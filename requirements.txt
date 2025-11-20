@@ -1,4 +1,9 @@
 alpaca-py
 pandas
-requests
 python-dotenv
+pytz
+supabase
+sqlalchemy
+alembic
+pydantic
+psycopg2-binary

@@ -1,0 +1,58 @@
+# Trading Bot Development Guidelines
+
+## Core Principles
+- Always prioritize data integrity and financial safety
+- Never make trades without proper validation and testing
+- Use paper trading mode by default unless explicitly requested otherwise
+- Implement comprehensive error handling and logging
+- Follow proper financial data handling practices
+
+## Code Standards
+- Use clear, descriptive variable and function names
+- Add docstrings to all functions explaining parameters and return values
+- Include proper error handling with specific exception types
+- Log all important operations with appropriate log levels
+- Use type hints for better code documentation
+
+## Trading Bot Specific Rules
+- Always validate market data before making trading decisions
+- Implement rate limiting to respect API quotas
+- Use proper timezone handling for market data
+- Never hardcode sensitive information (API keys, credentials)
+- Always test with small position sizes first
+- Implement position sizing and risk management
+- Add circuit breakers for unusual market conditions
+
+## Data Sources
+- Prefer using Alpaca API for both market data and trading operations
+- Ensure data quality checks before technical analysis
+- Handle missing or insufficient data gracefully
+- Use appropriate timeframes for the trading strategy
+
+## Testing and Validation
+- Create test scripts for major functionality
+- Validate trading signals before execution
+- Test with paper trading first
+- Monitor for API rate limits and handle gracefully
+- Log all trades and decisions for analysis
+
+## Configuration Management
+- Use environment variables for sensitive data
+- Provide clear configuration options for different modes (test/production)
+- Document all configuration parameters
+- Allow easy switching between paper and live trading
+
+## Risk Management
+- Implement position size limits
+- Add stop-loss mechanisms where appropriate
+- Monitor account balance and available buying power
+- Implement maximum daily loss limits
+- Add alerts for unusual trading activity
+
+## Before Making Changes
+1. Review existing code structure and patterns
+2. Consider impact on trading operations and data integrity
+3. Test changes in paper trading mode first
+4. Ensure proper error handling and logging
+5. Update documentation if needed
+6. Consider API rate limits and performance impact

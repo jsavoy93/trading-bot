@@ -1,0 +1,9 @@
+-- Rollback script
+-- Generated on 2025-11-20T03:46:51.907332
+
+DROP TABLE IF EXISTS performance_metrics CASCADE;
+DROP TABLE IF EXISTS error_logs CASCADE;
+DROP TABLE IF EXISTS market_data CASCADE;
+DROP TABLE IF EXISTS trades CASCADE;
+DROP TABLE IF EXISTS trading_sessions CASCADE;
+DROP TABLE IF EXISTS schema_migrations CASCADE;
