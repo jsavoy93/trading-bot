@@ -2,6 +2,42 @@
 
 All notable changes to the Advanced Trading Bot project will be documented in this file.
 
+## [2.1.0] - 2025-11-20
+
+### 🤖 AI Agent Integration
+
+#### ✨ Added
+- **AI Trading Agent**: Comprehensive AI system for market research and intelligent analysis
+- **News Analysis**: Real-time news fetching from News API with sentiment analysis
+- **Smart Recommendations**: AI-enhanced trading decision making with OpenAI GPT models
+- **Market Summaries**: Automated comprehensive market overview generation
+- **Multi-API Integration**: Support for OpenAI, News API, and Polygon API
+- **Async AI Operations**: Non-blocking AI analysis with full asyncio support
+- **AI Configuration Tools**: Setup script (`setup_ai.py`) and validation system
+- **Comprehensive AI Documentation**: Complete AI setup guide and troubleshooting (`docs/AI_CONFIGURATION.md`)
+
+#### 🚀 Enhanced Features
+- **Enhanced Symbol Analysis**: AI insights integrated into existing technical analysis
+- **Intelligent Signal Confirmation**: AI validation and enhancement of trading signals
+- **Risk Assessment**: AI-powered risk evaluation and position sizing recommendations
+- **Market Context**: Fundamental analysis to complement technical indicators
+- **Sentiment Integration**: News sentiment analysis integrated into trading decisions
+
+#### 🛠️ Technical Additions
+- **AITradingAgent Class**: Modular AI system with research, sentiment, and insight capabilities
+- **Async Support**: Full async/await implementation for concurrent AI operations
+- **Error Handling**: Graceful fallback when AI services unavailable - bot works without AI
+- **Cost Management**: Efficient API usage with batching and caching strategies
+- **Security**: Safe API key management and data privacy protection
+- **Optional Integration**: AI features are completely optional - existing functionality unaffected
+
+#### 📊 AI Capabilities
+- **Symbol Research**: Automated research with news analysis and key insights
+- **Sentiment Analysis**: Real-time sentiment scoring of news articles
+- **Trading Recommendations**: AI-generated buy/sell/hold recommendations with reasoning
+- **Market Summaries**: Comprehensive market overviews with key themes and risks
+- **Enhanced Decision Making**: AI-powered confirmation of technical analysis signals
+
 ## [2.0.0] - 2025-11-20
 
 ### 🎉 Major Release - Complete Rewrite and Organization

@@ -72,6 +72,12 @@ trading-bot/
 - **📈 Performance Tracking**: Comprehensive trade and session logging
 - **🧠 Learning Engine**: ML-ready data collection and analysis
 
+### AI-Powered Analysis (Optional)
+- **🤖 AI Research**: Automated stock research with news analysis
+- **📰 Sentiment Analysis**: Real-time news sentiment evaluation
+- **💡 Smart Recommendations**: AI-enhanced trading decisions
+- **📋 Market Summaries**: Comprehensive market overview generation
+
 ### Enterprise Features
 - **🔒 Security**: Row Level Security (RLS) enabled
 - **📊 Analytics**: Performance metrics and win rate tracking
@@ -91,6 +97,11 @@ ALPACA_BASE_URL=https://paper-api.alpaca.markets
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_service_key
+
+# AI Agent Credentials (Optional)
+OPENAI_API_KEY=your_openai_api_key
+NEWS_API_KEY=your_newsapi_key
+POLYGON_API_KEY=your_polygon_key  # Optional
 ```
 
 ### Trading Parameters
@@ -127,6 +138,12 @@ Edit `src/core/smart_bot.py` to customize:
 ### Basic Trading Session
 ```bash
 ./run.sh
+```
+
+### AI Features Setup
+```bash
+# Configure AI features (optional)
+python scripts/setup_ai.py
 ```
 
 ### Database Operations
@@ -190,6 +207,7 @@ The bot provides real-time monitoring of:
 ## 📚 Documentation
 
 - [Migration Guide](docs/MIGRATION_GUIDE.md) - Complete database setup
+- [AI Configuration](docs/AI_CONFIGURATION.md) - AI features setup and usage
 - [Coding Guidelines](.cursorrules) - Development standards
 - API documentation in code comments
 

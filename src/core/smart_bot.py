@@ -9,15 +9,20 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import pandas as pd
 from dotenv import load_dotenv
-import alpaca_trade_api as tradeapi
-from alpaca_trade_api.rest import APIError
+from alpaca.trading.client import TradingClient
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
 
-# Import our simple REST API manager
+# Import our simple REST API manager and AI agent
 import sys
 from pathlib import Path
 # Add the parent directory to path to access database module
 sys.path.append(str(Path(__file__).parent.parent))
 from database.simple_rest import simple_rest
+from analysis.ai_agent import ai_agent
 
 # Load environment variables
 load_dotenv()
@@ -43,11 +48,16 @@ class SmartTradingBot:
         if not self.api_key or not self.api_secret:
             raise ValueError("Missing Alpaca API credentials")
         
-        self.api = tradeapi.REST(
-            self.api_key,
-            self.api_secret,
-            self.base_url,
-            api_version='v2'
+        # Initialize Alpaca clients
+        self.trading_client = TradingClient(
+            api_key=self.api_key,
+            secret_key=self.api_secret,
+            paper=True  # Always use paper trading for safety
+        )
+        
+        self.data_client = StockHistoricalDataClient(
+            api_key=self.api_key,
+            secret_key=self.api_secret
         )
         
         # Trading parameters
@@ -58,18 +68,27 @@ class SmartTradingBot:
         self.rsi_buy_threshold = 30
         self.rsi_sell_threshold = 70
         
-        # Session tracking
+        # Database integration
         self.db = simple_rest
         self.session_id = None
         self.trades_executed = 0
         self.symbols_processed = 0
         self.errors_count = 0
         
+        # AI integration
+        self.ai = ai_agent
+        
         logging.info("🤖 Smart Trading Bot initialized")
         if self.db.is_available():
             logging.info("✅ Database available via REST API")
         else:
             logging.warning("⚠️  Database not available - running locally only")
+            
+        if self.ai.is_configured():
+            ai_config = self.ai.get_configuration_status()
+            logging.info(f"🧠 AI Agent configured: {sum(ai_config.values())}/{len(ai_config)} services")
+        else:
+            logging.warning("⚠️  AI Agent not configured - running without advanced analysis")
     
     def show_database_setup(self):
         """Show database setup instructions"""
@@ -162,8 +181,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
     def get_all_us_symbols(self) -> List[str]:
         """Get all tradeable US stock symbols"""
         try:
-            assets = self.api.list_assets(status='active', asset_class='us_equity')
-            symbols = [asset.symbol for asset in assets if asset.tradable and asset.shortable]
+            assets = self.trading_client.get_all_assets()
+            # Filter for active, tradable US equity assets
+            symbols = []
+            for asset in assets:
+                try:
+                    if (asset.tradable and 
+                        str(asset.status) == 'AssetStatus.ACTIVE' and 
+                        str(asset.asset_class) == 'AssetClass.US_EQUITY'):
+                        symbols.append(asset.symbol)
+                except Exception:
+                    # If we can't check the attributes, just check tradable
+                    if asset.tradable:
+                        symbols.append(asset.symbol)
             logging.info(f"📊 Retrieved {len(symbols)} tradeable symbols")
             return symbols
         except Exception as e:
@@ -176,24 +206,30 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             end_date = datetime.now()
             start_date = end_date - timedelta(days=100)
             
-            barset = self.api.get_bars(
-                symbol,
-                tradeapi.TimeFrame.Day,
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d')
+            request = StockBarsRequest(
+                symbol_or_symbols=[symbol],
+                timeframe=TimeFrame.Day,
+                start=start_date,
+                end=end_date
             )
             
-            if not barset or len(barset) == 0:
+            barset = self.data_client.get_stock_bars(request)
+            
+            if not barset or symbol not in barset.data:
+                return None
+            
+            bars = barset.data[symbol]
+            if not bars:
                 return None
             
             df = pd.DataFrame([{
-                'timestamp': bar.t,
-                'open': bar.o,
-                'high': bar.h,
-                'low': bar.l,
-                'close': bar.c,
-                'volume': bar.v
-            } for bar in barset])
+                'timestamp': bar.timestamp,
+                'open': bar.open,
+                'high': bar.high,
+                'low': bar.low,
+                'close': bar.close,
+                'volume': bar.volume
+            } for bar in bars])
             
             return df
             
@@ -219,8 +255,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         
         return df
     
-    def analyze_symbol(self, symbol: str) -> Optional[Dict]:
-        """Analyze symbol for trading opportunities"""
+    def analyze_symbol(self, symbol: str, use_ai: bool = False) -> Optional[Dict]:
+        """Analyze symbol for trading opportunities with optional AI enhancement"""
         try:
             df = self.get_market_data(symbol)
             if df is None or len(df) < self.sma_slow:
@@ -239,8 +275,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             
             signal = None
             signal_strength = "WEAK"
+            ai_insight = None
             
-            # Trading logic
+            # Traditional technical analysis
             if sma_fast > sma_slow and rsi < self.rsi_buy_threshold:
                 signal = "BUY"
                 signal_strength = "STRONG" if rsi < 25 else "MEDIUM"
@@ -248,7 +285,32 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 signal = "SELL"
                 signal_strength = "STRONG" if rsi > 75 else "MEDIUM"
             
-            return {
+            # AI enhancement (if enabled and configured)
+            if use_ai and self.ai.is_configured() and signal:
+                try:
+                    # Get AI research (non-blocking)
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    ai_research = loop.run_until_complete(self.ai.research_symbol(symbol, lookback_days=2))
+                    loop.close()
+                    
+                    if ai_research and ai_research.get('ai_recommendation'):
+                        ai_rec = ai_research['ai_recommendation']
+                        ai_signal = ai_rec.recommendation.upper()
+                        
+                        # Enhance signal with AI
+                        if ai_signal == signal and ai_rec.confidence > 0.7:
+                            signal_strength = "AI_ENHANCED"
+                            ai_insight = f"AI confirms {signal} with {ai_rec.confidence:.1%} confidence"
+                        elif ai_signal != signal:
+                            signal_strength = "CONFLICTED"
+                            ai_insight = f"AI suggests {ai_signal} vs technical {signal}"
+                        
+                except Exception as e:
+                    logging.debug(f"AI analysis failed for {symbol}: {e}")
+            
+            analysis_result = {
                 'symbol': symbol,
                 'price': price,
                 'sma_fast': sma_fast,
@@ -258,6 +320,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'signal_strength': signal_strength,
                 'timestamp': latest['timestamp']
             }
+            
+            if ai_insight:
+                analysis_result['ai_insight'] = ai_insight
+            
+            return analysis_result
             
         except Exception as e:
             logging.debug(f"Analysis failed for {symbol}: {e}")
@@ -278,15 +345,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if quantity <= 0:
                 return False
             
-            side = 'buy' if signal == 'BUY' else 'sell'
+            side = OrderSide.BUY if signal == 'BUY' else OrderSide.SELL
             
-            order = self.api.submit_order(
+            market_order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=quantity,
                 side=side,
-                type='market',
-                time_in_force='day'
+                time_in_force=TimeInForce.DAY
             )
+            
+            order = self.trading_client.submit_order(order_data=market_order_data)
             
             # Log to database if available
             if self.db.is_available() and self.session_id:
@@ -316,9 +384,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             self.errors_count += 1
             return False
     
-    def run_analysis(self, max_symbols: int = 50, max_trades: int = 3):
-        """Run trading analysis"""
-        logging.info(f"🔍 Starting analysis (max {max_symbols} symbols, max {max_trades} trades)")
+    def run_analysis(self, max_symbols: int = 50, max_trades: int = 3, use_ai: bool = False):
+        """Run trading analysis with optional AI enhancement"""
+        logging.info(f"🔍 Starting analysis (max {max_symbols} symbols, max {max_trades} trades, AI: {use_ai})")
         
         symbols = self.get_all_us_symbols()
         if not symbols:
@@ -328,6 +396,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         symbols = symbols[:max_symbols]
         trades_executed = 0
         opportunities = 0
+        ai_enhanced_trades = 0
+        
+        # Create AI market summary if enabled
+        if use_ai and self.ai.is_configured():
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                market_summary = loop.run_until_complete(self.ai.create_market_summary(symbols[:5]))
+                loop.close()
+                
+                logging.info(f"🧠 AI Market Summary: {market_summary.get('overall_sentiment', 'neutral')} sentiment")
+                
+            except Exception as e:
+                logging.warning(f"⚠️  AI market summary failed: {e}")
         
         for i, symbol in enumerate(symbols, 1):
             try:
@@ -336,10 +419,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if i % 10 == 0:
                     logging.info(f"📊 Progress: {i}/{len(symbols)} symbols, {opportunities} opportunities, {trades_executed} trades")
                 
-                analysis = self.analyze_symbol(symbol)
+                analysis = self.analyze_symbol(symbol, use_ai=use_ai)
                 if analysis and analysis['signal']:
                     opportunities += 1
-                    logging.info(f"📈 {analysis['signal']} signal: {symbol} RSI={analysis['rsi']:.1f} Price=${analysis['price']:.2f}")
+                    
+                    # Enhanced logging with AI insights
+                    ai_info = ""
+                    if analysis.get('ai_insight'):
+                        ai_info = f" | {analysis['ai_insight']}"
+                        if analysis['signal_strength'] == "AI_ENHANCED":
+                            ai_enhanced_trades += 1
+                    
+                    logging.info(f"📈 {analysis['signal']} signal: {symbol} RSI={analysis['rsi']:.1f} Price=${analysis['price']:.2f}{ai_info}")
                     
                     if trades_executed < max_trades:
                         if self.execute_trade(analysis):
@@ -354,7 +445,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 logging.error(f"❌ Error with {symbol}: {e}")
                 self.errors_count += 1
         
-        logging.info(f"🏁 Analysis complete: {opportunities} opportunities, {trades_executed} trades executed")
+        # Enhanced completion summary
+        ai_summary = f", {ai_enhanced_trades} AI-enhanced" if use_ai else ""
+        logging.info(f"🏁 Analysis complete: {opportunities} opportunities, {trades_executed} trades executed{ai_summary}")
     
     def show_database_status(self):
         """Show database status and recent sessions"""
@@ -404,8 +497,11 @@ def main():
         bot.start_session()
         
         try:
-            # Run analysis
-            bot.run_analysis(max_symbols=30, max_trades=2)
+            # Run analysis with AI if configured
+            use_ai = bot.ai.is_configured()
+            if use_ai:
+                logging.info("🧠 AI-enhanced analysis enabled")
+            bot.run_analysis(max_symbols=30, max_trades=2, use_ai=use_ai)
         finally:
             bot.end_session()
         
