@@ -43,6 +43,39 @@ async def test_openai_connection():
         print(f"❌ OpenAI API connection failed: {e}")
         return False
 
+def test_google_ai_connection():
+    """Test Google AI API connection"""
+    try:
+        import google.generativeai as genai
+        api_key = os.getenv('GOOGLE_AI_API_KEY')
+        
+        if not api_key:
+            print("❌ GOOGLE_AI_API_KEY not found in environment")
+            return False
+            
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # Test with a simple generation
+        response = model.generate_content(
+            "Test connection - respond with 'OK'",
+            generation_config={'max_output_tokens': 10, 'temperature': 0.1}
+        )
+        
+        if response.text and 'OK' in response.text:
+            print("✅ Google AI API connection successful")
+            return True
+        else:
+            print(f"❌ Google AI API unexpected response: {response.text}")
+            return False
+            
+    except ImportError:
+        print("❌ Google GenerativeAI package not installed. Run: pip install google-generativeai")
+        return False
+    except Exception as e:
+        print(f"❌ Google AI API connection failed: {e}")
+        return False
+
 def test_news_api():
     """Test News API connection"""
     try:
@@ -119,16 +152,28 @@ async def main():
     print("\n🔑 Testing API Connections...")
     
     # Test each API
-    openai_ok = await test_openai_connection()
+    ai_provider = os.getenv('AI_PROVIDER', 'openai').lower()
+    openai_ok = False
+    google_ok = False
+    
+    if ai_provider == 'google' or os.getenv('GOOGLE_AI_API_KEY'):
+        google_ok = test_google_ai_connection()
+    
+    if ai_provider == 'openai' or os.getenv('OPENAI_API_KEY'):
+        openai_ok = await test_openai_connection()
+    
     news_ok = test_news_api()
     polygon_ok = test_polygon_api()
     
     print("\n📊 Configuration Summary:")
+    print(f"  AI Provider: {ai_provider}")
     print(f"  OpenAI API:  {'✅' if openai_ok else '❌'}")
+    print(f"  Google AI:   {'✅' if google_ok else '❌'}")
     print(f"  News API:    {'✅' if news_ok else '❌'}")
     print(f"  Polygon API: {'✅' if polygon_ok else '❌'}")
     
-    if openai_ok and news_ok and polygon_ok:
+    ai_configured = openai_ok or google_ok
+    if ai_configured and news_ok and polygon_ok:
         print("\n🎉 AI Agent fully configured and ready!")
         
         # Test AI agent initialization
@@ -152,6 +197,10 @@ async def main():
         return True
     else:
         print("\n⚠️ Some AI services are not configured")
+        if not ai_configured:
+            print("   - No AI provider configured (OpenAI or Google AI)")
+        if not news_ok:
+            print("   - News API not configured")
         print("   The trading bot will work without AI features")
         print("   Configure missing API keys in .env file to enable AI")
         return False

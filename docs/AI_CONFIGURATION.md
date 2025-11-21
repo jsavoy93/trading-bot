@@ -11,11 +11,19 @@ The trading bot includes an advanced AI agent that can:
 
 ## Required API Keys
 
-### 1. OpenAI API (Required for AI features)
-- **Purpose**: Powers the core AI analysis and decision-making
+### 1. AI Provider (Choose One)
+
+#### Option A: OpenAI API
+- **Purpose**: Powers the core AI analysis and decision-making with GPT models
 - **Get API Key**: https://platform.openai.com/api-keys
-- **Environment Variable**: `OPENAI_API_KEY`
+- **Environment Variables**: `OPENAI_API_KEY`, `AI_PROVIDER=openai`
 - **Cost**: Pay-per-use (typically $0.002 per 1K tokens for GPT-3.5-turbo)
+
+#### Option B: Google AI (Gemini Flash)
+- **Purpose**: Powers the core AI analysis with Google's Gemini Flash model
+- **Get API Key**: https://aistudio.google.com/app/apikey
+- **Environment Variables**: `GOOGLE_AI_API_KEY`, `AI_PROVIDER=google`
+- **Cost**: Free tier available (15 requests per minute), very cost-effective
 
 ### 2. News API (Required for news analysis)
 - **Purpose**: Fetches real-time news articles for sentiment analysis
@@ -44,8 +52,16 @@ pip install -r requirements.txt
 
 2. Edit `.env` and add your API keys:
    ```env
-   # AI Agent Credentials
+   # AI Agent Credentials - Choose one AI provider
+   # Option A: OpenAI
    OPENAI_API_KEY=your-openai-api-key-here
+   AI_PROVIDER=openai
+   
+   # Option B: Google AI (Gemini Flash)
+   GOOGLE_AI_API_KEY=your-google-ai-api-key-here
+   AI_PROVIDER=google
+   
+   # Required for news analysis
    NEWS_API_KEY=your-newsapi-key-here
    POLYGON_API_KEY=your-polygon-api-key-here  # Optional
    ```

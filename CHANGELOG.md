@@ -8,10 +8,11 @@ All notable changes to the Advanced Trading Bot project will be documented in th
 
 #### ✨ Added
 - **AI Trading Agent**: Comprehensive AI system for market research and intelligent analysis
+- **Dual AI Provider Support**: Choose between OpenAI GPT or Google Gemini Flash models
 - **News Analysis**: Real-time news fetching from News API with sentiment analysis
-- **Smart Recommendations**: AI-enhanced trading decision making with OpenAI GPT models
+- **Smart Recommendations**: AI-enhanced trading decision making with multiple AI providers
 - **Market Summaries**: Automated comprehensive market overview generation
-- **Multi-API Integration**: Support for OpenAI, News API, and Polygon API
+- **Multi-API Integration**: Support for OpenAI/Google AI, News API, and Polygon API
 - **Async AI Operations**: Non-blocking AI analysis with full asyncio support
 - **AI Configuration Tools**: Setup script (`setup_ai.py`) and validation system
 - **Comprehensive AI Documentation**: Complete AI setup guide and troubleshooting (`docs/AI_CONFIGURATION.md`)
@@ -25,9 +26,10 @@ All notable changes to the Advanced Trading Bot project will be documented in th
 
 #### 🛠️ Technical Additions
 - **AITradingAgent Class**: Modular AI system with research, sentiment, and insight capabilities
+- **Multi-Provider Architecture**: Supports both OpenAI GPT and Google Gemini Flash with automatic fallback
 - **Async Support**: Full async/await implementation for concurrent AI operations
 - **Error Handling**: Graceful fallback when AI services unavailable - bot works without AI
-- **Cost Management**: Efficient API usage with batching and caching strategies
+- **Cost Management**: Efficient API usage with Google's cost-effective Gemini Flash option
 - **Security**: Safe API key management and data privacy protection
 - **Optional Integration**: AI features are completely optional - existing functionality unaffected
 

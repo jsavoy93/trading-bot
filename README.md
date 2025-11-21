@@ -99,7 +99,11 @@ SUPABASE_ANON_KEY=your_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_service_key
 
 # AI Agent Credentials (Optional)
+# Choose one: OpenAI or Google AI
 OPENAI_API_KEY=your_openai_api_key
+GOOGLE_AI_API_KEY=your_google_ai_key  
+AI_PROVIDER=openai  # Options: openai, google
+
 NEWS_API_KEY=your_newsapi_key
 POLYGON_API_KEY=your_polygon_key  # Optional
 ```

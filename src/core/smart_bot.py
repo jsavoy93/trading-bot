@@ -84,7 +84,7 @@ class SmartTradingBot:
         else:
             logging.warning("⚠️  Database not available - running locally only")
             
-        if self.ai.is_configured():
+        if self.ai.is_configured:
             ai_config = self.ai.get_configuration_status()
             logging.info(f"🧠 AI Agent configured: {sum(ai_config.values())}/{len(ai_config)} services")
         else:
@@ -286,7 +286,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 signal_strength = "STRONG" if rsi > 75 else "MEDIUM"
             
             # AI enhancement (if enabled and configured)
-            if use_ai and self.ai.is_configured() and signal:
+            if use_ai and self.ai.is_configured and signal:
                 try:
                     # Get AI research (non-blocking)
                     import asyncio
@@ -399,7 +399,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         ai_enhanced_trades = 0
         
         # Create AI market summary if enabled
-        if use_ai and self.ai.is_configured():
+        if use_ai and self.ai.is_configured:
             try:
                 import asyncio
                 loop = asyncio.new_event_loop()
@@ -498,7 +498,7 @@ def main():
         
         try:
             # Run analysis with AI if configured
-            use_ai = bot.ai.is_configured()
+            use_ai = bot.ai.is_configured
             if use_ai:
                 logging.info("🧠 AI-enhanced analysis enabled")
             bot.run_analysis(max_symbols=30, max_trades=2, use_ai=use_ai)

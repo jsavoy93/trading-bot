@@ -44,6 +44,8 @@ class AITradingAgent:
         
         # AI API Configuration
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.google_api_key = os.getenv("GOOGLE_AI_API_KEY")
+        self.ai_provider = os.getenv("AI_PROVIDER", "openai").lower()
         self.news_api_key = os.getenv("NEWS_API_KEY") 
         self.polygon_api_key = os.getenv("POLYGON_API_KEY")
         
@@ -52,9 +54,154 @@ class AITradingAgent:
         self.sentiment_threshold = 0.6
         self.confidence_threshold = 0.7
         
+        # Initialize AI client
+        self.ai_client = None
+        self.is_configured = False
+        self._init_ai_client()
+        
         # Initialize components
         self._setup_logging()
+    
+    def _init_ai_client(self):
+        """Initialize AI client based on provider preference"""
+        if self.ai_provider == "google" and self.google_api_key:
+            self._init_google_ai()
+        elif self.ai_provider == "openai" and self.openai_api_key:
+            self._init_openai()
+        elif self.openai_api_key:  # Fallback to OpenAI
+            self.ai_provider = "openai"
+            self._init_openai()
+        elif self.google_api_key:  # Fallback to Google
+            self.ai_provider = "google"
+            self._init_google_ai()
         
+        self.is_configured = bool(self.ai_client)
+    
+    def _init_openai(self):
+        """Initialize OpenAI client"""
+        try:
+            import openai
+            self.ai_client = openai.OpenAI(api_key=self.openai_api_key)
+            logging.info("✅ AI Agent initialized with OpenAI GPT")
+        except ImportError:
+            logging.error("❌ OpenAI package not available")
+    
+    def _init_google_ai(self):
+        """Initialize Google AI client"""
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=self.google_api_key)
+            self.ai_client = genai.GenerativeModel('gemini-pro')
+            logging.info("✅ AI Agent initialized with Google Gemini Flash")
+        except ImportError:
+            logging.error("❌ Google GenerativeAI package not available")
+    
+    def _call_ai_sync(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Synchronous AI API call for both providers"""
+        if not self.ai_client:
+            return None
+            
+        try:
+            if self.ai_provider == "openai":
+                return self._call_openai_sync(prompt, max_tokens)
+            elif self.ai_provider == "google":
+                return self._call_google_sync(prompt, max_tokens)
+            else:
+                logging.error(f"Unknown AI provider: {self.ai_provider}")
+                return None
+                
+        except Exception as e:
+            logging.error(f"AI API call failed: {e}")
+            return None
+    
+    def _call_openai_sync(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Call OpenAI GPT API synchronously"""
+        response = self.ai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a professional financial analyst providing concise, actionable insights in JSON format."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=max_tokens,
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content.strip()
+    
+    def _call_google_sync(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Call Google Gemini Flash API synchronously"""
+        system_prompt = "You are a professional financial analyst providing concise, actionable insights in JSON format."
+        full_prompt = f"{system_prompt}\n\n{prompt}"
+        
+        response = self.ai_client.generate_content(
+            full_prompt,
+            generation_config={
+                'max_output_tokens': max_tokens,
+                'temperature': 0.3,
+            }
+        )
+        return response.text.strip() if response.text else None
+    
+    async def _call_ai_async(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Asynchronous AI API call for both providers"""
+        if not self.ai_client:
+            return None
+            
+        try:
+            if self.ai_provider == "openai":
+                return await self._call_openai_async(prompt, max_tokens)
+            elif self.ai_provider == "google":
+                return await self._call_google_async(prompt, max_tokens)
+            else:
+                logging.error(f"Unknown AI provider: {self.ai_provider}")
+                return None
+                
+        except Exception as e:
+            logging.error(f"AI API call failed: {e}")
+            return None
+    
+    async def _call_openai_async(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Call OpenAI GPT API asynchronously"""
+        # For async, we need to use AsyncOpenAI
+        try:
+            import openai
+            async_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
+            response = await async_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a professional financial analyst providing concise, actionable insights in JSON format."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=max_tokens,
+                temperature=0.3
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logging.error(f"OpenAI async call failed: {e}")
+            return None
+    
+    async def _call_google_async(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Call Google Gemini Flash API asynchronously"""
+        import asyncio
+        
+        def sync_generate():
+            system_prompt = "You are a professional financial analyst providing concise, actionable insights in JSON format."
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+            
+            response = self.ai_client.generate_content(
+                full_prompt,
+                generation_config={
+                    'max_output_tokens': max_tokens,
+                    'temperature': 0.3,
+                }
+            )
+            return response.text.strip() if response.text else None
+        
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, sync_generate)
+        return result
+    
     def _setup_logging(self):
         """Setup AI agent logging"""
         self.logger = logging.getLogger("AITradingAgent")
@@ -156,41 +303,98 @@ class AITradingAgent:
         return articles[:self.max_articles_per_search]
     
     def _summarize_article(self, article: Dict) -> ArticleSummary:
-        """Create a summary of an article"""
+        """Create a summary of an article with AI enhancement if available"""
         try:
             title = article.get("title", "")
             url = article.get("url", "")
             content = article.get("description", "") or article.get("content", "")
             
-            # Simple keyword-based sentiment (can be enhanced with AI)
-            positive_words = ["bullish", "growth", "profit", "beat", "strong", "up", "gain", "buy"]
-            negative_words = ["bearish", "loss", "miss", "weak", "down", "fall", "sell", "risk"]
-            
-            content_lower = content.lower()
-            pos_score = sum(1 for word in positive_words if word in content_lower)
-            neg_score = sum(1 for word in negative_words if word in content_lower)
-            
-            if pos_score > neg_score:
-                sentiment = "positive"
-            elif neg_score > pos_score:
-                sentiment = "negative"
+            if self.is_configured and self.ai_client:
+                # Use AI for enhanced analysis
+                return self._ai_summarize_article(title, content, url)
             else:
-                sentiment = "neutral"
-            
-            return ArticleSummary(
-                title=title,
-                url=url,
-                summary=content[:200] + "..." if len(content) > 200 else content,
-                sentiment=sentiment,
-                relevance_score=0.8,  # Can be enhanced with AI
-                key_points=[title],
-                trading_signals=[],
-                timestamp=datetime.now()
-            )
+                # Fallback to simple keyword-based analysis
+                return self._simple_summarize_article(title, content, url)
             
         except Exception as e:
             self.logger.warning(f"Article summary failed: {e}")
             return None
+    
+    def _simple_summarize_article(self, title: str, content: str, url: str) -> ArticleSummary:
+        """Simple keyword-based article analysis"""
+        positive_words = ["bullish", "growth", "profit", "beat", "strong", "up", "gain", "buy"]
+        negative_words = ["bearish", "loss", "miss", "weak", "down", "fall", "sell", "risk"]
+        
+        content_lower = content.lower()
+        pos_score = sum(1 for word in positive_words if word in content_lower)
+        neg_score = sum(1 for word in negative_words if word in content_lower)
+        
+        if pos_score > neg_score:
+            sentiment = "positive"
+        elif neg_score > pos_score:
+            sentiment = "negative"
+        else:
+            sentiment = "neutral"
+        
+        return ArticleSummary(
+            title=title,
+            url=url,
+            summary=content[:200] + "..." if len(content) > 200 else content,
+            sentiment=sentiment,
+            relevance_score=0.8,
+            key_points=[title],
+            trading_signals=[],
+            timestamp=datetime.now()
+        )
+    
+    def _ai_summarize_article(self, title: str, content: str, url: str) -> ArticleSummary:
+        """AI-powered article analysis"""
+        try:
+            prompt = f"""
+            Analyze this financial news article and provide:
+            1. Sentiment: positive, negative, or neutral
+            2. Key trading points (max 3)  
+            3. Relevance score (0-1)
+            4. Brief summary (max 100 words)
+            
+            Title: {title}
+            Content: {content[:500]}
+            
+            Respond in JSON format:
+            {{
+                "sentiment": "positive/negative/neutral",
+                "key_points": ["point1", "point2", "point3"],
+                "relevance_score": 0.8,
+                "summary": "brief summary",
+                "trading_signals": ["signal1", "signal2"]
+            }}
+            """
+            
+            response = self._call_ai_sync(prompt)
+            if response:
+                try:
+                    import json
+                    ai_analysis = json.loads(response)
+                    
+                    return ArticleSummary(
+                        title=title,
+                        url=url,
+                        summary=ai_analysis.get("summary", content[:200]),
+                        sentiment=ai_analysis.get("sentiment", "neutral"),
+                        relevance_score=ai_analysis.get("relevance_score", 0.5),
+                        key_points=ai_analysis.get("key_points", [title]),
+                        trading_signals=ai_analysis.get("trading_signals", []),
+                        timestamp=datetime.now()
+                    )
+                except json.JSONDecodeError:
+                    pass
+            
+            # Fallback to simple analysis if AI fails
+            return self._simple_summarize_article(title, content, url)
+            
+        except Exception as e:
+            self.logger.warning(f"AI article analysis failed: {e}")
+            return self._simple_summarize_article(title, content, url)
     
     async def _analyze_sentiment(self, articles: List[Dict]) -> Dict[str, Any]:
         """Analyze overall sentiment from articles"""
@@ -251,7 +455,14 @@ class AITradingAgent:
                                      sentiment: Dict, technical: Dict) -> TradingInsight:
         """Generate AI-powered trading recommendation"""
         
-        # Simple rule-based recommendation (can be enhanced with AI models)
+        if self.is_configured and self.ai_client:
+            return await self._ai_generate_recommendation(symbol, articles, sentiment, technical)
+        else:
+            return self._simple_generate_recommendation(symbol, articles, sentiment, technical)
+    
+    def _simple_generate_recommendation(self, symbol: str, articles: List[Dict], 
+                                      sentiment: Dict, technical: Dict) -> TradingInsight:
+        """Simple rule-based recommendation"""
         recommendation = "hold"
         confidence = 0.5
         reasoning = "Neutral signals from multiple factors"
@@ -286,6 +497,60 @@ class AITradingAgent:
             time_horizon="1-3 months",
             sources=[f"{len(articles)} news articles", "Technical analysis"]
         )
+    
+    async def _ai_generate_recommendation(self, symbol: str, articles: List[Dict], 
+                                        sentiment: Dict, technical: Dict) -> TradingInsight:
+        """AI-powered trading recommendation"""
+        try:
+            # Prepare context for AI
+            news_summary = f"{len(articles)} articles with {sentiment['overall_sentiment']} sentiment ({sentiment['confidence']:.1%} confidence)"
+            tech_summary = f"RSI: {technical.get('rsi', 'N/A')}, SMA Signal: {technical.get('sma_signal', 'N/A')}"
+            
+            prompt = f"""
+            As a professional financial analyst, provide a trading recommendation for {symbol}.
+            
+            Market Data:
+            - News Analysis: {news_summary}
+            - Technical Analysis: {tech_summary}
+            
+            Provide your analysis in JSON format:
+            {{
+                "recommendation": "buy/sell/hold",
+                "confidence": 0.85,
+                "reasoning": "detailed reasoning for the recommendation",
+                "risk_factors": ["factor1", "factor2", "factor3"],
+                "price_targets": {{"short_term": 105.0, "long_term": 110.0}},
+                "time_horizon": "time frame for the recommendation"
+            }}
+            
+            Consider market conditions, sentiment, technical indicators, and risk management.
+            """
+            
+            response = await self._call_ai_async(prompt)
+            if response:
+                try:
+                    import json
+                    ai_analysis = json.loads(response)
+                    
+                    return TradingInsight(
+                        symbol=symbol,
+                        recommendation=ai_analysis.get("recommendation", "hold"),
+                        confidence=min(ai_analysis.get("confidence", 0.5), 1.0),
+                        reasoning=ai_analysis.get("reasoning", "AI-generated analysis"),
+                        risk_factors=ai_analysis.get("risk_factors", ["Market volatility"]),
+                        price_targets=ai_analysis.get("price_targets", {"short_term": 100.0, "long_term": 105.0}),
+                        time_horizon=ai_analysis.get("time_horizon", "1-3 months"),
+                        sources=[f"{len(articles)} news articles", "Technical analysis", f"AI ({self.ai_provider})"]
+                    )
+                except json.JSONDecodeError:
+                    logging.warning("AI returned invalid JSON, falling back to simple recommendation")
+            
+            # Fallback to simple recommendation if AI fails
+            return self._simple_generate_recommendation(symbol, articles, sentiment, technical)
+            
+        except Exception as e:
+            logging.error(f"AI recommendation generation failed: {e}")
+            return self._simple_generate_recommendation(symbol, articles, sentiment, technical)
     
     async def _assess_risks(self, symbol: str, articles: List[Dict], technical: Dict) -> Dict[str, Any]:
         """Assess trading risks"""
