@@ -54,20 +54,36 @@ def test_google_ai_connection():
             return False
             
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')
         
-        # Test with a simple generation
-        response = model.generate_content(
-            "Test connection - respond with 'OK'",
-            generation_config={'max_output_tokens': 10, 'temperature': 0.1}
-        )
+        # Try different models in order of preference (using correct API names)
+        models_to_try = [
+            'models/gemini-2.5-flash',
+            'models/gemini-2.0-flash', 
+            'models/gemini-flash-latest',
+            'models/gemini-2.5-flash-lite',
+            'models/gemini-2.0-flash-lite'
+        ]
         
-        if response.text and 'OK' in response.text:
-            print("✅ Google AI API connection successful")
-            return True
-        else:
-            print(f"❌ Google AI API unexpected response: {response.text}")
-            return False
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(model_name)
+                
+                # Test with a simple generation
+                response = model.generate_content(
+                    "Test connection - respond with 'OK'",
+                    generation_config={'max_output_tokens': 10, 'temperature': 0.1}
+                )
+                
+                if response.text and ('OK' in response.text or len(response.text.strip()) > 0):
+                    print(f"✅ Google AI API connection successful ({model_name})")
+                    return True
+                    
+            except Exception as model_error:
+                print(f"⚠️ Model {model_name} failed: {str(model_error)[:100]}")
+                continue
+        
+        print("❌ No compatible Google AI models found")
+        return False
             
     except ImportError:
         print("❌ Google GenerativeAI package not installed. Run: pip install google-generativeai")

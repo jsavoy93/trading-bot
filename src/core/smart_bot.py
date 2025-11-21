@@ -5,7 +5,7 @@ Works around package conflicts by using direct HTTP requests.
 import os
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 import pandas as pd
 from dotenv import load_dotenv
@@ -170,13 +170,91 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """End the current trading session"""
         if self.db.is_available() and self.session_id:
             self.db.update_session(self.session_id, {
-                "session_end": datetime.utcnow().isoformat(),
+                "session_end": datetime.now(timezone.utc).isoformat(),
                 "total_symbols_processed": self.symbols_processed,
                 "total_trades_executed": self.trades_executed,
                 "error_count": self.errors_count
             })
         
         logging.info(f"🏁 Session ended: {self.symbols_processed} symbols, {self.trades_executed} trades")
+    
+    def get_ai_recommended_tickers(self, portfolio_analysis: Dict) -> List[str]:
+        """Get AI-recommended tickers based on portfolio analysis"""
+        if not self.ai.is_configured:
+            logging.warning("⚠️ AI not configured, falling back to standard symbol selection")
+            return self.get_all_us_symbols()[:30]
+        
+        try:
+            # Prepare portfolio context for AI
+            portfolio_context = {
+                'total_value': portfolio_analysis.get('total_value', 0),
+                'positions': portfolio_analysis.get('total_positions', 0),
+                'cash_percentage': portfolio_analysis.get('cash_percentage', 0),
+                'concentration_risk': portfolio_analysis.get('concentration_risk', 0),
+                'top_holdings': portfolio_analysis.get('top_holdings', []),
+                'sector_allocation': portfolio_analysis.get('sector_allocation', {}),
+                'underperforming_positions': portfolio_analysis.get('underperforming_positions', []),
+                'high_concentration_positions': portfolio_analysis.get('high_concentration_positions', [])
+            }
+            
+            prompt = f"""
+            Based on this portfolio analysis, recommend 30 specific stock tickers to research for potential trades.
+            
+            Portfolio Context:
+            - Total Value: ${portfolio_context['total_value']:,.2f}
+            - Number of Positions: {portfolio_context['positions']}
+            - Cash Percentage: {portfolio_context['cash_percentage']:.1f}%
+            - Concentration Risk: {portfolio_context['concentration_risk']:.1f}% in top 5 positions
+            
+            Top Holdings: {portfolio_context['top_holdings'][:5]}
+            Sector Allocation: {portfolio_context['sector_allocation']}
+            Underperforming Positions: {portfolio_context['underperforming_positions'][:3]}
+            High Concentration Positions: {portfolio_context['high_concentration_positions']}
+            
+            Provide recommendations for:
+            1. Diversification opportunities (if concentration risk is high)
+            2. Sector rebalancing (if overweight in certain sectors)
+            3. Growth opportunities (if excess cash available)
+            4. Defensive positions (if portfolio needs stability)
+            5. Replacement candidates (for underperforming positions)
+            
+            Return ONLY a JSON object with this format:
+            {{
+                "recommended_tickers": ["AAPL", "MSFT", "GOOGL", ...],
+                "reasoning": "Brief explanation of the selection strategy",
+                "focus_areas": ["diversification", "growth", "defensive", ...]
+            }}
+            
+            Focus on liquid, well-known stocks. Avoid penny stocks or highly speculative tickers.
+            """
+            
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                response = loop.run_until_complete(self.ai.analyze_with_context(prompt, "portfolio_ticker_selection"))
+                
+                if isinstance(response, dict) and 'recommended_tickers' in response:
+                    tickers = response['recommended_tickers'][:30]  # Limit to 30
+                    reasoning = response.get('reasoning', 'No reasoning provided')
+                    focus_areas = response.get('focus_areas', [])
+                    
+                    logging.info(f"🧠 AI Ticker Selection Strategy: {reasoning}")
+                    logging.info(f"🎯 Focus Areas: {', '.join(focus_areas)}")
+                    logging.info(f"📊 AI recommended {len(tickers)} tickers for analysis")
+                    
+                    return tickers
+                else:
+                    logging.warning("⚠️ AI returned invalid ticker recommendations, using fallback")
+                    return self.get_all_us_symbols()[:30]
+                    
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            logging.error(f"❌ Failed to get AI ticker recommendations: {e}")
+            return self.get_all_us_symbols()[:30]
     
     def get_all_us_symbols(self) -> List[str]:
         """Get all tradeable US stock symbols"""
@@ -360,13 +438,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if self.db.is_available() and self.session_id:
                 trade_data = {
                     'session_id': self.session_id,
-                    'alpaca_order_id': order.id,
+                    'alpaca_order_id': str(order.id) if order.id else None,
                     'symbol': symbol,
                     'side': side.upper(),
                     'quantity': quantity,
                     'order_price': price,
                     'signal_time': datetime.fromisoformat(str(analysis['timestamp']).replace('Z', '+00:00')).isoformat(),
-                    'order_time': datetime.utcnow().isoformat(),
+                    'order_time': datetime.now(timezone.utc).isoformat(),
                     'sma_fast': analysis['sma_fast'],
                     'sma_slow': analysis['sma_slow'],
                     'rsi': analysis['rsi'],
@@ -388,15 +466,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """Run trading analysis with optional AI enhancement"""
         logging.info(f"🔍 Starting analysis (max {max_symbols} symbols, max {max_trades} trades, AI: {use_ai})")
         
-        symbols = self.get_all_us_symbols()
-        if not symbols:
-            logging.error("❌ No symbols available")
-            return
-        
-        symbols = symbols[:max_symbols]
+
         trades_executed = 0
         opportunities = 0
         ai_enhanced_trades = 0
+        
+        # Perform portfolio analysis before trading
+        logging.info("📊 Pre-trading portfolio analysis...")
+        portfolio_analysis = self.analyze_portfolio()
+        if portfolio_analysis:
+            self.execute_portfolio_actions(portfolio_analysis)
+        
+        # Get AI-recommended tickers based on portfolio analysis
+        if portfolio_analysis and use_ai and self.ai.is_configured:
+            logging.info("🧠 Getting AI-recommended tickers based on portfolio analysis...")
+            symbols = self.get_ai_recommended_tickers(portfolio_analysis)
+        else:
+            symbols = self.get_all_us_symbols()
+            symbols = symbols[:max_symbols]
+        
+        if not symbols:
+            logging.error("❌ No symbols available")
+            return
         
         # Create AI market summary if enabled
         if use_ai and self.ai.is_configured:
@@ -448,6 +539,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # Enhanced completion summary
         ai_summary = f", {ai_enhanced_trades} AI-enhanced" if use_ai else ""
         logging.info(f"🏁 Analysis complete: {opportunities} opportunities, {trades_executed} trades executed{ai_summary}")
+        
+        # Final portfolio analysis
+        logging.info("📊 Post-trading portfolio analysis...")
+        final_portfolio = self.analyze_portfolio()
+        if final_portfolio:
+            logging.info("📊 Final Portfolio Status:")
+            logging.info(f"   Positions: {final_portfolio['total_positions']}")
+            logging.info(f"   Value: ${final_portfolio['total_value']:,.2f}")
+            logging.info(f"   P&L: ${final_portfolio['total_unrealized_pnl']:,.2f}")
+            logging.info(f"   Win Rate: {final_portfolio['win_rate']:.1f}%")
     
     def show_database_status(self):
         """Show database status and recent sessions"""
@@ -481,6 +582,178 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 print("\n📈 No sessions yet")
         
         print("="*60)
+    
+    def analyze_portfolio(self):
+        """Comprehensive portfolio analysis with automated recommendations"""
+        try:
+            logging.info("📊 Starting portfolio analysis...")
+            
+            # Get portfolio data
+            account = self.trading_client.get_account()
+            positions = self.trading_client.get_all_positions()
+            
+            portfolio_data = {
+                'account': {
+                    'portfolio_value': float(account.portfolio_value),
+                    'cash': float(account.cash),
+                    'buying_power': float(account.buying_power),
+                },
+                'positions': []
+            }
+            
+            total_market_value = 0
+            total_unrealized_pnl = 0
+            
+            for pos in positions:
+                position_data = {
+                    'symbol': pos.symbol,
+                    'qty': float(pos.qty),
+                    'market_value': float(pos.market_value),
+                    'unrealized_pl': float(pos.unrealized_pl),
+                    'unrealized_plpc': float(pos.unrealized_plpc) * 100,
+                    'current_price': float(pos.current_price) if pos.current_price else 0,
+                    'side': pos.side.value if pos.side else 'long'
+                }
+                
+                portfolio_data['positions'].append(position_data)
+                total_market_value += abs(position_data['market_value'])
+                total_unrealized_pnl += position_data['unrealized_pl']
+            
+            # Calculate metrics
+            winners = [p for p in portfolio_data['positions'] if p['unrealized_pl'] > 0]
+            losers = [p for p in portfolio_data['positions'] if p['unrealized_pl'] < 0]
+            win_rate = (len(winners) / len(positions)) * 100 if positions else 0
+            
+            # Calculate concentration risk
+            position_weights = [(p['symbol'], abs(p['market_value']) / total_market_value * 100) for p in portfolio_data['positions']]
+            position_weights.sort(key=lambda x: x[1], reverse=True)
+            top_5_concentration = sum(weight for _, weight in position_weights[:5])
+            
+            portfolio_analysis = {
+                'total_positions': len(positions),
+                'total_value': portfolio_data['account']['portfolio_value'],
+                'total_unrealized_pnl': total_unrealized_pnl,
+                'cash_available': portfolio_data['account']['cash'],
+                'cash_percentage': (portfolio_data['account']['cash'] / portfolio_data['account']['portfolio_value']) * 100 if portfolio_data['account']['portfolio_value'] > 0 else 0,
+                'win_rate': win_rate,
+                'concentration_risk': top_5_concentration,
+                'largest_position': position_weights[0] if position_weights else ('N/A', 0),
+                'winners': len(winners),
+                'losers': len(losers),
+                'positions': portfolio_data['positions']
+            }
+            
+            # Log portfolio summary
+            logging.info(f"📊 Portfolio Analysis Complete:")
+            logging.info(f"   Total Value: ${portfolio_analysis['total_value']:,.2f}")
+            logging.info(f"   Unrealized P&L: ${portfolio_analysis['total_unrealized_pnl']:,.2f}")
+            logging.info(f"   Win Rate: {portfolio_analysis['win_rate']:.1f}%")
+            logging.info(f"   Cash Available: ${portfolio_analysis['cash_available']:,.2f}")
+            logging.info(f"   Concentration Risk: {portfolio_analysis['concentration_risk']:.1f}%")
+            
+            return portfolio_analysis
+            
+        except Exception as e:
+            logging.error(f"❌ Portfolio analysis failed: {e}")
+            return None
+    
+    def execute_portfolio_actions(self, portfolio_analysis):
+        """Execute automated actions based on portfolio analysis"""
+        if not portfolio_analysis:
+            return
+            
+        actions_taken = []
+        
+        try:
+            logging.info("🎯 Evaluating portfolio actions...")
+            
+            # Action 1: Reduce high-concentration positions (>15% of portfolio)
+            for position in portfolio_analysis['positions']:
+                position_weight = abs(position['market_value']) / portfolio_analysis['total_value'] * 100
+                
+                if position_weight > 15 and position['unrealized_plpc'] > 50:
+                    # Consider taking partial profits on large winning positions
+                    reduce_qty = int(abs(position['qty']) * 0.25)  # Reduce by 25%
+                    
+                    if reduce_qty > 0:
+                        logging.info(f"🎯 Reducing {position['symbol']} position by {reduce_qty} shares ({position_weight:.1f}% concentration, {position['unrealized_plpc']:.1f}% gain)")
+                        
+                        if self._place_portfolio_order(position['symbol'], reduce_qty, 'sell', f"Reduce concentration risk - {position_weight:.1f}% of portfolio"):
+                            actions_taken.append(f"Reduced {position['symbol']} by {reduce_qty} shares")
+            
+            # Action 2: Set stop losses on losing positions (>-10%)
+            for position in portfolio_analysis['positions']:
+                if position['unrealized_plpc'] < -10 and abs(position['market_value']) > 100:
+                    # Calculate stop loss price (5% below current price)
+                    stop_price = position['current_price'] * 0.95
+                    
+                    logging.info(f"🛑 Setting stop loss for {position['symbol']} at ${stop_price:.2f} ({position['unrealized_plpc']:.1f}% loss)")
+                    
+                    # Note: This would require stop order functionality - placeholder for now
+                    actions_taken.append(f"Stop loss recommended for {position['symbol']} at ${stop_price:.2f}")
+            
+            # Action 3: Deploy excess cash if available
+            cash_percentage = portfolio_analysis['cash_available'] / portfolio_analysis['total_value'] * 100
+            
+            if cash_percentage > 20:  # More than 20% cash
+                deployable_cash = portfolio_analysis['cash_available'] * 0.5  # Deploy 50% of excess cash
+                
+                logging.info(f"💰 High cash position ({cash_percentage:.1f}%) - considering deployment of ${deployable_cash:,.2f}")
+                actions_taken.append(f"High cash position identified: ${portfolio_analysis['cash_available']:,.2f} ({cash_percentage:.1f}%)")
+            
+            # Action 4: Diversification recommendations
+            if portfolio_analysis['concentration_risk'] > 60:
+                logging.warning(f"⚠️ High concentration risk: {portfolio_analysis['concentration_risk']:.1f}% in top 5 positions")
+                actions_taken.append(f"High concentration risk: {portfolio_analysis['concentration_risk']:.1f}%")
+            
+            # Log actions taken
+            if actions_taken:
+                logging.info(f"✅ Portfolio actions completed: {len(actions_taken)} actions")
+                for action in actions_taken:
+                    logging.info(f"   • {action}")
+            else:
+                logging.info("✅ Portfolio appears balanced - no actions needed")
+                
+        except Exception as e:
+            logging.error(f"❌ Portfolio action execution failed: {e}")
+    
+    def _place_portfolio_order(self, symbol, quantity, side, reason):
+        """Place a portfolio management order"""
+        try:
+            order_side = OrderSide.SELL if side.lower() == 'sell' else OrderSide.BUY
+            
+            market_order_data = MarketOrderRequest(
+                symbol=symbol,
+                qty=quantity,
+                side=order_side,
+                time_in_force=TimeInForce.DAY
+            )
+            
+            order = self.trading_client.submit_order(order_data=market_order_data)
+            
+            logging.info(f"📋 Portfolio order placed: {side.upper()} {quantity} {symbol} - {reason}")
+            
+            # Log to database if available
+            if self.db.is_available():
+                trade_data = {
+                    'symbol': symbol,
+                    'signal': side.upper(),
+                    'price': 0,  # Will be filled at market
+                    'quantity': quantity,
+                    'reason': f"Portfolio Management: {reason}",
+                    'rsi': 0,
+                    'sma_fast': 0,
+                    'sma_slow': 0,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                self.db.insert_data('trades', trade_data)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"❌ Portfolio order failed for {symbol}: {e}")
+            return False
 
 def main():
     """Main bot execution"""

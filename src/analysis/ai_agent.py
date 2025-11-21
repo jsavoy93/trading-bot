@@ -92,7 +92,34 @@ class AITradingAgent:
             import google.generativeai as genai
             genai.configure(api_key=self.google_api_key)
             self.ai_client = genai.GenerativeModel('gemini-pro')
-            logging.info("✅ AI Agent initialized with Google Gemini Flash")
+            # Try different model names in order of preference (using correct API names)
+            models_to_try = [
+                'models/gemini-2.5-flash',
+                'models/gemini-2.0-flash', 
+                'models/gemini-flash-latest',
+                'models/gemini-2.5-flash-lite',
+                'models/gemini-2.0-flash-lite'
+            ]
+            
+            for model_name in models_to_try:
+                try:
+                    self.ai_client = genai.GenerativeModel(model_name)
+                    # Test the model with a simple call
+                    test_response = self.ai_client.generate_content(
+                        "Hello",
+                        generation_config={'max_output_tokens': 5, 'temperature': 0.1}
+                    )
+                    if test_response.text:
+                        logging.info(f"✅ AI Agent initialized with Google {model_name}")
+                        return
+                except Exception as e:
+                    logging.debug(f"Model {model_name} failed: {e}")
+                    continue
+            
+            # If all models fail
+            logging.error("❌ No compatible Google AI models found")
+            self.ai_client = None
+            
         except ImportError:
             logging.error("❌ Google GenerativeAI package not available")
     
@@ -202,6 +229,35 @@ class AITradingAgent:
         result = await loop.run_in_executor(None, sync_generate)
         return result
     
+    async def analyze_with_context(self, prompt: str, context_type: str = "general") -> Dict[str, Any]:
+        """Analyze content with context and return structured response"""
+        try:
+            response_text = await self._call_ai_async(prompt)
+            if not response_text:
+                return {}
+            
+            # Try to parse as JSON
+            try:
+                import json
+                # Clean common JSON formatting issues
+                cleaned_response = response_text.strip()
+                if cleaned_response.startswith('```json'):
+                    cleaned_response = cleaned_response[7:]  # Remove ```json
+                if cleaned_response.startswith('```'):
+                    cleaned_response = cleaned_response[3:]  # Remove ``` (generic)
+                if cleaned_response.endswith('```'):
+                    cleaned_response = cleaned_response[:-3]  # Remove closing ```
+                cleaned_response = cleaned_response.strip()
+                
+                return json.loads(cleaned_response)
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                logging.warning(f"AI returned non-JSON response for {context_type} ({e}): {response_text[:100]}...")
+                return {"raw_response": response_text}
+                
+        except Exception as e:
+            logging.error(f"AI context analysis failed for {context_type}: {e}")
+            return {}
+
     def _setup_logging(self):
         """Setup AI agent logging"""
         self.logger = logging.getLogger("AITradingAgent")
@@ -530,20 +586,29 @@ class AITradingAgent:
             if response:
                 try:
                     import json
-                    ai_analysis = json.loads(response)
+                    # Clean the response to handle markdown formatting
+                    cleaned_response = response.strip()
+                    if cleaned_response.startswith('```json'):
+                        cleaned_response = cleaned_response[7:]  # Remove ```json
+                    if cleaned_response.endswith('```'):
+                        cleaned_response = cleaned_response[:-3]  # Remove closing ```
+                    cleaned_response = cleaned_response.strip()
+                    
+                    ai_analysis = json.loads(cleaned_response)
                     
                     return TradingInsight(
                         symbol=symbol,
-                        recommendation=ai_analysis.get("recommendation", "hold"),
-                        confidence=min(ai_analysis.get("confidence", 0.5), 1.0),
+                        recommendation=ai_analysis.get("recommendation", "hold").lower(),
+                        confidence=min(float(ai_analysis.get("confidence", 0.5)), 1.0),
                         reasoning=ai_analysis.get("reasoning", "AI-generated analysis"),
                         risk_factors=ai_analysis.get("risk_factors", ["Market volatility"]),
                         price_targets=ai_analysis.get("price_targets", {"short_term": 100.0, "long_term": 105.0}),
                         time_horizon=ai_analysis.get("time_horizon", "1-3 months"),
                         sources=[f"{len(articles)} news articles", "Technical analysis", f"AI ({self.ai_provider})"]
                     )
-                except json.JSONDecodeError:
-                    logging.warning("AI returned invalid JSON, falling back to simple recommendation")
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    logging.warning(f"AI returned invalid JSON ({e}), falling back to simple recommendation")
+                    logging.debug(f"Raw AI response: {response[:200]}...")
             
             # Fallback to simple recommendation if AI fails
             return self._simple_generate_recommendation(symbol, articles, sentiment, technical)

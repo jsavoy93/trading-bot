@@ -19,8 +19,8 @@ The trading bot includes an advanced AI agent that can:
 - **Environment Variables**: `OPENAI_API_KEY`, `AI_PROVIDER=openai`
 - **Cost**: Pay-per-use (typically $0.002 per 1K tokens for GPT-3.5-turbo)
 
-#### Option B: Google AI (Gemini Flash)
-- **Purpose**: Powers the core AI analysis with Google's Gemini Flash model
+#### Option B: Google AI (Gemini)
+- **Purpose**: Powers the core AI analysis with Google's Gemini models (Flash/Pro)
 - **Get API Key**: https://aistudio.google.com/app/apikey
 - **Environment Variables**: `GOOGLE_AI_API_KEY`, `AI_PROVIDER=google`
 - **Cost**: Free tier available (15 requests per minute), very cost-effective
