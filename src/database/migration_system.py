@@ -168,6 +168,49 @@ class MigrationGenerator:
                     "CREATE UNIQUE INDEX idx_performance_session_date ON performance_metrics(session_id, metric_date);",
                     "CREATE INDEX idx_performance_date ON performance_metrics(metric_date DESC);"
                 ]
+            ),
+            Table(
+                name="research_cooldowns",
+                columns=[
+                    Column("id", "SERIAL", primary_key=True, nullable=False),
+                    Column("symbol", "VARCHAR(10)", nullable=False),
+                    Column("last_research_time", "TIMESTAMP", nullable=False),
+                    Column("created_at", "TIMESTAMP", default="CURRENT_TIMESTAMP", nullable=False),
+                    Column("updated_at", "TIMESTAMP", default="CURRENT_TIMESTAMP", nullable=False),
+                ],
+                indexes=[
+                    "CREATE UNIQUE INDEX idx_research_cooldowns_symbol ON research_cooldowns(symbol);",
+                    "CREATE INDEX idx_research_cooldowns_time ON research_cooldowns(last_research_time DESC);"
+                ]
+            ),
+            Table(
+                name="position_sell_cooldowns",
+                columns=[
+                    Column("id", "SERIAL", primary_key=True, nullable=False),
+                    Column("symbol", "VARCHAR(10)", nullable=False),
+                    Column("last_analysis_time", "TIMESTAMP", nullable=False),
+                    Column("created_at", "TIMESTAMP", default="CURRENT_TIMESTAMP", nullable=False),
+                    Column("updated_at", "TIMESTAMP", default="CURRENT_TIMESTAMP", nullable=False),
+                ],
+                indexes=[
+                    "CREATE UNIQUE INDEX idx_position_sell_cooldowns_symbol ON position_sell_cooldowns(symbol);",
+                    "CREATE INDEX idx_position_sell_cooldowns_time ON position_sell_cooldowns(last_analysis_time DESC);"
+                ]
+            ),
+            Table(
+                name="trade_cooldowns",
+                columns=[
+                    Column("id", "SERIAL", primary_key=True, nullable=False),
+                    Column("symbol", "VARCHAR(10)", nullable=False),
+                    Column("last_trade_time", "TIMESTAMP", nullable=False),
+                    Column("trade_type", "VARCHAR(10)", nullable=True),  # 'BUY' or 'SELL'
+                    Column("created_at", "TIMESTAMP", default="CURRENT_TIMESTAMP", nullable=False),
+                    Column("updated_at", "TIMESTAMP", default="CURRENT_TIMESTAMP", nullable=False),
+                ],
+                indexes=[
+                    "CREATE UNIQUE INDEX idx_trade_cooldowns_symbol ON trade_cooldowns(symbol);",
+                    "CREATE INDEX idx_trade_cooldowns_time ON trade_cooldowns(last_trade_time DESC);"
+                ]
             )
         ]
     

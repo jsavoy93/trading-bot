@@ -42,19 +42,27 @@ trading-bot/
 │   │   ├── learning_engine.py   # ML learning system
 │   │   └── performance_dashboard.py # Performance analytics
 │   └── utils/                    # Utility functions
-├── scripts/                      # Automation scripts
-│   ├── migrate.py               # Migration CLI
-│   └── run_migrations.py        # Migration runner
+├── scripts/                      # Utility scripts
+│   ├── performance_analysis.py  # Performance analytics
+│   ├── run_continuous.py        # Continuous trading mode
+│   └── archive/                 # Archived scripts
+├── tests/                        # Test files
+│   ├── test_no_trade_reasons.py # No-trade reasons demo
+│   ├── test_ticker_criteria.py  # Ticker criteria analysis
+│   └── archive/                 # Archived tests
 ├── migrations/                   # Database migrations
 │   ├── 0001_initial_schema.sql  # Schema creation
-│   ├── rollback.sql             # Rollback script
-│   └── seed_data.sql            # Test data
+│   ├── 0002_learning_engine.sql # Learning system
+│   ├── 0003_cooldown_persistence_only.sql # Cooldown tables
+│   └── rollback/                # Rollback scripts
 ├── docs/                        # Documentation
-│   └── MIGRATION_GUIDE.md       # Database setup guide
-├── legacy/                      # Legacy files (safe to delete)
+│   ├── MIGRATION_GUIDE.md       # Database setup guide
+│   └── API_DOCUMENTATION.md     # API reference
+├── legacy/                      # Legacy code (archived)
 ├── main.py                      # Main entry point
 ├── requirements.txt             # Python dependencies
-├── .env                         # Environment variables
+├── AI_CONFIGURATION.md          # AI feature configuration
+├── QUICK_START.md               # Quick start guide
 └── README.md                    # This file
 ```
 
@@ -141,8 +149,42 @@ Edit `src/core/smart_bot.py` to customize:
 
 ### Basic Trading Session
 ```bash
-./run.sh
+python main.py
 ```
+
+### Continuous Trading Mode
+```bash
+# Run continuously with 5-minute delays
+python main.py --continuous -d 300
+
+# Short delay for testing
+python main.py -c -d 60 --max-symbols 20
+```
+
+### AI Configuration Options
+
+**Full AI Mode (Default)**:
+```bash
+python main.py -c -d 60
+```
+
+**Pure Technical Analysis (No AI)**:
+```bash
+python main.py --no-ai -c -d 60
+```
+
+**Disable Individual Ticker AI Only** (Fastest):
+```bash
+python main.py --no-ai-ticker-analysis -c -d 60
+```
+
+**Custom AI Configuration**:
+```bash
+# AI ticker selection, but technical-only analysis
+python main.py --no-ai-ticker-analysis --no-ai-market-summary -c -d 90
+```
+
+See [AI_CONFIGURATION.md](AI_CONFIGURATION.md) for detailed AI configuration options.
 
 ### AI Features Setup
 ```bash
@@ -210,10 +252,23 @@ The bot provides real-time monitoring of:
 
 ## 📚 Documentation
 
+- [Quick Start Guide](QUICK_START.md) - Get started quickly
+- [AI Configuration](AI_CONFIGURATION.md) - AI features setup and usage
 - [Migration Guide](docs/MIGRATION_GUIDE.md) - Complete database setup
-- [AI Configuration](docs/AI_CONFIGURATION.md) - AI features setup and usage
-- [Coding Guidelines](.cursorrules) - Development standards
-- API documentation in code comments
+- [Change Log](CHANGELOG.md) - Version history and updates
+- Additional docs in `docs/` directory
+
+## 🧪 Testing
+
+```bash
+# Test no-trade reasons feature
+python tests/test_no_trade_reasons.py
+
+# Test ticker criteria analysis
+python tests/test_ticker_criteria.py
+```
+
+See `tests/README.md` for more information.
 
 ## 🤝 Contributing
 
@@ -221,6 +276,15 @@ The bot provides real-time monitoring of:
 2. Update tests for new features
 3. Document database schema changes
 4. Use the migration system for DB updates
+
+## 📦 Repository Organization
+
+- **Active Code**: `src/`, `main.py`, `migrations/`
+- **Scripts**: `scripts/` (utilities and helpers)
+- **Tests**: `tests/` (active tests and archive)
+- **Documentation**: `docs/`, `*.md` files
+- **Legacy**: `legacy/` (archived, safe to delete)
+- **Archived**: `tests/archive/`, `scripts/archive/` (kept for reference)
 
 ## ⚠️ Disclaimer
 

@@ -258,6 +258,209 @@ class SimpleSupabaseREST:
             logging.debug(f"Error getting database info: {e}")
         
         return info
+    
+    def get_research_cooldown(self, symbol: str) -> Optional[datetime]:
+        """Get the last research time for a symbol"""
+        if not self.available:
+            return None
+        
+        try:
+            response = requests.get(
+                f"{self.rest_url}/research_cooldowns?symbol=eq.{symbol}&select=last_research_time",
+                headers=self.headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    return datetime.fromisoformat(data[0]['last_research_time'].replace('Z', '+00:00'))
+        except Exception as e:
+            logging.debug(f"Error getting research cooldown for {symbol}: {e}")
+        
+        return None
+    
+    def set_research_cooldown(self, symbol: str, research_time: datetime = None) -> bool:
+        """Set the last research time for a symbol"""
+        if not self.available:
+            return False
+        
+        if research_time is None:
+            research_time = datetime.utcnow()
+        
+        try:
+            data = {
+                "symbol": symbol,
+                "last_research_time": research_time.isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            # Use upsert with on_conflict parameter for Supabase
+            # First try to update if symbol exists, otherwise insert
+            response = requests.post(
+                f"{self.rest_url}/research_cooldowns",
+                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                json=data,
+                params={"on_conflict": "symbol"},  # Specify the conflict column
+                timeout=5
+            )
+            
+            if response.status_code in [200, 201]:
+                return True
+            else:
+                # Log the actual error for debugging
+                error_detail = response.text[:200] if response.text else "No error details"
+                logging.debug(f"Failed to set research cooldown for {symbol}: {response.status_code} - {error_detail}")
+                return False
+        except Exception as e:
+            logging.debug(f"Error setting research cooldown for {symbol}: {e}")
+            return False
+    
+    def get_position_sell_cooldown(self, symbol: str) -> Optional[datetime]:
+        """Get the last position sell analysis time for a symbol"""
+        if not self.available:
+            return None
+        
+        try:
+            response = requests.get(
+                f"{self.rest_url}/position_sell_cooldowns?symbol=eq.{symbol}&select=last_analysis_time",
+                headers=self.headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    return datetime.fromisoformat(data[0]['last_analysis_time'].replace('Z', '+00:00'))
+        except Exception as e:
+            logging.debug(f"Error getting position sell cooldown for {symbol}: {e}")
+        
+        return None
+    
+    def set_position_sell_cooldown(self, symbol: str, analysis_time: datetime = None) -> bool:
+        """Set the last position sell analysis time for a symbol"""
+        if not self.available:
+            return False
+        
+        if analysis_time is None:
+            analysis_time = datetime.utcnow()
+        
+        try:
+            data = {
+                "symbol": symbol,
+                "last_analysis_time": analysis_time.isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            response = requests.post(
+                f"{self.rest_url}/position_sell_cooldowns",
+                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                json=data,
+                params={"on_conflict": "symbol"},
+                timeout=5
+            )
+            
+            if response.status_code in [200, 201]:
+                return True
+            else:
+                logging.debug(f"Failed to set position sell cooldown for {symbol}: {response.status_code}")
+                return False
+        except Exception as e:
+            logging.debug(f"Error setting position sell cooldown for {symbol}: {e}")
+        
+        return False
+    
+    def get_trade_cooldown(self, symbol: str) -> Optional[datetime]:
+        """Get the last trade time for a symbol"""
+        if not self.available:
+            return None
+        
+        try:
+            response = requests.get(
+                f"{self.rest_url}/trade_cooldowns?symbol=eq.{symbol}&select=last_trade_time",
+                headers=self.headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    return datetime.fromisoformat(data[0]['last_trade_time'].replace('Z', '+00:00'))
+        except Exception as e:
+            logging.debug(f"Error getting trade cooldown for {symbol}: {e}")
+        
+        return None
+    
+    def set_trade_cooldown(self, symbol: str, trade_time: datetime = None, trade_type: str = None) -> bool:
+        """Set the last trade time for a symbol"""
+        if not self.available:
+            return False
+        
+        if trade_time is None:
+            trade_time = datetime.utcnow()
+        
+        try:
+            data = {
+                "symbol": symbol,
+                "last_trade_time": trade_time.isoformat(),
+                "trade_type": trade_type,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            response = requests.post(
+                f"{self.rest_url}/trade_cooldowns",
+                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                json=data,
+                params={"on_conflict": "symbol"},
+                timeout=5
+            )
+            
+            if response.status_code in [200, 201]:
+                return True
+            else:
+                logging.debug(f"Failed to set trade cooldown for {symbol}: {response.status_code}")
+                return False
+        except Exception as e:
+            logging.debug(f"Error setting trade cooldown for {symbol}: {e}")
+        
+        return False
+    
+    def cleanup_old_cooldowns(self, days_old: int = 7) -> bool:
+        """Clean up old cooldown entries"""
+        if not self.available:
+            return False
+        
+        cutoff_date = (datetime.utcnow() - timedelta(days=days_old)).isoformat()
+        
+        try:
+            # Clean research cooldowns
+            requests.delete(
+                f"{self.rest_url}/research_cooldowns?last_research_time=lt.{cutoff_date}",
+                headers=self.headers,
+                timeout=10
+            )
+            
+            # Clean position sell cooldowns
+            requests.delete(
+                f"{self.rest_url}/position_sell_cooldowns?last_analysis_time=lt.{cutoff_date}",
+                headers=self.headers,
+                timeout=10
+            )
+            
+            # Clean trade cooldowns
+            requests.delete(
+                f"{self.rest_url}/trade_cooldowns?last_trade_time=lt.{cutoff_date}",
+                headers=self.headers,
+                timeout=10
+            )
+            
+            logging.info(f"🧹 Cleaned up cooldown entries older than {days_old} days")
+            return True
+            
+        except Exception as e:
+            logging.debug(f"Error cleaning up old cooldowns: {e}")
+        
+        return False
 
 # Global instance - created when first imported
 simple_rest = None

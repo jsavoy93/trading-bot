@@ -36,6 +36,7 @@ env/
 *.log
 logs/
 trading_bot.log
+ai_agent.log
 
 # IDE
 .vscode/
