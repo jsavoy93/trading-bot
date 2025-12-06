@@ -100,6 +100,11 @@ class SmartTradingBot:
         self.use_ai_for_ticker_selection = True  # Set to False to disable AI-based ticker selection
         self.use_ai_for_market_summary = True  # Set to False to disable AI market summaries
         
+        # Advanced strategy flags
+        self.use_advanced_signals = os.getenv("USE_ADVANCED_SIGNALS", "false").lower() == "true"
+        self.use_atr_exits = os.getenv("USE_ATR_EXITS", "false").lower() == "true"
+        self.use_atr_sizing = os.getenv("USE_ATR_SIZING", "false").lower() == "true"
+        
         # Rate limit tracking
         self.rate_limit_detected = False
         self.rate_limit_count = 0
@@ -689,8 +694,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if df is None:
                 logging.debug(f"{symbol}: get_market_data returned None")
                 return None
-            if len(df) < self.sma_slow:
-                logging.debug(f"{symbol}: Only {len(df)} bars, need {self.sma_slow}")
+            
+            # Check minimum bars based on strategy mode
+            min_bars = 200 if self.use_advanced_signals else self.sma_slow
+            if len(df) < min_bars:
+                logging.debug(f"{symbol}: Only {len(df)} bars, need {min_bars}")
                 return None
             
             df = self.calculate_indicators(df)
@@ -703,24 +711,78 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 logging.debug(f"{symbol}: RSI is NaN")
                 return None
             
-            sma_fast = latest[f'SMA_{self.sma_fast}']
-            sma_slow = latest[f'SMA_{self.sma_slow}']
-            rsi = latest['RSI']
             price = latest['close']
             
-            signal = None
-            signal_strength = "WEAK"
-            ai_insight = None
-            
-            # Traditional technical analysis
-            if sma_fast > sma_slow and rsi < self.rsi_buy_threshold:
-                signal = "BUY"
-                signal_strength = "STRONG" if rsi < 25 else "MEDIUM"
-            elif sma_fast < sma_slow and rsi > self.rsi_sell_threshold:
-                signal = "SELL"
-                signal_strength = "STRONG" if rsi > 75 else "MEDIUM"
+            # Use advanced or basic signal generation
+            if self.use_advanced_signals:
+                # Import here to avoid circular dependency
+                from trading.strategy import TechnicalStrategy
+                
+                # Create strategy on-demand (could cache this in __init__)
+                if not hasattr(self, '_tech_strategy'):
+                    self._tech_strategy = TechnicalStrategy()
+                
+                # Use advanced signal with full diagnostic output
+                signal, signal_strength, reasons = self._tech_strategy.evaluate_signal_advanced(latest)
+                
+                # Log diagnostic reasons
+                if signal:
+                    logging.info(f"{symbol}: {signal} signal ({signal_strength})")
+                    for reason in reasons:
+                        logging.info(f"  • {reason}")
+                
+                # Build enhanced analysis result
+                analysis_result = {
+                    'symbol': symbol,
+                    'price': price,
+                    'sma_fast': latest[f'SMA_{self.sma_fast}'],
+                    'sma_slow': latest[f'SMA_{self.sma_slow}'],
+                    'rsi': latest['RSI'],
+                    'signal': signal,
+                    'signal_strength': signal_strength,
+                    'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
+                    'reasons': reasons  # Diagnostic reasons
+                }
+                
+                # Include advanced indicators if available
+                if 'MACD' in latest and not pd.isna(latest['MACD']):
+                    analysis_result['macd'] = latest['MACD']
+                    analysis_result['macd_signal'] = latest.get('MACD_signal')
+                    analysis_result['macd_hist'] = latest.get('MACD_hist')
+                
+                if 'ATR' in latest and not pd.isna(latest['ATR']):
+                    analysis_result['atr'] = latest['ATR']
+                
+            else:
+                # Traditional basic analysis
+                sma_fast = latest[f'SMA_{self.sma_fast}']
+                sma_slow = latest[f'SMA_{self.sma_slow}']
+                rsi = latest['RSI']
+                
+                signal = None
+                signal_strength = "WEAK"
+                
+                # Traditional technical analysis
+                if sma_fast > sma_slow and rsi < self.rsi_buy_threshold:
+                    signal = "BUY"
+                    signal_strength = "STRONG" if rsi < 25 else "MEDIUM"
+                elif sma_fast < sma_slow and rsi > self.rsi_sell_threshold:
+                    signal = "SELL"
+                    signal_strength = "STRONG" if rsi > 75 else "MEDIUM"
+                
+                analysis_result = {
+                    'symbol': symbol,
+                    'price': price,
+                    'sma_fast': sma_fast,
+                    'sma_slow': sma_slow,
+                    'rsi': rsi,
+                    'signal': signal,
+                    'signal_strength': signal_strength,
+                    'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
+                }
             
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
+            ai_insight = None
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
                 try:
                     # Get AI research
@@ -733,10 +795,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         
                         # Enhance signal with AI
                         if ai_signal == signal and ai_rec.confidence > 0.7:
-                            signal_strength = "AI_ENHANCED"
+                            analysis_result['signal_strength'] = "AI_ENHANCED"
                             ai_insight = f"AI confirms {signal} with {ai_rec.confidence:.1%} confidence"
                         elif ai_signal != signal:
-                            signal_strength = "CONFLICTED"
+                            analysis_result['signal_strength'] = "CONFLICTED"
                             ai_insight = f"AI suggests {ai_signal} vs technical {signal}"
                         
                 except Exception as e:
@@ -745,19 +807,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         # Don't break the analysis, just skip AI for this symbol
                     logging.debug(f"AI analysis failed for {symbol}: {e}")
             
-            analysis_result = {
-                'symbol': symbol,
-                'price': price,
-                'sma_fast': sma_fast,
-                'sma_slow': sma_slow,
-                'rsi': rsi,
-                'signal': signal,
-                'signal_strength': signal_strength,
-                'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
-            }
-            
-            # Only use AI insight if enabled at ticker level
-            if ai_insight and self.use_ai_for_ticker_analysis:
+            # Add AI insight to result if available
+            if ai_insight:
                 analysis_result['ai_insight'] = ai_insight
             
             # Track research time for cooldown variety
