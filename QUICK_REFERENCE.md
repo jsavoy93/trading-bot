@@ -28,9 +28,33 @@ python main.py -c -d 300
 | `--max-symbols NUM` | | Max symbols per loop (default: 30) |
 | `--max-trades NUM` | | Max trades per loop (default: 2) |
 | `--no-ai` | | Disable all AI features |
+| `--ai-selection-only` | | 🌟 AI picks tickers, technical decides trades (RECOMMENDED) |
 | `--no-ai-ticker-analysis` | | Disable AI for ticker analysis only |
 | `--no-ai-ticker-selection` | | Disable AI ticker selection only |
 | `--no-ai-market-summary` | | Disable AI market summary only |
+
+## 🌟 Recommended Modes
+
+### AI Selection Only (FASTEST AI MODE)
+```bash
+# AI analyzes your portfolio and picks smart tickers
+# Then uses technical analysis (RSI, SMA) to decide trades
+# No article fetching per ticker = much faster!
+python main.py -c -d 60 --ai-selection-only
+```
+
+### Pure Technical (NO AI)
+```bash
+# Fastest mode - no AI at all
+python main.py -c -d 60 --no-ai
+```
+
+### Full AI (SLOWEST)
+```bash
+# AI does everything - portfolio analysis, ticker selection, 
+# article research, and per-ticker analysis
+python main.py -c -d 300
+```
 
 ## 📊 Useful Scripts
 

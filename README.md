@@ -293,3 +293,32 @@ This bot is for educational and testing purposes only. Always test thoroughly wi
 ## 📄 License
 
 MIT License - see LICENSE file for details.
+
+## 📱 SMS Alerts (Twilio)
+
+You can enable SMS notifications when the bot executes a trade using Twilio.
+
+1. Install the Twilio package:
+```bash
+pip install twilio
+```
+
+2. Set the following environment variables (example):
+```bash
+export TWILIO_ACCOUNT_SID="your_account_sid"
+export TWILIO_AUTH_TOKEN="your_auth_token"
+export TWILIO_FROM_NUMBER="+12345556666"   # your Twilio number
+export ALERT_PHONE_NUMBER="+15551234567"   # your mobile number
+```
+
+3. Send a one-off test SMS and exit:
+```bash
+python main.py --test-sms
+```
+
+4. When running the bot normally, it will send an SMS each time a trade is executed (if Twilio is configured):
+```bash
+python main.py --continuous -d 300
+```
+
+If Twilio is not installed or the env vars are missing, the bot will log a warning and continue running without SMS notifications.

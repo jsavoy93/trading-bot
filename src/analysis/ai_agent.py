@@ -6,11 +6,20 @@ import os
 import logging
 import json
 import asyncio
+import re
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 import requests
 from dotenv import load_dotenv
+
+# Try to import async helpers for better performance
+try:
+    from utils.async_helpers import run_async_safely, async_retry
+    ASYNC_HELPERS_AVAILABLE = True
+except ImportError:
+    ASYNC_HELPERS_AVAILABLE = False
+    logging.debug("Async helpers not available, using standard asyncio patterns")
 
 @dataclass
 class ArticleSummary:
@@ -243,24 +252,22 @@ class AITradingAgent:
         
         cleaned_response = response.strip()
         
-        # Remove markdown code blocks
+        # Remove markdown code blocks / fences
         if cleaned_response.startswith('```json'):
             cleaned_response = cleaned_response[7:]
         elif cleaned_response.startswith('```'):
             cleaned_response = cleaned_response[3:]
-        
+
         if cleaned_response.endswith('```'):
             cleaned_response = cleaned_response[:-3]
-        
+
         cleaned_response = cleaned_response.strip()
-        
-        # Try to find JSON object boundaries
-        # Look for the first { and last } to extract just the JSON
+
+        # Try to find JSON object boundaries using balanced braces
         first_brace = cleaned_response.find('{')
         if first_brace == -1:
             return None, "No JSON object found"
-        
-        # Find matching closing brace
+
         brace_count = 0
         last_brace = -1
         for i, char in enumerate(cleaned_response[first_brace:], first_brace):
@@ -271,18 +278,22 @@ class AITradingAgent:
                 if brace_count == 0:
                     last_brace = i
                     break
-        
+
         if last_brace == -1:
             return None, "No matching closing brace found"
-        
-        # Extract just the JSON portion
+
         json_portion = cleaned_response[first_brace:last_brace + 1]
-        
-        try:
-            parsed_json = json.loads(json_portion)
-            return parsed_json, None
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
-            return None, f"JSON parse error: {e}"
+
+        # Try strict parse, then lenient retry removing trailing commas
+        for attempt in range(2):
+            try:
+                parsed_json = json.loads(json_portion)
+                return parsed_json, None
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                if attempt == 0:
+                    json_portion = re.sub(r',\s*([}\]])', r'\1', json_portion)
+                    continue
+                return None, f"JSON parse error: {e}"
     
     def _is_provider_failed(self, provider: str) -> bool:
         """Check if a provider is currently marked as failed"""
@@ -537,8 +548,7 @@ class AITradingAgent:
                 raise e
         
         try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, sync_generate)
+            result = await asyncio.to_thread(sync_generate)
             return result
         except Exception as e:
             logging.debug(f"Async wrapper error: {e}")
@@ -604,8 +614,7 @@ class AITradingAgent:
                     return None
                 raise e
         
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, sync_generate)
+        result = await asyncio.to_thread(sync_generate)
         return result
     
     async def analyze_with_context(self, prompt: str, context_type: str = "general") -> Dict[str, Any]:

@@ -14,6 +14,82 @@
 - Log all important operations with appropriate log levels
 - Use type hints for better code documentation
 
+## Exception Handling Rules (CRITICAL)
+- **NEVER use bare `except:` clauses** - they catch KeyboardInterrupt and SystemExit
+- Always specify exception types: `except Exception as e:` at minimum
+- Prefer specific exceptions when possible: `except (ValueError, KeyError) as e:`
+- Always log exceptions with context: `logging.error(f"Failed to {action}: {e}")`
+- Use debug level for expected failures: `logging.debug(f"Optional operation failed: {e}")`
+- Example of proper exception handling:
+  ```python
+  # Bad - Never do this
+  try:
+      risky_operation()
+  except:
+      return None
+  
+  # Good - Specific and logged
+  try:
+      risky_operation()
+  except (ConnectionError, TimeoutError) as e:
+      logging.error(f"API call failed: {e}")
+      return None
+  except Exception as e:
+      logging.warning(f"Unexpected error: {e}")
+      return None
+  ```
+
+## Async/Await Best Practices
+- **NEVER create new event loops in sync contexts** - use `asyncio.run()` instead
+- **NEVER use `get_event_loop().run_in_executor()`** - use `asyncio.to_thread()` instead
+- Avoid pattern: `loop = asyncio.new_event_loop(); loop.run_until_complete()`
+- Prefer making entire call chain async when possible
+- For one-off async calls in sync code, use: `asyncio.run(async_function())`
+- For multiple async calls, use `AsyncBatchRunner` from `utils.async_helpers`
+- Use `asyncio.to_thread()` for blocking I/O in async contexts (Python 3.9+)
+- Always use `asyncio.gather()` with `return_exceptions=True` for parallel operations
+- Example of proper async handling:
+  ```python
+  # Bad - Creates new loop each time (30-40% slower)
+  import asyncio
+  loop = asyncio.new_event_loop()
+  asyncio.set_event_loop(loop)
+  result = loop.run_until_complete(async_func())
+  loop.close()
+  
+  # Bad - Deprecated pattern
+  loop = asyncio.get_event_loop()
+  result = await loop.run_in_executor(None, blocking_func)
+  
+  # Good - Use asyncio.run for one-off calls
+  result = asyncio.run(async_func())
+  
+  # Better - Use asyncio.to_thread for blocking I/O
+  result = await asyncio.to_thread(blocking_func)
+  
+  # Best - Batch multiple async calls together
+  from utils.async_helpers import AsyncBatchRunner
+  runner = AsyncBatchRunner()
+  runner.add(async_func1())
+  runner.add(async_func2())
+  results = runner.run_all()  # Single event loop for all
+  
+  # For async contexts - Make the whole function async
+  async def my_function():
+      # Can use asyncio.gather for parallel execution
+      results = await asyncio.gather(
+          async_func1(),
+          async_func2(),
+          return_exceptions=True  # Don't let one failure stop all
+      )
+      return results
+  ```
+- **Performance Tips:**
+  - Creating event loops has ~10-20ms overhead each time
+  - Batching 10 async calls = 1 event loop vs 10 = 100-200ms savings
+  - Use `AsyncBatchRunner` when calling multiple async functions from sync code
+  - Use `gather_with_limit()` to respect API rate limits while parallelizing
+
 ## Trading Bot Specific Rules
 - Always validate market data before making trading decisions
 - Implement rate limiting to respect API quotas
@@ -31,16 +107,32 @@
 
 ## Testing and Validation
 - Create test scripts for major functionality
+- When looking through the code and adding new code always be on the lookout for areas that would benifit from a unit test. if it needs one then make one.
 - Validate trading signals before execution
 - Test with paper trading first
 - Monitor for API rate limits and handle gracefully
 - Log all trades and decisions for analysis
 
 ## Configuration Management
-- Use environment variables for sensitive data
+- **Use Pydantic settings for environment variable validation** - fail fast on startup
+- Always use `get_settings()` from `config.settings` instead of `os.getenv()`
+- Validate all required environment variables on application startup
+- Use environment variables for sensitive data (never hardcode)
 - Provide clear configuration options for different modes (test/production)
 - Document all configuration parameters
 - Allow easy switching between paper and live trading
+- Example of proper configuration:
+  ```python
+  # Bad - Silent failure if missing
+  api_key = os.getenv("API_KEY")
+  if api_key:  # May be None!
+      use_api(api_key)
+  
+  # Good - Fails fast with clear error
+  from config.settings import get_settings
+  settings = get_settings()
+  use_api(settings.API_KEY)  # Guaranteed to exist or app won't start
+  ```
 
 ## Risk Management
 - Implement position size limits

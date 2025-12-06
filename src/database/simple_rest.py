@@ -6,9 +6,22 @@ import os
 import logging
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, asdict
+
+try:
+    from src.utils.performance import track_performance, track_api_call, perf_monitor
+except ImportError:
+    # Fallback if performance module not available
+    def track_performance(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    def track_api_call(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 class SimpleSupabaseREST:
     """Simple Supabase REST API client using direct HTTP requests"""
@@ -24,6 +37,10 @@ class SimpleSupabaseREST:
         
         self.available = False
         self.current_session_id = None
+        self.last_error = None
+        
+        # Initialize requests session for connection pooling
+        self.session = requests.Session()
         
         if self.supabase_url and (self.supabase_anon_key or self.supabase_service_key):
             self.rest_url = f"{self.supabase_url}/rest/v1"
@@ -35,6 +52,9 @@ class SimpleSupabaseREST:
                 "Prefer": "return=representation"
             }
             
+            # Configure session with headers for connection pooling
+            self.session.headers.update(self.headers)
+            
             # Test connection
             self._test_connection()
         else:
@@ -44,14 +64,14 @@ class SimpleSupabaseREST:
         """Test connection to Supabase"""
         try:
             # Try to ping the API
-            response = requests.get(
+            response = self.session.get(
                 f"{self.rest_url}/trading_sessions?select=id&limit=1",
-                headers=self.headers,
                 timeout=10
             )
             
             if response.status_code == 200:
                 self.available = True
+                self.last_error = None
                 logging.info("✅ Simple Supabase REST API connection successful")
             elif response.status_code == 404:
                 logging.warning("⚠️  Tables don't exist yet - need to create them manually")
@@ -59,7 +79,12 @@ class SimpleSupabaseREST:
             elif response.status_code == 406:
                 # This can happen with certain Supabase configurations, but connection is still good
                 self.available = True
+                self.last_error = None
                 logging.info("✅ Simple Supabase REST API connection successful (406 response)")
+            elif response.status_code == 401:
+                self.available = False
+                self.last_error = f"401 Unauthorized when testing connection: check API key permissions"
+                logging.warning(f"⚠️  API connection unauthorized (401) - verify Supabase keys")
             else:
                 logging.warning(f"⚠️  API connection issue: {response.status_code} - {response.text}")
                 self.available = False
@@ -71,6 +96,8 @@ class SimpleSupabaseREST:
     def is_available(self) -> bool:
         return self.available
     
+    @track_performance(log_level='info')
+    @track_api_call('supabase_create_session')
     def create_session(self, bot_version: str = "2.0.0", 
                       configuration: Dict = None,
                       is_paper_trading: bool = True,
@@ -92,9 +119,8 @@ class SimpleSupabaseREST:
                 "error_count": 0
             }
             
-            response = requests.post(
+            response = self.session.post(
                 f"{self.rest_url}/trading_sessions",
-                headers=self.headers,
                 json=data,
                 timeout=10
             )
@@ -104,61 +130,72 @@ class SimpleSupabaseREST:
                 if result and len(result) > 0:
                     session_id = result[0]['id']
                     self.current_session_id = session_id
+                    self.last_error = None
                     logging.info(f"✅ Created session {session_id}")
                     return session_id
             else:
-                logging.error(f"Failed to create session: {response.status_code} {response.text}")
+                self.last_error = f"Create session failed: {response.status_code} {response.text[:200]}"
+                logging.error(self.last_error)
                 
         except Exception as e:
-            logging.error(f"Exception creating session: {e}")
+            self.last_error = f"Exception creating session: {e}"
+            logging.error(self.last_error)
         
         return None
     
+    @track_performance(threshold_ms=100)
+    @track_api_call('supabase_log_trade')
     def log_trade(self, session_id: int, trade_data: Dict) -> bool:
         """Log a trade"""
         if not self.available:
             return False
         
         try:
-            response = requests.post(
+            response = self.session.post(
                 f"{self.rest_url}/trades",
-                headers=self.headers,
                 json=trade_data,
                 timeout=10
             )
             
             if response.status_code in [200, 201]:
+                self.last_error = None
                 logging.debug(f"✅ Logged trade for {trade_data.get('symbol', 'unknown')}")
                 return True
             else:
-                logging.warning(f"Failed to log trade: {response.status_code}")
+                self.last_error = f"Failed to log trade: {response.status_code} {response.text[:200]}"
+                logging.warning(self.last_error)
                 
         except Exception as e:
-            logging.warning(f"Exception logging trade: {e}")
+            self.last_error = f"Exception logging trade: {e}"
+            logging.warning(self.last_error)
         
         return False
     
+    @track_performance(threshold_ms=100)
+    @track_api_call('supabase_update_session')
     def update_session(self, session_id: int, updates: Dict) -> bool:
         """Update session data"""
         if not self.available:
             return False
         
         try:
-            response = requests.patch(
+            response = self.session.patch(
                 f"{self.rest_url}/trading_sessions?id=eq.{session_id}",
-                headers=self.headers,
                 json=updates,
                 timeout=10
             )
             
             if response.status_code in [200, 204]:
+                self.last_error = None
                 logging.info(f"✅ Updated session {session_id}")
                 return True
             else:
-                logging.warning(f"Failed to update session: {response.status_code}")
+                self.last_error = f"Failed to update session: {response.status_code} {response.text[:200]}"
+                logging.warning(self.last_error)
                 
         except Exception as e:
-            logging.warning(f"Exception updating session: {e}")
+            self.last_error = f"Exception updating session: {e}"
+            logging.warning(self.last_error)
         
         return False
     
@@ -168,17 +205,21 @@ class SimpleSupabaseREST:
             return []
         
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.rest_url}/trading_sessions?order=session_start.desc&limit={limit}",
-                headers=self.headers,
                 timeout=10
             )
             
             if response.status_code == 200:
+                self.last_error = None
                 return response.json()
+            else:
+                self.last_error = f"get_sessions failed: {response.status_code} {response.text[:200]}"
+                logging.debug(self.last_error)
                 
         except Exception as e:
-            logging.warning(f"Exception getting sessions: {e}")
+            self.last_error = f"Exception getting sessions: {e}"
+            logging.warning(self.last_error)
         
         return []
     
@@ -188,9 +229,8 @@ class SimpleSupabaseREST:
             return None
         
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.rest_url}/schema_migrations?order=version.desc&limit=1",
-                headers=self.headers,
                 timeout=10
             )
             
@@ -223,205 +263,247 @@ class SimpleSupabaseREST:
             info['schema_version'] = self.check_schema_version()
             
             # Check if main tables exist and get counts
-            session_response = requests.get(
+            session_response = self.session.get(
                 f"{self.rest_url}/trading_sessions?select=id&limit=1",
-                headers=self.headers,
                 timeout=5
             )
             
             if session_response.status_code == 200:
                 info['tables_exist'] = True
                 
-                # Get session count
-                count_response = requests.get(
-                    f"{self.rest_url}/trading_sessions?select=id",
-                    headers={**self.headers, 'Prefer': 'count=exact'},
+                # Get session count using HEAD request with count=exact
+                # PostgREST returns count in content-range header: "0-24/2631" means 2631 total
+                count_response = self.session.head(
+                    f"{self.rest_url}/trading_sessions",
+                    headers={'Prefer': 'count=exact'},
                     timeout=5
                 )
-                if count_response.status_code == 200:
+                if count_response.status_code in [200, 206]:
                     count_header = count_response.headers.get('content-range', '')
                     if '/' in count_header:
                         info['total_sessions'] = int(count_header.split('/')[-1])
+                        logging.debug(f"Session count from header: {count_header} -> {info['total_sessions']}")
+                    else:
+                        logging.debug(f"No content-range header for sessions: {dict(count_response.headers)}")
                 
-                # Get trade count
-                trade_count_response = requests.get(
-                    f"{self.rest_url}/trades?select=id",
-                    headers={**self.headers, 'Prefer': 'count=exact'},
+                # Get trade count using HEAD request
+                trade_count_response = self.session.head(
+                    f"{self.rest_url}/trades",
+                    headers={'Prefer': 'count=exact'},
                     timeout=5
                 )
-                if trade_count_response.status_code == 200:
+                if trade_count_response.status_code in [200, 206]:
                     count_header = trade_count_response.headers.get('content-range', '')
                     if '/' in count_header:
                         info['total_trades'] = int(count_header.split('/')[-1])
+                        logging.debug(f"Trade count from header: {count_header} -> {info['total_trades']}")
+                    else:
+                        logging.debug(f"No content-range header for trades: {dict(trade_count_response.headers)}")
+
+            # Do NOT clear last_error here - it may be from other operations like cooldown queries
+            # Only the operation that sets an error should clear it on its own success
             
         except Exception as e:
+            # Only set last_error if we don't already have one from a more specific operation
+            if not self.last_error:
+                self.last_error = f"Error getting database info: {e}"
             logging.debug(f"Error getting database info: {e}")
         
         return info
     
+    @track_performance(threshold_ms=50)
+    @track_api_call('supabase_get_research_cooldown')
     def get_research_cooldown(self, symbol: str) -> Optional[datetime]:
         """Get the last research time for a symbol"""
         if not self.available:
             return None
         
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.rest_url}/research_cooldowns?symbol=eq.{symbol}&select=last_research_time",
-                headers=self.headers,
                 timeout=5
             )
             
             if response.status_code == 200:
                 data = response.json()
                 if data and len(data) > 0:
+                    self.last_error = None
                     return datetime.fromisoformat(data[0]['last_research_time'].replace('Z', '+00:00'))
+            else:
+                self.last_error = f"get_research_cooldown failed ({response.status_code})"
         except Exception as e:
-            logging.debug(f"Error getting research cooldown for {symbol}: {e}")
+            self.last_error = f"Error getting research cooldown for {symbol}: {e}"
+            logging.debug(self.last_error)
         
         return None
     
+    @track_performance(threshold_ms=100)
+    @track_api_call('supabase_set_research_cooldown')
     def set_research_cooldown(self, symbol: str, research_time: datetime = None) -> bool:
         """Set the last research time for a symbol"""
         if not self.available:
             return False
         
         if research_time is None:
-            research_time = datetime.utcnow()
+            research_time = datetime.now(timezone.utc)
         
         try:
             data = {
                 "symbol": symbol,
                 "last_research_time": research_time.isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }
             
             # Use upsert with on_conflict parameter for Supabase
             # First try to update if symbol exists, otherwise insert
-            response = requests.post(
+            response = self.session.post(
                 f"{self.rest_url}/research_cooldowns",
-                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                headers={"Prefer": "resolution=merge-duplicates"},
                 json=data,
                 params={"on_conflict": "symbol"},  # Specify the conflict column
                 timeout=5
             )
             
             if response.status_code in [200, 201]:
+                self.last_error = None
                 return True
             else:
                 # Log the actual error for debugging
                 error_detail = response.text[:200] if response.text else "No error details"
-                logging.debug(f"Failed to set research cooldown for {symbol}: {response.status_code} - {error_detail}")
+                self.last_error = f"set_research_cooldown failed ({response.status_code}): {error_detail}"
+                logging.debug(self.last_error)
                 return False
         except Exception as e:
-            logging.debug(f"Error setting research cooldown for {symbol}: {e}")
+            self.last_error = f"Error setting research cooldown for {symbol}: {e}"
+            logging.debug(self.last_error)
             return False
     
+    @track_performance(threshold_ms=50)
+    @track_api_call('supabase_get_position_sell_cooldown')
     def get_position_sell_cooldown(self, symbol: str) -> Optional[datetime]:
         """Get the last position sell analysis time for a symbol"""
         if not self.available:
             return None
         
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.rest_url}/position_sell_cooldowns?symbol=eq.{symbol}&select=last_analysis_time",
-                headers=self.headers,
                 timeout=5
             )
             
             if response.status_code == 200:
                 data = response.json()
                 if data and len(data) > 0:
+                    self.last_error = None
                     return datetime.fromisoformat(data[0]['last_analysis_time'].replace('Z', '+00:00'))
+            else:
+                self.last_error = f"get_position_sell_cooldown failed ({response.status_code})"
         except Exception as e:
-            logging.debug(f"Error getting position sell cooldown for {symbol}: {e}")
+            self.last_error = f"Error getting position sell cooldown for {symbol}: {e}"
+            logging.debug(self.last_error)
         
         return None
     
+    @track_performance(threshold_ms=100)
+    @track_api_call('supabase_set_position_sell_cooldown')
     def set_position_sell_cooldown(self, symbol: str, analysis_time: datetime = None) -> bool:
         """Set the last position sell analysis time for a symbol"""
         if not self.available:
             return False
         
         if analysis_time is None:
-            analysis_time = datetime.utcnow()
+            analysis_time = datetime.now(timezone.utc)
         
         try:
             data = {
                 "symbol": symbol,
                 "last_analysis_time": analysis_time.isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }
             
-            response = requests.post(
+            response = self.session.post(
                 f"{self.rest_url}/position_sell_cooldowns",
-                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                headers={"Prefer": "resolution=merge-duplicates"},
                 json=data,
                 params={"on_conflict": "symbol"},
                 timeout=5
             )
             
             if response.status_code in [200, 201]:
+                self.last_error = None
                 return True
             else:
-                logging.debug(f"Failed to set position sell cooldown for {symbol}: {response.status_code}")
+                self.last_error = f"Failed to set position sell cooldown for {symbol}: {response.status_code} {response.text[:200]}"
+                logging.debug(self.last_error)
                 return False
         except Exception as e:
-            logging.debug(f"Error setting position sell cooldown for {symbol}: {e}")
+            self.last_error = f"Error setting position sell cooldown for {symbol}: {e}"
+            logging.debug(self.last_error)
         
         return False
     
+    @track_performance(threshold_ms=50)
+    @track_api_call('supabase_get_trade_cooldown')
     def get_trade_cooldown(self, symbol: str) -> Optional[datetime]:
         """Get the last trade time for a symbol"""
         if not self.available:
             return None
         
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.rest_url}/trade_cooldowns?symbol=eq.{symbol}&select=last_trade_time",
-                headers=self.headers,
                 timeout=5
             )
             
             if response.status_code == 200:
                 data = response.json()
                 if data and len(data) > 0:
+                    self.last_error = None
                     return datetime.fromisoformat(data[0]['last_trade_time'].replace('Z', '+00:00'))
+            else:
+                self.last_error = f"get_trade_cooldown failed ({response.status_code})"
         except Exception as e:
-            logging.debug(f"Error getting trade cooldown for {symbol}: {e}")
+            self.last_error = f"Error getting trade cooldown for {symbol}: {e}"
+            logging.debug(self.last_error)
         
         return None
     
+    @track_performance(threshold_ms=100)
+    @track_api_call('supabase_set_trade_cooldown')
     def set_trade_cooldown(self, symbol: str, trade_time: datetime = None, trade_type: str = None) -> bool:
         """Set the last trade time for a symbol"""
         if not self.available:
             return False
         
         if trade_time is None:
-            trade_time = datetime.utcnow()
+            trade_time = datetime.now(timezone.utc)
         
         try:
             data = {
                 "symbol": symbol,
                 "last_trade_time": trade_time.isoformat(),
                 "trade_type": trade_type,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": datetime.now(timezone.utc).isoformat()
             }
             
-            response = requests.post(
+            response = self.session.post(
                 f"{self.rest_url}/trade_cooldowns",
-                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                headers={"Prefer": "resolution=merge-duplicates"},
                 json=data,
                 params={"on_conflict": "symbol"},
                 timeout=5
             )
             
             if response.status_code in [200, 201]:
+                self.last_error = None
                 return True
             else:
-                logging.debug(f"Failed to set trade cooldown for {symbol}: {response.status_code}")
+                self.last_error = f"Failed to set trade cooldown for {symbol}: {response.status_code} {response.text[:200]}"
+                logging.debug(self.last_error)
                 return False
         except Exception as e:
-            logging.debug(f"Error setting trade cooldown for {symbol}: {e}")
+            self.last_error = f"Error setting trade cooldown for {symbol}: {e}"
+            logging.debug(self.last_error)
         
         return False
     
@@ -430,35 +512,34 @@ class SimpleSupabaseREST:
         if not self.available:
             return False
         
-        cutoff_date = (datetime.utcnow() - timedelta(days=days_old)).isoformat()
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
         
         try:
             # Clean research cooldowns
-            requests.delete(
+            self.session.delete(
                 f"{self.rest_url}/research_cooldowns?last_research_time=lt.{cutoff_date}",
-                headers=self.headers,
                 timeout=10
             )
             
             # Clean position sell cooldowns
-            requests.delete(
+            self.session.delete(
                 f"{self.rest_url}/position_sell_cooldowns?last_analysis_time=lt.{cutoff_date}",
-                headers=self.headers,
                 timeout=10
             )
             
             # Clean trade cooldowns
-            requests.delete(
+            self.session.delete(
                 f"{self.rest_url}/trade_cooldowns?last_trade_time=lt.{cutoff_date}",
-                headers=self.headers,
                 timeout=10
             )
             
             logging.info(f"🧹 Cleaned up cooldown entries older than {days_old} days")
+            self.last_error = None
             return True
             
         except Exception as e:
-            logging.debug(f"Error cleaning up old cooldowns: {e}")
+            self.last_error = f"Error cleaning up old cooldowns: {e}"
+            logging.debug(self.last_error)
         
         return False
 
