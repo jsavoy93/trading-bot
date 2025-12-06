@@ -23,10 +23,40 @@ A sophisticated algorithmic trading bot with machine learning capabilities, comp
 
 4. **Run Trading Bot**:
    ```bash
-   ./run.sh
-   # OR use the virtual environment directly:
-   .venv/bin/python main.py
+   # Basic mode
+   python main.py
+   
+   # Advanced mode with multi-indicator analysis
+   python main.py -as
+   
+   # All advanced features (signals + ATR exits + position sizing)
+   python main.py -as -ae -ap
+   
+   # See all options
+   python main.py --help
    ```
+
+## 🎯 Command-Line Options
+
+```bash
+python main.py [OPTIONS]
+
+Options:
+  -as, --advanced-signals      Enable MACD, ATR, 200-SMA analysis
+  -ae, --atr-exits            Enable volatility-adjusted exits
+  -ap, --atr-position-sizing  Enable risk-based position sizing
+  --test-sms                  Test SMS notifications
+  -h, --help                  Show help message
+
+Examples:
+  python main.py              # Run with default settings
+  python main.py -as          # Enable advanced signals
+  python main.py -as -ae -ap  # Enable all advanced features
+```
+
+For detailed information on advanced features, see:
+- [HOW_TO_RUN_ADVANCED.md](HOW_TO_RUN_ADVANCED.md) - Quick start guide
+- [MIGRATION_GUIDE_PRO_STRATEGY.md](MIGRATION_GUIDE_PRO_STRATEGY.md) - Complete guide
 
 ## 📁 Project Structure
 

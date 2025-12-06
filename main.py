@@ -42,12 +42,47 @@ if __name__ == "__main__":
         print("❌ Configuration validation failed. Exiting.")
         sys.exit(1)
 
-    parser = argparse.ArgumentParser(description="Trading Bot launcher")
-    parser.add_argument("--test-sms", action="store_true", help="Send a single test SMS using configured Twilio credentials and exit")
-    args, _ = parser.parse_known_args()
+    parser = argparse.ArgumentParser(
+        description="Trading Bot launcher",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py                    # Run with default settings
+  python main.py -as                # Enable advanced signals
+  python main.py -as -ae -ap        # Enable all advanced features
+  python main.py --test-sms         # Test SMS notifications
+        """
+    )
+    
+    # SMS testing
+    parser.add_argument("--test-sms", action="store_true", 
+                       help="Send a single test SMS using configured Twilio credentials and exit")
+    
+    # Advanced strategy flags
+    parser.add_argument("-as", "--advanced-signals", action="store_true",
+                       help="Enable advanced multi-indicator analysis (MACD, ATR, 200-SMA)")
+    parser.add_argument("-ae", "--atr-exits", action="store_true",
+                       help="Enable ATR-based volatility-adjusted exits")
+    parser.add_argument("-ap", "--atr-position-sizing", action="store_true",
+                       help="Enable ATR-based risk-adjusted position sizing")
+    
+    args = parser.parse_args()
 
     if args.test_sms:
         _send_test_sms_and_exit()
+    
+    # Set environment variables from command-line flags
+    if args.advanced_signals:
+        os.environ["USE_ADVANCED_SIGNALS"] = "true"
+        print("🎯 Advanced signals enabled (MACD, ATR, 200-SMA trend filter)")
+    
+    if args.atr_exits:
+        os.environ["USE_ATR_EXITS"] = "true"
+        print("📊 ATR-based exits enabled (volatility-adjusted stops)")
+    
+    if args.atr_position_sizing:
+        os.environ["USE_ATR_SIZING"] = "true"
+        print("💰 ATR-based position sizing enabled (risk-adjusted)")
 
     # If no test flag, start the bot normally (delegates to smart_bot.main)
     from core.smart_bot import main

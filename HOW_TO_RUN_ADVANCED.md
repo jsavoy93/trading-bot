@@ -2,9 +2,29 @@
 
 ## Quick Start - 3 Ways to Enable
 
-### ✅ Option 1: Environment Variable (Easiest)
+### ✅ Option 1: Command-Line Flags (Easiest!)
 
-Just set the flag before running:
+```bash
+# Enable advanced signals only
+python main.py -as
+
+# Enable advanced signals with short flag
+python main.py --advanced-signals
+
+# Enable all advanced features
+python main.py -as -ae -ap
+
+# Enable specific combinations
+python main.py -as -ae              # Signals + ATR exits
+python main.py --advanced-signals --atr-exits
+```
+
+**Available Flags:**
+- `-as` or `--advanced-signals` - Multi-indicator analysis (MACD, ATR, 200-SMA)
+- `-ae` or `--atr-exits` - Volatility-adjusted stop loss/take profit
+- `-ap` or `--atr-position-sizing` - Risk-based position sizing
+
+### ✅ Option 2: Environment Variable
 
 ```bash
 # Linux/Mac
@@ -21,7 +41,7 @@ $env:USE_ADVANCED_SIGNALS="true"
 python main.py
 ```
 
-### ✅ Option 2: Edit Configuration File
+### ✅ Option 3: Configuration File (.env)
 
 Create/edit `.env` file in the project root:
 
@@ -37,16 +57,55 @@ Then run normally:
 python main.py
 ```
 
-### ✅ Option 3: Code Modification
+---
 
-Edit `src/core/smart_bot.py` around line 101:
+## Command-Line Help
 
-```python
-# Change this line:
-self.use_advanced_signals = os.getenv("USE_ADVANCED_SIGNALS", "false").lower() == "true"
+See all available options:
+```bash
+python main.py --help
+```
 
-# To this:
-self.use_advanced_signals = True  # Always use advanced signals
+Output:
+```
+usage: main.py [-h] [--test-sms] [-as] [-ae] [-ap]
+
+Trading Bot launcher
+
+options:
+  -h, --help            show this help message and exit
+  --test-sms            Send a single test SMS and exit
+  -as, --advanced-signals
+                        Enable advanced multi-indicator analysis
+  -ae, --atr-exits     Enable ATR-based volatility-adjusted exits
+  -ap, --atr-position-sizing
+                        Enable ATR-based risk-adjusted position sizing
+
+Examples:
+  python main.py                    # Run with default settings
+  python main.py -as                # Enable advanced signals
+  python main.py -as -ae -ap        # Enable all advanced features
+```
+
+---
+
+## Quick Examples
+
+```bash
+# Basic run (default mode)
+python main.py
+
+# Advanced signals only
+python main.py -as
+
+# Advanced signals + ATR exits
+python main.py -as -ae
+
+# All advanced features
+python main.py -as -ae -ap
+
+# Check what options are available
+python main.py --help
 ```
 
 ---
