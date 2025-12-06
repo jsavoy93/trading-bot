@@ -542,9 +542,51 @@ class SimpleSupabaseREST:
             logging.debug(self.last_error)
         
         return False
+    
+    def get_all_trades(self, limit: int = 100) -> List[Dict]:
+        """Get recent trades from database"""
+        if not self.is_available():
+            return []
+        
+        try:
+            response = self.session.get(
+                f"{self.rest_url}/trades?order=signal_time.desc&limit={limit}",
+                headers=self.headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logging.error(f"Failed to get trades: {response.status_code} - {response.text}")
+                return []
+        except Exception as e:
+            logging.error(f"Error getting trades: {e}")
+            return []
+    
+    def get_recent_sessions(self, limit: int = 10) -> List[Dict]:
+        """Get recent trading sessions from database"""
+        if not self.is_available():
+            return []
+        
+        try:
+            response = self.session.get(
+                f"{self.rest_url}/trading_sessions?order=session_start.desc&limit={limit}",
+                headers=self.headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logging.error(f"Failed to get sessions: {response.status_code} - {response.text}")
+                return []
+        except Exception as e:
+            logging.error(f"Error getting sessions: {e}")
+            return []
 
 # Global instance - created when first imported
-simple_rest = None
+simple_rest = SimpleSupabaseREST()
 
 def get_simple_rest():
     """Get the global SimpleSupabaseREST instance, creating it if needed"""
@@ -552,6 +594,3 @@ def get_simple_rest():
     if simple_rest is None:
         simple_rest = SimpleSupabaseREST()
     return simple_rest
-
-# Initialize on import
-simple_rest = SimpleSupabaseREST()

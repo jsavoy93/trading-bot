@@ -5,9 +5,10 @@ Usage: python view_performance.py
 """
 import sys
 import os
+from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# Add src to path (go up 2 levels from scripts/utils to project root)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from utils.performance import get_performance_monitor
 

@@ -6,8 +6,8 @@ import sys
 import os
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# Add src to path (go up 2 levels from scripts/utils to project root)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from utils.cache import get_cache_manager
 

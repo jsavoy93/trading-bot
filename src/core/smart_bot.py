@@ -44,9 +44,9 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('trading_bot.log'),
+        logging.FileHandler('bot_live.log', mode='a'),  # 'a' mode appends to keep history
         logging.StreamHandler()
     ]
 )
@@ -95,15 +95,23 @@ class SmartTradingBot:
         # AI integration
         self.ai = ai_agent
         
-        # AI configuration flags
-        self.use_ai_for_ticker_analysis = True  # Set to False to disable AI analysis for individual tickers
-        self.use_ai_for_ticker_selection = True  # Set to False to disable AI-based ticker selection
-        self.use_ai_for_market_summary = True  # Set to False to disable AI market summaries
+        # AI configuration flags (default to selection-only mode for speed)
+        self.use_ai_for_ticker_analysis = False  # Default: technical analysis only (use --ai-full to enable)
+        self.use_ai_for_ticker_selection = True  # Default: AI picks tickers (use --no-ai to disable)
+        self.use_ai_for_market_summary = False   # Default: no market summary (use --ai-full to enable)
         
-        # Advanced strategy flags
-        self.use_advanced_signals = os.getenv("USE_ADVANCED_SIGNALS", "false").lower() == "true"
-        self.use_atr_exits = os.getenv("USE_ATR_EXITS", "false").lower() == "true"
-        self.use_atr_sizing = os.getenv("USE_ATR_SIZING", "false").lower() == "true"
+        # Advanced strategy flags (default to advanced mode)
+        self.use_advanced_signals = os.getenv("USE_ADVANCED_SIGNALS", "true").lower() == "true"
+        self.use_atr_exits = os.getenv("USE_ATR_EXITS", "true").lower() == "true"  # Default ON
+        self.use_atr_sizing = os.getenv("USE_ATR_SIZING", "true").lower() == "true"  # Default ON
+        self.use_volume_shelves = os.getenv("USE_VOLUME_SHELVES", "true").lower() == "true"  # Default ON
+        self.use_scored_signals = os.getenv("USE_SCORED_SIGNALS", "true").lower() == "true"  # Default ON
+        
+        # Signal strength thresholds (for scored mode)
+        self.min_buy_score = float(os.getenv("MIN_BUY_SCORE", "3.0"))
+        self.min_sell_score = float(os.getenv("MIN_SELL_SCORE", "-3.0"))
+        self.strong_threshold = float(os.getenv("STRONG_SIGNAL_THRESHOLD", "4.5"))
+        self.min_signal_strength = os.getenv("MIN_SIGNAL_STRENGTH", "medium").lower()  # weak, medium, strong
         
         # Rate limit tracking
         self.rate_limit_detected = False
@@ -631,8 +639,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # Use current date/time, but Alpaca will return latest available data
             # When markets are closed, this returns the most recent trading day's data
             end_date = datetime.now()
-            # Request extra days to ensure we have enough bars even with weekends/holidays
-            start_date = end_date - timedelta(days=150)
+            # Request enough days for advanced indicators (200-SMA + buffer for weekends/holidays)
+            # 250 trading days ≈ 1 year, request ~400 calendar days to ensure we get 200+ bars
+            days_needed = 400 if self.use_advanced_signals else 150
+            start_date = end_date - timedelta(days=days_needed)
             
             request = StockBarsRequest(
                 symbol_or_symbols=[symbol],
@@ -670,22 +680,38 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return None
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate technical indicators"""
+        """Calculate technical indicators based on strategy mode"""
         if len(df) < max(self.sma_slow, self.rsi_period):
             return df
         
-        # SMAs
-        df[f'SMA_{self.sma_fast}'] = df['close'].rolling(window=self.sma_fast).mean()
-        df[f'SMA_{self.sma_slow}'] = df['close'].rolling(window=self.sma_slow).mean()
-        
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        
-        return df
+        if self.use_advanced_signals:
+            # Use TechnicalStrategy for advanced indicators (MACD, ATR, 200-SMA)
+            from trading.strategy import TechnicalStrategy, StrategyConfig
+            if not hasattr(self, '_tech_strategy'):
+                # Create strategy with SmartBot's SMA parameters
+                config = StrategyConfig(
+                    sma_fast=self.sma_fast,
+                    sma_slow=self.sma_slow,
+                    rsi_period=self.rsi_period,
+                    rsi_buy_threshold=self.rsi_buy_threshold,
+                    rsi_sell_threshold=self.rsi_sell_threshold
+                )
+                self._tech_strategy = TechnicalStrategy(config=config)
+            return self._tech_strategy.calculate_indicators(df)
+        else:
+            # Basic indicators only (SMA + RSI)
+            # SMAs
+            df[f'SMA_{self.sma_fast}'] = df['close'].rolling(window=self.sma_fast).mean()
+            df[f'SMA_{self.sma_slow}'] = df['close'].rolling(window=self.sma_slow).mean()
+            
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            return df
     
     def analyze_symbol(self, symbol: str, use_ai: bool = False) -> Optional[Dict]:
         """Analyze symbol for trading opportunities with optional AI enhancement"""
@@ -720,16 +746,53 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 
                 # Create strategy on-demand (could cache this in __init__)
                 if not hasattr(self, '_tech_strategy'):
-                    self._tech_strategy = TechnicalStrategy()
+                    self._tech_strategy = TechnicalStrategy(
+                        min_buy_score=self.min_buy_score,
+                        min_sell_score=self.min_sell_score,
+                        strong_threshold=self.strong_threshold
+                    )
                 
-                # Use advanced signal with full diagnostic output
-                signal, signal_strength, reasons = self._tech_strategy.evaluate_signal_advanced(latest)
+                # Compute volume shelves if enabled
+                shelves = None
+                if self.use_volume_shelves or self.use_scored_signals:
+                    profile = self._tech_strategy.compute_volume_profile(df, lookback=100, n_bins=24)
+                    if profile is not None:
+                        shelves = self._tech_strategy.find_volume_shelves(profile, top_k=3, prominence_pct=0.5)
                 
-                # Log diagnostic reasons
-                if signal:
-                    logging.info(f"{symbol}: {signal} signal ({signal_strength})")
+                # Use scored signal evaluation if enabled (pro voting system)
+                if self.use_scored_signals:
+                    signal, signal_strength, reasons, score = self._tech_strategy.evaluate_signal_scored(
+                        latest, shelves=shelves
+                    )
+                    # Log score-based evaluation
+                    if signal:
+                        logging.info(f"{symbol}: {signal} signal ({signal_strength}, score={score:.1f})")
+                    else:
+                        logging.info(f"{symbol}: No signal (score={score:.1f})")
                     for reason in reasons:
                         logging.info(f"  • {reason}")
+                    
+                # Use advanced signal with volume shelves
+                elif self.use_volume_shelves and shelves is not None:
+                    signal, signal_strength, reasons = self._tech_strategy.evaluate_signal_advanced_with_shelves(
+                        latest, shelves=shelves, shelf_proximity_pct=0.01
+                    )
+                    score = None  # No score in non-scored mode
+                    # Log diagnostic reasons
+                    if signal:
+                        logging.info(f"{symbol}: {signal} signal ({signal_strength})")
+                        for reason in reasons:
+                            logging.info(f"  • {reason}")
+                            
+                # Standard advanced signal
+                else:
+                    signal, signal_strength, reasons = self._tech_strategy.evaluate_signal_advanced(latest)
+                    score = None  # No score in non-scored mode
+                    # Log diagnostic reasons
+                    if signal:
+                        logging.info(f"{symbol}: {signal} signal ({signal_strength})")
+                        for reason in reasons:
+                            logging.info(f"  • {reason}")
                 
                 # Build enhanced analysis result
                 analysis_result = {
@@ -743,6 +806,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
                     'reasons': reasons  # Diagnostic reasons
                 }
+                
+                # Include score if using scored signals
+                if self.use_scored_signals:
+                    analysis_result['score'] = score
                 
                 # Include advanced indicators if available
                 if 'MACD' in latest and not pd.isna(latest['MACD']):
@@ -1770,6 +1837,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if analysis['signal']:
                     opportunities += 1
                     
+                    # Check minimum signal strength requirement (if configured)
+                    strength_order = {"WEAK": 0, "MEDIUM": 1, "STRONG": 2}
+                    min_strength_level = strength_order.get(self.min_signal_strength.upper(), 1)
+                    signal_strength_level = strength_order.get(analysis['signal_strength'], 0)
+                    
+                    if signal_strength_level < min_strength_level:
+                        no_trade_reasons['insufficient_strength'] = no_trade_reasons.get('insufficient_strength', 0) + 1
+                        opportunities_not_traded.append({
+                            'symbol': symbol,
+                            'reason': f"Signal strength {analysis['signal_strength']} below minimum {self.min_signal_strength.upper()}"
+                        })
+                        score_info = f", score={analysis.get('score', 'N/A')}" if analysis.get('score') is not None else ""
+                        print(f"   ⏭️  {symbol}: ⚠️  {analysis['signal']} ({analysis['signal_strength']}) below min strength {self.min_signal_strength.upper()}{score_info}")
+                        continue
+                    
                     # Check if we should skip due to weak/conflicted signals
                     if analysis['signal_strength'] == "WEAK":
                         no_trade_reasons['weak_signal'] += 1
@@ -1795,11 +1877,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         if analysis['signal_strength'] == "AI_ENHANCED":
                             ai_enhanced_trades += 1
                     
-                    # Enhanced decision logging
+                    # Enhanced decision logging (to log file)
                     logging.info(f"\n🔍 {symbol} ANALYSIS COMPLETE:")
                     logging.info(f"   📊 Signal: {analysis['signal']} ({analysis['signal_strength']})")
                     logging.info(f"   💰 Price: ${analysis['price']:.2f}")
                     logging.info(f"   📈 RSI: {analysis['rsi']:.1f} | SMA Fast: ${analysis['sma_fast']:.2f} | SMA Slow: ${analysis['sma_slow']:.2f}")
+                    
+                    # Enhanced console display with voting info
+                    if analysis.get('score') is not None:
+                        score = analysis['score']
+                        print(f"   ✅ {symbol}: {analysis['signal']} ({analysis['signal_strength']}) at ${analysis['price']:.2f}")
+                        print(f"      🎯 Score: {score:.1f} | Signal: {analysis['signal']} ({analysis['signal_strength']})")
+                        
+                        # Show voting breakdown for scored signals
+                        if analysis.get('reasons'):
+                            print(f"      🗳️  Voting Breakdown:")
+                            for reason in analysis['reasons']:
+                                print(f"         • {reason}")
+                    else:
+                        # Basic mode display
+                        print(f"   ✅ {symbol}: {analysis['signal']} ({analysis['signal_strength']}) at ${analysis['price']:.2f}")
+                        print(f"      📈 RSI: {analysis['rsi']:.1f} | SMA Fast: ${analysis['sma_fast']:.2f} | SMA Slow: ${analysis['sma_slow']:.2f}")
+                    
                     if analysis.get('ai_insight'):
                         logging.info(f"   🧠 AI Insight: {analysis['ai_insight']}")
                     
@@ -1807,34 +1906,56 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         logging.info(f"   ➡️  Executing {analysis['signal']} trade...")
                         if self.execute_trade(analysis):
                             trades_executed += 1
+                            print(f"      ✅ Trade #{trades_executed} executed")
                         time.sleep(1)  # Rate limiting
+                        
+                        # Check if we just hit the limit - if so, stop analyzing further tickers
+                        if trades_executed >= max_trades:
+                            remaining_symbols = len(symbols) - i
+                            if remaining_symbols > 0:
+                                print(f"\n   🛑 Max trades per loop ({max_trades}) reached – skipping {remaining_symbols} remaining tickers")
+                                logging.info(f"Max trades ({max_trades}) reached after {i}/{len(symbols)} symbols. Stopping further analysis this loop.")
+                            break  # Exit the symbol loop early
                     else:
-                        logging.info(f"   ⏸️  Signal detected but max trades reached ({max_trades})")
+                        # This shouldn't happen now since we break above, but keep as safety net
+                        print(f"      ⏸️  Max trades ({max_trades}) reached – not executing")
                         no_trade_reasons['max_trades_reached'] += 1
                         opportunities_not_traded.append({
                             'symbol': symbol,
                             'reason': f"Max trades reached ({max_trades})"
                         })
                 else:
-                    # No signal detected - show which criteria failed
+                    # No signal detected
                     no_trade_reasons['no_signal'] += 1
-                    rsi = analysis['rsi']
-                    sma_fast = analysis['sma_fast']
-                    sma_slow = analysis['sma_slow']
                     
-                    # Determine what failed
-                    failed_criteria = []
-                    if sma_fast <= sma_slow:
-                        failed_criteria.append(f"SMA bearish (Fast ${sma_fast:.2f} ≤ Slow ${sma_slow:.2f})")
-                    if rsi >= self.rsi_buy_threshold:
-                        failed_criteria.append(f"RSI not oversold ({rsi:.1f} ≥ {self.rsi_buy_threshold})")
-                    
-                    # Check sell criteria too
-                    if sma_fast >= sma_slow and rsi <= self.rsi_sell_threshold:
-                        failed_criteria = [f"RSI not overbought ({rsi:.1f} ≤ {self.rsi_sell_threshold})"]
-                    
-                    failure_msg = ", ".join(failed_criteria) if failed_criteria else f"No clear trend (RSI: {rsi:.1f})"
-                    print(f"   ⏭️  {symbol}: ⊗ {failure_msg}")
+                    # For scored signals, show the score and why it didn't trigger
+                    if analysis.get('score') is not None:
+                        score = analysis['score']
+                        print(f"   ⏭️  {symbol}: ⊗ No signal (score={score:.1f}, need ≥3.0 or ≤-3.0)")
+                        # Show voting breakdown in console for transparency
+                        if analysis.get('reasons'):
+                            print(f"      🗳️  Score breakdown:")
+                            for reason in analysis['reasons']:
+                                print(f"         • {reason}")
+                    else:
+                        # Traditional signal criteria
+                        rsi = analysis['rsi']
+                        sma_fast = analysis['sma_fast']
+                        sma_slow = analysis['sma_slow']
+                        
+                        # Determine what failed
+                        failed_criteria = []
+                        if sma_fast <= sma_slow:
+                            failed_criteria.append(f"SMA bearish (Fast ${sma_fast:.2f} ≤ Slow ${sma_slow:.2f})")
+                        if rsi >= self.rsi_buy_threshold:
+                            failed_criteria.append(f"RSI not oversold ({rsi:.1f} ≥ {self.rsi_buy_threshold})")
+                        
+                        # Check sell criteria too
+                        if sma_fast >= sma_slow and rsi <= self.rsi_sell_threshold:
+                            failed_criteria = [f"RSI not overbought ({rsi:.1f} ≤ {self.rsi_sell_threshold})"]
+                        
+                        failure_msg = ", ".join(failed_criteria) if failed_criteria else f"No clear trend (RSI: {rsi:.1f})"
+                        print(f"   ⏭️  {symbol}: ⊗ {failure_msg}")
                 
                 time.sleep(0.1)  # API rate limiting
                 
@@ -2742,8 +2863,10 @@ def main():
                           help='Disable ALL AI features (pure technical analysis mode)')
         
         # AI preset modes
+        parser.add_argument('--ai-full', action='store_true',
+                          help='Enable full AI analysis (selection + per-ticker + market summary)')
         parser.add_argument('--ai-selection-only', action='store_true',
-                          help='Use AI for ticker selection only (fastest AI mode - recommended)')
+                          help='Use AI for ticker selection only (DEFAULT - fastest AI mode)')
         
         args = parser.parse_args()
         
@@ -2752,26 +2875,36 @@ def main():
         # Configure AI settings based on command-line arguments
         if args.no_ai:
             # Disable all AI features
+            print("🚫 No AI Mode: Pure technical analysis")
             bot.configure_ai_usage(
                 ticker_analysis=False,
                 ticker_selection=False,
                 market_summary=False
             )
+        elif args.ai_full:
+            # Full AI: selection + per-ticker analysis + market summary
+            print("🤖 Full AI Mode: AI selection + per-ticker analysis + market summary")
+            bot.configure_ai_usage(
+                ticker_analysis=True,        # AI analysis per ticker
+                ticker_selection=True,       # AI selects tickers
+                market_summary=True          # AI market summary
+            )
         elif args.ai_selection_only:
-            # AI selects tickers based on portfolio, but uses technical analysis only
-            # This is the fastest AI mode - AI picks which stocks to look at, technical analysis decides buy/sell
-            print("🎯 AI Selection Only Mode: AI picks tickers, technical analysis decides trades")
+            # Explicit --ai-selection-only flag (same as default)
+            print("🎯 AI Selection Only Mode (explicit): AI picks tickers, technical analysis decides trades")
             bot.configure_ai_usage(
                 ticker_analysis=False,      # No AI per-ticker analysis (technical only)
                 ticker_selection=True,       # AI selects which tickers to analyze
                 market_summary=False         # No market summary (faster)
             )
         else:
-            # Configure individual AI features
+            # DEFAULT: AI selection only (if no flags specified)
+            # This is the fastest AI mode - AI picks which stocks to look at, technical analysis decides buy/sell
+            print("🎯 AI Selection Only Mode (default): AI picks tickers, technical analysis decides trades")
             bot.configure_ai_usage(
-                ticker_analysis=not args.no_ai_ticker_analysis,
-                ticker_selection=not args.no_ai_ticker_selection,
-                market_summary=not args.no_ai_market_summary
+                ticker_analysis=False,      # No AI per-ticker analysis (technical only)
+                ticker_selection=True,       # AI selects which tickers to analyze
+                market_summary=False         # No market summary (faster)
             )
         
         # Show setup instructions if database not available
