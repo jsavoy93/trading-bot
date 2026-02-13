@@ -6,8 +6,19 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
-COPY bot.py .
+# Install FastAPI and uvicorn for dashboard
+RUN pip install --no-cache-dir fastapi uvicorn jinja2
 
-# Run the bot
-CMD ["python", "bot.py"]
+# Copy app code
+COPY src ./src
+COPY dashboard.py .
+COPY templates ./templates
+
+# Create static directory (required by FastAPI)
+RUN mkdir -p static
+
+# Expose port
+EXPOSE 8000
+
+# Run dashboard
+CMD ["python", "dashboard.py"]

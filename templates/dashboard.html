@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Bot Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+        }
+        
+        .navbar {
+            background: #161b22;
+            padding: 1rem;
+            border-bottom: 1px solid #30363d;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        .nav-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        
+        .status-green { background: #2ea043; }
+        .status-red { background: #da3633; }
+        .status-yellow { background: #d29922; }
+        
+        .container {
+            padding: 1rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #58a6ff;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+        }
+        
+        .stat {
+            background: #0d1117;
+            padding: 0.75rem;
+            border-radius: 6px;
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            color: #8b949e;
+            margin-bottom: 0.25rem;
+        }
+        
+        .stat-value {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+        
+        .stat-value.green { color: #2ea043; }
+        .stat-value.red { color: #da3633; }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+        
+        th, td {
+            padding: 0.5rem;
+            text-align: left;
+            border-bottom: 1px solid #30363d;
+        }
+        
+        th {
+            color: #8b949e;
+            font-weight: 500;
+        }
+        
+        .symbol {
+            font-weight: 600;
+            color: #58a6ff;
+        }
+        
+        .side-buy { color: #2ea043; }
+        .side-sell { color: #da3633; }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        
+        .badge-filled { background: #238636; color: #fff; }
+        .badge-pending { background: #d29922; color: #000; }
+        .badge-cancelled { background: #484f58; color: #fff; }
+        
+        .btn {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            border: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        
+        .btn-primary {
+            background: #238636;
+            color: #fff;
+        }
+        
+        .btn-danger {
+            background: #da3633;
+            color: #fff;
+        }
+        
+        .btn-secondary {
+            background: #30363d;
+            color: #c9d1d9;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .no-data {
+            text-align: center;
+            color: #8b949e;
+            padding: 2rem;
+        }
+        
+        .refresh-time {
+            font-size: 0.75rem;
+            color: #8b949e;
+            text-align: center;
+            margin-top: 1rem;
+        }
+        
+        @media (max-width: 600px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-title">
+            🤖 Trading Bot
+            <span class="status-dot {% if account %}status-green{% else %}status-red{% endif %}"></span>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Account Overview -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">💰 Account</span>
+            </div>
+            <div class="grid">
+                <div class="stat">
+                    <div class="stat-label">Portfolio Value</div>
+                    <div class="stat-value">${{ "%.2f"|format(account.portfolio_value) if account.portfolio_value else "N/A" }}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Cash</div>
+                    <div class="stat-value">${{ "%.2f"|format(account.cash) if account.cash else "N/A" }}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Buying Power</div>
+                    <div class="stat-value">${{ "%.2f"|format(account.buying_power) if account.buying_power else "N/A" }}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Positions Value</div>
+                    <div class="stat-value">${{ "%.2f"|format(total_position_value) }}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="actions">
+            <button class="btn btn-primary" onclick="refresh()">🔄 Refresh</button>
+            <a href="/api/start-session" class="btn btn-secondary">▶️ Start Session</a>
+        </div>
+
+        <!-- Positions -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📊 Positions ({{ positions|length }})</span>
+            </div>
+            {% if positions %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Qty</th>
+                        <th>Value</th>
+                        <th>P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for pos in positions %}
+                    <tr>
+                        <td class="symbol">{{ pos.symbol }}</td>
+                        <td>{{ pos.qty }}</td>
+                        <td>${{ "%.2f"|format(pos.market_value) }}</td>
+                        <td class="{% if pos.unrealized_pl >= 0 %}green{% else %}red{% endif %}">
+                            ${{ "%.2f"|format(pos.unrealized_pl) }} ({{ "%.1f"|format(pos.unrealized_plpc * 100) }}%)
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="no-data">No open positions</p>
+            {% endif %}
+        </div>
+
+        <!-- Recent Orders -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📋 Recent Orders</span>
+            </div>
+            {% if orders %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Qty</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in orders %}
+                    <tr>
+                        <td class="symbol">{{ order.symbol }}</td>
+                        <td class="side-{{ order.side }}">{{ order.side.upper() }}</td>
+                        <td>{{ order.filled_qty }}/{{ order.qty }}</td>
+                        <td>
+                            <span class="badge badge-{% if order.status == 'filled' %}filled{% elif order.status == 'pending' %}pending{% else %}cancelled{% endif %}">
+                                {{ order.status }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="no-data">No orders</p>
+            {% endif %}
+        </div>
+
+        <!-- Recent Sessions -->
+        {% if sessions %}
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🟢 Recent Sessions</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Start</th>
+                        <th>Trades</th>
+                        <th>Symbols</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for session in sessions %}
+                    <tr>
+                        <td>{{ session.id }}</td>
+                        <td>{{ session.session_start[:10] if session.session_start else 'N/A' }}</td>
+                        <td>{{ session.total_trades_executed or 0 }}</td>
+                        <td>{{ session.total_symbols_processed or 0 }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <!-- Database Status -->
+        {% if not db_available %}
+        <div class="card" style="border-color: #d29922;">
+            <p style="color: #d29922;">⚠️ Database not connected - session tracking disabled</p>
+        </div>
+        {% endif %}
+
+        <p class="refresh-time">Last updated: {{ datetime.now().strftime('%H:%M:%S') }}</p>
+    </div>
+
+    <script>
+        function refresh() {
+            window.location.reload();
+        }
+        
+        // Auto-refresh every 30 seconds
+        setInterval(refresh, 30000);
+    </script>
+</body>
+</html>
