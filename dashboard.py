@@ -193,6 +193,7 @@ def dashboard():
         total_position_value=total_position_value,
         total_unrealized_pl=total_unrealized_pl,
         db_available=db.is_available(),
+        now=datetime.now(),
     )
 
 
