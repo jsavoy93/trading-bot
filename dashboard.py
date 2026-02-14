@@ -173,28 +173,32 @@ def get_recent_sessions(limit: int = 5) -> List[Dict]:
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     """Main dashboard page"""
-    account = get_account_info()
-    positions = get_positions()
-    orders = get_orders(10)
-    db_trades = get_trades_from_db(10)
-    sessions = get_recent_sessions(5)
-    
-    # Calculate totals
-    total_position_value = sum(p["market_value"] for p in positions)
-    total_unrealized_pl = sum(p["unrealized_pl"] for p in positions)
-    
-    template = jinja_env.get_template("dashboard.html")
-    return template.render(
-        account=account,
-        positions=positions,
-        orders=orders,
-        db_trades=db_trades,
-        sessions=sessions,
-        total_position_value=total_position_value,
-        total_unrealized_pl=total_unrealized_pl,
-        db_available=db.is_available(),
-        now=datetime.now(),
-    )
+    try:
+        account = get_account_info()
+        positions = get_positions()
+        orders = get_orders(10)
+        db_trades = get_trades_from_db(10)
+        sessions = get_recent_sessions(5)
+        
+        # Calculate totals
+        total_position_value = sum(p["market_value"] for p in positions)
+        total_unrealized_pl = sum(p["unrealized_pl"] for p in positions)
+        
+        template = jinja_env.get_template("dashboard.html")
+        return template.render(
+            account=account,
+            positions=positions,
+            orders=orders,
+            db_trades=db_trades,
+            sessions=sessions,
+            total_position_value=total_position_value,
+            total_unrealized_pl=total_unrealized_pl,
+            db_available=db.is_available(),
+            now=datetime.now(),
+        )
+    except Exception as e:
+        logger.error(f"Dashboard error: {e}")
+        return f"Error loading dashboard: {e}", 500
 
 
 @app.get("/api/account")
