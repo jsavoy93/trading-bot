@@ -49,6 +49,7 @@ class AITradingAgent:
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.mistral_api_key = os.getenv("MISTRAL_API_KEY")
         self.cohere_api_key = os.getenv("COHERE_API_KEY")
+        self.minimax_api_key = os.getenv("MINIMAX_API_KEY")
         
         # Request tracking
         self.total_requests = 0
@@ -87,7 +88,9 @@ class AITradingAgent:
         providers_to_try = []
         
         # Add preferred provider first (if not failed recently)
-        if self.ai_provider == "google" and self.google_api_key and not self._is_provider_failed("google"):
+        if self.ai_provider == "minimax" and self.minimax_api_key and not self._is_provider_failed("minimax"):
+            providers_to_try.append(("minimax", self._init_minimax))
+        elif self.ai_provider == "google" and self.google_api_key and not self._is_provider_failed("google"):
             providers_to_try.append(("google", self._init_google_ai))
         elif self.ai_provider == "openai" and self.openai_api_key and not self._is_provider_failed("openai"):
             providers_to_try.append(("openai", self._init_openai))
@@ -102,6 +105,7 @@ class AITradingAgent:
         
         # Add other available providers as fallbacks
         fallback_providers = [
+            ("minimax", self._init_minimax, self.minimax_api_key),
             ("openai", self._init_openai, self.openai_api_key),
             ("google", self._init_google_ai, self.google_api_key),
             ("huggingface", self._init_huggingface, self.huggingface_api_key),
@@ -233,6 +237,20 @@ class AITradingAgent:
             logging.error("❌ Cohere package not available")
             self.ai_client = None
     
+    def _init_minimax(self):
+        """Initialize MiniMax client"""
+        try:
+            import requests
+            self.ai_client = {
+                "api_key": self.minimax_api_key,
+                "provider": "minimax"
+            }
+            self.minimax_model = "MiniMax-M2.1"  # Default model
+            logging.info("✅ AI Agent initialized with MiniMax")
+        except Exception as e:
+            logging.error(f"❌ MiniMax initialization failed: {e}")
+            self.ai_client = None
+    
     def _extract_json_from_response(self, response: str) -> tuple[dict, str]:
         """Extract JSON from AI response, handling markdown and extra text"""
         import json
@@ -330,7 +348,9 @@ class AITradingAgent:
             return None
             
         try:
-            if self.current_provider == "openai":
+            if self.current_provider == "minimax":
+                return self._call_minimax_sync(prompt, max_tokens)
+            elif self.current_provider == "openai":
                 return self._call_openai_sync(prompt, max_tokens)
             elif self.current_provider == "google":
                 return self._call_google_sync(prompt, max_tokens)
@@ -495,6 +515,46 @@ class AITradingAgent:
         except Exception as e:
             logging.debug(f"Cohere API error: {e}")
             logging.error("Cohere API rate limit or error")
+            raise e
+    
+    def _call_minimax_sync(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
+        """Call MiniMax API synchronously"""
+        try:
+            import requests
+            
+            url = "https://api.minimax.chat/v1/text/chatcompletion_pro"
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.minimax_api_key}"
+            }
+            
+            data = {
+                "model": "MiniMax-M2.1",
+                "messages": [
+                    {"role": "system", "content": "You are a professional financial analyst providing concise, actionable insights in JSON format."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.3
+            }
+            
+            response = requests.post(url, json=data, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if "choices" in result and len(result["choices"]) > 0:
+                    return result["choices"][0]["message"]["content"].strip()
+                else:
+                    logging.error(f"MiniMax response missing choices: {result}")
+                    return None
+            else:
+                logging.error(f"MiniMax API error: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logging.debug(f"MiniMax API error: {e}")
+            logging.error(f"MiniMax API call failed: {e}")
             raise e
     
     async def _call_ai_async(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
