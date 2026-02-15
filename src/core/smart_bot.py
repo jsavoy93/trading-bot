@@ -145,6 +145,9 @@ class SmartTradingBot:
         self.earnings_days_skip = 3  # Skip trades within this many days before earnings
         self.earnings_cache = {}  # Cache earnings dates to avoid repeated API calls
         
+        # SPY Relative Strength Filter (enabled by default)
+        self.enable_sp_filter = True  # Only buy stocks outperforming SPY
+        
         # Rate limit tracking
         self.rate_limit_detected = False
         self.rate_limit_count = 0
@@ -947,6 +950,56 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(f"Earnings check failed for {symbol}: {e}")
             return (False, None, None)
     
+    def check_sp_relative_strength(self, symbol: str, df: pd.DataFrame, lookback_days: int = 20) -> tuple:
+        """
+        Check if stock is outperforming SPY over the lookback period.
+        
+        Args:
+            symbol: Stock symbol
+            df: Stock DataFrame with price data
+            lookback_days: Number of days to compare (default: 20)
+            
+        Returns:
+            (outperforming: bool, stock_return: float, spy_return: float, spread: float)
+        """
+        try:
+            # Calculate stock return
+            if len(df) < lookback_days:
+                return (True, 0, 0, 0)  # Not enough data, don't filter
+            
+            current_price = df['close'].iloc[-1]
+            past_price = df['close'].iloc[-lookback_days]
+            
+            if past_price <= 0:
+                return (True, 0, 0, 0)
+            
+            stock_return = ((current_price - past_price) / past_price) * 100
+            
+            # Get SPY data
+            spy = yf.Ticker("SPY")
+            spy_hist = spy.history(period=f"{lookback_days+10}d")
+            
+            if spy_hist.empty or len(spy_hist) < lookback_days:
+                return (True, 0, 0, 0)  # Can't get SPY data, don't filter
+            
+            spy_current = spy_hist['Close'].iloc[-1]
+            spy_past = spy_hist['Close'].iloc[-lookback_days]
+            
+            if spy_past <= 0:
+                return (True, 0, 0, 0)
+            
+            spy_return = ((spy_current - spy_past) / spy_past) * 100
+            
+            # Spread: positive = stock outperforming SPY
+            spread = stock_return - spy_return
+            
+            # Stock is outperforming if spread > 0
+            return (spread > 0, stock_return, spy_return, spread)
+            
+        except Exception as e:
+            logging.debug(f"SPY relative strength check failed for {symbol}: {e}")
+            return (True, 0, 0, 0)  # Don't filter if check fails
+    
     def check_volume_confirmation(self, df: pd.DataFrame, min_volume_ratio: float = 1.0) -> tuple:
         """
         Check if volume confirms the price movement.
@@ -1103,6 +1156,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     earnings_warning = f"Earnings in {days_until} days - skipping buy"
                     logging.info(f"⚠️ {symbol}: {earnings_warning}")
             
+            # SPY Relative Strength filter: only buy stocks outperforming SPY
+            sp_warning = None
+            if signal == "BUY" and self.enable_sp_filter:
+                # Need to recalculate indicators to get the dataframe
+                df = self.calculate_indicators(df.copy())
+                outperforming, stock_ret, spy_ret, spread = self.check_sp_relative_strength(symbol, df)
+                if not outperforming:
+                    signal = "HOLD"
+                    signal_strength = "WEAK"
+                    sp_warning = f"Underperforming SPY ({spread:+.1f}% spread)"
+                    logging.info(f"⚠️ {symbol}: {sp_warning} (Stock: {stock_ret:+.1f}%, SPY: {spy_ret:+.1f}%)")
+            
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
                 try:
@@ -1151,6 +1216,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'macd_score': macd_score,
                 'bb_score': bb_score,
                 'earnings_warning': earnings_warning,
+                'sp_warning': sp_warning,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
             }
             
@@ -2844,12 +2910,38 @@ message(
             logging.debug(f"Could not check existing orders: {e}")
             return False
     
+    def has_pending_orders(self, symbol: str) -> bool:
+        """Check if there are any pending orders for this symbol (that might hold shares)"""
+        try:
+            orders = list(self.trading_client.get_orders())
+            from alpaca.trading.enums import OrderStatus
+            
+            active_statuses = {
+                OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
+                OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL,
+                OrderStatus.PENDING_REPLACE, OrderStatus.PENDING_REVIEW
+            }
+            
+            for order in orders:
+                if order.symbol == symbol and order.status in active_statuses:
+                    return True
+            return False
+        except Exception as e:
+            logging.debug(f"Could not check pending orders: {e}")
+            return False
+            return False
+    
     def _place_stop_loss_order(self, symbol: str, quantity: int, stop_price: float) -> bool:
         """Place an actual stop-loss order using Alpaca's OTO (one-triggers-other)"""
         try:
             # First check if we already have a stop order
             if self.has_active_stop_order(symbol):
                 logging.info(f"⏭️ {symbol}: Already has active stop order, skipping")
+                return False
+            
+            # Check if there are pending orders that might hold shares
+            if self.has_pending_orders(symbol):
+                logging.info(f"⏭️ {symbol}: Has pending orders, skipping stop-loss (shares may be locked)")
                 return False
             
             # Get current position to verify we have shares
@@ -2869,6 +2961,30 @@ message(
                 if qty <= 0:
                     logging.warning(f"⚠️ {symbol}: No position to set stop-loss on")
                     return False
+                
+                # Check if shares are available for trading (not held for pending orders)
+                # Use the position's market_value and avg_entry_price to verify available shares
+                try:
+                    # Get fresh position data
+                    positions = self.trading_client.get_all_positions()
+                    position_data = None
+                    for p in positions:
+                        if p.symbol == symbol:
+                            position_data = p
+                            break
+                    
+                    if not position_data:
+                        logging.info(f"⏭️ {symbol}: Position no longer exists")
+                        return False
+                    
+                    # Check if position has available shares (not locked)
+                    # If market_value is 0 or very small, shares might be locked
+                    if float(position_data.market_value) <= 0:
+                        logging.info(f"⏭️ {symbol}: No available shares (possibly held for orders)")
+                        return False
+                        
+                except Exception as e:
+                    logging.warning(f"⚠️ {symbol}: Could not verify position availability: {e}")
             except Exception as e:
                 logging.warning(f"⚠️ {symbol}: Could not get position: {e}")
                 return False
@@ -3360,6 +3476,10 @@ def main():
         parser.add_argument('--earnings-filter', type=int, default=3,
                           help='Days before earnings to skip trades (default: 3, 0 to disable)')
         
+        # SPY Relative Strength filter
+        parser.add_argument('--no-sp-filter', action='store_true', default=False,
+                          help='Disable SPY relative strength filter (buy stocks outperforming SPY)')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -3476,6 +3596,13 @@ def main():
                 print(f"📅 Earnings Filter: Enabled (skip {bot.earnings_days_skip} days before earnings)")
             else:
                 print(f"📅 Earnings Filter: Disabled")
+        
+        # SPY Relative Strength filter
+        if hasattr(args, 'no_sp_filter') and args.no_sp_filter:
+            bot.enable_sp_filter = False
+        
+        if bot.enable_sp_filter:
+            print(f"📈 SPY Filter: Enabled (only buy stocks outperforming SPY)")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
