@@ -777,6 +777,37 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(f"Liquidity check failed for {symbol}: {e}")
             return (True, 0, 0, "Check failed - allowing")  # Don't filter if check fails
     
+    def get_volatility_tier(self, symbol: str) -> str:
+        """
+        Classify stock into volatility tier based on ATR%.
+        
+        Returns:
+            'low' - Low volatility (< 2% ATR) - good for mean-reversion
+            'mid' - Medium volatility (2-5% ATR) - standard strategy
+            'high' - High volatility (> 5% ATR) - momentum strategy
+        """
+        try:
+            df = self.get_market_data(symbol)
+            if df is None or len(df) < 20:
+                return 'mid'  # Default to mid if no data
+            
+            df = self.calculate_indicators(df)
+            atr_pct = df['ATR_pct'].iloc[-1] if len(df) > 0 else 0
+            
+            if pd.isna(atr_pct) or atr_pct <= 0:
+                return 'mid'
+            
+            if atr_pct < 2.0:
+                return 'low'
+            elif atr_pct > 5.0:
+                return 'high'
+            else:
+                return 'mid'
+                
+        except Exception as e:
+            logging.debug(f"Volatility tier check failed for {symbol}: {e}")
+            return 'mid'
+    
     def get_hourly_market_data(self, symbol: str, lookback_hours: int = 168) -> Optional[pd.DataFrame]:
         """Fetch hourly market data for multi-timeframe analysis"""
         try:
@@ -1182,6 +1213,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 # Lower band = bullish (25), Upper = bearish (-25)
                 bb_score = 25 - (bb_position * 50)
             
+            # Get volatility tier and adjust scoring
+            # Low volatility = mean-reversion works better
+            # High volatility = momentum works better
+            atr_pct = latest.get('ATR_pct', 0)
+            volatility_tier = 'mid'
+            if pd.notna(atr_pct):
+                if atr_pct < 2.0:
+                    volatility_tier = 'low'
+                    # Boost mean-reversion signals for low volatility
+                    rsi_score *= 1.3  # Stronger weight on RSI for low-vol
+                elif atr_pct > 5.0:
+                    volatility_tier = 'high'
+                    # Boost momentum signals for high volatility
+                    sma_score *= 1.3  # Stronger weight on SMA/momentum for high-vol
+            
             # Total Score (0-100 scale, 50 = neutral)
             total_score = 50 + rsi_score + sma_score + macd_score + bb_score
             total_score = max(0, min(100, total_score))
@@ -1273,6 +1319,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'sma_score': sma_score,
                 'macd_score': macd_score,
                 'bb_score': bb_score,
+                'volatility_tier': volatility_tier,
+                'atr_pct': atr_pct if pd.notna(atr_pct) else 0,
                 'earnings_warning': earnings_warning,
                 'sp_warning': sp_warning,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
