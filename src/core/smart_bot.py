@@ -125,6 +125,9 @@ class SmartTradingBot:
         self.enable_multi_timeframe = True  # Require daily AND hourly to agree on signals
         self.hourly_weight = 0.30  # Hourly weight (daily is 0.70)
         
+        # Volume Confirmation (enabled by default)
+        self.enable_volume_confirmation = True  # Require volume > 20-day average for signals
+        
         # Rate limit tracking
         self.rate_limit_detected = False
         self.rate_limit_count = 0
@@ -772,6 +775,17 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             else:
                 signal = "HOLD"
             
+            # Volume confirmation (if enabled)
+            volume_confirmed = True
+            volume_ratio = 1.0
+            if self.enable_volume_confirmation and signal in ["BUY", "SELL"]:
+                vol_confirmed, volume_ratio, _ = self.check_volume_confirmation(df_daily)
+                if not vol_confirmed:
+                    # Volume doesn't confirm - downgrade signal or reject
+                    if signal_strength in ["STRONG", "MEDIUM"]:
+                        signal_strength = "WEAK_VOLUME"
+                    volume_confirmed = False
+            
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
             ai_insight = None
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal in ["BUY", "SELL"]:
@@ -807,7 +821,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'signal': signal,
                 'signal_strength': signal_strength,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
-                'multi_timeframe': True
+                'multi_timeframe': True,
+                'volume_confirmed': volume_confirmed,
+                'volume_ratio': volume_ratio
             }
             
             # Add hourly data to result if available
@@ -824,6 +840,32 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         except Exception as e:
             logging.debug(f"Multi-timeframe analysis failed for {symbol}: {e}")
             return None
+    
+    def check_volume_confirmation(self, df: pd.DataFrame, min_volume_ratio: float = 1.0) -> tuple:
+        """
+        Check if volume confirms the price movement.
+        
+        Args:
+            df: DataFrame with volume data
+            min_volume_ratio: Minimum volume / volume_sma_20 ratio (default: 1.0 = above average)
+        
+        Returns:
+            (confirmed: bool, volume_ratio: float, volume_sma: float)
+        """
+        if df is None or len(df) < 20:
+            return False, 0.0, 0.0
+        
+        latest = df.iloc[-1]
+        volume = latest.get('volume', 0)
+        volume_sma = latest.get('volume_sma_20', 0)
+        
+        if volume_sma is None or volume_sma == 0:
+            return False, 0.0, 0.0
+        
+        volume_ratio = volume / volume_sma
+        confirmed = volume_ratio >= min_volume_ratio
+        
+        return confirmed, volume_ratio, volume_sma
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate technical indicators"""
@@ -848,6 +890,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['ATR'] = true_range.rolling(window=14).mean()
         df['ATR_pct'] = (df['ATR'] / df['close']) * 100  # ATR as percentage of price
+        
+        # Volume SMA - for volume confirmation
+        df['volume_sma_20'] = df['volume'].rolling(window=20).mean()
+        df['volume_ratio'] = df['volume'] / df['volume_sma_20']  # Current volume vs 20-day average
         
         return df
     
@@ -3024,6 +3070,10 @@ def main():
         parser.add_argument('--no-multi-timeframe', action='store_true', default=False,
                           help='Disable multi-timeframe analysis (use daily only)')
         
+        # Volume confirmation
+        parser.add_argument('--no-volume-confirmation', action='store_true', default=False,
+                          help='Disable volume confirmation for signals')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -3122,6 +3172,13 @@ def main():
         
         if bot.enable_multi_timeframe:
             print(f"📊 Multi-Timeframe: Enabled (Daily 70% + Hourly 30%)")
+        
+        # Volume confirmation
+        if hasattr(args, 'no_volume_confirmation') and args.no_volume_confirmation:
+            bot.enable_volume_confirmation = False
+        
+        if bot.enable_volume_confirmation:
+            print(f"📊 Volume Confirmation: Enabled (volume > 20-day avg required)")
         
         # Show setup instructions if database not available
         bot.show_database_setup()

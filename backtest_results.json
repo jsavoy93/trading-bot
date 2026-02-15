@@ -1,0 +1,59 @@
+{
+  "initial_capital": 100000,
+  "final_capital": 78236.27,
+  "total_return_pct": -21.763729999999995,
+  "total_trades": 12,
+  "winning_trades": 2,
+  "losing_trades": 10,
+  "win_rate": 16.666666666666664,
+  "avg_profit": -1813.6441666666667,
+  "total_pnl": -21763.73,
+  "max_drawdown": 85.36387562795736,
+  "sharpe_ratio": 0.287899416114366,
+  "trades_by_symbol": {
+    "CRM": {
+      "wins": 1,
+      "losses": 1
+    },
+    "INTC": {
+      "wins": 1,
+      "losses": 0
+    },
+    "GOOGL": {
+      "wins": 0,
+      "losses": 1
+    },
+    "AMZN": {
+      "wins": 0,
+      "losses": 1
+    },
+    "TSLA": {
+      "wins": 0,
+      "losses": 1
+    },
+    "JPM": {
+      "wins": 0,
+      "losses": 1
+    },
+    "V": {
+      "wins": 0,
+      "losses": 1
+    },
+    "JNJ": {
+      "wins": 0,
+      "losses": 1
+    },
+    "MA": {
+      "wins": 0,
+      "losses": 1
+    },
+    "UNH": {
+      "wins": 0,
+      "losses": 1
+    },
+    "ADBE": {
+      "wins": 0,
+      "losses": 1
+    }
+  }
+}
