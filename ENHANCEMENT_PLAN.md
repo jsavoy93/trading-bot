@@ -1,187 +1,178 @@
 # Trading Bot Enhancement Plan
 
-**Prepared by:** Moose 🫎  
-**Date:** Feb 13, 2026  
-**Status:** Ready for Review
+## Phase 1: Smarter Signal Generation
+
+### 1.1 — Add MACD crossover signal
+- **What:** Add MACD as an independent signal alongside RSI/SMA
+- **Why:** More signals = more opportunities, track which perform best
+- **Implementation:** Calculate MACD (12/26/9), track signal performance independently
+
+### 1.2 — Add Bollinger Band mean-reversion signal
+- **What:** Buy when price touches lower band with RSI < 35, sell at middle band
+- **Why:** Second uncorrelated strategy for diversification
+- **Implementation:** Add Bollinger Bands (20,2), add separate buy/sell logic
+
+### 1.3 — Build a signal scoring system
+- **What:** Score each signal 0-100 instead of binary buy/sell
+- **Why:** Weight and combine signals intelligently
+- **Implementation:** Create weighted score combining RSI, SMA, MACD, Bollinger, volume
+
+### 1.4 — Add earnings surprise filter
+- **What:** Pull upcoming earnings dates via API
+- **Why:** Avoid entering positions 3 days before earnings
+- **Implementation:** Use Financial Modeling Prep or similar API for earnings dates
+
+### 1.5 — Add relative strength vs. SPY
+- **What:** Only buy stocks outperforming SPY over 20 days
+- **Why:** Dramatically improves win rates
+- **Implementation:** Compare stock return to SPY return over lookback period
+
+### 1.6 — Implement VWAP-based entries
+- **What:** Wait for price to pull back to VWAP before entering
+- **Why:** Reduces average entry cost
+- **Implementation:** Calculate VWAP, wait for price to retest before executing
 
 ---
 
-## Overview
+## Phase 2: Intelligent Universe Selection
 
-Current state: Solid paper trading bot with good infrastructure. Strategy is basic, lacks proper risk management. Not ready for real money.
+### 2.1 — Liquidity and spread filter
+- **What:** Filter out stocks with avg daily volume < $1M or bid-ask spread > 0.3%
+- **Why:** Reduces slippage on entries/exits
+- **Implementation:** Add volume/spread checks before analyzing
 
-Goal: Transform into a more robust, risk-managed trading system suitable for eventual live trading.
+### 2.2 — Volatility-based universe tiering
+- **What:** Classify stocks into high/mid/low volatility buckets using ATR%
+- **Why:** Apply different strategies to each tier
+- **Implementation:** ATR% classification, apply mean-reversion for low-vol, momentum for high-vol
 
----
+### 2.3 — Sector rotation scoring
+- **What:** Track sector ETF performance (XLK, XLF, XLE, etc.) over 5/20/60 days
+- **Why:** Overweight sectors with positive momentum
+- **Implementation:** Score sectors, prioritize stocks in trending sectors
 
-## Priority 1: Risk Management (Critical)
-
-### 1.1 Stop-Loss System
-- **What:** Add configurable stop-loss percentage per trade
-- **Why:** Currently no exit strategy for losing positions
-- **Implementation:** 
-  - Trailing stop: X% below entry
-  - Hard stop: X% below entry (panic exit)
-  - Time-based stop: Exit after N days if no profit
-
-### 1.2 Position Sizing Improvements
-- **What:** Volatility-adjusted position sizing
-- **Why:** Same % allocation on volatile vs stable stocks = different risk
-- **Implementation:**
-  - Use ATR (Average True Range) to calculate position size
-  - Smaller positions for volatile stocks, larger for stable
-
-### 1.3 Max Drawdown Protection
-- **What:** Pause trading if portfolio drops X% from peak
-- **Why:** Prevent catastrophic losses in bad streaks
-- **Implementation:**
-  - Track peak portfolio value
-  - Auto-pause if drawdown > 10%
-  - Require manual resume
-
-### 1.4 Daily/Weekly Loss Limits
-- **What:** Stop trading for the day/week after losing X%
-- **Why:** Prevent revenge trading after losses
-- **Implementation:**
-  - Track daily P&L
-  - Auto-stop if daily loss > 5%
+### 2.4 — Catalyst scanner
+- **What:** Flag stocks with unusual volume (>2x avg), 52-week highs, or gap-ups
+- **Why:** Prioritize high-catalyst stocks instead of random scanning
+- **Implementation:** Scan for catalysts, boost signal scores for high-catalyst stocks
 
 ---
 
-## Priority 2: Strategy Improvements
+## Phase 3: Portfolio-Level Risk Management
 
-### 2.1 Multi-Timeframe Analysis
-- **What:** Analyze on multiple timeframes (daily + hourly) before trading
-- **Why:** Reduce false signals
-- **Implementation:**
-  - Require both daily AND hourly to agree on signal
-  - Weight signals: daily 70%, hourly 30%
+### 3.1 — Sector concentration limits
+- **What:** Cap exposure to any single sector at 25% of portfolio
+- **Why:** Prevent accidentally loading up on all tech stocks
+- **Implementation:** Track sector allocations, block new positions if sector overexposed
 
-### 2.2 Trend Confirmation
-- **What:** Only trade in direction of overall market trend
-- **Why:** Counter-trend trades have lower win rate
-- **Implementation:**
-  - Add market trend indicator (S&P 500 SMA 200)
-  - Only BUY in uptrend, only SELL in downtrend
+### 3.2 — Correlation-aware position sizing
+- **What:** Check correlation with existing positions before entering
+- **Why:** Reduce correlation risk
+- **Implementation:** Calculate correlation, reduce size or skip if >0.7
 
-### 2.3 Volume Confirmation
-- **What:** Confirm signals with volume
-- **Why:** Price movement without volume = unreliable
-- **Implementation:**
-  - Add volume SMA
-  - Require volume > 20-day average for signal
+### 3.3 — Beta-adjusted exposure
+- **What:** Track portfolio's overall beta to SPY
+- **Why:** Prevent blowups in market selloffs
+- **Implementation:** If beta > 1.5, stop adding long positions
 
-### 2.4 Take-Profit Targets
-- **What:** Auto-sell when profit reaches X%
-- **Why:** Lock in gains instead of riding back to loss
-- **Implementation:**
-  - Configurable take-profit % (e.g., 5%, 10%, 15%)
-  - Trailing take-profit: Lock in X%, let rest ride
+### 3.4 — Dynamic stop-loss using ATR
+- **What:** Replace fixed 8% stop with 2x ATR
+- **Why:** Volatile stocks get wider stops, tight stocks get tighter
+- **Implementation:** Calculate ATR, set stop at current_price - (2 * ATR)
 
 ---
 
-## Priority 3: Data & Analytics
+## Phase 4: Backtesting & Validation Infrastructure
 
-### 3.1 Backtesting Framework
-- **What:** Test strategies on historical data
-- **Why:** Validate before trading real money
-- **Implementation:**
-  - Use Alpaca historical data
-  - Run simulation: 1 year backtest
-  - Output: win rate, avg profit, max drawdown, Sharpe ratio
+### 4.1 — Historical data pipeline
+- **What:** Set up storage for daily/hourly OHLCV data going back 3+ years
+- **Why:** Can't validate without clean historical data
+- **Implementation:** Store in database, use for backtesting
 
-### 3.2 Performance Dashboard
-- **What:** Enhanced analytics
-- **Why:** Understand what's working
-- **Implementation:**
-  - Track by signal type (pure tech vs AI-enhanced)
-  - Track by sector
-  - Track by RSI range
-  - Win rate by hour/day of week
+### 4.2 — Backtesting engine
+- **What:** Run signals against historical data with slippage/commissions
+- **Why:** Track Sharpe ratio, max drawdown, win rate, profit factor
+- **Implementation:** Already have basic backtest.py - enhance it
 
-### 3.3 Trade Logging Improvements
-- **What:** More detailed trade records
-- **Why:** Better analysis
-- **Implementation:**
-  - Log entry reasoning (which indicators triggered)
-  - Log market conditions
-  - Log AI confidence scores
+### 4.3 — Walk-forward optimization
+- **What:** Train on 12 months, test on next 3, roll forward
+- **Why:** Only deploy signals that perform consistently out-of-sample
+- **Implementation:** Implement rolling window backtesting
 
 ---
 
-## Priority 4: Infrastructure
+## Phase 5: Market Regime Detection
 
-### 4.1 Error Recovery
-- **What:** Better error handling
-- **Implementation:**
-  - Retry logic with exponential backoff
-  - Circuit breaker for failing APIs
-  - Dead letter queue for failed trades
+### 5.1 — Trend vs. range classifier
+- **What:** Use ADX on SPY to detect trend vs range
+- **Why:** Different strategies for different regimes
+- **Implementation:** ADX > 25 = momentum, ADX < 20 = mean-reversion
 
-### 4.2 Configuration System
-- **What:** Centralized config
-- **Implementation:**
-  - All parameters in one file
-  - Environment-specific configs (dev/staging/prod)
-  - Config validation on startup
+### 5.2 — Volatility regime detection
+- **What:** Track VIX or realized volatility of SPY
+- **Why:** Adjust position sizes and stops based on vol regime
+- **Implementation:** High-vol = smaller positions, low-vol = larger
 
-### 4.3 Testing Suite
-- **What:** Automated tests
-- **Implementation:**
-  - Unit tests for indicator calculations
-  - Integration tests for API calls
-  - Mock Alpaca responses for offline testing
+### 5.3 — Sector momentum regime
+- **What:** Detect when sector leadership is changing vs broad market moves
+- **Why:** Adjust sector weights accordingly
+- **Implementation:** Track sector relative performance
 
 ---
 
-## Priority 5: Future (Post-Profit)
+## Phase 6: Execution Optimization
 
-### 5.1 Paper/Live Toggle
-- **What:** Switch between paper and live trading
-- **Implementation:**
-  - Single config change to go live
-  - Mandatory paper profits before live allowed
+### 6.1 — Limit order entries
+- **What:** Replace market orders with limit orders at small discount
+- **Why:** Reduce execution costs
+- **Implementation:** Use limit orders, track fill rates
 
-### 5.2 Multi-Strategy
-- **What:** Run multiple strategies simultaneously
-- **Implementation:**
-  - Strategy A: RSI oversold
-  - Strategy B: Breakout
-  - Strategy C: Mean reversion
+### 6.2 — Time-of-day optimization
+- **What:** Analyze history by hour, avoid first/last 15 minutes
+- **Why:** Reduce slippage during volatile periods
+- **Implementation:** Use analytics to find best hours
 
-### 5.3 Portfolio Rebalancing
-- **What:** Auto-rebalance portfolio
-- **Implementation:**
-  - Target sector allocations
-  - Weekly/monthly rebalance
+### 6.3 — Partial position scaling
+- **What:** Scale in over 2-3 entries as signal strengthens
+- **Why:** Better entry, same for exits
+- **Implementation:** Partial entries/exits with trailing stops
 
 ---
 
-## Recommended Execution Order
+## Phase 7: Sentiment & Alternative Data
 
-```
-Phase 1 (Week 1-2): Risk Management
-  → Stop-loss, position sizing, drawdown protection
+### 7.1 — News sentiment API integration
+- **What:** Use news sentiment API (Benzinga, Alpha Vantage)
+- **Why:** Avoid negative sentiment, amplify positive
+- **Implementation:** API integration, sentiment scoring
 
-Phase 2 (Week 2-3): Strategy Improvements  
-  → Multi-timeframe, trend confirmation, take-profit
+### 7.2 — Short interest data
+- **What:** Pull short interest / days-to-cover data
+- **Why:** High short interest + bullish signal = short squeeze candidate
+- **Implementation:** API for short interest, boost scores
 
-Phase 3 (Week 3-4): Backtesting & Analytics
-  → Backtest framework, enhanced dashboard
-
-Phase 4 (Ongoing): Infrastructure
-  → Testing, error recovery, config system
-```
-
----
-
-## Questions for Josh
-
-1. Which priority resonates most?
-2. Any specific feature you want first?
-3. Target timeframe for live trading?
-4. What's your risk tolerance? (aggressive vs conservative)
+### 7.3 — Insider trading filings
+- **What:** Monitor SEC Form 4 filings
+- **Why:** Insider buying clusters are strong predictive signals
+- **Implementation:** API for insider filings, track clusters
 
 ---
 
-*Plan ready for approval. Moose standing by.* 🫎
+## Current Implementation Status
+
+### Already Implemented (Priority Items)
+- ✅ Multi-timeframe analysis (daily + hourly)
+- ✅ Volume confirmation
+- ✅ Rolling ticker list (12,000+ symbols)
+- ✅ Stop-loss order placement
+- ✅ ATR position sizing
+- ✅ Max drawdown protection
+- ✅ Daily loss limit
+- ✅ Telegram notifications (trade alerts + 30-min summaries)
+- ✅ Performance dashboard analytics
+- ✅ Backtesting framework
+
+### Known Issues
+- No AI ticker selection (uses rolling list)
+- Market in neutral zone - few signals triggering
+- Win rate shows 67.8% but trades not filling due to strict RSI thresholds

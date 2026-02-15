@@ -27,23 +27,36 @@ from analysis.ai_agent import ai_agent
 # Load environment variables
 load_dotenv()
 
-# Configure logging - with auto-flush to file
-class FlushFileHandler(logging.FileHandler):
-    def emit(self, record):
-        super().emit(record)
-        self.flush()
+# Configure logging
+import logging
+import sys
 
 # Use absolute path for log file
 log_path = '/home/ubuntu/.openclaw/workspace/trading-bot/trading_bot.log'
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        FlushFileHandler(log_path),
-        logging.StreamHandler()
-    ]
-)
+# Create and configure logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Remove any existing handlers
+for h in logger.handlers[:]:
+    logger.removeHandler(h)
+
+# File handler
+file_handler = logging.FileHandler(log_path, mode='a')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+# Stream handler
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setLevel(logging.INFO)
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
+
+# Also set root logger
+logging.getLogger().setLevel(logging.INFO)
 
 class SmartTradingBot:
     def __init__(self):
@@ -88,7 +101,7 @@ class SmartTradingBot:
         
         # AI configuration flags
         self.use_ai_for_ticker_analysis = True  # Set to False to disable AI analysis for individual tickers
-        self.use_ai_for_ticker_selection = True  # Set to False to disable AI-based ticker selection
+        self.use_ai_for_ticker_selection = False  # Disabled - use rolling list of all symbols instead
         self.use_ai_for_market_summary = True  # Set to False to disable AI market summaries
         
         # Stop-Loss Configuration
@@ -626,6 +639,49 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.error(f"❌ Failed to get symbols: {e}")
             return []
     
+    def _get_rolling_ticker_list(self, target_count: int = 30) -> List[str]:
+        """
+        Get a rolling list of tickers that haven't been researched in 60 minutes.
+        This creates a continuous scan of all available US symbols.
+        """
+        # Get all US symbols
+        all_symbols = self.get_all_us_symbols()
+        
+        # Get recently researched (cooldown)
+        recently_researched = set(self.get_recently_researched_tickers(cooldown_minutes=60))
+        
+        # Get current portfolio positions to exclude
+        portfolio_symbols = set()
+        try:
+            positions = self.trading_client.get_all_positions()
+            portfolio_symbols = {p.symbol for p in positions if float(p.qty) > 0}
+        except Exception:
+            pass
+        
+        # Get symbols with pending orders
+        pending_symbols = set()
+        try:
+            orders = list(self.trading_client.get_orders())
+            from alpaca.trading.enums import OrderStatus
+            pending_symbols = {o.symbol for o in orders if o.status in [
+                OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
+                OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL
+            ]}
+        except Exception:
+            pass
+        
+        # Combine all exclusions
+        excluded = recently_researched | portfolio_symbols | pending_symbols
+        
+        # Filter and return
+        available = [s for s in all_symbols if s not in excluded]
+        
+        # Log the counts
+        logging.info(f"📊 Rolling ticker list: {len(all_symbols)} total, {len(excluded)} excluded, {len(available)} available")
+        
+        # Return up to target_count
+        return available[:target_count]
+    
     def get_market_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """Get market data for analysis"""
         try:
@@ -883,6 +939,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
         
+        # MACD (12, 26, 9)
+        ema_12 = df['close'].ewm(span=12, adjust=False).mean()
+        ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = ema_12 - ema_26
+        df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_histogram'] = df['MACD'] - df['MACD_signal']
+        
         # ATR (Average True Range) - for volatility-based position sizing
         high_low = df['high'] - df['low']
         high_close = abs(df['high'] - df['close'].shift())
@@ -920,12 +983,53 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             ai_insight = None
             
             # Traditional technical analysis
+            rsi_signal = None
+            sma_signal = None
+            macd_signal = None
+            
+            # RSI-based signal
             if sma_fast > sma_slow and rsi < self.rsi_buy_threshold:
-                signal = "BUY"
-                signal_strength = "STRONG" if rsi < 25 else "MEDIUM"
+                rsi_signal = "BUY"
             elif sma_fast < sma_slow and rsi > self.rsi_sell_threshold:
+                rsi_signal = "SELL"
+            
+            # SMA crossover signal
+            if sma_fast > sma_slow:
+                sma_signal = "BUY"
+            elif sma_fast < sma_slow:
+                sma_signal = "SELL"
+            
+            # MACD signal (MACD crosses above signal = bullish, below = bearish)
+            macd = latest.get('MACD', 0)
+            macd_signal_line = latest.get('MACD_signal', 0)
+            if pd.notna(macd) and pd.notna(macd_signal_line):
+                if macd > macd_signal_line:
+                    macd_signal = "BUY"
+                elif macd < macd_signal_line:
+                    macd_signal = "SELL"
+            
+            # Combine signals - need at least 2 of 3 aligned
+            signals = [rsi_signal, sma_signal, macd_signal]
+            buy_count = signals.count("BUY")
+            sell_count = signals.count("SELL")
+            
+            if buy_count >= 2:
+                signal = "BUY"
+                signal_strength = "STRONG" if buy_count == 3 else "MEDIUM"
+            elif sell_count >= 2:
                 signal = "SELL"
-                signal_strength = "STRONG" if rsi > 75 else "MEDIUM"
+                signal_strength = "STRONG" if sell_count == 3 else "MEDIUM"
+            else:
+                # No consensus - check RSI alone for strong signals
+                if rsi < 25:
+                    signal = "BUY"
+                    signal_strength = "STRONG_RSI"
+                elif rsi > 75:
+                    signal = "SELL"
+                    signal_strength = "STRONG_RSI"
+                else:
+                    signal = "HOLD"
+                    signal_strength = "WEAK"
             
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
@@ -961,6 +1065,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'sma_fast': sma_fast,
                 'sma_slow': sma_slow,
                 'rsi': rsi,
+                'macd': latest.get('MACD', 0),
+                'macd_signal': latest.get('MACD_signal', 0),
+                'macd_histogram': latest.get('MACD_histogram', 0),
                 'signal': signal,
                 'signal_strength': signal_strength,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
@@ -2017,21 +2124,20 @@ message(
         logging.info(f"\n🔍 Looking for new opportunities ({remaining_trades} trades remaining)...")
         max_trades = remaining_trades  # Update for the buy loop
         
-        # Get AI-recommended tickers based on portfolio analysis (if ticker selection AI is enabled)
-        if portfolio_analysis and ai_enabled and self.ai.is_configured and self.use_ai_for_ticker_selection:
+        # Get tickers - use rolling list of all US symbols (no AI)
+        # Filter out: portfolio positions, pending orders, and recently researched (60-min cooldown)
+        logging.info(f"🔍 Ticker selection: ai_enabled={ai_enabled}, is_configured={self.ai.is_configured}, use_ai_sel={self.use_ai_for_ticker_selection}")
+        if ai_enabled and self.ai.is_configured and self.use_ai_for_ticker_selection:
+            # AI-based selection (rarely used now)
             logging.info("🧠 Getting AI-recommended tickers based on portfolio analysis...")
             try:
                 symbols = self.get_ai_recommended_tickers(portfolio_analysis)
             except Exception as e:
-                if self._detect_rate_limit_error(str(e)) or self._detect_ai_failure_error(str(e)):
-                    self._handle_rate_limit_error(e)
-                    ai_enabled = False  # Disable AI for this run
                 logging.warning(f"⚠️ AI ticker recommendation failed: {e}")
-                symbols = self.get_all_us_symbols()
-                symbols = symbols[:max_symbols]
+                symbols = self._get_rolling_ticker_list(max_symbols)
         else:
-            symbols = self.get_all_us_symbols()
-            symbols = symbols[:max_symbols]
+            # Rolling ticker list - just get all symbols not in cooldown
+            symbols = self._get_rolling_ticker_list(max_symbols)
         
         if not symbols:
             logging.error("❌ No symbols available")
@@ -2098,7 +2204,11 @@ message(
                         rsi = latest['RSI']
                         sma_fast = latest[f'SMA_{self.sma_fast}']
                         sma_slow = latest[f'SMA_{self.sma_slow}']
-                        print(f"   ⏭️  {symbol}: ⚪ No signal (RSI: {rsi:.1f}, SMA: {sma_fast:.2f}/{sma_slow:.2f})")
+                        macd = latest.get('MACD', 0)
+                        macd_sig = latest.get('MACD_signal', 0)
+                        if pd.isna(macd): macd = 'N/A'
+                        if pd.isna(macd_sig): macd_sig = 'N/A'
+                        print(f"   ⏭️  {symbol}: ⚪ No signal (RSI: {rsi:.1f}, MACD: {macd}/{macd_sig})")
                         no_trade_reasons['no_signal'] += 1
                     continue
                     
@@ -2580,13 +2690,23 @@ message(
             # Action 2: Set stop losses on losing positions (>-10%)
             for position in portfolio_analysis['positions']:
                 if position['unrealized_plpc'] < -10 and abs(position['market_value']) > 100:
-                    # Calculate stop loss price (5% below current price)
-                    stop_price = position['current_price'] * 0.95
+                    # Calculate stop loss price (8% below current price = the stop_loss_pct)
+                    stop_price = round(position['current_price'] * (1 - (self.stop_loss_pct / 100)), 2)
                     
-                    logging.info(f"🛑 Setting stop loss for {position['symbol']} at ${stop_price:.2f} ({position['unrealized_plpc']:.1f}% loss)")
+                    # Check if we already have a stop order
+                    if self.has_active_stop_order(position['symbol']):
+                        logging.info(f"⏭️ {position['symbol']}: Already has stop-loss order, skipping")
+                        continue
                     
-                    # Note: This would require stop order functionality - placeholder for now
-                    actions_taken.append(f"Stop loss recommended for {position['symbol']} at ${stop_price:.2f}")
+                    # Place actual stop-loss order
+                    success = self._place_stop_loss_order(
+                        position['symbol'], 
+                        int(position['qty']), 
+                        stop_price
+                    )
+                    
+                    if success:
+                        actions_taken.append(f"Stop loss set for {position['symbol']} at ${stop_price:.2f}")
             
             # Action 3: Deploy excess cash if available
             cash_percentage = portfolio_analysis['cash_available'] / portfolio_analysis['total_value'] * 100
@@ -2612,6 +2732,83 @@ message(
                 
         except Exception as e:
             logging.error(f"❌ Portfolio action execution failed: {e}")
+    
+    def has_active_stop_order(self, symbol: str) -> bool:
+        """Check if there's already an active stop-loss order for this symbol"""
+        try:
+            orders = list(self.trading_client.get_orders())
+            from alpaca.trading.enums import OrderStatus
+            
+            # Check for open/stop orders
+            active_statuses = {
+                OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
+                OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL,
+                OrderStatus.PENDING_REPLACE, OrderStatus.PENDING_REVIEW
+            }
+            
+            for order in orders:
+                if (order.symbol == symbol and 
+                    order.status in active_statuses and
+                    order.side == OrderSide.SELL):
+                    # Check if this is a stop or stop-limit order
+                    if hasattr(order, 'order_type') and 'stop' in str(order.order_type).lower():
+                        return True
+                    # Also check order class type if available
+                    if hasattr(order, 'stop_price') and order.stop_price:
+                        return True
+            return False
+        except Exception as e:
+            logging.debug(f"Could not check existing orders: {e}")
+            return False
+    
+    def _place_stop_loss_order(self, symbol: str, quantity: int, stop_price: float) -> bool:
+        """Place an actual stop-loss order using Alpaca's OTO (one-triggers-other)"""
+        try:
+            # First check if we already have a stop order
+            if self.has_active_stop_order(symbol):
+                logging.info(f"⏭️ {symbol}: Already has active stop order, skipping")
+                return False
+            
+            # Get current position to verify we have shares
+            try:
+                positions = self.trading_client.get_all_positions()
+                position = None
+                for p in positions:
+                    if p.symbol == symbol:
+                        position = p
+                        break
+                
+                if not position:
+                    logging.warning(f"⚠️ {symbol}: No position found")
+                    return False
+                    
+                qty = int(abs(float(position.qty)))
+                if qty <= 0:
+                    logging.warning(f"⚠️ {symbol}: No position to set stop-loss on")
+                    return False
+            except Exception as e:
+                logging.warning(f"⚠️ {symbol}: Could not get position: {e}")
+                return False
+            
+            # Place a stop-loss order (sell if price drops below stop_price)
+            from alpaca.trading.requests import StopOrderRequest
+            
+            stop_order = StopOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                stop_price=stop_price,
+                time_in_force=TimeInForce.DAY
+            )
+            
+            order = self.trading_client.submit_order(order_data=stop_order)
+            
+            logging.info(f"🛑 STOP-LOSS ORDER PLACED: {symbol} - Stop: ${stop_price:.2f}, Qty: {qty}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"❌ Failed to place stop-loss for {symbol}: {e}")
+            return False
     
     def _place_portfolio_order(self, symbol, quantity, side, reason):
         """Place a portfolio management order"""
@@ -3055,8 +3252,10 @@ def main():
         # AI configuration flags
         parser.add_argument('--ai-ticker-analysis', action='store_true', default=False,
                           help='Enable AI to read articles for each ticker (slower, more detailed)')
+        parser.add_argument('--ai-ticker-selection', action='store_true', default=False,
+                          help='Enable AI-based ticker selection (default: off - use rolling list)')
         parser.add_argument('--no-ai-ticker-selection', action='store_true',
-                          help='Disable AI-based ticker selection (use standard ticker list)')
+                          help='Disable AI-based ticker selection (use rolling list)')
         parser.add_argument('--ai-market-summary', action='store_true', default=False,
                           help='Enable AI market summary (reads 5 tickers for sentiment)')
         parser.add_argument('--no-ai-market-summary', action='store_true',
@@ -3122,13 +3321,16 @@ def main():
             )
         else:
             # Configure individual AI features
-            # Default: ticker analysis OFF (skip article reading), others ON
+            # Default: ticker analysis OFF (skip article reading), ticker selection OFF (use rolling list), market summary OFF
             # Use --ai-ticker-analysis to enable article reading
+            # Use --ai-ticker-selection to enable AI ticker selection (not recommended)
             enable_ticker_analysis = getattr(args, 'ai_ticker_analysis', False)
             enable_market_summary = getattr(args, 'ai_market_summary', False)
+            # Default to False for ticker selection - use rolling list instead
+            enable_ticker_selection = getattr(args, 'ai_ticker_selection', False)
             bot.configure_ai_usage(
                 ticker_analysis=enable_ticker_analysis,
-                ticker_selection=not args.no_ai_ticker_selection,
+                ticker_selection=enable_ticker_selection,
                 market_summary=enable_market_summary
             )
         
