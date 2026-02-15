@@ -259,6 +259,25 @@ class SimpleSupabaseREST:
         
         return info
     
+    def get_all_trades(self, limit: int = 1000) -> List[Dict]:
+        """Get all trades from the database"""
+        try:
+            response = requests.get(
+                f"{self.rest_url}/trades?select=*&order=order_time.desc&limit={limit}",
+                headers=self.headers,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logging.warning(f"Failed to get trades: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            logging.debug(f"Error getting trades: {e}")
+            return []
+    
     def get_research_cooldown(self, symbol: str) -> Optional[datetime]:
         """Get the last research time for a symbol"""
         if not self.available:

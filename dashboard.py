@@ -253,6 +253,213 @@ def api_stop_session():
     return {"status": "ok", "message": "Session stopped"}
 
 
+@app.get("/api/analytics/overview")
+def api_analytics_overview():
+    """Get overall trading analytics"""
+    if not db.is_available():
+        return {"error": "Database not available"}
+    
+    try:
+        trades = db.get_all_trades()
+        if not trades:
+            return {"error": "No trades found"}
+        
+        # Helper to safely get pnl (handle None)
+        def safe_pnl(t):
+            pnl = t.get('pnl')
+            return pnl if pnl is not None else 0
+        
+        # Basic stats
+        total_trades = len(trades)
+        winners = sum(1 for t in trades if safe_pnl(t) > 0)
+        losers = sum(1 for t in trades if safe_pnl(t) < 0)
+        win_rate = (winners / total_trades * 100) if total_trades > 0 else 0
+        
+        total_pnl = sum(safe_pnl(t) for t in trades)
+        avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
+        
+        # By signal type (if available)
+        signal_types = {}
+        for t in trades:
+            signal = t.get('signal_type', 'unknown')
+            if signal not in signal_types:
+                signal_types[signal] = {'count': 0, 'wins': 0, 'pnl': 0}
+            signal_types[signal]['count'] += 1
+            if safe_pnl(t) > 0:
+                signal_types[signal]['wins'] += 1
+            signal_types[signal]['pnl'] += safe_pnl(t)
+        
+        # By symbol
+        symbols = {}
+        for t in trades:
+            sym = t.get('symbol', 'unknown')
+            if sym not in symbols:
+                symbols[sym] = {'count': 0, 'wins': 0, 'pnl': 0}
+            symbols[sym]['count'] += 1
+            if safe_pnl(t) > 0:
+                symbols[sym]['wins'] += 1
+            symbols[sym]['pnl'] += safe_pnl(t)
+        
+        # Top performers
+        top_winners = sorted(symbols.items(), key=lambda x: x[1]['pnl'], reverse=True)[:5]
+        top_losers = sorted(symbols.items(), key=lambda x: x[1]['pnl'])[:5]
+        
+        return {
+            "total_trades": total_trades,
+            "winners": winners,
+            "losers": losers,
+            "win_rate": round(win_rate, 1),
+            "total_pnl": round(total_pnl, 2),
+            "avg_pnl": round(avg_pnl, 2),
+            "by_signal_type": signal_types,
+            "top_winners": [{"symbol": s, **stats} for s, stats in top_winners if stats['pnl'] > 0],
+            "top_losers": [{"symbol": s, **stats} for s, stats in top_losers if stats['pnl'] < 0][:5]
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/analytics/timing")
+def api_analytics_timing():
+    """Get timing-based analytics (hour/day of week)"""
+    if not db.is_available():
+        return {"error": "Database not available"}
+    
+    try:
+        trades = db.get_all_trades()
+        if not trades:
+            return {"error": "No trades found"}
+        
+        # By hour of day
+        hours = {h: {'count': 0, 'wins': 0, 'pnl': 0} for h in range(24)}
+        
+        # By day of week
+        days = {d: {'count': 0, 'wins': 0, 'pnl': 0} for d in range(7)}
+        
+        day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        
+        for t in trades:
+            # Parse timestamp - check order_time or signal_time
+            ts = t.get('order_time') or t.get('signal_time') or ''
+            if isinstance(ts, str) and ts:
+                try:
+                    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                    hour = dt.hour
+                    day = dt.weekday()
+                except:
+                    continue
+            else:
+                continue
+            
+            hours[hour]['count'] += 1
+            days[day]['count'] += 1
+            
+            pnl = t.get('pnl') or 0
+            if pnl > 0:
+                hours[hour]['wins'] += 1
+                days[day]['wins'] += 1
+            
+            hours[hour]['pnl'] += pnl
+            days[day]['pnl'] += pnl
+        
+        # Format results
+        hours_data = []
+        for h, stats in hours.items():
+            if stats['count'] > 0:
+                wr = (stats['wins'] / stats['count'] * 100) if stats['count'] > 0 else 0
+                hours_data.append({
+                    "hour": h,
+                    "count": stats['count'],
+                    "wins": stats['wins'],
+                    "win_rate": round(wr, 1),
+                    "pnl": round(stats['pnl'], 2)
+                })
+        
+        days_data = []
+        for d, stats in days.items():
+            if stats['count'] > 0:
+                wr = (stats['wins'] / stats['count'] * 100) if stats['count'] > 0 else 0
+                days_data.append({
+                    "day": day_names[d],
+                    "day_num": d,
+                    "count": stats['count'],
+                    "wins": stats['wins'],
+                    "win_rate": round(wr, 1),
+                    "pnl": round(stats['pnl'], 2)
+                })
+        
+        return {
+            "by_hour": hours_data,
+            "by_day": days_data
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/analytics/rsi")
+def api_analytics_rsi():
+    """Get analytics by RSI range at entry"""
+    if not db.is_available():
+        return {"error": "Database not available"}
+    
+    try:
+        trades = db.get_all_trades()
+        if not trades:
+            return {"error": "No trades found"}
+        
+        # By RSI range
+        ranges = {
+            'oversold (<30)': {'count': 0, 'wins': 0, 'pnl': 0},
+            'neutral (30-50)': {'count': 0, 'wins': 0, 'pnl': 0},
+            'neutral (50-70)': {'count': 0, 'wins': 0, 'pnl': 0},
+            'overbought (>70)': {'count': 0, 'wins': 0, 'pnl': 0}
+        }
+        
+        for t in trades:
+            rsi_raw = t.get('rsi_entry') or t.get('rsi')
+            if rsi_raw is None:
+                continue
+            
+            try:
+                rsi = float(rsi_raw)
+            except (ValueError, TypeError):
+                continue
+            
+            if rsi < 30:
+                key = 'oversold (<30)'
+            elif rsi < 50:
+                key = 'neutral (30-50)'
+            elif rsi < 70:
+                key = 'neutral (50-70)'
+            else:
+                key = 'overbought (>70)'
+            
+            ranges[key]['count'] += 1
+            pnl = t.get('pnl') or 0
+            if pnl > 0:
+                ranges[key]['wins'] += 1
+            ranges[key]['pnl'] += pnl
+        
+        result = []
+        for key, stats in ranges.items():
+            if stats['count'] > 0:
+                wr = (stats['wins'] / stats['count'] * 100)
+                result.append({
+                    "range": key,
+                    "count": stats['count'],
+                    "wins": stats['wins'],
+                    "win_rate": round(wr, 1),
+                    "pnl": round(stats['pnl'], 2)
+                })
+        
+        return {"by_rsi_range": result}
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))

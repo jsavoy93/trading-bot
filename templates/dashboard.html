@@ -296,6 +296,203 @@
             {% endif %}
         </div>
 
+<!-- Performance Analytics -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📈 Performance Analytics</span>
+            </div>
+            
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('overview')">Overview</button>
+                <button class="tab" onclick="showTab('timing')">Timing</button>
+                <button class="tab" onclick="showTab('rsi')">By RSI</button>
+            </div>
+            
+            <div id="tab-overview" class="tab-content">
+                <div class="grid">
+                    <div class="stat">
+                        <div class="stat-label">Total Trades</div>
+                        <div class="stat-value" id="total-trades">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Win Rate</div>
+                        <div class="stat-value" id="win-rate">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Total P&L</div>
+                        <div class="stat-value" id="total-pnl">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Avg P&L</div>
+                        <div class="stat-value" id="avg-pnl">-</div>
+                    </div>
+                </div>
+                <div id="top-performers" style="margin-top: 1rem;"></div>
+            </div>
+            
+            <div id="tab-timing" class="tab-content" style="display: none;">
+                <div id="timing-loading">Loading...</div>
+            </div>
+            
+            <div id="tab-rsi" class="tab-content" style="display: none;">
+                <div id="rsi-loading">Loading...</div>
+            </div>
+        </div>
+
+        <script>
+        let analyticsLoaded = false;
+        
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-' + tabName).style.display = 'block';
+            event.target.classList.add('active');
+            
+            if (!analyticsLoaded) {
+                loadAnalytics();
+                analyticsLoaded = true;
+            }
+        }
+        
+        async function loadAnalytics() {
+            // Overview
+            try {
+                const resp = await fetch('/api/analytics/overview');
+                const data = await resp.json();
+                
+                if (data.error) {
+                    document.getElementById('total-trades').textContent = 'N/A';
+                    return;
+                }
+                
+                document.getElementById('total-trades').textContent = data.total_trades;
+                document.getElementById('win-rate').textContent = data.win_rate + '%';
+                document.getElementById('win-rate').className = 'stat-value ' + (data.win_rate >= 50 ? 'green' : 'red');
+                
+                const pnlEl = document.getElementById('total-pnl');
+                pnlEl.textContent = '$' + data.total_pnl.toFixed(2);
+                pnlEl.className = 'stat-value ' + (data.total_pnl >= 0 ? 'green' : 'red');
+                
+                const avgEl = document.getElementById('avg-pnl');
+                avgEl.textContent = '$' + data.avg_pnl.toFixed(2);
+                avgEl.className = 'stat-value ' + (data.avg_pnl >= 0 ? 'green' : 'red');
+                
+                // Top performers
+                let html = '<h4 style="margin: 1rem 0 0.5rem; color: #8b949e;">Top Winners</h4>';
+                if (data.top_winners && data.top_winners.length > 0) {
+                    html += '<table><thead><tr><th>Symbol</th><th>Trades</th><th>P&L</th></tr></thead><tbody>';
+                    for (const w of data.top_winners) {
+                        html += `<tr><td>${w.symbol}</td><td>${w.count}</td><td class="green">$${w.pnl.toFixed(2)}</td></tr>`;
+                    }
+                    html += '</tbody></table>';
+                } else {
+                    html += '<p class="no-data">No winners yet</p>';
+                }
+                
+                html += '<h4 style="margin: 1rem 0 0.5rem; color: #8b949e;">Top Losers</h4>';
+                if (data.top_losers && data.top_losers.length > 0) {
+                    html += '<table><thead><tr><th>Symbol</th><th>Trades</th><th>P&L</th></tr></thead><tbody>';
+                    for (const l of data.top_losers) {
+                        html += `<tr><td>${l.symbol}</td><td>${l.count}</td><td class="red">$${l.pnl.toFixed(2)}</td></tr>`;
+                    }
+                    html += '</tbody></table>';
+                } else {
+                    html += '<p class="no-data">No losers</p>';
+                }
+                
+                document.getElementById('top-performers').innerHTML = html;
+                
+            } catch (e) {
+                console.error(e);
+            }
+            
+            // Timing
+            try {
+                const resp = await fetch('/api/analytics/timing');
+                const data = await resp.json();
+                
+                if (data.error) {
+                    document.getElementById('timing-loading').textContent = 'No data';
+                    return;
+                }
+                
+                let html = '<h4 style="margin-bottom: 0.5rem;">By Hour of Day</h4>';
+                html += '<table><thead><tr><th>Hour</th><th>Trades</th><th>Win Rate</th><th>P&L</th></tr></thead><tbody>';
+                for (const h of data.by_hour || []) {
+                    const color = h.pnl >= 0 ? 'green' : 'red';
+                    html += `<tr><td>${h.hour}:00</td><td>${h.count}</td><td>${h.win_rate}%</td><td class="${color}">$${h.pnl.toFixed(2)}</td></tr>`;
+                }
+                html += '</tbody></table>';
+                
+                html += '<h4 style="margin: 1rem 0 0.5rem;">By Day of Week</h4>';
+                html += '<table><thead><tr><th>Day</th><th>Trades</th><th>Win Rate</th><th>P&L</th></tr></thead><tbody>';
+                for (const d of data.by_day || []) {
+                    const color = d.pnl >= 0 ? 'green' : 'red';
+                    html += `<tr><td>${d.day}</td><td>${d.count}</td><td>${d.win_rate}%</td><td class="${color}">$${d.pnl.toFixed(2)}</td></tr>`;
+                }
+                html += '</tbody></table>';
+                
+                document.getElementById('timing-loading').innerHTML = html;
+                
+            } catch (e) {
+                console.error(e);
+            }
+            
+            // RSI
+            try {
+                const resp = await fetch('/api/analytics/rsi');
+                const data = await resp.json();
+                
+                if (data.error) {
+                    document.getElementById('rsi-loading').textContent = 'No data';
+                    return;
+                }
+                
+                let html = '<table><thead><tr><th>RSI Range</th><th>Trades</th><th>Win Rate</th><th>P&L</th></tr></thead><tbody>';
+                for (const r of data.by_rsi_range || []) {
+                    const color = r.pnl >= 0 ? 'green' : 'red';
+                    html += `<tr><td>${r.range}</td><td>${r.count}</td><td>${r.win_rate}%</td><td class="${color}">$${r.pnl.toFixed(2)}</td></tr>`;
+                }
+                html += '</tbody></table>';
+                
+                document.getElementById('rsi-loading').innerHTML = html;
+                
+            } catch (e) {
+                console.error(e);
+            }
+        }
+        
+        // Load on page load
+        loadAnalytics();
+        </script>
+
+        <style>
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .tab {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            color: #8b949e;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        
+        .tab.active {
+            background: #238636;
+            color: white;
+            border-color: #238636;
+        }
+        
+        .tab:hover:not(.active) {
+            border-color: #58a6ff;
+        }
+        </style>
+
         <!-- Recent Sessions -->
         {% if sessions %}
         <div class="card">
