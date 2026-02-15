@@ -946,6 +946,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         df['MACD_histogram'] = df['MACD'] - df['MACD_signal']
         
+        # Bollinger Bands (20, 2) - for mean-reversion signals
+        df['BB_middle'] = df['close'].rolling(window=20).mean()
+        bb_std = df['close'].rolling(window=20).std()
+        df['BB_upper'] = df['BB_middle'] + (2 * bb_std)
+        df['BB_lower'] = df['BB_middle'] - (2 * bb_std)
+        df['BB_width'] = (df['BB_upper'] - df['BB_lower']) / df['BB_middle']  # Bandwidth
+        
         # ATR (Average True Range) - for volatility-based position sizing
         high_low = df['high'] - df['low']
         high_close = abs(df['high'] - df['close'].shift())
@@ -1008,17 +1015,37 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 elif macd < macd_signal_line:
                     macd_signal = "SELL"
             
-            # Combine signals - need at least 2 of 3 aligned
-            signals = [rsi_signal, sma_signal, macd_signal]
-            buy_count = signals.count("BUY")
-            sell_count = signals.count("SELL")
+            # Bollinger Band mean-reversion signal
+            # Buy when price touches lower band with RSI < 35, sell at middle band
+            bb_lower = latest.get('BB_lower', 0)
+            bb_middle = latest.get('BB_middle', 0)
+            bb_upper = latest.get('BB_upper', 0)
+            bb_signal = None
             
+            if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0:
+                # Price near lower band + oversold RSI = buy signal
+                if price <= bb_lower * 1.02 and rsi < 35:  # Within 2% of lower band
+                    bb_signal = "BUY"
+                # Price near upper band + overbought RSI = sell signal  
+                elif price >= bb_upper * 0.98 and rsi > 65:  # Within 2% of upper band
+                    bb_signal = "SELL"
+                # Price at middle band = take profit signal for long positions
+                elif price >= bb_middle and sma_fast > sma_slow:
+                    bb_signal = "SELL"  # Mean reversion complete
+            
+            # Combine signals - need at least 2 of 4 aligned
+            signals = [rsi_signal, sma_signal, macd_signal, bb_signal]
+            signals_clean = [s for s in signals if s is not None]
+            buy_count = signals_clean.count("BUY")
+            sell_count = signals_clean.count("SELL")
+            
+            # Require at least 2 signals to agree (or 1 strong signal)
             if buy_count >= 2:
                 signal = "BUY"
-                signal_strength = "STRONG" if buy_count == 3 else "MEDIUM"
+                signal_strength = "STRONG" if buy_count >= 3 else "MEDIUM"
             elif sell_count >= 2:
                 signal = "SELL"
-                signal_strength = "STRONG" if sell_count == 3 else "MEDIUM"
+                signal_strength = "STRONG" if sell_count >= 3 else "MEDIUM"
             else:
                 # No consensus - check RSI alone for strong signals
                 if rsi < 25:
@@ -1068,6 +1095,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'macd': latest.get('MACD', 0),
                 'macd_signal': latest.get('MACD_signal', 0),
                 'macd_histogram': latest.get('MACD_histogram', 0),
+                'bb_upper': latest.get('BB_upper', 0),
+                'bb_middle': latest.get('BB_middle', 0),
+                'bb_lower': latest.get('BB_lower', 0),
                 'signal': signal,
                 'signal_strength': signal_strength,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
