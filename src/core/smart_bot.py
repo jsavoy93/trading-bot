@@ -156,6 +156,71 @@ class SmartTradingBot:
         self.enable_sector_filter = True  # Prefer stocks in strong sectors
         self.sector_rotation_scores = {}  # Cache sector scores
         
+        # Sector Concentration Limit (default 25%)
+        self.max_sector_concentration = 0.25  # Max 25% in any single sector
+        
+        # Simple sector mapping for common stocks (expand as needed)
+        self.stock_sector_map = {
+            # Technology
+            'AAPL': 'XLK', 'MSFT': 'XLK', 'GOOGL': 'XLK', 'GOOG': 'XLK', 'META': 'XLK',
+            'NVDA': 'XLK', 'AMD': 'XLK', 'INTC': 'XLK', 'CSCO': 'XLK', 'ORCL': 'XLK',
+            'ADBE': 'XLK', 'CRM': 'XLK', 'PYPL': 'XLK', 'NFLX': 'XLK', 'AVGO': 'XLK',
+            'NOW': 'XLK', 'SNOW': 'XLK', 'PANW': 'XLK', 'CRWD': 'XLK', 'ZS': 'XLK',
+            'OKTA': 'XLK', 'DDOG': 'XLK', 'NET': 'XLK', 'MDB': 'XLK', 'TEAM': 'XLK',
+            # Financials
+            'JPM': 'XLF', 'BAC': 'XLF', 'WFC': 'XLF', 'C': 'XLF', 'GS': 'XLF',
+            'MS': 'XLF', 'AXP': 'XLF', 'V': 'XLF', 'MA': 'XLF', 'BLK': 'XLF',
+            'SCHW': 'XLF', 'USB': 'XLF', 'PNC': 'XLF', 'TFC': 'XLF', 'COF': 'XLF',
+            # Energy
+            'XOM': 'XLE', 'CVX': 'XLE', 'COP': 'XLE', 'SLB': 'XLE', 'EOG': 'XLE',
+            'MPC': 'XLE', 'VLO': 'XLE', 'PSX': 'XLE', 'OXY': 'XLE', 'HAL': 'XLE',
+            # Healthcare
+            'JNJ': 'XLV', 'UNH': 'XLV', 'PFE': 'XLV', 'MRK': 'XLV', 'ABBV': 'XLV',
+            'TMO': 'XLV', 'DHR': 'XLV', 'BMY': 'XLV', 'AMGN': 'XLV', 'GILD': 'XLV',
+            'CVS': 'XLV', 'CI': 'XLV', 'HUM': 'XLV', 'ZTS': 'XLV', 'REGN': 'XLV',
+            # Consumer Staples
+            'PG': 'XLP', 'KO': 'XLP', 'PEP': 'XLP', 'WMT': 'XLP', 'COST': 'XLP',
+            'MDLZ': 'XLP', 'CL': 'XLP', 'EL': 'XLP', 'KMB': 'XLP', 'GIS': 'XLP',
+            # Consumer Discretionary
+            'AMZN': 'XLY', 'TSLA': 'XLY', 'HD': 'XLY', 'MCD': 'XLY', 'NKE': 'XLY',
+            'SBUX': 'XLY', 'TGT': 'XLY', 'LOW': 'XLY', 'TJX': 'XLY', 'BKNG': 'XLY',
+            # Materials
+            'LIN': 'XLB', 'APD': 'XLB', 'ECL': 'XLB', 'NEM': 'XLB', 'FCX': 'XLB',
+            'SHW': 'XLB', 'DOW': 'XLB', 'PPG': 'XLB', 'NUE': 'XLB', 'VMC': 'XLB',
+            # Industrials
+            'CAT': 'XLI', 'BA': 'XLI', 'HON': 'XLI', 'UPS': 'XLI', 'UNP': 'XLI',
+            'GE': 'XLI', 'RTX': 'XLI', 'LMT': 'XLI', 'DE': 'XLI', 'MMM': 'XLI',
+            # Real Estate
+            'PLD': 'XLRE', 'AMT': 'XLRE', 'EQIX': 'XLRE', 'CCI': 'XLRE', 'SPG': 'XLRE',
+            'O': 'XLRE', 'PSA': 'XLRE', 'WELL': 'XLRE', 'AVB': 'XLRE', 'EQR': 'XLRE',
+            # Utilities
+            'NEE': 'XLU', 'DUK': 'XLU', 'SO': 'XLU', 'D': 'XLU', 'AEP': 'XLU',
+            'SRE': 'XLU', 'EXC': 'XLU', 'XEL': 'XLU', 'ED': 'XLU', 'PEG': 'XLU',
+            # Communication
+            'META': 'XLC', 'GOOG': 'XLC', 'GOOGL': 'XLC', 'NFLX': 'XLC', 'DIS': 'XLC',
+            'CMCSA': 'XLC', 'T': 'XLC', 'VZ': 'XLC', 'TMUS': 'XLC', 'CHTR': 'XLC',
+        }
+        
+        # Yahoo Finance sector mapping (for dynamic lookup)
+        # Map Yahoo sector names to our sector ETFs
+        self.yahoo_sector_to_etf = {
+            'Technology': 'XLK',
+            'Financial Services': 'XLF',
+            'Energy': 'XLE',
+            'Healthcare': 'XLV',
+            'Consumer Defensive': 'XLP',
+            'Consumer Cyclical': 'XLY',
+            'Basic Materials': 'XLB',
+            'Industrials': 'XLI',
+            'Real Estate': 'XLRE',
+            'Utilities': 'XLU',
+            'Communication Services': 'XLC',
+        }
+        
+        # Cache for dynamically fetched sectors
+        self._sector_cache = {}
+        self._sector_allocation_cache = None  # Cache for sector allocation
+        
         # Rate limit tracking
         self.rate_limit_detected = False
         self.rate_limit_count = 0
@@ -2162,6 +2227,144 @@ message(
             # If all else fails, use current time
             return datetime.now(timezone.utc).isoformat()
     
+    def get_sector_allocation(self, use_cache: bool = True) -> dict:
+        """
+        Calculate current sector allocation percentages.
+        Uses only hardcoded map for performance - doesn't do Yahoo lookups.
+        
+        Args:
+            use_cache: If True, uses cached allocation if available (for performance)
+        
+        Returns:
+            dict of {sector_etf: percentage_of_portfolio}
+        """
+        # Use cached allocation if available
+        if use_cache and hasattr(self, '_sector_allocation_cache') and self._sector_allocation_cache is not None:
+            return self._sector_allocation_cache
+            
+        try:
+            positions = self.trading_client.get_all_positions()
+            portfolio_value = self.get_portfolio_total_value()
+            
+            if portfolio_value <= 0:
+                return {}
+            
+            sector_values = {}
+            
+            for position in positions:
+                symbol = position.symbol
+                market_value = abs(float(position.market_value))
+                
+                # Use ONLY hardcoded map for allocation (fast, no API calls)
+                sector = self.stock_sector_map.get(symbol)
+                if sector:
+                    sector_values[sector] = sector_values.get(sector, 0) + market_value
+            
+            # Cache the result
+            self._sector_allocation_cache = {sector: value / portfolio_value for sector, value in sector_values.items()}
+            return self._sector_allocation_cache
+            
+        except Exception as e:
+            logging.debug(f"Error calculating sector allocation: {e}")
+            return {}
+    
+    def get_sector_for_symbol(self, symbol: str) -> str:
+        """
+        Get sector ETF for a symbol, using hardcoded map first, then Yahoo Finance.
+        
+        Returns:
+            Sector ETF code (XLK, XLF, etc.) or None if unavailable
+        """
+        # First check hardcoded map
+        sector = self.stock_sector_map.get(symbol)
+        if sector:
+            return sector
+        
+        # Check cache
+        if symbol in self._sector_cache:
+            return self._sector_cache[symbol]
+        
+        # Try Yahoo Finance for unmapped stocks (with timeout)
+        try:
+            import yfinance as yf
+            from threading import Timer
+            
+            # Create a timer to timeout the Yahoo lookup
+            result = {'sector': None}
+            
+            def lookup():
+                try:
+                    ticker = yf.Ticker(symbol)
+                    info = ticker.info
+                    result['sector'] = info.get('sector')
+                except:
+                    pass
+            
+            t = Timer(3.0, lookup)  # 3 second timeout
+            t.start()
+            t.join()
+            
+            yahoo_sector = result['sector']
+            
+            if yahoo_sector:
+                # Map Yahoo sector name to our ETF
+                sector = self.yahoo_sector_to_etf.get(yahoo_sector)
+                if sector:
+                    self._sector_cache[symbol] = sector
+                    logging.debug(f"📊 {symbol}: Mapped via Yahoo Finance -> {yahoo_sector} -> {sector}")
+                    return sector
+                    
+        except Exception as e:
+            logging.debug(f"Failed to get sector from Yahoo Finance for {symbol}: {e}")
+        
+        # Cache the negative result too
+        self._sector_cache[symbol] = None
+        return None
+    
+    def invalidate_sector_cache(self):
+        """Clear sector allocation cache after a trade."""
+        self._sector_allocation_cache = None
+    
+    def check_sector_concentration(self, symbol: str, position_size_dollars: float) -> tuple:
+        """
+        Check if adding this position would exceed sector concentration limit.
+        
+        Args:
+            symbol: Stock symbol to check
+            position_size_dollars: Dollar value of new position
+            
+        Returns:
+            (passes: bool, current_pct: float, projected_pct: float, reason: str)
+        """
+        try:
+            portfolio_value = self.get_portfolio_total_value()
+            if portfolio_value <= 0:
+                return (True, 0, 0, "No portfolio value")
+            
+            # Get sector for this symbol (uses hardcoded map first, then Yahoo Finance)
+            sector = self.get_sector_for_symbol(symbol)
+            if not sector:
+                return (True, 0, 0, "Unknown sector - allowing")
+            
+            # Get current sector allocation
+            sector_alloc = self.get_sector_allocation()
+            current_pct = sector_alloc.get(sector, 0)
+            
+            # Calculate projected allocation
+            projected_value = position_size_dollars
+            projected_pct = (projected_value / portfolio_value) + current_pct
+            
+            # Check against limit
+            if projected_pct > self.max_sector_concentration:
+                return (False, current_pct * 100, projected_pct * 100, 
+                        f"Sector {self.SECTOR_ETFS.get(sector, sector)} at {current_pct*100:.1f}% → would be {projected_pct*100:.1f}% (limit: {self.max_sector_concentration*100:.0f}%)")
+            
+            return (True, current_pct * 100, projected_pct * 100, "Passes concentration check")
+            
+        except Exception as e:
+            logging.debug(f"Sector concentration check failed: {e}")
+            return (True, 0, 0, "Check failed - allowing")
+    
     def execute_trade(self, analysis: Dict) -> bool:
         """Execute trade based on analysis with comprehensive position and risk management"""
         try:
@@ -2224,6 +2427,17 @@ message(
                         logging.info(f"⚠️ Reducing {symbol} quantity from {quantity} to {adjusted_quantity} shares (position limit: {position_percentage:.1f}%)")
                         quantity = adjusted_quantity
                 
+                # Check sector concentration limits (Phase 3.1)
+                position_size_dollars = quantity * price
+                passes_sector_check, current_pct, projected_pct, sector_reason = self.check_sector_concentration(
+                    symbol, position_size_dollars
+                )
+                
+                if not passes_sector_check:
+                    logging.info(f"🚫 Skipping {symbol}: {sector_reason}")
+                    # Log this for visibility
+                    return False
+                
                 # Add position size context to logging
                 if current_position_qty > 0:
                     new_total_qty = current_position_qty + quantity
@@ -2273,6 +2487,9 @@ message(
             )
             
             self.trades_executed += 1
+            
+            # Invalidate sector allocation cache after trade
+            self.invalidate_sector_cache()
             
             # Mark trade for cooldown tracking
             self.mark_recent_trade(symbol, signal)
