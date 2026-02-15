@@ -152,6 +152,10 @@ class SmartTradingBot:
         self.enable_liquidity_filter = True  # Skip stocks with low volume or wide spreads
         self.min_daily_volume = 1000000  # Minimum 1M shares avg daily volume
         
+        # Sector Rotation Filter (enabled by default)
+        self.enable_sector_filter = True  # Prefer stocks in strong sectors
+        self.sector_rotation_scores = {}  # Cache sector scores
+        
         # Rate limit tracking
         self.rate_limit_detected = False
         self.rate_limit_count = 0
@@ -807,6 +811,71 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         except Exception as e:
             logging.debug(f"Volatility tier check failed for {symbol}: {e}")
             return 'mid'
+    
+    # Major sector ETFs for rotation tracking
+    SECTOR_ETFS = {
+        'XLK': 'Technology',
+        'XLF': 'Financials', 
+        'XLE': 'Energy',
+        'XLV': 'Healthcare',
+        'XLP': 'Consumer Staples',
+        'XLY': 'Consumer Discretionary',
+        'XLB': 'Materials',
+        'XLI': 'Industrials',
+        'XLRE': 'Real Estate',
+        'XLU': 'Utilities',
+        'XLC': 'Communication',
+    }
+    
+    def get_sector_rotation_scores(self, lookback_days: int = 20) -> dict:
+        """
+        Calculate relative strength scores for major sector ETFs.
+        
+        Returns:
+            dict of {symbol: score} where positive = outperforming, negative = underperforming
+        """
+        scores = {}
+        try:
+            # Get SPY as benchmark
+            spy = self.get_market_data('SPY')
+            if spy is None or len(spy) < lookback_days:
+                return {k: 0 for k in self.SECTOR_ETFS}
+            
+            spy_current = spy['close'].iloc[-1]
+            spy_past = spy['close'].iloc[-lookback_days]
+            spy_return = ((spy_current - spy_past) / spy_past) * 100 if spy_past > 0 else 0
+            
+            # Calculate each sector's return vs SPY
+            for symbol in self.SECTOR_ETFS.keys():
+                try:
+                    df = self.get_market_data(symbol)
+                    if df is None or len(df) < lookback_days:
+                        scores[symbol] = 0
+                        continue
+                    
+                    current = df['close'].iloc[-1]
+                    past = df['close'].iloc[-lookback_days]
+                    sector_return = ((current - past) / past) * 100 if past > 0 else 0
+                    
+                    # Score = sector return - SPY return (positive = outperforming)
+                    scores[symbol] = sector_return - spy_return
+                    
+                except Exception:
+                    scores[symbol] = 0
+            
+            return scores
+            
+        except Exception as e:
+            logging.debug(f"Sector rotation calculation failed: {e}")
+            return {k: 0 for k in self.SECTOR_ETFS}
+    
+    def get_sector_for_symbol(self, symbol: str) -> str:
+        """Get the sector ETF most correlated with a symbol (simple heuristic)."""
+        # This is a simplified mapping - in production you'd use a sector database
+        # For now, we'll just return the symbol if it's a sector ETF, else None
+        if symbol in self.SECTOR_ETFS:
+            return symbol
+        return None
     
     def get_hourly_market_data(self, symbol: str, lookback_hours: int = 168) -> Optional[pd.DataFrame]:
         """Fetch hourly market data for multi-timeframe analysis"""
@@ -2453,6 +2522,19 @@ message(
                         analysis['signal_strength'] = 'WEAK'
                         analysis['liquidity_warning'] = reason
                         logging.debug(f"⏭️ {symbol}: Failed liquidity filter - {reason}")
+                
+                # Apply sector rotation filter - prefer stocks in strong sectors
+                if analysis and analysis.get('signal') == 'BUY' and self.enable_sector_filter:
+                    # Check if this is a sector ETF we're analyzing
+                    sector = self.get_sector_for_symbol(symbol)
+                    if sector and sector in self.sector_rotation_scores:
+                        sector_score = self.sector_rotation_scores.get(sector, 0)
+                        # If sector is underperforming SPY by > 2%, downgrade signal
+                        if sector_score < -2:
+                            analysis['signal'] = 'HOLD'
+                            analysis['signal_strength'] = 'WEAK'
+                            analysis['sector_warning'] = f"Sector {self.SECTOR_ETFS.get(sector, sector)} underperforming ({sector_score:+.1f}% vs SPY)"
+                            logging.debug(f"⏭️ {symbol}: Sector {sector} underperforming - {sector_score:+.1f}%")
                 if not analysis:
                     # Check why - no data vs no signal
                     df = self.get_market_data(symbol)
@@ -3656,6 +3738,10 @@ def main():
         parser.add_argument('--min-volume', type=int, default=1000000,
                           help='Minimum daily volume for liquidity filter (default: 1M)')
         
+        # Sector rotation filter
+        parser.add_argument('--no-sector-filter', action='store_true', default=False,
+                          help='Disable sector rotation filter')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -3789,6 +3875,15 @@ def main():
         
         if bot.enable_liquidity_filter:
             print(f"💧 Liquidity Filter: Enabled (min volume: {bot.min_daily_volume/1e6:.1f}M)")
+        
+        # Sector rotation filter
+        if hasattr(args, 'no_sector_filter') and args.no_sector_filter:
+            bot.enable_sector_filter = False
+        
+        if bot.enable_sector_filter:
+            # Pre-calculate sector scores
+            bot.sector_rotation_scores = bot.get_sector_rotation_scores()
+            print(f"🏛️ Sector Filter: Enabled (prefer strong sectors)")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
