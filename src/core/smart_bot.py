@@ -141,6 +141,10 @@ class SmartTradingBot:
         # Volume Confirmation (enabled by default)
         self.enable_volume_confirmation = True  # Require volume > 20-day average for signals
         
+        # Earnings Filter (enabled by default - skip trades N days before earnings)
+        self.earnings_days_skip = 3  # Skip trades within this many days before earnings
+        self.earnings_cache = {}  # Cache earnings dates to avoid repeated API calls
+        
         # Rate limit tracking
         self.rate_limit_detected = False
         self.rate_limit_count = 0
@@ -897,6 +901,52 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(f"Multi-timeframe analysis failed for {symbol}: {e}")
             return None
     
+    def check_earnings_calendar(self, symbol: str, days_ahead: int = 3) -> tuple:
+        """
+        Check if stock has earnings coming up within specified days.
+        Uses Yahoo Finance free API.
+        
+        Args:
+            symbol: Stock symbol
+            days_ahead: Number of days to look ahead
+            
+        Returns:
+            (has_earnings: bool, earnings_date: datetime or None, days_until: int or None)
+        """
+        try:
+            import yfinance as yf
+            
+            ticker = yf.Ticker(symbol)
+            earnings_dates = ticker.earnings_dates
+            
+            if earnings_dates is None or earnings_dates.empty:
+                return (False, None, None)
+            
+            # Get the next earnings date
+            now = datetime.now()
+            for date in earnings_dates.index:
+                if isinstance(date, str):
+                    # Parse string format
+                    earnings_date = pd.to_datetime(date)
+                else:
+                    earnings_date = date
+                
+                # Skip past earnings
+                if earnings_date <= now:
+                    continue
+                
+                # Check if within the window
+                days_until = (earnings_date - now).days
+                
+                if days_until <= days_ahead:
+                    return (True, earnings_date, days_until)
+            
+            return (False, None, None)
+            
+        except Exception as e:
+            logging.debug(f"Earnings check failed for {symbol}: {e}")
+            return (False, None, None)
+    
     def check_volume_confirmation(self, df: pd.DataFrame, min_volume_ratio: float = 1.0) -> tuple:
         """
         Check if volume confirms the price movement.
@@ -1043,6 +1093,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 signal = "HOLD"
                 signal_strength = "WEAK"
             
+            # Earnings filter: skip BUY signals near earnings
+            earnings_warning = None
+            if signal == "BUY" and self.earnings_days_skip > 0:
+                has_earnings, earnings_date, days_until = self.check_earnings_calendar(symbol, self.earnings_days_skip)
+                if has_earnings:
+                    signal = "HOLD"
+                    signal_strength = "WEAK"
+                    earnings_warning = f"Earnings in {days_until} days - skipping buy"
+                    logging.info(f"⚠️ {symbol}: {earnings_warning}")
+            
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
                 try:
@@ -1090,6 +1150,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'sma_score': sma_score,
                 'macd_score': macd_score,
                 'bb_score': bb_score,
+                'earnings_warning': earnings_warning,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
             }
             
@@ -3295,6 +3356,10 @@ def main():
         parser.add_argument('--no-volume-confirmation', action='store_true', default=False,
                           help='Disable volume confirmation for signals')
         
+        # Earnings filter
+        parser.add_argument('--earnings-filter', type=int, default=3,
+                          help='Days before earnings to skip trades (default: 3, 0 to disable)')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -3403,6 +3468,14 @@ def main():
         
         if bot.enable_volume_confirmation:
             print(f"📊 Volume Confirmation: Enabled (volume > 20-day avg required)")
+        
+        # Earnings filter
+        if hasattr(args, 'earnings_filter'):
+            bot.earnings_days_skip = args.earnings_filter
+            if bot.earnings_days_skip > 0:
+                print(f"📅 Earnings Filter: Enabled (skip {bot.earnings_days_skip} days before earnings)")
+            else:
+                print(f"📅 Earnings Filter: Disabled")
         
         # Show setup instructions if database not available
         bot.show_database_setup()

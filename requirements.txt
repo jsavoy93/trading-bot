@@ -14,3 +14,4 @@ google-generativeai>=0.3.0
 aiohttp>=3.8.0
 beautifulsoup4>=4.12.0
 newsapi-python>=0.2.6
+yfinance
