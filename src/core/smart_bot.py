@@ -2353,10 +2353,26 @@ message(
                         sma_slow = latest[f'SMA_{self.sma_slow}']
                         macd = latest.get('MACD', 0)
                         macd_sig = latest.get('MACD_signal', 0)
-                        if pd.isna(macd): macd = 'N/A'
-                        if pd.isna(macd_sig): macd_sig = 'N/A'
+                        if pd.isna(macd): macd = 0
+                        if pd.isna(macd_sig): macd_sig = 0
+                        
+                        # Get other indicators for one-line summary
+                        bb_upper = latest.get('BB_upper', 0)
+                        bb_lower = latest.get('BB_lower', 0)
+                        vwap_dist = latest.get('vwap_distance', 0)
+                        if pd.isna(vwap_dist): vwap_dist = 0
+                        price = latest.get('close', 0)
+                        
+                        # Calculate BB position
+                        if bb_upper and bb_lower and price > 0:
+                            bb_pos = ((price - bb_lower) / (bb_upper - bb_lower)) * 100
+                        else:
+                            bb_pos = 50
+                        
                         total = analysis.get('total_score', 50) if analysis else 50
-                        print(f"   ⏭️  {symbol}: ⚪ No signal (Score: {total:.0f}/100, RSI: {rsi:.1f})")
+                        
+                        # One-line summary: Symbol | Price | RSI | MACD | BB% | VWAP% | Score
+                        print(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
                         no_trade_reasons['no_signal'] += 1
                     continue
                     
@@ -2367,7 +2383,12 @@ message(
                     if analysis['signal_strength'] == "WEAK":
                         no_trade_reasons['weak_signal'] += 1
                         score = analysis.get('total_score', 50)
-                        print(f"   ⏭️  {symbol}: ⚠️  {analysis['signal']} signal too weak (Score: {score:.0f}/100, needs 65+ or 35-)")
+                        rsi = analysis.get('rsi', 50)
+                        macd = analysis.get('macd', 0)
+                        price = analysis.get('price', 0)
+                        bb_pos = 50
+                        vwap_dist = 0
+                        print(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | ⚠️ WEAK")
                         continue
                     elif analysis['signal_strength'] == "CONFLICTED":
                         no_trade_reasons['conflicted_signal'] += 1
@@ -2397,6 +2418,16 @@ message(
                     else:
                         logging.info(f"   ⏸️  Signal detected but max trades reached ({max_trades})")
                         no_trade_reasons['max_trades_reached'] += 1
+                
+                elif analysis:
+                    # Has analysis but no actionable signal (HOLD)
+                    score = analysis.get('total_score', 50)
+                    rsi = analysis.get('rsi', 50)
+                    macd = analysis.get('macd', 0)
+                    price = analysis.get('price', 0)
+                    bb_pos = 50
+                    vwap_dist = 0
+                    print(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100")
                 else:
                     # No signal detected - show which criteria failed
                     no_trade_reasons['no_signal'] += 1
