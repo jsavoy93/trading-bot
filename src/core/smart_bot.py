@@ -148,6 +148,10 @@ class SmartTradingBot:
         # SPY Relative Strength Filter (enabled by default)
         self.enable_sp_filter = True  # Only buy stocks outperforming SPY
         
+        # Liquidity Filter (enabled by default) - filter out illiquid stocks
+        self.enable_liquidity_filter = True  # Skip stocks with low volume or wide spreads
+        self.min_daily_volume = 1000000  # Minimum 1M shares avg daily volume
+        
         # Rate limit tracking
         self.rate_limit_detected = False
         self.rate_limit_count = 0
@@ -387,7 +391,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 return self._get_smart_fallback_tickers(portfolio_analysis)
             
             # Get recently researched tickers to avoid recommending them again
-            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=60)
+            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=240)
             if recently_researched:
                 print(f"\n🔍 Recently researched tickers to EXCLUDE ({len(recently_researched)}): {', '.join(recently_researched[:20])}")
                 logging.info(f"🔍 Recently researched tickers to EXCLUDE ({len(recently_researched)}): {', '.join(recently_researched[:20])}")
@@ -502,7 +506,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     logging.info("="*60)
                     
                     # Filter out tickers in research cooldown before returning
-                    cooldown_filtered_tickers = self.filter_tickers_by_cooldown(tickers, cooldown_minutes=60)
+                    cooldown_filtered_tickers = self.filter_tickers_by_cooldown(tickers, cooldown_minutes=240)
                     
                     # Log which tickers were filtered out to diagnose AI ignoring exclusions
                     filtered_out = set(tickers) - set(cooldown_filtered_tickers)
@@ -558,7 +562,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
     def _get_smart_fallback_tickers(self, portfolio_analysis: Dict) -> List[str]:
         """Intelligent fallback ticker selection based on portfolio analysis"""
         # Get recently researched tickers to avoid repeating them
-        recently_researched = self.get_recently_researched_tickers(cooldown_minutes=60)
+        recently_researched = self.get_recently_researched_tickers(cooldown_minutes=240)
         
         fallback_tickers = []
         all_candidate_tickers = []
@@ -613,7 +617,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         print("="*60)
         
         # Filter out tickers in research cooldown before returning
-        cooldown_filtered_tickers = self.filter_tickers_by_cooldown(selected, cooldown_minutes=60)
+        cooldown_filtered_tickers = self.filter_tickers_by_cooldown(selected, cooldown_minutes=240)
         
         # If too few tickers after cooldown filtering, get fresh ticker list
         if len(cooldown_filtered_tickers) < 10:
@@ -655,7 +659,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         all_symbols = self.get_all_us_symbols()
         
         # Get recently researched (cooldown)
-        recently_researched = set(self.get_recently_researched_tickers(cooldown_minutes=60))
+        recently_researched = set(self.get_recently_researched_tickers(cooldown_minutes=240))
         
         # Get current portfolio positions to exclude
         portfolio_symbols = set()
@@ -725,6 +729,53 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         except Exception as e:
             logging.debug(f"Data fetch failed for {symbol}: {e}")
             return None
+    
+    def check_liquidity(self, symbol: str, min_volume: int = 1000000, max_spread_pct: float = 0.3) -> tuple:
+        """
+        Check if stock meets liquidity criteria.
+        
+        Args:
+            symbol: Stock symbol
+            min_volume: Minimum average daily volume (default: 1M)
+            max_spread_pct: Maximum bid-ask spread percentage (default: 0.3%)
+            
+        Returns:
+            (passes: bool, avg_volume: float, spread_pct: float, reason: str)
+        """
+        try:
+            # Get recent data for volume calculation
+            df = self.get_market_data(symbol)
+            if df is None or len(df) < 20:
+                return (True, 0, 0, "Insufficient data - skipping liquidity check")
+            
+            # Calculate average daily volume (last 20 days)
+            avg_volume = df['volume'].tail(20).mean()
+            
+            # Get latest quote for spread calculation
+            # Note: Alpaca basic data doesn't include bid/ask, so we estimate spread using high-low
+            # Real implementation would need premium data or another source
+            latest = df.iloc[-1]
+            price = latest['close']
+            
+            if price <= 0:
+                return (True, 0, 0, "Invalid price - skipping liquidity check")
+            
+            # Estimate spread using high-low as proxy (wider = more volatile/less liquid)
+            high_low_spread = ((latest['high'] - latest['low']) / price) * 100
+            
+            # Check volume requirement
+            if avg_volume < min_volume:
+                return (False, avg_volume, high_low_spread, f"Volume {avg_volume/1e6:.1f}M < {min_volume/1e6:.0f}M minimum")
+            
+            # Check spread requirement (using high-low as proxy)
+            if high_low_spread > max_spread_pct * 3:  # Multiply since high-low is typically larger than bid-ask
+                return (False, avg_volume, high_low_spread, f"Spread {high_low_spread:.1f}% too wide")
+            
+            return (True, avg_volume, high_low_spread, "Passes liquidity check")
+            
+        except Exception as e:
+            logging.debug(f"Liquidity check failed for {symbol}: {e}")
+            return (True, 0, 0, "Check failed - allowing")  # Don't filter if check fails
     
     def get_hourly_market_data(self, symbol: str, lookback_hours: int = 168) -> Optional[pd.DataFrame]:
         """Fetch hourly market data for multi-timeframe analysis"""
@@ -1067,6 +1118,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # Volume SMA - for volume confirmation
         df['volume_sma_20'] = df['volume'].rolling(window=20).mean()
         df['volume_ratio'] = df['volume'] / df['volume_sma_20']  # Current volume vs 20-day average
+        
+        # VWAP (Volume Weighted Average Price) - for entry timing
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+        # Fill NaN values in VWAP using forward fill then backward fill
+        df['vwap'] = df['vwap'].ffill().bfill()
+        df['vwap_distance'] = ((df['close'] - df['vwap']) / df['vwap']) * 100  # Distance from VWAP in %
         
         return df
     
@@ -1780,7 +1838,7 @@ message(
         from datetime import datetime
         research_time = datetime.utcnow()  # Use UTC to match database timestamps
         
-        print(f"   🔖 Marking {symbol} as researched ({research_time.strftime('%H:%M:%S')} UTC)")
+        logging.debug(f"   🔖 Marking {symbol} as researched ({research_time.strftime('%H:%M:%S')} UTC)")
         
         # Store in database if available
         if self.db.is_available():
@@ -1820,7 +1878,7 @@ message(
                 return []
             
             # Get exclusion lists
-            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=60)
+            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=240)
             
             # Get current portfolio positions
             portfolio_symbols = set()
@@ -1942,7 +2000,7 @@ message(
                 return False
             
             # Check cooldown period for BUY signals to prevent excessive repeat trades
-            if signal == 'BUY' and self.is_in_cooldown(symbol, cooldown_minutes=60):
+            if signal == 'BUY' and self.is_in_cooldown(symbol, cooldown_minutes=240):
                 logging.info(f"⏰ Skipping {symbol}: In 15-minute cooldown period")
                 return False
             
@@ -2328,7 +2386,7 @@ message(
                 
                 # Note: Cooldown filtering now happens at ticker selection stage
                 # This check is kept as a safety net for edge cases
-                if self.is_in_research_cooldown(symbol, cooldown_minutes=60):
+                if self.is_in_research_cooldown(symbol, cooldown_minutes=240):
                     symbols_skipped_cooldown += 1
                     logging.debug(f"⏭️  {symbol}: Skipping research - in research cooldown period (safety check)")
                     continue
@@ -2338,11 +2396,20 @@ message(
                     analysis = self.analyze_multi_timeframe(symbol, use_ai=ai_enabled)
                 else:
                     analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
+                
+                # Apply liquidity filter - skip illiquid stocks for BUY signals
+                if analysis and analysis.get('signal') == 'BUY' and self.enable_liquidity_filter:
+                    passes_liquidity, avg_vol, spread, reason = self.check_liquidity(symbol, self.min_daily_volume)
+                    if not passes_liquidity:
+                        analysis['signal'] = 'HOLD'
+                        analysis['signal_strength'] = 'WEAK'
+                        analysis['liquidity_warning'] = reason
+                        logging.debug(f"⏭️ {symbol}: Failed liquidity filter - {reason}")
                 if not analysis:
                     # Check why - no data vs no signal
                     df = self.get_market_data(symbol)
                     if df is None or len(df) < self.sma_slow:
-                        print(f"   ⏭️  {symbol}: ❌ No market data (needs {self.sma_slow} bars)")
+                        logging.debug(f"   ⏭️  {symbol}: ❌ No market data (needs {self.sma_slow} bars)")
                         no_trade_reasons['no_data'] += 1
                     else:
                         # Has data but no signal (RSI not in buy/sell zone)
@@ -2369,14 +2436,36 @@ message(
                         else:
                             bb_pos = 50
                         
-                        total = analysis.get('total_score', 50) if analysis else 50
+                        # Calculate signal score from scratch (0-100, 50=neutral)
+                        rsi_score = 0
+                        if rsi < 30:
+                            rsi_score = 25 * (1 - rsi / 30)
+                        elif rsi > 70:
+                            rsi_score = -25 * ((rsi - 70) / 30)
+                        
+                        sma_score = 0
+                        if sma_fast > sma_slow:
+                            sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
+                            sma_score = min(25, sma_pct * 5)
+                        elif sma_fast < sma_slow:
+                            sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
+                            sma_score = -min(25, sma_pct * 5)
+                        
+                        macd_score = 0
+                        if pd.notna(macd) and pd.notna(macd_sig):
+                            macd_score = max(-25, min(25, (macd - macd_sig) * 100))
+                        
+                        bb_score = 25 - bb_pos  # Lower band = bullish, upper = bearish
+                        
+                        total = 50 + rsi_score + sma_score + macd_score + bb_score
+                        total = max(0, min(100, total))
                         
                         # One-line summary: Symbol | Price | RSI | MACD | BB% | VWAP% | Score
-                        print(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
+                        logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
                         no_trade_reasons['no_signal'] += 1
                     continue
                     
-                if analysis and analysis['signal']:
+                if analysis and analysis['signal'] in ['BUY', 'SELL']:
                     opportunities += 1
                     
                     # Check if we should skip due to weak signals
@@ -2387,8 +2476,9 @@ message(
                         macd = analysis.get('macd', 0)
                         price = analysis.get('price', 0)
                         bb_pos = 50
-                        vwap_dist = 0
-                        print(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | ⚠️ WEAK")
+                        vwap_dist = analysis.get('vwap_distance', 0)
+                        if pd.isna(vwap_dist): vwap_dist = 0
+                        logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | ⚠️ WEAK")
                         continue
                     elif analysis['signal_strength'] == "CONFLICTED":
                         no_trade_reasons['conflicted_signal'] += 1
@@ -2426,8 +2516,9 @@ message(
                     macd = analysis.get('macd', 0)
                     price = analysis.get('price', 0)
                     bb_pos = 50
-                    vwap_dist = 0
-                    print(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100")
+                    vwap_dist = analysis.get('vwap_distance', 0)
+                    if pd.isna(vwap_dist): vwap_dist = 0
+                    logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100")
                 else:
                     # No signal detected - show which criteria failed
                     no_trade_reasons['no_signal'] += 1
@@ -2728,7 +2819,7 @@ message(
                     logging.debug(f"⏭️  {symbol}: Skipping sell analysis - in 30-minute cooldown")
                     continue
                 
-                logging.info(f"🔍 Analyzing position: {symbol} ({current_qty} shares, {unrealized_plpc:+.1f}%)")
+                logging.debug(f"🔍 Analyzing position: {symbol} ({current_qty} shares, {unrealized_plpc:+.1f}%)")
                 
                 # Run technical analysis on the held position (use multi-timeframe if enabled)
                 if self.enable_multi_timeframe:
@@ -3438,8 +3529,8 @@ def main():
         parser = argparse.ArgumentParser(description='Enhanced Trading Bot with AI')
         parser.add_argument('--continuous', '-c', action='store_true', 
                           help='Run in continuous mode (default: single session)')
-        parser.add_argument('--delay', '-d', type=int, default=300,
-                          help='Seconds between loops in continuous mode (default: 300)')
+        parser.add_argument('--delay', '-d', type=int, default=10,
+                          help='Seconds between loops in continuous mode (default: 10)')
         parser.add_argument('--max-symbols', type=int, default=30,
                           help='Maximum symbols to analyze per loop (default: 30)')
         parser.add_argument('--max-trades', type=int, default=2,
@@ -3510,6 +3601,12 @@ def main():
         # SPY Relative Strength filter
         parser.add_argument('--no-sp-filter', action='store_true', default=False,
                           help='Disable SPY relative strength filter (buy stocks outperforming SPY)')
+        
+        # Liquidity filter
+        parser.add_argument('--no-liquidity-filter', action='store_true', default=False,
+                          help='Disable liquidity filter (skip low-volume stocks)')
+        parser.add_argument('--min-volume', type=int, default=1000000,
+                          help='Minimum daily volume for liquidity filter (default: 1M)')
         
         args = parser.parse_args()
         
@@ -3634,6 +3731,16 @@ def main():
         
         if bot.enable_sp_filter:
             print(f"📈 SPY Filter: Enabled (only buy stocks outperforming SPY)")
+        
+        # Liquidity filter
+        if hasattr(args, 'no_liquidity_filter') and args.no_liquidity_filter:
+            bot.enable_liquidity_filter = False
+        else:
+            if hasattr(args, 'min_volume'):
+                bot.min_daily_volume = args.min_volume
+        
+        if bot.enable_liquidity_filter:
+            print(f"💧 Liquidity Filter: Enabled (min volume: {bot.min_daily_volume/1e6:.1f}M)")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
