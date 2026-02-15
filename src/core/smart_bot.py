@@ -116,10 +116,14 @@ class SmartTradingBot:
         self.daily_loss_paused = False  # Flag if trading paused due to daily loss
         self.last_reset_date = None  # Track when we last reset daily tracking
         
-        # Email Notifications (disabled - using Telegram instead)
+        # Telegram Notifications (enabled)
         self.enable_email_notifications = False
         self.enable_telegram_notifications = os.getenv('TELEGRAM_ENABLED', 'true').lower() == 'true'
         self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
+        
+        # Multi-Timeframe Analysis (enabled by default)
+        self.enable_multi_timeframe = True  # Require daily AND hourly to agree on signals
+        self.hourly_weight = 0.30  # Hourly weight (daily is 0.70)
         
         # Rate limit tracking
         self.rate_limit_detected = False
@@ -654,6 +658,171 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             
         except Exception as e:
             logging.debug(f"Data fetch failed for {symbol}: {e}")
+            return None
+    
+    def get_hourly_market_data(self, symbol: str, lookback_hours: int = 168) -> Optional[pd.DataFrame]:
+        """Fetch hourly market data for multi-timeframe analysis"""
+        try:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(hours=lookback_hours)
+            
+            # Get 1-hour timeframe bars
+            request = StockBarsRequest(
+                symbol_or_symbols=[symbol],
+                timeframe=TimeFrame.Hour,
+                start=start_date,
+                end=end_date
+            )
+            
+            barset = self.data_client.get_stock_bars(request)
+            
+            if not barset or symbol not in barset.data:
+                return None
+            
+            bars = barset.data[symbol]
+            if not bars or len(bars) < 24:  # Need at least 24 hours of data
+                return None
+            
+            df = pd.DataFrame([{
+                'timestamp': bar.timestamp,
+                'open': bar.open,
+                'high': bar.high,
+                'low': bar.low,
+                'close': bar.close,
+                'volume': bar.volume
+            } for bar in bars])
+            
+            return df
+            
+        except Exception as e:
+            logging.debug(f"Hourly data fetch failed for {symbol}: {e}")
+            return None
+    
+    def analyze_multi_timeframe(self, symbol: str, use_ai: bool = False) -> Optional[Dict]:
+        """Analyze symbol using multiple timeframes (daily + hourly)"""
+        try:
+            # Get daily data
+            df_daily = self.get_market_data(symbol)
+            if df_daily is None or len(df_daily) < self.sma_slow:
+                return None
+            
+            df_daily = self.calculate_indicators(df_daily)
+            
+            # Get hourly data
+            df_hourly = self.get_hourly_market_data(symbol)
+            hourly_indicators = None
+            if df_hourly is not None and len(df_hourly) >= self.sma_slow:
+                df_hourly = self.calculate_indicators(df_hourly)
+                hourly_indicators = df_hourly.iloc[-1]
+            
+            latest = df_daily.iloc[-1]
+            
+            if pd.isna(latest[f'SMA_{self.sma_fast}']) or pd.isna(latest['RSI']):
+                return None
+            
+            sma_fast_daily = latest[f'SMA_{self.sma_fast}']
+            sma_slow_daily = latest[f'SMA_{self.sma_slow}']
+            rsi_daily = latest['RSI']
+            price = latest['close']
+            
+            # Analyze daily timeframe
+            daily_signal = None
+            if sma_fast_daily > sma_slow_daily and rsi_daily < self.rsi_buy_threshold:
+                daily_signal = "BUY"
+            elif sma_fast_daily < sma_slow_daily and rsi_daily > self.rsi_sell_threshold:
+                daily_signal = "SELL"
+            
+            # Analyze hourly timeframe (if available)
+            hourly_signal = None
+            if hourly_indicators is not None:
+                sma_fast_hourly = hourly_indicators[f'SMA_{self.sma_fast}']
+                sma_slow_hourly = hourly_indicators[f'SMA_{self.sma_slow}']
+                rsi_hourly = hourly_indicators['RSI']
+                
+                if not pd.isna(sma_fast_hourly) and not pd.isna(rsi_hourly):
+                    if sma_fast_hourly > sma_slow_hourly and rsi_hourly < self.rsi_buy_threshold:
+                        hourly_signal = "BUY"
+                    elif sma_fast_hourly < sma_slow_hourly and rsi_hourly > self.rsi_sell_threshold:
+                        hourly_signal = "SELL"
+            
+            # Multi-timeframe signal generation
+            # Require BOTH daily AND hourly to agree (weighted: daily 70%, hourly 30%)
+            signal = None
+            signal_strength = "WEAK"
+            
+            if daily_signal and hourly_signal:
+                # Both timeframes must agree
+                if daily_signal == hourly_signal:
+                    signal = daily_signal
+                    # Strength based on how strong the signals are
+                    if daily_signal == "BUY":
+                        rsi_score = (30 - rsi_daily) / 30  # Lower RSI = stronger
+                        signal_strength = "STRONG" if rsi_daily < 25 else "MEDIUM"
+                    else:
+                        rsi_score = (rsi_daily - 70) / 30  # Higher RSI = stronger
+                        signal_strength = "STRONG" if rsi_daily > 75 else "MEDIUM"
+                else:
+                    # Conflicting signals - no trade
+                    signal = "HOLD"
+                    signal_strength = "CONFLICTED"
+            elif daily_signal and not hourly_indicators:
+                # No hourly data - use daily only but mark as weaker
+                signal = daily_signal
+                signal_strength = "DAILY_ONLY"
+            else:
+                signal = "HOLD"
+            
+            # AI enhancement (if enabled globally, configured, and enabled at ticker level)
+            ai_insight = None
+            if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal in ["BUY", "SELL"]:
+                try:
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    ai_research = loop.run_until_complete(self.ai.research_symbol(symbol, lookback_days=2))
+                    loop.close()
+                    
+                    if ai_research and ai_research.get('ai_recommendation'):
+                        ai_rec = ai_research['ai_recommendation']
+                        ai_signal = ai_rec.recommendation.upper()
+                        
+                        if ai_signal == signal and ai_rec.confidence > 0.7:
+                            signal_strength = "AI_ENHANCED"
+                            ai_insight = f"AI confirms {signal} with {ai_rec.confidence:.1%} confidence"
+                        elif ai_signal != signal:
+                            signal_strength = "CONFLICTED"
+                            ai_insight = f"AI suggests {ai_signal} vs technical {signal}"
+                            
+                except Exception as e:
+                    if self._detect_rate_limit_error(str(e)) or self._detect_ai_failure_error(str(e)):
+                        self._handle_rate_limit_error(e)
+                    logging.debug(f"AI analysis failed for {symbol}: {e}")
+            
+            analysis_result = {
+                'symbol': symbol,
+                'price': price,
+                'sma_fast': sma_fast_daily,
+                'sma_slow': sma_slow_daily,
+                'rsi': rsi_daily,
+                'signal': signal,
+                'signal_strength': signal_strength,
+                'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
+                'multi_timeframe': True
+            }
+            
+            # Add hourly data to result if available
+            if hourly_indicators is not None:
+                analysis_result['hourly_rsi'] = hourly_indicators['RSI']
+                analysis_result['hourly_signal'] = hourly_signal
+            
+            if ai_insight and self.use_ai_for_ticker_analysis:
+                analysis_result['ai_insight'] = ai_insight
+            
+            self.mark_recent_research(symbol)
+            return analysis_result
+            
+        except Exception as e:
+            logging.debug(f"Multi-timeframe analysis failed for {symbol}: {e}")
             return None
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1865,7 +2034,11 @@ message(
                     logging.debug(f"⏭️  {symbol}: Skipping research - in research cooldown period (safety check)")
                     continue
                 
-                analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
+                # Use multi-timeframe analysis if enabled
+                if self.enable_multi_timeframe:
+                    analysis = self.analyze_multi_timeframe(symbol, use_ai=ai_enabled)
+                else:
+                    analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
                 if not analysis:
                     # Check why - no data vs no signal
                     df = self.get_market_data(symbol)
@@ -1938,7 +2111,15 @@ message(
                         failed_criteria = [f"RSI not overbought ({rsi:.1f} ≤ {self.rsi_sell_threshold})"]
                     
                     failure_msg = ", ".join(failed_criteria) if failed_criteria else f"No clear trend (RSI: {rsi:.1f})"
-                    print(f"   ⏭️  {symbol}: ⊗ {failure_msg}")
+                    
+                    # Add multi-timeframe info if enabled
+                    mt_msg = ""
+                    if analysis.get('multi_timeframe') and analysis.get('hourly_signal'):
+                        mt_msg = f" (Hourly: {analysis['hourly_signal']}, RSI: {analysis.get('hourly_rsi', 'N/A'):.1f})"
+                    elif analysis.get('multi_timeframe') and not analysis.get('hourly_signal'):
+                        mt_msg = " (Hourly: No signal)"
+                    
+                    print(f"   ⏭️  {symbol}: ⊗ {failure_msg}{mt_msg}")
                 
                 time.sleep(0.1)  # API rate limiting
                 
@@ -2213,8 +2394,11 @@ message(
                 
                 logging.info(f"🔍 Analyzing position: {symbol} ({current_qty} shares, {unrealized_plpc:+.1f}%)")
                 
-                # Run technical analysis on the held position
-                analysis = self.analyze_symbol(symbol, use_ai=use_ai)
+                # Run technical analysis on the held position (use multi-timeframe if enabled)
+                if self.enable_multi_timeframe:
+                    analysis = self.analyze_multi_timeframe(symbol, use_ai=use_ai)
+                else:
+                    analysis = self.analyze_symbol(symbol, use_ai=use_ai)
                 if not analysis:
                     continue
                 
@@ -2834,6 +3018,12 @@ def main():
         parser.add_argument('--no-ai', action='store_true',
                           help='Disable ALL AI features (pure technical analysis mode)')
         
+        # Multi-timeframe analysis
+        parser.add_argument('--multi-timeframe', action='store_true', default=True,
+                          help='Use multi-timeframe analysis (daily + hourly)')
+        parser.add_argument('--no-multi-timeframe', action='store_true', default=False,
+                          help='Disable multi-timeframe analysis (use daily only)')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -2925,6 +3115,13 @@ def main():
             print(f"📊 Daily Loss Limit: {'Enabled' if bot.enable_daily_loss_limit else 'Disabled'}")
             if bot.enable_daily_loss_limit:
                 print(f"   Max Daily Loss: {args.daily_loss_limit}%")
+        
+        # Multi-timeframe analysis
+        if hasattr(args, 'no_multi_timeframe') and args.no_multi_timeframe:
+            bot.enable_multi_timeframe = False
+        
+        if bot.enable_multi_timeframe:
+            print(f"📊 Multi-Timeframe: Enabled (Daily 70% + Hourly 30%)")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
