@@ -989,74 +989,59 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             signal_strength = "WEAK"
             ai_insight = None
             
-            # Traditional technical analysis
-            rsi_signal = None
-            sma_signal = None
-            macd_signal = None
+            # RSI-based score (contributes to total)
+            rsi_score = 0
+            # RSI Score: 0 (overbought) to 25 (oversold) - always applies
+            if rsi < 30:
+                rsi_score = 25 * (1 - rsi / 30)  # Max 25 at RSI 0
+            elif rsi > 70:
+                rsi_score = -25 * ((rsi - 70) / 30)  # Min -25 at RSI 100
             
-            # RSI-based signal
-            if sma_fast > sma_slow and rsi < self.rsi_buy_threshold:
-                rsi_signal = "BUY"
-            elif sma_fast < sma_slow and rsi > self.rsi_sell_threshold:
-                rsi_signal = "SELL"
-            
-            # SMA crossover signal
+            # SMA Score: based on how far fast is above/below slow
+            sma_score = 0
             if sma_fast > sma_slow:
-                sma_signal = "BUY"
+                sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
+                sma_score = min(25, sma_pct * 5)  # Max 25 at 5% separation
             elif sma_fast < sma_slow:
-                sma_signal = "SELL"
-            
-            # MACD signal (MACD crosses above signal = bullish, below = bearish)
-            macd = latest.get('MACD', 0)
-            macd_signal_line = latest.get('MACD_signal', 0)
-            if pd.notna(macd) and pd.notna(macd_signal_line):
-                if macd > macd_signal_line:
-                    macd_signal = "BUY"
-                elif macd < macd_signal_line:
-                    macd_signal = "SELL"
-            
-            # Bollinger Band mean-reversion signal
-            # Buy when price touches lower band with RSI < 35, sell at middle band
-            bb_lower = latest.get('BB_lower', 0)
-            bb_middle = latest.get('BB_middle', 0)
-            bb_upper = latest.get('BB_upper', 0)
-            bb_signal = None
-            
-            if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0:
-                # Price near lower band + oversold RSI = buy signal
-                if price <= bb_lower * 1.02 and rsi < 35:  # Within 2% of lower band
-                    bb_signal = "BUY"
-                # Price near upper band + overbought RSI = sell signal  
-                elif price >= bb_upper * 0.98 and rsi > 65:  # Within 2% of upper band
-                    bb_signal = "SELL"
-                # Price at middle band = take profit signal for long positions
-                elif price >= bb_middle and sma_fast > sma_slow:
-                    bb_signal = "SELL"  # Mean reversion complete
-            
-            # Combine signals - need at least 2 of 4 aligned
-            signals = [rsi_signal, sma_signal, macd_signal, bb_signal]
-            signals_clean = [s for s in signals if s is not None]
-            buy_count = signals_clean.count("BUY")
-            sell_count = signals_clean.count("SELL")
-            
-            # Require at least 2 signals to agree (or 1 strong signal)
-            if buy_count >= 2:
-                signal = "BUY"
-                signal_strength = "STRONG" if buy_count >= 3 else "MEDIUM"
-            elif sell_count >= 2:
-                signal = "SELL"
-                signal_strength = "STRONG" if sell_count >= 3 else "MEDIUM"
+                sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
+                sma_score = -min(25, sma_pct * 5)
             else:
-                # No consensus - check RSI alone for strong signals
-                if rsi < 25:
-                    signal = "BUY"
-                    signal_strength = "STRONG_RSI"
-                elif rsi > 75:
-                    signal = "SELL"
-                    signal_strength = "STRONG_RSI"
+                sma_score = 0
+            
+            # MACD Score: based on histogram value normalized
+            macd_hist = latest.get('MACD_histogram', 0)
+            if pd.notna(macd_hist):
+                macd_score = max(-25, min(25, macd_hist * 100))  # Scale by histogram
+            else:
+                macd_score = 0
+            
+            # Bollinger Band Score: based on position within bands
+            if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0:
+                bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+                # Lower band = bullish (25), Upper = bearish (-25)
+                bb_score = 25 - (bb_position * 50)
+            
+            # Total Score (0-100 scale, 50 = neutral)
+            total_score = 50 + rsi_score + sma_score + macd_score + bb_score
+            total_score = max(0, min(100, total_score))
+            
+            # Determine signal based on score
+            # BUY threshold: 65+, SELL threshold: 35-
+            if total_score >= 65:
+                signal = "BUY"
+                if total_score >= 80:
+                    signal_strength = "STRONG"
                 else:
-                    signal = "HOLD"
-                    signal_strength = "WEAK"
+                    signal_strength = "MEDIUM"
+            elif total_score <= 35:
+                signal = "SELL"
+                if total_score <= 20:
+                    signal_strength = "STRONG"
+                else:
+                    signal_strength = "MEDIUM"
+            else:
+                signal = "HOLD"
+                signal_strength = "WEAK"
             
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
@@ -1100,6 +1085,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'bb_lower': latest.get('BB_lower', 0),
                 'signal': signal,
                 'signal_strength': signal_strength,
+                'total_score': total_score,
+                'rsi_score': rsi_score,
+                'sma_score': sma_score,
+                'macd_score': macd_score,
+                'bb_score': bb_score,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
             }
             
@@ -2238,17 +2228,19 @@ message(
                         macd_sig = latest.get('MACD_signal', 0)
                         if pd.isna(macd): macd = 'N/A'
                         if pd.isna(macd_sig): macd_sig = 'N/A'
-                        print(f"   ⏭️  {symbol}: ⚪ No signal (RSI: {rsi:.1f}, MACD: {macd}/{macd_sig})")
+                        total = analysis.get('total_score', 50) if analysis else 50
+                        print(f"   ⏭️  {symbol}: ⚪ No signal (Score: {total:.0f}/100, RSI: {rsi:.1f})")
                         no_trade_reasons['no_signal'] += 1
                     continue
                     
-                if analysis['signal']:
+                if analysis and analysis['signal']:
                     opportunities += 1
                     
-                    # Check if we should skip due to weak/conflicted signals
+                    # Check if we should skip due to weak signals
                     if analysis['signal_strength'] == "WEAK":
                         no_trade_reasons['weak_signal'] += 1
-                        print(f"   ⏭️  {symbol}: ⚠️  {analysis['signal']} signal too weak (RSI: {analysis['rsi']:.1f}, needs < 25 or > 75)")
+                        score = analysis.get('total_score', 50)
+                        print(f"   ⏭️  {symbol}: ⚠️  {analysis['signal']} signal too weak (Score: {score:.0f}/100, needs 65+ or 35-)")
                         continue
                     elif analysis['signal_strength'] == "CONFLICTED":
                         no_trade_reasons['conflicted_signal'] += 1
