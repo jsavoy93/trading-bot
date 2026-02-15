@@ -877,6 +877,65 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return symbol
         return None
     
+    def scan_catalysts(self, symbol: str) -> dict:
+        """
+        Scan for trading catalysts in a stock.
+        
+        Returns dict with:
+        - has_volume_surge: bool (>2x avg volume)
+        - is_52_week_high: bool
+        - has_gap_up: bool (gap > 1% up from previous close)
+        - catalyst_score: int (0-25, boosts signal if positive)
+        """
+        try:
+            df = self.get_market_data(symbol)
+            if df is None or len(df) < 30:
+                return {'has_volume_surge': False, 'is_52_week_high': False, 
+                        'has_gap_up': False, 'catalyst_score': 0, 'catalysts': []}
+            
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) >= 2 else None
+            
+            catalysts = []
+            catalyst_score = 0
+            
+            # 1. Volume surge (>2x 20-day average)
+            avg_volume = df['volume'].tail(20).mean()
+            if latest['volume'] > avg_volume * 2:
+                catalysts.append('volume_surge')
+                catalyst_score += 8
+            
+            # 2. 52-week high (within 1% of 52-week high)
+            high_52w = df['high'].tail(252).max() if len(df) >= 252 else df['high'].max()
+            if latest['close'] >= high_52w * 0.99:
+                catalysts.append('52_week_high')
+                catalyst_score += 10
+            
+            # 3. Gap up (>1% gap from previous close)
+            if prev is not None:
+                gap_pct = ((latest['open'] - prev['close']) / prev['close']) * 100
+                if gap_pct > 1:
+                    catalysts.append('gap_up')
+                    catalyst_score += 7
+            
+            # Cap catalyst score at 25
+            catalyst_score = min(25, catalyst_score)
+            
+            return {
+                'has_volume_surge': 'volume_surge' in catalysts,
+                'is_52_week_high': '52_week_high' in catalysts,
+                'has_gap_up': 'gap_up' in catalysts,
+                'catalyst_score': catalyst_score,
+                'catalysts': catalysts,
+                'volume_ratio': latest['volume'] / avg_volume if avg_volume > 0 else 1,
+                'distance_from_52w_high': ((high_52w - latest['close']) / high_52w * 100) if high_52w > 0 else 0
+            }
+            
+        except Exception as e:
+            logging.debug(f"Catalyst scan failed for {symbol}: {e}")
+            return {'has_volume_surge': False, 'is_52_week_high': False,
+                    'has_gap_up': False, 'catalyst_score': 0, 'catalysts': []}
+    
     def get_hourly_market_data(self, symbol: str, lookback_hours: int = 168) -> Optional[pd.DataFrame]:
         """Fetch hourly market data for multi-timeframe analysis"""
         try:
@@ -1297,8 +1356,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     # Boost momentum signals for high volatility
                     sma_score *= 1.3  # Stronger weight on SMA/momentum for high-vol
             
+            # Catalyst scanner - boost scores for stocks with catalysts
+            catalyst_data = self.scan_catalysts(symbol)
+            catalyst_score = catalyst_data.get('catalyst_score', 0)
+            
             # Total Score (0-100 scale, 50 = neutral)
-            total_score = 50 + rsi_score + sma_score + macd_score + bb_score
+            total_score = 50 + rsi_score + sma_score + macd_score + bb_score + catalyst_score
             total_score = max(0, min(100, total_score))
             
             # Determine signal based on score
@@ -1390,6 +1453,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'bb_score': bb_score,
                 'volatility_tier': volatility_tier,
                 'atr_pct': atr_pct if pd.notna(atr_pct) else 0,
+                'catalyst_score': catalyst_score,
+                'catalysts': catalyst_data.get('catalysts', []),
                 'earnings_warning': earnings_warning,
                 'sp_warning': sp_warning,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
@@ -2627,6 +2692,21 @@ message(
                     logging.info(f"   📊 Signal: {analysis['signal']} ({analysis['signal_strength']})")
                     logging.info(f"   💰 Price: ${analysis['price']:.2f}")
                     logging.info(f"   📈 RSI: {analysis['rsi']:.1f} | SMA Fast: ${analysis['sma_fast']:.2f} | SMA Slow: ${analysis['sma_slow']:.2f}")
+                    
+                    # Log new Phase 2 metrics
+                    vol_tier = analysis.get('volatility_tier', 'mid')
+                    atr = analysis.get('atr_pct', 0)
+                    cat_score = analysis.get('catalyst_score', 0)
+                    catalysts = analysis.get('catalysts', [])
+                    cat_str = f" ({', '.join(catalysts)})" if catalysts else ""
+                    logging.info(f"   🎯 Vol: {vol_tier} (ATR: {atr:.1f}%) | 💥 Catalyst: +{cat_score}{cat_str}")
+                    
+                    # Log liquidity/sector warnings if present
+                    if analysis.get('liquidity_warning'):
+                        logging.info(f"   💧 {analysis['liquidity_warning']}")
+                    if analysis.get('sector_warning'):
+                        logging.info(f"   🏛️  {analysis['sector_warning']}")
+                    
                     if analysis.get('ai_insight'):
                         logging.info(f"   🧠 AI Insight: {analysis['ai_insight']}")
                     
@@ -2648,7 +2728,12 @@ message(
                     bb_pos = 50
                     vwap_dist = analysis.get('vwap_distance', 0)
                     if pd.isna(vwap_dist): vwap_dist = 0
-                    logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100")
+                    
+                    # Add new Phase 2 metrics to log
+                    vol_tier = analysis.get('volatility_tier', 'mid')
+                    atr = analysis.get('atr_pct', 0)
+                    cat_score = analysis.get('catalyst_score', 0)
+                    logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | Vol:{vol_tier}({atr:.1f}%) Cat:+{cat_score}")
                 else:
                     # No signal detected - show which criteria failed
                     no_trade_reasons['no_signal'] += 1
