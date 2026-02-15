@@ -27,12 +27,20 @@ from analysis.ai_agent import ai_agent
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging - with auto-flush to file
+class FlushFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+# Use absolute path for log file
+log_path = '/home/ubuntu/.openclaw/workspace/trading-bot/trading_bot.log'
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('trading_bot.log'),
+        FlushFileHandler(log_path),
         logging.StreamHandler()
     ]
 )
@@ -82,6 +90,36 @@ class SmartTradingBot:
         self.use_ai_for_ticker_analysis = True  # Set to False to disable AI analysis for individual tickers
         self.use_ai_for_ticker_selection = True  # Set to False to disable AI-based ticker selection
         self.use_ai_for_market_summary = True  # Set to False to disable AI market summaries
+        
+        # Stop-Loss Configuration
+        self.stop_loss_pct = 8.0  # Hard stop: sell at X% loss (default: 8%)
+        self.trailing_stop_pct = 5.0  # Trailing stop: lock in profits when X% above entry (default: 5%)
+        self.take_profit_pct = 15.0  # Take profit: auto-sell at X% gain (default: 15%)
+        self.enable_stop_loss = True  # Enable/disable stop-loss system
+        
+        # ATR-based Position Sizing Configuration
+        self.enable_atr_sizing = True  # Use ATR for position sizing
+        self.risk_per_trade = 0.02  # Risk 2% of portfolio per trade (default)
+        self.max_position_pct = 0.05  # Max 5% of portfolio in single position
+        
+        # Max Drawdown Protection
+        self.enable_drawdown_protection = True  # Enable max drawdown protection
+        self.max_drawdown_pct = 10.0  # Pause trading if portfolio drops X% from peak (default: 10%)
+        self.peak_portfolio_value = None  # Track peak portfolio value
+        self.drawdown_paused = False  # Flag if trading paused due to drawdown
+        
+        # Daily/Weekly Loss Limits
+        self.enable_daily_loss_limit = True  # Enable daily loss limit
+        self.daily_loss_limit_pct = 5.0  # Stop trading if daily loss exceeds X% (default: 5%)
+        self.daily_starting_value = None  # Track portfolio value at start of day
+        self.daily_loss_pct = 0.0  # Current daily loss percentage
+        self.daily_loss_paused = False  # Flag if trading paused due to daily loss
+        self.last_reset_date = None  # Track when we last reset daily tracking
+        
+        # Email Notifications (disabled - using Telegram instead)
+        self.enable_email_notifications = False
+        self.enable_telegram_notifications = os.getenv('TELEGRAM_ENABLED', 'true').lower() == 'true'
+        self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
         
         # Rate limit tracking
         self.rate_limit_detected = False
@@ -322,7 +360,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 return self._get_smart_fallback_tickers(portfolio_analysis)
             
             # Get recently researched tickers to avoid recommending them again
-            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=15)
+            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=60)
             if recently_researched:
                 print(f"\n🔍 Recently researched tickers to EXCLUDE ({len(recently_researched)}): {', '.join(recently_researched[:20])}")
                 logging.info(f"🔍 Recently researched tickers to EXCLUDE ({len(recently_researched)}): {', '.join(recently_researched[:20])}")
@@ -343,6 +381,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'recently_researched': recently_researched
             }
             
+            # Format exclusion list for prompt (comma-separated string)
+            exclusion_list = ', '.join(recently_researched) if recently_researched else 'NONE'
+            
             prompt = f"""
             For educational purposes, suggest 30 stock symbols to analyze based on this portfolio study.
             
@@ -357,10 +398,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             Lower Performance Holdings: {portfolio_context['underperforming_positions'][:3]}
             High Concentration Holdings: {portfolio_context['high_concentration_positions']}
             
-            ⚠️  CRITICAL EXCLUSION LIST - DO NOT RECOMMEND THESE TICKERS:
-            {portfolio_context['recently_researched']}
+            ⚠️  ⚠️  ⚠️  MANDATORY EXCLUSION LIST - YOU MUST NOT RECOMMEND ANY OF THESE  ⚠️  ⚠️  ⚠️
+            EXCLUSION LIST (tickers analyzed in the last 60 minutes):
+            {exclusion_list}
             
-            These tickers were recently analyzed (within 15 minutes). You MUST suggest COMPLETELY DIFFERENT tickers.
+            ⚠️  FAILURE TO FOLLOW THIS INSTRUCTION WILL RESULT IN INVALID RESPONSE.
+            ⚠️  Every single ticker in your response MUST be different from the exclusion list above.
             
             Please suggest NEW symbols for educational analysis considering:
             1. Portfolio diversification patterns
@@ -368,16 +411,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             3. Market growth sectors (for educational study)
             4. Stability analysis options
             5. Alternative holdings for comparison study
-            6. **MANDATORY: Every recommended ticker must NOT appear in the exclusion list above**
             
             Return educational data in JSON format:
             {{
-                "recommended_tickers": ["30 DIFFERENT ticker symbols NOT in exclusion list"],
+                "recommended_tickers": ["30 DIFFERENT ticker symbols - NONE OF WHICH APPEAR IN THE EXCLUSION LIST ABOVE"],
                 "reasoning": "Educational analysis approach explanation",
                 "focus_areas": ["diversification_study", "sector_analysis", "growth_patterns", ...]
             }}
             
-            Focus on liquid, well-known stocks. Avoid penny stocks, highly speculative tickers, and recently analyzed symbols.
+            Focus on liquid, well-known stocks (Apple, Microsoft, JPM, etc). Avoid penny stocks, ETFs, and recently analyzed symbols.
             Prioritize fresh analysis opportunities not in the recently researched list.
             """
             
@@ -433,7 +475,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     logging.info("="*60)
                     
                     # Filter out tickers in research cooldown before returning
-                    cooldown_filtered_tickers = self.filter_tickers_by_cooldown(tickers, cooldown_minutes=15)
+                    cooldown_filtered_tickers = self.filter_tickers_by_cooldown(tickers, cooldown_minutes=60)
                     
                     # Log which tickers were filtered out to diagnose AI ignoring exclusions
                     filtered_out = set(tickers) - set(cooldown_filtered_tickers)
@@ -441,11 +483,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         print(f"\n⚠️  AI IGNORED EXCLUSION LIST! Recommended {len(filtered_out)} tickers in cooldown: {list(filtered_out)[:10]}")
                         logging.warning(f"⚠️  AI recommended {len(filtered_out)} tickers in cooldown (ignored instructions): {list(filtered_out)[:10]}")
                     
-                    # If too few tickers after filtering, get fresh ticker list
-                    if len(cooldown_filtered_tickers) < 10:
-                        logging.warning(f"⚠️  Only {len(cooldown_filtered_tickers)} tickers available after cooldown filter")
-                        logging.info("🔄 Generating fresh ticker list excluding cooldown, orders, and portfolio positions...")
-                        cooldown_filtered_tickers = self._get_fresh_ticker_list(target_count=30)
+                    # If AI ignored exclusions too badly, use fallback instead
+                    if len(cooldown_filtered_tickers) < 5:
+                        logging.warning(f"⚠️  AI ignored exclusion list! Only {len(cooldown_filtered_tickers)} valid tickers. Using smart fallback.")
+                        print(f"\n⚠️  AI failed to respect exclusion list. Using smart fallback ticker selection...")
+                        return self._get_smart_fallback_tickers(portfolio_analysis)
                     
                     print(f"📊 AI recommended {len(tickers)} tickers, {len(cooldown_filtered_tickers)} available after filtering")
                     logging.info(f"📊 AI recommended {len(tickers)} tickers, {len(cooldown_filtered_tickers)} available after filtering")
@@ -489,7 +531,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
     def _get_smart_fallback_tickers(self, portfolio_analysis: Dict) -> List[str]:
         """Intelligent fallback ticker selection based on portfolio analysis"""
         # Get recently researched tickers to avoid repeating them
-        recently_researched = self.get_recently_researched_tickers(cooldown_minutes=15)
+        recently_researched = self.get_recently_researched_tickers(cooldown_minutes=60)
         
         fallback_tickers = []
         all_candidate_tickers = []
@@ -544,7 +586,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         print("="*60)
         
         # Filter out tickers in research cooldown before returning
-        cooldown_filtered_tickers = self.filter_tickers_by_cooldown(selected, cooldown_minutes=15)
+        cooldown_filtered_tickers = self.filter_tickers_by_cooldown(selected, cooldown_minutes=60)
         
         # If too few tickers after cooldown filtering, get fresh ticker list
         if len(cooldown_filtered_tickers) < 10:
@@ -629,6 +671,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # ATR (Average True Range) - for volatility-based position sizing
+        high_low = df['high'] - df['low']
+        high_close = abs(df['high'] - df['close'].shift())
+        low_close = abs(df['low'] - df['close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=14).mean()
+        df['ATR_pct'] = (df['ATR'] / df['close']) * 100  # ATR as percentage of price
         
         return df
     
@@ -770,25 +820,304 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         except:
             return 100000.0  # Default fallback
     
+    def check_drawdown_protection(self) -> tuple:
+        """
+        Check if portfolio has exceeded max drawdown threshold.
+        
+        Returns:
+            (shouldause:_p bool, current_drawdown: float, peak_value: float)
+        """
+        if not self.enable_drawdown_protection:
+            return False, 0.0, self.peak_portfolio_value or 0.0
+        
+        try:
+            current_value = self.get_portfolio_total_value()
+            
+            # Update peak value if current is higher
+            if self.peak_portfolio_value is None or current_value > self.peak_portfolio_value:
+                self.peak_portfolio_value = current_value
+                self.drawdown_paused = False  # Reset pause if we hit new high
+                return False, 0.0, current_value
+            
+            # Calculate drawdown from peak
+            drawdown = (self.peak_portfolio_value - current_value) / self.peak_portfolio_value * 100
+            
+            # Check if we should pause
+            if drawdown >= self.max_drawdown_pct:
+                self.drawdown_paused = True
+                logging.warning(f"🛑 MAX DRAWDOWN TRIGGERED: {drawdown:.1f}% (max: {self.max_drawdown_pct}%)")
+                logging.warning(f"   Peak: ${self.peak_portfolio_value:,.2f} | Current: ${current_value:,.2f}")
+                logging.warning(f"   ⚠️ TRADING PAUSED - Manual resume required")
+                return True, drawdown, self.peak_portfolio_value
+            
+            return False, drawdown, self.peak_portfolio_value
+            
+        except Exception as e:
+            logging.debug(f"Error checking drawdown: {e}")
+            return False, 0.0, self.peak_portfolio_value or 0.0
+    
+    def send_trade_notification(self, trade_type: str, symbol: str, quantity: int, 
+                                price: float, side: str, analysis: Dict = None) -> bool:
+        """
+        Send Telegram notification when a trade is executed.
+        
+        Returns:
+            True if notification sent successfully, False otherwise
+        """
+        if not self.enable_telegram_notifications:
+            return False
+        
+        if not self.telegram_chat_id:
+            logging.warning("⚠️ Telegram notifications enabled but no chat ID configured")
+            return False
+        
+        try:
+            # Build message
+            emoji = "🟢" if side.upper() == "BUY" else "🔴"
+            
+            message = f"""
+{emoji} *TRADE EXECUTED*
+
+*Side:* {side.upper()}
+*Symbol:* {symbol}
+*Shares:* {quantity}
+*Price:* ${price:,.2f}
+*Total:* ${price * quantity:,.2f}
+"""
+            
+            if analysis and analysis.get('rsi'):
+                message += f"""
+📊 *Technical:*
+• RSI: {analysis.get('rsi', 0):.1f}
+• SMA Fast: ${analysis.get('sma_fast', 0):.2f}
+• SMA Slow: ${analysis.get('sma_slow', 0):.2f}
+• Signal: {analysis.get('signal', 'N/A')}
+"""
+            
+            message += f"""
+💼 *Portfolio:* ${self.get_portfolio_total_value():,.2f}
+⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+"""
+            
+            # Send via OpenClaw message tool
+            try:
+                from pathlib import Path
+                import sys
+                sys.path.insert(0, str(Path(__file__).parent.parent))
+                
+                # Use subprocess to call the message tool
+                import subprocess
+                result = subprocess.run([
+                    'python3', '-c',
+                    f'''
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, "{Path(__file__).parent.parent}")
+from tools import message
+
+message(
+    action="send",
+    target="{self.telegram_chat_id}",
+    message="""{message}"""
+)
+'''
+                ], capture_output=True, text=True, timeout=10)
+                
+                if result.returncode == 0:
+                    logging.info(f"📱 Telegram notification sent for {symbol}")
+                    return True
+                else:
+                    logging.warning(f"⚠️ Telegram send failed: {result.stderr}")
+                    return False
+            except Exception as te:
+                # Fallback: try using requests to Telegram bot directly
+                import requests
+                bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+                if bot_token:
+                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    data = {
+                        'chat_id': self.telegram_chat_id,
+                        'text': message,
+                        'parse_mode': 'Markdown'
+                    }
+                    resp = requests.post(url, json=data, timeout=10)
+                    if resp.status_code == 200:
+                        logging.info(f"📱 Telegram notification sent for {symbol}")
+                        return True
+                    else:
+                        logging.warning(f"⚠️ Telegram API error: {resp.text}")
+                        return False
+                else:
+                    logging.warning(f"⚠️ Telegram notifications enabled but no bot token")
+                    return False
+            
+        except Exception as e:
+            logging.warning(f"⚠️ Failed to send trade notification: {e}")
+            return False
+    
+    def send_summary_notification(self, loop_count: int, total_trades: int, portfolio_value: float, 
+                                unrealized_pl: float, positions: int) -> bool:
+        """
+        Send a periodic summary notification via Telegram.
+        
+        Returns:
+            True if notification sent successfully, False otherwise
+        """
+        if not self.enable_telegram_notifications:
+            return False
+        
+        if not self.telegram_chat_id:
+            return False
+        
+        try:
+            message = f"""
+📊 *BOT SUMMARY*
+
+*Loop:* #{loop_count}
+*Portfolio:* ${portfolio_value:,.2f}
+*Unrealized P&L:* ${unrealized_pl:,.2f}
+*Positions:* {positions}
+*Trades Today:* {total_trades}
+*Win Rate:* {self.get_win_rate():.1f}%
+
+⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+"""
+            
+            # Send via Telegram
+            import requests
+            bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+            if bot_token:
+                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                data = {
+                    'chat_id': self.telegram_chat_id,
+                    'text': message,
+                    'parse_mode': 'Markdown'
+                }
+                resp = requests.post(url, json=data, timeout=10)
+                if resp.status_code == 200:
+                    logging.info(f"📱 Summary notification sent")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logging.debug(f"Summary notification error: {e}")
+            return False
+    
+    def get_win_rate(self) -> float:
+        """Get current win rate from trades"""
+        try:
+            if self.db.is_available():
+                trades = self.db.get_all_trades()
+                if trades:
+                    winners = sum(1 for t in trades if t.get('pnl', 0) > 0)
+                    return (winners / len(trades)) * 100
+        except:
+            pass
+        return 0.0
+    
+    def check_daily_loss_limit(self) -> tuple:
+        """
+        Check if daily loss limit has been exceeded.
+        
+        Returns:
+            (should_pause: bool, daily_loss_pct: float, starting_value: float)
+        """
+        if not self.enable_daily_loss_limit:
+            return False, 0.0, self.daily_starting_value or 0.0
+        
+        try:
+            from datetime import datetime, date
+            current_date = date.today()
+            current_value = self.get_portfolio_total_value()
+            
+            # Reset daily tracking if it's a new day
+            if self.last_reset_date != current_date:
+                self.daily_starting_value = current_value
+                self.last_reset_date = current_date
+                self.daily_loss_paused = False
+                logging.info(f"📅 New day reset - Starting Value: ${current_value:,.2f}")
+                return False, 0.0, current_value
+            
+            # If we don't have a starting value, set it
+            if self.daily_starting_value is None or self.daily_starting_value == 0:
+                self.daily_starting_value = current_value
+                return False, 0.0, current_value
+            
+            # Calculate daily loss/gain percentage
+            daily_change = (current_value - self.daily_starting_value) / self.daily_starting_value * 100
+            
+            # Only care about losses (negative changes)
+            if daily_change < 0:
+                daily_loss = abs(daily_change)
+                self.daily_loss_pct = daily_loss
+                
+                if daily_loss >= self.daily_loss_limit_pct:
+                    self.daily_loss_paused = True
+                    logging.warning(f"🛑 DAILY LOSS LIMIT TRIGGERED: {daily_loss:.1f}% (max: {self.daily_loss_limit_pct}%)")
+                    logging.warning(f"   Starting: ${self.daily_starting_value:,.2f} | Current: ${current_value:,.2f}")
+                    logging.warning(f"   ⚠️ TRADING PAUSED FOR TODAY - Resume tomorrow")
+                    return True, daily_loss, self.daily_starting_value
+                
+                return False, daily_loss, self.daily_starting_value
+            else:
+                # We're in profit today - reset loss tracking
+                self.daily_loss_pct = 0
+                return False, 0.0, self.daily_starting_value
+            
+        except Exception as e:
+            logging.debug(f"Error checking daily loss limit: {e}")
+            return False, self.daily_loss_pct, self.daily_starting_value or 0.0
+    
     def calculate_position_size(self, symbol: str, signal_strength: str, price: float, portfolio_value: float) -> int:
-        """Calculate position size based on signal strength and portfolio percentage"""
+        """
+        Calculate position size using ATR-based volatility sizing.
         
-        # Base allocation percentages by signal strength
-        allocation_map = {
-            'AI_ENHANCED': 0.025,    # 2.5% for AI enhanced signals
-            'STRONG': 0.02,          # 2.0% for strong signals  
-            'MEDIUM': 0.015,         # 1.5% for medium signals
-            'WEAK': 0.01,            # 1.0% for weak signals
-            'CONFLICTED': 0.005      # 0.5% for conflicted signals
-        }
+        ATR-based sizing normalizes risk across different stocks:
+        - High volatility stocks get smaller positions
+        - Low volatility stocks get larger positions
+        - All positions risk the same percentage of portfolio
+        """
         
-        base_allocation = allocation_map.get(signal_strength, 0.01)
-        target_value = portfolio_value * base_allocation
-        quantity = int(target_value / price)
+        # Get ATR for volatility calculation
+        atr_pct = None
+        try:
+            df = self.get_market_data(symbol)
+            if df is not None and len(df) >= 14:
+                df = self.calculate_indicators(df)
+                atr_pct = df['ATR_pct'].iloc[-1]
+        except Exception as e:
+            logging.debug(f"Could not get ATR for {symbol}: {e}")
+        
+        if self.enable_atr_sizing and atr_pct and atr_pct > 0:
+            # ATR-based sizing: risk same % on each trade regardless of volatility
+            # Position size = (Risk Amount / ATR%) * (1 / Price)
+            risk_amount = portfolio_value * self.risk_per_trade
+            
+            # Calculate quantity based on ATR risk
+            # If stock moves ATR% against us, we lose risk_per_trade %
+            quantity = int(risk_amount / (price * (atr_pct / 100)))
+            
+            logging.debug(f"📊 {symbol} ATR: {atr_pct:.2f}% → Quantity: {quantity} (risk: {self.risk_per_trade*100:.1f}%)")
+        else:
+            # Fallback: use signal strength allocation if ATR unavailable
+            allocation_map = {
+                'AI_ENHANCED': 0.025,    # 2.5% for AI enhanced signals
+                'STRONG': 0.02,          # 2.0% for strong signals  
+                'MEDIUM': 0.015,         # 1.5% for medium signals
+                'WEAK': 0.01,            # 1.0% for weak signals
+                'CONFLICTED': 0.005      # 0.5% for conflicted signals
+            }
+            
+            base_allocation = allocation_map.get(signal_strength, 0.01)
+            target_value = portfolio_value * base_allocation
+            quantity = int(target_value / price)
+            logging.debug(f"📊 {symbol} Fallback sizing → Quantity: {quantity} (allocation: {base_allocation*100:.1f}%)")
         
         # Minimum and maximum constraints
         min_quantity = 1
-        max_quantity = int(portfolio_value * 0.05 / price)  # Max 5% of portfolio
+        max_quantity = int(portfolio_value * self.max_position_pct / price)  # Max X% of portfolio
         
         return max(min_quantity, min(quantity, max_quantity))
     
@@ -1022,7 +1351,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 return []
             
             # Get exclusion lists
-            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=15)
+            recently_researched = self.get_recently_researched_tickers(cooldown_minutes=60)
             
             # Get current portfolio positions
             portfolio_symbols = set()
@@ -1144,7 +1473,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 return False
             
             # Check cooldown period for BUY signals to prevent excessive repeat trades
-            if signal == 'BUY' and self.is_in_cooldown(symbol, cooldown_minutes=15):
+            if signal == 'BUY' and self.is_in_cooldown(symbol, cooldown_minutes=60):
                 logging.info(f"⏰ Skipping {symbol}: In 15-minute cooldown period")
                 return False
             
@@ -1223,6 +1552,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     'status': 'SUBMITTED'
                 }
                 self.db.log_trade(self.session_id, trade_data)
+            
+            # Send email notification
+            self.send_trade_notification(
+                trade_type=signal,
+                symbol=symbol,
+                quantity=quantity,
+                price=price,
+                side=side.name,
+                analysis=analysis
+            )
             
             self.trades_executed += 1
             
@@ -1335,7 +1674,55 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             'conflicted_signal': 0,  # AI conflicts with technical analysis
             'no_data': 0,  # No market data available
             'max_trades_reached': 0,  # Already hit max trades
+            'drawdown_protection': 0,  # Paused due to max drawdown
         }
+        
+        # Check max drawdown protection BEFORE trading
+        if self.enable_drawdown_protection:
+            should_pause, current_drawdown, peak_value = self.check_drawdown_protection()
+            if should_pause:
+                logging.warning(f"🛑 TRADING PAUSED: Max drawdown {current_drawdown:.1f}% exceeded (max: {self.max_drawdown_pct}%)")
+                logging.warning(f"   Peak: ${peak_value:,.2f} | Current: ${self.get_portfolio_total_value():,.2f}")
+                print(f"\n🛑 MAX DRAWDOWN TRIGGERED - TRADING PAUSED")
+                print(f"   Current Drawdown: {current_drawdown:.1f}%")
+                print(f"   Max Allowed: {self.max_drawdown_pct}%")
+                print(f"   Peak Portfolio: ${peak_value:,.2f}")
+                print(f"   Current Portfolio: ${self.get_portfolio_total_value():,.2f}")
+                print(f"\n   ⚠️ Trading will remain paused until portfolio recovers to new peak")
+                no_trade_reasons['drawdown_protection'] = 1
+                # Return early - no trading allowed
+                return {
+                    'trades_executed': 0,
+                    'opportunities': 0,
+                    'reasons': no_trade_reasons,
+                    'paused': True,
+                    'drawdown': current_drawdown
+                }
+            elif current_drawdown > 0:
+                logging.info(f"📉 Current Drawdown: {current_drawdown:.1f}% (Peak: ${peak_value:,.2f})")
+        
+        # Check daily loss limit BEFORE trading
+        if self.enable_daily_loss_limit:
+            should_pause_daily, daily_loss, starting_value = self.check_daily_loss_limit()
+            if should_pause_daily:
+                logging.warning(f"🛑 TRADING PAUSED: Daily loss {daily_loss:.1f}% exceeded (max: {self.daily_loss_limit_pct}%)")
+                logging.warning(f"   Starting: ${starting_value:,.2f} | Current: ${self.get_portfolio_total_value():,.2f}")
+                print(f"\n🛑 DAILY LOSS LIMIT TRIGGERED - TRADING PAUSED FOR TODAY")
+                print(f"   Daily Loss: {daily_loss:.1f}%")
+                print(f"   Max Allowed: {self.daily_loss_limit_pct}%")
+                print(f"   Starting Value: ${starting_value:,.2f}")
+                print(f"   Current Value: ${self.get_portfolio_total_value():,.2f}")
+                print(f"\n   ⚠️ Trading will resume tomorrow")
+                no_trade_reasons['drawdown_protection'] = 1
+                return {
+                    'trades_executed': 0,
+                    'opportunities': 0,
+                    'reasons': no_trade_reasons,
+                    'paused': True,
+                    'daily_loss': daily_loss
+                }
+            elif daily_loss > 0:
+                logging.info(f"📊 Daily Loss: {daily_loss:.1f}% (Starting: ${starting_value:,.2f})")
         
         # Perform portfolio analysis before trading
         logging.info("📊 Pre-trading portfolio analysis...")
@@ -1473,15 +1860,27 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 
                 # Note: Cooldown filtering now happens at ticker selection stage
                 # This check is kept as a safety net for edge cases
-                if self.is_in_research_cooldown(symbol, cooldown_minutes=15):
+                if self.is_in_research_cooldown(symbol, cooldown_minutes=60):
                     symbols_skipped_cooldown += 1
                     logging.debug(f"⏭️  {symbol}: Skipping research - in research cooldown period (safety check)")
                     continue
                 
                 analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
                 if not analysis:
-                    print(f"   ⏭️  {symbol}: ❌ Insufficient market data (needs {self.sma_slow} bars minimum)")
-                    no_trade_reasons['no_data'] += 1
+                    # Check why - no data vs no signal
+                    df = self.get_market_data(symbol)
+                    if df is None or len(df) < self.sma_slow:
+                        print(f"   ⏭️  {symbol}: ❌ No market data (needs {self.sma_slow} bars)")
+                        no_trade_reasons['no_data'] += 1
+                    else:
+                        # Has data but no signal (RSI not in buy/sell zone)
+                        df = self.calculate_indicators(df)
+                        latest = df.iloc[-1]
+                        rsi = latest['RSI']
+                        sma_fast = latest[f'SMA_{self.sma_fast}']
+                        sma_slow = latest[f'SMA_{self.sma_slow}']
+                        print(f"   ⏭️  {symbol}: ⚪ No signal (RSI: {rsi:.1f}, SMA: {sma_fast:.2f}/{sma_slow:.2f})")
+                        no_trade_reasons['no_signal'] += 1
                     continue
                     
                 if analysis['signal']:
@@ -1835,13 +2234,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     sell_reasons.append(f"Moderate profit (+{unrealized_plpc:.1f}%)")
                     confidence += 15
                 
-                # Stop-loss logic
-                if unrealized_plpc < -8:  # More than 8% loss
-                    sell_reasons.append(f"Stop loss (-{abs(unrealized_plpc):.1f}%)")
-                    confidence += 35
-                elif unrealized_plpc < -5:  # More than 5% loss
-                    sell_reasons.append(f"Defensive sell (-{abs(unrealized_plpc):.1f}%)")
-                    confidence += 20
+                # Stop-loss logic (using configurable values)
+                if self.enable_stop_loss:
+                    # Hard stop-loss: panic sell at configured percentage
+                    if unrealized_plpc < -self.stop_loss_pct:
+                        sell_reasons.append(f"🛑 HARD STOP-LOSS (-{abs(unrealized_plpc):.1f}% < -{self.stop_loss_pct}%)")
+                        confidence = 100  # Force sell
+                    # Take profit: lock in gains at configured percentage
+                    elif unrealized_plpc > self.take_profit_pct:
+                        sell_reasons.append(f"🎯 TAKE PROFIT (+{unrealized_plpc:.1f}% > +{self.take_profit_pct}%)")
+                        confidence = 90
+                    # Defensive sell: warning level before hard stop
+                    elif unrealized_plpc < -(self.stop_loss_pct * 0.6):
+                        sell_reasons.append(f"⚠️ Defensive warning (-{abs(unrealized_plpc):.1f}% < -{self.stop_loss_pct * 0.6:.1f}%)")
+                        confidence += 25
                 
                 # Concentration risk (position too large)
                 portfolio_value = float(self.trading_client.get_account().portfolio_value)
@@ -2013,6 +2419,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 
                 self.db.insert_data('trades', trade_data)
             
+            # Send email notification for portfolio actions
+            try:
+                price = float(order.fill_price) if order.fill_price else 0
+            except:
+                price = 0
+            self.send_trade_notification(
+                trade_type=side.upper(),
+                symbol=symbol,
+                quantity=quantity,
+                price=price,
+                side=side.upper(),
+                analysis={'reason': reason}
+            )
+            
             return True
             
         except Exception as e:
@@ -2146,6 +2566,17 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     # Show summary every N loops
                     if loop_count % summary_interval == 0:
                         self._show_performance_summary(loop_count, loop_performance, total_trades, total_opportunities, start_time, ticker_positions, ticker_transactions)
+                        
+                        # Send Telegram summary notification
+                        try:
+                            account = self.trading_client.get_account()
+                            portfolio_value = float(account.portfolio_value)
+                            positions = len(self.trading_client.get_all_positions())
+                            # Calculate unrealized P&L
+                            unrealized_pl = sum(float(p.unrealized_pl) for p in self.trading_client.get_all_positions())
+                            self.send_summary_notification(loop_count, total_trades, portfolio_value, unrealized_pl, positions)
+                        except Exception as e:
+                            logging.debug(f"Could not send summary: {e}")
                         
                         # Keep only recent performance data (last 100 loops) to manage memory
                         if len(loop_performance) > 100:
@@ -2356,20 +2787,88 @@ def main():
                           help='Maximum symbols to analyze per loop (default: 30)')
         parser.add_argument('--max-trades', type=int, default=2,
                           help='Maximum trades to execute per loop (default: 2)')
-        parser.add_argument('--summary-interval', type=int, default=50,
-                          help='Show summary every N loops (default: 50)')
+        parser.add_argument('--summary-interval', type=int, default=60,
+                          help='Show/send summary every N loops (default: 60 = ~30 min)')
+        parser.add_argument('--logs', '-l', type=int, default=0,
+                          help='Show last N lines of logs (default: 0 = off, use 50 for last 50 lines)')
+        parser.add_argument('--tail', '-t', action='store_true',
+                          help='Tail the log file continuously (like tail -f)')
+        
+        # Stop-Loss Configuration
+        parser.add_argument('--stop-loss', type=float, default=8.0,
+                          help='Stop-loss percentage (default: 8.0)')
+        parser.add_argument('--take-profit', type=float, default=15.0,
+                          help='Take profit percentage (default: 15.0)')
+        parser.add_argument('--no-stop-loss', action='store_true',
+                          help='Disable stop-loss system')
+        
+        # ATR-based Position Sizing
+        parser.add_argument('--risk-per-trade', type=float, default=2.0,
+                          help='Risk percentage per trade (default: 2.0)')
+        parser.add_argument('--max-position', type=float, default=5.0,
+                          help='Max position size as %% of portfolio (default: 5.0)')
+        parser.add_argument('--no-atr-sizing', action='store_true',
+                          help='Disable ATR-based position sizing (use fixed instead)')
+        
+        # Max Drawdown Protection
+        parser.add_argument('--max-drawdown', type=float, default=10.0,
+                          help='Max drawdown %% before pausing trading (default: 10.0)')
+        parser.add_argument('--no-drawdown-protection', action='store_true',
+                          help='Disable max drawdown protection')
+        
+        # Daily Loss Limit
+        parser.add_argument('--daily-loss-limit', type=float, default=5.0,
+                          help='Daily loss %% limit - stop trading if exceeded (default: 5.0)')
+        parser.add_argument('--no-daily-loss-limit', action='store_true',
+                          help='Disable daily loss limit')
         
         # AI configuration flags
-        parser.add_argument('--no-ai-ticker-analysis', action='store_true',
-                          help='Disable AI analysis for individual tickers (use only technical indicators)')
+        parser.add_argument('--ai-ticker-analysis', action='store_true', default=False,
+                          help='Enable AI to read articles for each ticker (slower, more detailed)')
         parser.add_argument('--no-ai-ticker-selection', action='store_true',
                           help='Disable AI-based ticker selection (use standard ticker list)')
+        parser.add_argument('--ai-market-summary', action='store_true', default=False,
+                          help='Enable AI market summary (reads 5 tickers for sentiment)')
         parser.add_argument('--no-ai-market-summary', action='store_true',
                           help='Disable AI market sentiment summaries')
         parser.add_argument('--no-ai', action='store_true',
                           help='Disable ALL AI features (pure technical analysis mode)')
         
         args = parser.parse_args()
+        
+        # Handle log viewing options
+        log_file = 'trading_bot.log'
+        if args.logs > 0 or args.tail:
+            import os
+            if os.path.exists(log_file):
+                if args.tail:
+                    # Tail mode - continuous follow
+                    print(f"📜 Tailing {log_file} (Ctrl+C to stop)...\n")
+                    try:
+                        with open(log_file, 'r') as f:
+                            # Seek to end of file
+                            f.seek(0, 2)
+                            while True:
+                                line = f.readline()
+                                if not line:
+                                    time.sleep(0.5)
+                                else:
+                                    print(line.rstrip())
+                    except KeyboardInterrupt:
+                        print("\n👋 Log tailing stopped")
+                        sys.exit(0)
+                else:
+                    # Show last N lines
+                    with open(log_file, 'r') as f:
+                        lines = f.readlines()
+                    last_n = args.logs
+                    print(f"📜 Last {last_n} lines of {log_file}:\n")
+                    for line in lines[-last_n:]:
+                        print(line.rstrip())
+                    sys.exit(0)
+            else:
+                print(f"❌ Log file not found: {log_file}")
+                sys.exit(1)
         
         bot = SmartTradingBot()
         
@@ -2383,11 +2882,49 @@ def main():
             )
         else:
             # Configure individual AI features
+            # Default: ticker analysis OFF (skip article reading), others ON
+            # Use --ai-ticker-analysis to enable article reading
+            enable_ticker_analysis = getattr(args, 'ai_ticker_analysis', False)
+            enable_market_summary = getattr(args, 'ai_market_summary', False)
             bot.configure_ai_usage(
-                ticker_analysis=not args.no_ai_ticker_analysis,
+                ticker_analysis=enable_ticker_analysis,
                 ticker_selection=not args.no_ai_ticker_selection,
-                market_summary=not args.no_ai_market_summary
+                market_summary=enable_market_summary
             )
+        
+        # Configure Stop-Loss settings
+        if hasattr(args, 'stop_loss'):
+            bot.stop_loss_pct = args.stop_loss
+            bot.take_profit_pct = args.take_profit if hasattr(args, 'take_profit') else 15.0
+            bot.enable_stop_loss = not args.no_stop_loss if hasattr(args, 'no_stop_loss') else True
+            print(f"🛑 Stop-Loss: {'Enabled' if bot.enable_stop_loss else 'Disabled'}")
+            if bot.enable_stop_loss:
+                print(f"   Hard Stop: {bot.stop_loss_pct}% | Take Profit: {bot.take_profit_pct}%")
+        
+        # Configure ATR-based Position Sizing
+        if hasattr(args, 'risk_per_trade'):
+            bot.risk_per_trade = args.risk_per_trade / 100  # Convert to decimal
+            bot.max_position_pct = args.max_position / 100  # Convert to decimal
+            bot.enable_atr_sizing = not args.no_atr_sizing if hasattr(args, 'no_atr_sizing') else True
+            print(f"📊 ATR Position Sizing: {'Enabled' if bot.enable_atr_sizing else 'Disabled'}")
+            if bot.enable_atr_sizing:
+                print(f"   Risk/Trade: {args.risk_per_trade}% | Max Position: {args.max_position}%")
+        
+        # Configure Max Drawdown Protection
+        if hasattr(args, 'max_drawdown'):
+            bot.max_drawdown_pct = args.max_drawdown
+            bot.enable_drawdown_protection = not args.no_drawdown_protection if hasattr(args, 'no_drawdown_protection') else True
+            print(f"📉 Max Drawdown Protection: {'Enabled' if bot.enable_drawdown_protection else 'Disabled'}")
+            if bot.enable_drawdown_protection:
+                print(f"   Max Drawdown: {args.max_drawdown}%")
+        
+        # Configure Daily Loss Limit
+        if hasattr(args, 'daily_loss_limit'):
+            bot.daily_loss_limit_pct = args.daily_loss_limit
+            bot.enable_daily_loss_limit = not args.no_daily_loss_limit if hasattr(args, 'no_daily_loss_limit') else True
+            print(f"📊 Daily Loss Limit: {'Enabled' if bot.enable_daily_loss_limit else 'Disabled'}")
+            if bot.enable_daily_loss_limit:
+                print(f"   Max Daily Loss: {args.daily_loss_limit}%")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
