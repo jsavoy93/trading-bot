@@ -159,6 +159,9 @@ class SmartTradingBot:
         # Sector Concentration Limit (default 25%)
         self.max_sector_concentration = 0.25  # Max 25% in any single sector
         
+        # Correlation-aware position sizing (default: skip if > 0.7)
+        self.max_correlation = 0.7  # Skip if correlation with any position > 0.7
+        
         # Simple sector mapping for common stocks (expand as needed)
         self.stock_sector_map = {
             # Technology
@@ -2365,6 +2368,67 @@ message(
             logging.debug(f"Sector concentration check failed: {e}")
             return (True, 0, 0, "Check failed - allowing")
     
+    def check_correlation_risk(self, symbol: str) -> tuple:
+        """
+        Check correlation with existing positions.
+        
+        Returns:
+            (passes: bool, max_correlation: float, correlated_symbols: list, reason: str)
+        """
+        try:
+            # Get historical data for the candidate symbol
+            df_candidate = self.get_market_data(symbol)
+            if df_candidate is None or len(df_candidate) < 30:
+                return (True, 0, [], "Insufficient data for correlation check")
+            
+            # Get recent returns
+            candidate_returns = df_candidate['close'].pct_change().dropna().tail(30)
+            
+            # Get existing positions
+            positions = self.trading_client.get_all_positions()
+            
+            max_corr = 0
+            correlated = []
+            
+            for position in positions:
+                pos_symbol = position.symbol
+                if pos_symbol == symbol:
+                    continue
+                
+                # Skip if too small
+                if abs(float(position.market_value)) < 1000:
+                    continue
+                
+                # Get historical data for existing position
+                df_pos = self.get_market_data(pos_symbol)
+                if df_pos is None or len(df_pos) < 30:
+                    continue
+                
+                pos_returns = df_pos['close'].pct_change().dropna().tail(30)
+                
+                # Align the series
+                if len(candidate_returns) != len(pos_returns):
+                    continue
+                
+                # Calculate correlation
+                corr = candidate_returns.corr(pos_returns)
+                
+                if pd.notna(corr) and abs(corr) > max_corr:
+                    max_corr = abs(corr)
+                    if max_corr > self.max_correlation:
+                        correlated.append((pos_symbol, corr))
+            
+            if max_corr > self.max_correlation:
+                corr_str = ", ".join([f"{s}({c:.2f})" for s, c in correlated[:3]])
+                return (False, max_corr, correlated, 
+                        f"High correlation with {corr_str} (max: {max_corr:.2f} > {self.max_correlation})")
+            
+            return (True, max_corr, [], f"Correlation check passed (max: {max_corr:.2f})")
+            
+        except Exception as e:
+            logging.debug(f"Correlation check failed: {e}")
+            return (True, 0, [], "Check failed - allowing")
+    
     def execute_trade(self, analysis: Dict) -> bool:
         """Execute trade based on analysis with comprehensive position and risk management"""
         try:
@@ -2436,6 +2500,12 @@ message(
                 if not passes_sector_check:
                     logging.info(f"🚫 Skipping {symbol}: {sector_reason}")
                     # Log this for visibility
+                    return False
+                
+                # Check correlation with existing positions (Phase 3.2)
+                passes_corr, max_corr, correlated, corr_reason = self.check_correlation_risk(symbol)
+                if not passes_corr:
+                    logging.info(f"🚫 Skipping {symbol}: {corr_reason}")
                     return False
                 
                 # Add position size context to logging
@@ -4044,6 +4114,12 @@ def main():
         parser.add_argument('--no-sector-filter', action='store_true', default=False,
                           help='Disable sector rotation filter')
         
+        # Correlation check
+        parser.add_argument('--no-correlation-check', action='store_true', default=False,
+                          help='Disable correlation check with existing positions')
+        parser.add_argument('--max-correlation', type=float, default=0.7,
+                          help='Maximum correlation allowed (default: 0.7)')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -4186,6 +4262,16 @@ def main():
             # Pre-calculate sector scores
             bot.sector_rotation_scores = bot.get_sector_rotation_scores()
             print(f"🏛️ Sector Filter: Enabled (prefer strong sectors)")
+        
+        # Correlation check
+        if hasattr(args, 'no_correlation_check') and args.no_correlation_check:
+            bot.max_correlation = 1.0  # Disable by setting to max
+        else:
+            if hasattr(args, 'max_correlation'):
+                bot.max_correlation = args.max_correlation
+        
+        if bot.max_correlation < 1.0:
+            print(f"📊 Correlation Check: Enabled (max correlation: {bot.max_correlation})")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
