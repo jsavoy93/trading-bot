@@ -4251,6 +4251,141 @@ def main():
         parser.add_argument('--atr-stop-multiplier', type=float, default=2.0,
                           help='ATR multiplier for stop-loss (default: 2.0)')
         
+        # Historical data download
+        parser.add_argument('--download-historical', type=str, default=None,
+                          help='Download historical OHLCV data for symbol(s). Can be single symbol (AAPL) or comma-separated (AAPL,MSFT,GOOG)')
+        parser.add_argument('--historical-years', type=int, default=3,
+                          help='Number of years of historical data to download (default: 3)')
+        
+        # Data pipeline commands
+        parser.add_argument('--backfill', action='store_true', default=False,
+                          help='Run full backfill for all portfolio symbols')
+        parser.add_argument('--backfill-symbol', type=str, default=None,
+                          help='Backfill a single symbol')
+        parser.add_argument('--sync', action='store_true', default=False,
+                          help='Run incremental daily sync')
+        parser.add_argument('--data-health', action='store_true', default=False,
+                          help='Show data quality report')
+        parser.add_argument('--list-gaps', action='store_true', default=False,
+                          help='Show missing data ranges')
+        parser.add_argument('--create-tables', action='store_true', default=False,
+                          help='Create OHLCV database tables (prints SQL)')
+        
+        args = parser.parse_args()
+        
+        # Handle historical data download request
+        if args.download_historical or args.backfill or args.backfill_symbol or args.sync or args.data_health or args.list_gaps or args.create_tables:
+            from src.data.historical_pipeline import HistoricalDataPipeline
+            from src.database.simple_rest import SimpleSupabaseREST
+            
+            # Initialize pipeline
+            pipeline = HistoricalDataPipeline()
+            
+            # Try to get Supabase connection
+            try:
+                db = SimpleSupabaseREST()
+                if db.is_available():
+                    pipeline.db = db
+            except:
+                pass
+            
+            # Create tables
+            if args.create_tables:
+                print("📋 Creating OHLCV tables in Supabase...")
+                pipeline.create_database_tables()
+                return
+            
+            # Download single symbol(s)
+            if args.download_historical:
+                print(f"📥 Downloading historical data...")
+                symbols = [s.strip() for s in args.download_historical.split(',')]
+                
+                for symbol in symbols:
+                    print(f"   Downloading {symbol}...")
+                    df = pipeline.fetch_daily_ohlcv(symbol)
+                    if df is not None:
+                        pipeline.save_to_csv(df, symbol, 'daily')
+                        min_date = df['date'].min()
+                        max_date = df['date'].max()
+                        print(f"   ✓ {symbol}: {len(df)} days ({min_date} to {max_date})")
+                    else:
+                        print(f"   ✗ {symbol}: Failed to download")
+                
+                print("📥 Historical data download complete!")
+                return
+            
+            # Backfill single symbol
+            if args.backfill_symbol:
+                print(f"🔄 Backfilling {args.backfill_symbol}...")
+                success = pipeline.sync_symbol(args.backfill_symbol, years=args.historical_years)
+                if success:
+                    print(f"✅ Backfill complete for {args.backfill_symbol}")
+                else:
+                    print(f"❌ Backfill failed for {args.backfill_symbol}")
+                return
+            
+            # Backfill all portfolio symbols
+            if args.backfill:
+                print("🔄 Running full backfill for portfolio...")
+                try:
+                    positions = self.trading_client.get_all_positions()
+                    symbols = list(set([p.symbol for p in positions]))
+                except:
+                    symbols = []
+                
+                if symbols:
+                    results = pipeline.backfill_symbols(symbols, years=args.historical_years, delay=0.5)
+                    success = sum(1 for v in results.values() if v)
+                    print(f"📥 Backfill complete: {success}/{len(symbols)} symbols")
+                else:
+                    print("❌ No positions found")
+                return
+            
+            # Daily sync
+            if args.sync:
+                print("🔄 Running daily sync...")
+                results = pipeline.daily_sync()
+                success = sum(1 for v in results.values() if v)
+                print(f"📥 Daily sync complete: {success} symbols updated")
+                return
+            
+            # Data health check
+            if args.data_health:
+                print("📊 Data Health Report")
+                print("=" * 50)
+                
+                # Get all downloaded symbols
+                import os
+                import glob
+                files = glob.glob(f"{pipeline.data_dir}/*_daily_*.csv")
+                symbols = list(set([os.path.basename(f).split('_')[0] for f in files]))
+                
+                for symbol in symbols[:20]:  # Limit to 20
+                    health = pipeline.check_data_health(symbol)
+                    status = "✅" if health['status'] == 'healthy' else "⚠️"
+                    print(f"{status} {symbol}: {health.get('total_days', 0)} days, {health.get('date_range', 'N/A')}")
+                    if health.get('issues'):
+                        print(f"   Issues: {', '.join(health['issues'])}")
+                return
+            
+            # List gaps
+            if args.list_gaps:
+                print("📋 Data Gaps")
+                print("=" * 50)
+                
+                import os
+                import glob
+                files = glob.glob(f"{pipeline.data_dir}/*_daily_*.csv")
+                symbols = list(set([os.path.basename(f).split('_')[0] for f in files]))
+                
+                for symbol in symbols[:20]:
+                    gaps = pipeline.check_data_gaps(symbol)
+                    if gaps and 'error' not in gaps[0]:
+                        print(f"⚠️ {symbol}: {len(gaps)} gaps found")
+                        for gap in gaps[:3]:
+                            print(f"   {gap['start']} to {gap['end']}: {gap['missing_days']} days")
+                return
+        
         args = parser.parse_args()
         
         # Handle log viewing options
