@@ -162,6 +162,10 @@ class SmartTradingBot:
         # Correlation-aware position sizing (default: skip if > 0.7)
         self.max_correlation = 0.7  # Skip if correlation with any position > 0.7
         
+        # Beta-adjusted exposure (default: stop adding if portfolio beta > 1.5)
+        self.max_portfolio_beta = 1.5  # Max portfolio beta allowed
+        self._portfolio_beta_cache = None  # Cache for portfolio beta
+        
         # Simple sector mapping for common stocks (expand as needed)
         self.stock_sector_map = {
             # Technology
@@ -2429,6 +2433,81 @@ message(
             logging.debug(f"Correlation check failed: {e}")
             return (True, 0, [], "Check failed - allowing")
     
+    def get_portfolio_beta(self) -> float:
+        """
+        Calculate portfolio beta relative to SPY.
+        
+        Returns:
+            Portfolio beta (weighted by position size)
+        """
+        # Use cached value if available
+        if self._portfolio_beta_cache is not None:
+            return self._portfolio_beta_cache
+        
+        try:
+            # Get SPY data
+            df_spy = self.get_market_data('SPY')
+            if df_spy is None or len(df_spy) < 30:
+                return 1.0  # Default to beta 1 if no data
+            
+            spy_returns = df_spy['close'].pct_change().dropna().tail(30)
+            
+            # Get positions
+            positions = self.trading_client.get_all_positions()
+            portfolio_value = self.get_portfolio_total_value()
+            
+            if portfolio_value <= 0:
+                return 1.0
+            
+            weighted_beta = 0
+            
+            for position in positions:
+                symbol = position.symbol
+                market_value = abs(float(position.market_value))
+                weight = market_value / portfolio_value
+                
+                # Get stock data
+                df_stock = self.get_market_data(symbol)
+                if df_stock is None or len(df_stock) < 30:
+                    continue
+                
+                stock_returns = df_stock['close'].pct_change().dropna().tail(30)
+                
+                # Align with SPY returns
+                if len(stock_returns) != len(spy_returns):
+                    continue
+                
+                # Calculate beta (covariance / variance)
+                covariance = stock_returns.cov(spy_returns)
+                spy_variance = spy_returns.var()
+                
+                if spy_variance > 0:
+                    beta = covariance / spy_variance
+                    if pd.notna(beta):
+                        weighted_beta += weight * beta
+            
+            self._portfolio_beta_cache = weighted_beta
+            return weighted_beta
+            
+        except Exception as e:
+            logging.debug(f"Portfolio beta calculation failed: {e}")
+            return 1.0
+    
+    def check_beta_exposure(self) -> tuple:
+        """
+        Check if portfolio beta exceeds limit.
+        
+        Returns:
+            (passes: bool, current_beta: float, reason: str)
+        """
+        portfolio_beta = self.get_portfolio_beta()
+        
+        if portfolio_beta > self.max_portfolio_beta:
+            return (False, portfolio_beta, 
+                    f"Portfolio beta {portfolio_beta:.2f} exceeds limit {self.max_portfolio_beta}")
+        
+        return (True, portfolio_beta, f"Portfolio beta {portfolio_beta:.2f} within limits")
+    
     def execute_trade(self, analysis: Dict) -> bool:
         """Execute trade based on analysis with comprehensive position and risk management"""
         try:
@@ -2508,6 +2587,13 @@ message(
                     logging.info(f"🚫 Skipping {symbol}: {corr_reason}")
                     return False
                 
+                # Check portfolio beta exposure (Phase 3.3)
+                passes_beta, current_beta, beta_reason = self.check_beta_exposure()
+                if not passes_beta:
+                    # Log prominently - this is a risk management block
+                    logging.warning(f"🛑 BLOCKED BY BETA RULE: {symbol} - {beta_reason}")
+                    return False
+                
                 # Add position size context to logging
                 if current_position_qty > 0:
                     new_total_qty = current_position_qty + quantity
@@ -2560,6 +2646,7 @@ message(
             
             # Invalidate sector allocation cache after trade
             self.invalidate_sector_cache()
+            self._portfolio_beta_cache = None  # Invalidate beta cache after trade
             
             # Mark trade for cooldown tracking
             self.mark_recent_trade(symbol, signal)
@@ -3193,6 +3280,13 @@ message(
         """Comprehensive portfolio analysis with automated recommendations"""
         try:
             logging.info("📊 Starting portfolio analysis...")
+            
+            # Log portfolio beta (Phase 3.3)
+            portfolio_beta = self.get_portfolio_beta()
+            if portfolio_beta > self.max_portfolio_beta:
+                logging.warning(f"⚠️  Portfolio beta {portfolio_beta:.2f} exceeds limit {self.max_portfolio_beta} - BUY trades will be blocked!")
+            else:
+                logging.info(f"📈 Portfolio beta: {portfolio_beta:.2f} (limit: {self.max_portfolio_beta})")
             
             # Get portfolio data
             account = self.trading_client.get_account()
@@ -4120,6 +4214,12 @@ def main():
         parser.add_argument('--max-correlation', type=float, default=0.7,
                           help='Maximum correlation allowed (default: 0.7)')
         
+        # Beta exposure check
+        parser.add_argument('--no-beta-check', action='store_true', default=False,
+                          help='Disable portfolio beta check')
+        parser.add_argument('--max-beta', type=float, default=1.5,
+                          help='Maximum portfolio beta allowed (default: 1.5)')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -4272,6 +4372,16 @@ def main():
         
         if bot.max_correlation < 1.0:
             print(f"📊 Correlation Check: Enabled (max correlation: {bot.max_correlation})")
+        
+        # Beta exposure check
+        if hasattr(args, 'no_beta_check') and args.no_beta_check:
+            bot.max_portfolio_beta = 99.0  # Disable by setting very high
+        else:
+            if hasattr(args, 'max_beta'):
+                bot.max_portfolio_beta = args.max_beta
+        
+        if bot.max_portfolio_beta < 99.0:
+            print(f"📈 Beta Check: Enabled (max portfolio beta: {bot.max_portfolio_beta})")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
