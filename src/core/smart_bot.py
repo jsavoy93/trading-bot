@@ -110,6 +110,10 @@ class SmartTradingBot:
         self.take_profit_pct = 15.0  # Take profit: auto-sell at X% gain (default: 15%)
         self.enable_stop_loss = True  # Enable/disable stop-loss system
         
+        # Dynamic ATR-based stop-loss
+        self.use_atr_stop_loss = True  # Use 2x ATR instead of fixed percentage
+        self.atr_stop_multiplier = 2.0  # Stop at current_price - (multiplier * ATR)
+        
         # ATR-based Position Sizing Configuration
         self.enable_atr_sizing = True  # Use ATR for position sizing
         self.risk_per_trade = 0.02  # Risk 2% of portfolio per trade (default)
@@ -3557,8 +3561,28 @@ message(
             # Action 2: Set stop losses on losing positions (>-10%)
             for position in portfolio_analysis['positions']:
                 if position['unrealized_plpc'] < -10 and abs(position['market_value']) > 100:
-                    # Calculate stop loss price (8% below current price = the stop_loss_pct)
-                    stop_price = round(position['current_price'] * (1 - (self.stop_loss_pct / 100)), 2)
+                    # Calculate stop loss price
+                    if self.use_atr_stop_loss:
+                        # Use ATR-based stop: current_price - (multiplier * ATR)
+                        df = self.get_market_data(position['symbol'])
+                        if df is not None and len(df) >= 14:
+                            df = self.calculate_indicators(df)
+                            atr = df['ATR'].iloc[-1] if 'ATR' in df.columns else None
+                            if atr and pd.notna(atr) and atr > 0:
+                                stop_price = round(position['current_price'] - (self.atr_stop_multiplier * atr), 2)
+                                stop_type = "ATR"
+                            else:
+                                # Fallback to percentage if ATR unavailable
+                                stop_price = round(position['current_price'] * (1 - (self.stop_loss_pct / 100)), 2)
+                                stop_type = "pct"
+                        else:
+                            # Fallback
+                            stop_price = round(position['current_price'] * (1 - (self.stop_loss_pct / 100)), 2)
+                            stop_type = "pct"
+                    else:
+                        # Use fixed percentage
+                        stop_price = round(position['current_price'] * (1 - (self.stop_loss_pct / 100)), 2)
+                        stop_type = "pct"
                     
                     # Check if we already have a stop order
                     if self.has_active_stop_order(position['symbol']):
@@ -3573,7 +3597,8 @@ message(
                     )
                     
                     if success:
-                        actions_taken.append(f"Stop loss set for {position['symbol']} at ${stop_price:.2f}")
+                        stop_method = f"({self.atr_stop_multiplier}x ATR)" if stop_type == "ATR" else f"({self.stop_loss_pct}%)"
+                        actions_taken.append(f"Stop loss set for {position['symbol']} at ${stop_price:.2f} {stop_method}")
             
             # Action 3: Deploy excess cash if available
             cash_percentage = portfolio_analysis['cash_available'] / portfolio_analysis['total_value'] * 100
@@ -4220,6 +4245,12 @@ def main():
         parser.add_argument('--max-beta', type=float, default=1.5,
                           help='Maximum portfolio beta allowed (default: 1.5)')
         
+        # ATR-based stop-loss
+        parser.add_argument('--no-atr-stop', action='store_true', default=False,
+                          help='Disable ATR-based stop-loss (use fixed percentage)')
+        parser.add_argument('--atr-stop-multiplier', type=float, default=2.0,
+                          help='ATR multiplier for stop-loss (default: 2.0)')
+        
         args = parser.parse_args()
         
         # Handle log viewing options
@@ -4382,6 +4413,15 @@ def main():
         
         if bot.max_portfolio_beta < 99.0:
             print(f"📈 Beta Check: Enabled (max portfolio beta: {bot.max_portfolio_beta})")
+        
+        # ATR-based stop-loss
+        if hasattr(args, 'no_atr_stop') and args.no_atr_stop:
+            bot.use_atr_stop_loss = False
+            print(f"🛑 Stop-Loss: Using fixed {bot.stop_loss_pct}% (ATR disabled)")
+        else:
+            if hasattr(args, 'atr_stop_multiplier'):
+                bot.atr_stop_multiplier = args.atr_stop_multiplier
+            print(f"🛑 Stop-Loss: Using {bot.atr_stop_multiplier}x ATR")
         
         # Show setup instructions if database not available
         bot.show_database_setup()
