@@ -170,6 +170,15 @@ class SmartTradingBot:
         self.max_portfolio_beta = 1.5  # Max portfolio beta allowed
         self._portfolio_beta_cache = None  # Cache for portfolio beta
         
+        # Market Regime Classifier
+        self.enable_regime_filter = True  # Use ADX-based regime detection
+        self.regime_symbol = "SPY"  # Symbol for regime detection
+        self.adx_period = 14  # ADX calculation period
+        self.trend_threshold = 25.0  # ADX > this = trending
+        self.range_threshold = 20.0  # ADX < this = ranging
+        self._regime_classifier = None  # Will be initialized lazily
+        self._forced_regime = None  # For testing
+        
         # Simple sector mapping for common stocks (expand as needed)
         self.stock_sector_map = {
             # Technology
@@ -1458,6 +1467,31 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 signal = "HOLD"
                 signal_strength = "WEAK"
             
+            # Apply market regime modifiers (if enabled)
+            regime_info = None
+            if self.enable_regime_filter:
+                try:
+                    regime_info = self.get_current_market_regime()
+                    mods = regime_info.get('modifiers', {})
+                    
+                    if regime_info.get('regime') in ['TRENDING_BULLISH', 'TRENDING_BEARISH']:
+                        # In trending markets, be more selective about BUY signals
+                        # Require stronger RSI for buy signals in trending
+                        if signal == "BUY" and rsi >= mods.get('rsi_buy_threshold', 30):
+                            # But only block if we have data and signal is weak
+                            if total_score < 75:
+                                signal = "HOLD"
+                                signal_strength = "WEAK"
+                                logging.debug(f"📊 {symbol}: Blocked by regime filter ({regime_info['regime']}, RSI: {rsi:.1f})")
+                    
+                    # Add regime info to result
+                    if regime_info:
+                        analysis_result['_regime'] = regime_info.get('regime')
+                        analysis_result['_regime_adx'] = regime_info.get('adx')
+                        
+                except Exception as e:
+                    logging.debug(f"Regime check failed for {symbol}: {e}")
+            
             # Earnings filter: skip BUY signals near earnings
             earnings_warning = None
             if signal == "BUY" and self.earnings_days_skip > 0:
@@ -1684,58 +1718,26 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 ⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
 """
             
-            # Send via OpenClaw message tool
-            try:
-                from pathlib import Path
-                import sys
-                sys.path.insert(0, str(Path(__file__).parent.parent))
-                
-                # Use subprocess to call the message tool
-                import subprocess
-                result = subprocess.run([
-                    'python3', '-c',
-                    f'''
-import json
-from pathlib import Path
-import sys
-sys.path.insert(0, "{Path(__file__).parent.parent}")
-from tools import message
-
-message(
-    action="send",
-    target="{self.telegram_chat_id}",
-    message="""{message}"""
-)
-'''
-                ], capture_output=True, text=True, timeout=10)
-                
-                if result.returncode == 0:
+            # Send via Telegram Bot API directly
+            import requests
+            bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+            if bot_token:
+                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                data = {
+                    'chat_id': self.telegram_chat_id,
+                    'text': message,
+                    'parse_mode': 'Markdown'
+                }
+                resp = requests.post(url, json=data, timeout=10)
+                if resp.status_code == 200:
                     logging.info(f"📱 Telegram notification sent for {symbol}")
                     return True
                 else:
-                    logging.warning(f"⚠️ Telegram send failed: {result.stderr}")
+                    logging.warning(f"⚠️ Telegram API error: {resp.text}")
                     return False
-            except Exception as te:
-                # Fallback: try using requests to Telegram bot directly
-                import requests
-                bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
-                if bot_token:
-                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                    data = {
-                        'chat_id': self.telegram_chat_id,
-                        'text': message,
-                        'parse_mode': 'Markdown'
-                    }
-                    resp = requests.post(url, json=data, timeout=10)
-                    if resp.status_code == 200:
-                        logging.info(f"📱 Telegram notification sent for {symbol}")
-                        return True
-                    else:
-                        logging.warning(f"⚠️ Telegram API error: {resp.text}")
-                        return False
-                else:
-                    logging.warning(f"⚠️ Telegram notifications enabled but no bot token")
-                    return False
+            else:
+                logging.warning(f"⚠️ Telegram notifications enabled but no bot token")
+                return False
             
         except Exception as e:
             logging.warning(f"⚠️ Failed to send trade notification: {e}")
@@ -2512,6 +2514,63 @@ message(
         
         return (True, portfolio_beta, f"Portfolio beta {portfolio_beta:.2f} within limits")
     
+    def get_regime_classifier(self):
+        """Get or create the market regime classifier."""
+        if self._regime_classifier is None:
+            from src.analysis.market_regime import MarketRegimeClassifier
+            self._regime_classifier = MarketRegimeClassifier(
+                db=self.db,
+                regime_symbol=self.regime_symbol,
+                adx_period=self.adx_period,
+                trend_threshold=self.trend_threshold,
+                range_threshold=self.range_threshold
+            )
+        return self._regime_classifier
+    
+    def get_current_market_regime(self, force_refresh: bool = False) -> Dict:
+        """
+        Get current market regime.
+        
+        Returns:
+            Dict with regime, adx, plus_di, minus_di, etc.
+        """
+        if self._forced_regime:
+            # Return forced regime for testing
+            classifier = self.get_regime_classifier()
+            mods = classifier.get_strategy_modifiers(self._forced_regime)
+            return {
+                'regime': self._forced_regime,
+                'adx': 0,
+                'plus_di': 0,
+                'minus_di': 0,
+                'symbol': self.regime_symbol,
+                'timestamp': datetime.now(timezone.utc),
+                'modifiers': mods,
+                'forced': True
+            }
+        
+        if not self.enable_regime_filter:
+            # Return neutral if disabled
+            return {
+                'regime': 'TRANSITIONING',
+                'adx': 22,  # Middle value
+                'plus_di': 0,
+                'minus_di': 0,
+                'symbol': self.regime_symbol,
+                'timestamp': datetime.now(timezone.utc),
+                'modifiers': {
+                    'rsi_buy_threshold': 30,
+                    'rsi_sell_threshold': 70,
+                    'position_size_multiplier': 1.0,
+                    'stop_loss_multiplier': 1.0
+                }
+            }
+        
+        classifier = self.get_regime_classifier()
+        result = classifier.calculate_current_regime()
+        result['modifiers'] = classifier.get_strategy_modifiers(result['regime'])
+        return result
+    
     def execute_trade(self, analysis: Dict) -> bool:
         """Execute trade based on analysis with comprehensive position and risk management"""
         try:
@@ -2730,6 +2789,14 @@ message(
     
     def run_analysis(self, max_symbols: int = 50, max_trades: int = 3, use_ai: bool = False):
         """Run trading analysis with optional AI enhancement"""
+        # Log market regime at start of analysis
+        if self.enable_regime_filter:
+            try:
+                regime = self.get_current_market_regime()
+                logging.info(f"📊 Market Regime: {regime.get('regime', 'UNKNOWN')} (ADX: {regime.get('adx', 0):.1f})")
+            except Exception as e:
+                logging.debug(f"Could not get regime: {e}")
+        
         # Determine AI usage: check for rate limits, then use provided parameter
         if use_ai is not None:
             # Explicit parameter provided - respect rate limits
@@ -3836,6 +3903,14 @@ message(
                 print(f"\n🔄 LOOP #{loop_count} - {loop_start.strftime('%H:%M:%S')}")
                 print("-" * 40)
                 
+                # Log market regime at start of each loop
+                if self.enable_regime_filter:
+                    try:
+                        regime = self.get_current_market_regime()
+                        print(f"📊 Market Regime: {regime.get('regime', 'UNKNOWN')} (ADX: {regime.get('adx', 0):.1f})")
+                    except Exception as e:
+                        logging.debug(f"Could not get regime: {e}")
+                
                 try:
                     # Start session for this loop
                     self.start_session()
@@ -4271,7 +4346,55 @@ def main():
         parser.add_argument('--create-tables', action='store_true', default=False,
                           help='Create OHLCV database tables (prints SQL)')
         
+        # Market Regime options
+        parser.add_argument('--show-regime', action='store_true', default=False,
+                          help='Show current market regime (ADX-based)')
+        parser.add_argument('--regime-symbol', type=str, default='SPY',
+                          help='Symbol for regime detection (default: SPY)')
+        parser.add_argument('--adx-period', type=int, default=14,
+                          help='ADX calculation period (default: 14)')
+        parser.add_argument('--trend-threshold', type=float, default=25.0,
+                          help='ADX threshold for trending (default: 25)')
+        parser.add_argument('--range-threshold', type=float, default=20.0,
+                          help='ADX threshold for ranging (default: 20)')
+        parser.add_argument('--force-regime', type=str, default=None, choices=['TRENDING_BULLISH', 'TRENDING_BEARISH', 'RANGING', 'TRANSITIONING'],
+                          help='Override regime detection for testing')
+        parser.add_argument('--no-regime-filter', action='store_true', default=False,
+                          help='Disable regime filtering')
+        
         args = parser.parse_args()
+        
+        # Handle regime display
+        if args.show_regime:
+            from src.analysis.market_regime import MarketRegimeClassifier
+            from src.database.simple_rest import SimpleSupabaseREST
+            
+            db = SimpleSupabaseREST()
+            classifier = MarketRegimeClassifier(
+                db=db,
+                regime_symbol=args.regime_symbol,
+                adx_period=args.adx_period,
+                trend_threshold=args.trend_threshold,
+                range_threshold=args.range_threshold
+            )
+            
+            print(f"\\n📊 Market Regime for {args.regime_symbol}")
+            print("=" * 40)
+            
+            result = classifier.calculate_current_regime()
+            print(f"Regime:     {result['regime']}")
+            print(f"ADX:        {result['adx']:.1f}")
+            print(f"+DI:        {result['plus_di']:.1f}")
+            print(f"-DI:        {result['minus_di']:.1f}")
+            
+            mods = classifier.get_strategy_modifiers(result['regime'])
+            print(f"\\nStrategy Modifiers:")
+            print(f"  Description: {mods['description']}")
+            print(f"  RSI Buy Threshold: {mods['rsi_buy_threshold']}")
+            print(f"  RSI Sell Threshold: {mods['rsi_sell_threshold']}")
+            print(f"  Position Size: {mods['position_size_multiplier']}x")
+            print(f"  Stop Loss Multiplier: {mods['stop_loss_multiplier']}x")
+            return
         
         # Handle historical data download request
         if args.download_historical or args.backfill or args.backfill_symbol or args.sync or args.data_health or args.list_gaps or args.create_tables:
