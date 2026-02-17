@@ -1552,6 +1552,67 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     sp_warning = f"Underperforming SPY ({spread:+.1f}% spread)"
                     logging.info(f"⚠️ {symbol}: {sp_warning} (Stock: {stock_ret:+.1f}%, SPY: {spy_ret:+.1f}%)")
             
+            # ================================================
+            # NEW: Wire up additional signal filters (Phases 6.2, 7.1, 7.2, 7.3)
+            # ================================================
+            
+            # Trading Windows filter (Phase 6.2) - skip if bad time
+            if signal == "BUY":
+                try:
+                    from src.analysis.trading_windows import is_trading_allowed
+                    allowed, time_reason = is_trading_allowed()
+                    if not allowed:
+                        signal = "HOLD"
+                        signal_strength = "WEAK"
+                        logging.info(f"⏰ {symbol}: Blocked by trading window ({time_reason})")
+                except Exception as e:
+                    logging.debug(f"Trading window check failed: {e}")
+            
+            # News Sentiment filter (Phase 7.1) - skip if strongly negative
+            news_warning = None
+            if signal == "BUY":
+                try:
+                    from src.analysis.news_sentiment import filter_signal_by_sentiment
+                    allowed, news_score, news_reason = filter_signal_by_sentiment(symbol, signal)
+                    if not allowed:
+                        signal = "HOLD"
+                        signal_strength = "WEAK"
+                        news_warning = f"Negative news sentiment ({news_reason})"
+                        logging.info(f"📰 {symbol}: {news_warning}")
+                except Exception as e:
+                    logging.debug(f"News sentiment check failed: {e}")
+            
+            # Short Interest filter (Phase 7.2) - skip if high short + bearish
+            short_warning = None
+            if signal == "BUY":
+                try:
+                    from src.analysis.short_interest import filter_by_short_interest
+                    allowed, squeeze_score, short_reason = filter_by_short_interest(symbol, signal)
+                    if not allowed:
+                        signal = "HOLD"
+                        signal_strength = "WEAK"
+                        short_warning = f"Short interest warning ({short_reason})"
+                        logging.info(f"📉 {symbol}: {short_warning}")
+                except Exception as e:
+                    logging.debug(f"Short interest check failed: {e}")
+            
+            # Insider Trading filter (Phase 7.3) - additive boost
+            insider_score = 0
+            if signal == "BUY":
+                try:
+                    from src.analysis.insider_trading import get_insider_score
+                    insider_score = get_insider_score(symbol)
+                    if insider_score > 50:
+                        # Boost signal strength for strong insider buying
+                        total_score = min(100, total_score + 10)
+                        logging.info(f"📋 {symbol}: Insider score {insider_score} - signal boosted")
+                except Exception as e:
+                    logging.debug(f"Insider check failed: {e}")
+            
+            # ================================================
+            # End new filters
+            # ================================================
+            
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
                 try:
