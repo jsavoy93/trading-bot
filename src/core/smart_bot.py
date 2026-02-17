@@ -5,7 +5,10 @@ Works around package conflicts by using direct HTTP requests.
 import os
 import time
 import logging
-from datetime import datetime, timedelta, timezone
+import random
+import asyncio
+import requests
+from datetime import datetime, timedelta, timezone, date
 from typing import List, Dict, Optional
 import pandas as pd
 from dotenv import load_dotenv
@@ -13,8 +16,9 @@ from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
+import yfinance as yf
 
 # Import our simple REST API manager and AI agent
 import sys
@@ -28,8 +32,6 @@ from analysis.ai_agent import ai_agent
 load_dotenv()
 
 # Configure logging
-import logging
-import sys
 
 # Use absolute path for log file
 log_path = '/home/ubuntu/.openclaw/workspace/trading-bot/trading_bot.log'
@@ -148,6 +150,11 @@ class SmartTradingBot:
         # Earnings Filter (enabled by default - skip trades N days before earnings)
         self.earnings_days_skip = 3  # Skip trades within this many days before earnings
         self.earnings_cache = {}  # Cache earnings dates to avoid repeated API calls
+        
+        # Market Data Request Deduplication - cache API calls within a cycle
+        self._market_data_cache = {}  # symbol -> (timestamp, DataFrame)
+        self._market_data_cache_ttl = 30  # Cache valid for 30 seconds
+        self._cycle_start_time = None  # Track cycle start for cache invalidation
         
         # SPY Relative Strength Filter (enabled by default)
         self.enable_sp_filter = True  # Only buy stocks outperforming SPY
@@ -543,7 +550,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             Prioritize fresh analysis opportunities not in the recently researched list.
             """
             
-            import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
@@ -762,7 +768,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         pending_symbols = set()
         try:
             orders = list(self.trading_client.get_orders())
-            from alpaca.trading.enums import OrderStatus
             pending_symbols = {o.symbol for o in orders if o.status in [
                 OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
                 OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL
@@ -783,7 +788,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         return available[:target_count]
     
     def get_market_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Get market data for analysis"""
+        """Get market data for analysis with request deduplication"""
+        # Check if we have a valid cached result
+        now = datetime.now(timezone.utc)
+        
+        # Start new cycle if needed
+        if self._cycle_start_time is None:
+            self._cycle_start_time = now
+        
+        # Invalidate cache if more than TTL seconds have passed since cycle start
+        cache_age = (now - self._cycle_start_time).total_seconds()
+        if cache_age > self._market_data_cache_ttl:
+            self._market_data_cache.clear()
+            self._cycle_start_time = now
+        
+        # Return cached data if available
+        if symbol in self._market_data_cache:
+            cached_time, cached_df = self._market_data_cache[symbol]
+            if cached_df is not None:
+                logging.debug(f"�_cache Hit: {symbol}")
+                return cached_df.copy()  # Return a copy to prevent mutation
+        
+        # Fetch fresh data
         try:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=100)
@@ -798,10 +824,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             barset = self.data_client.get_stock_bars(request)
             
             if not barset or symbol not in barset.data:
+                self._market_data_cache[symbol] = (now, None)
                 return None
             
             bars = barset.data[symbol]
             if not bars:
+                self._market_data_cache[symbol] = (now, None)
                 return None
             
             df = pd.DataFrame([{
@@ -813,10 +841,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'volume': bar.volume
             } for bar in bars])
             
+            # Cache the result
+            self._market_data_cache[symbol] = (now, df)
+            
             return df
             
         except Exception as e:
             logging.debug(f"Data fetch failed for {symbol}: {e}")
+            self._market_data_cache[symbol] = (now, None)
             return None
     
     def check_liquidity(self, symbol: str, min_volume: int = 1000000, max_spread_pct: float = 0.3) -> tuple:
@@ -953,14 +985,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         except Exception as e:
             logging.debug(f"Sector rotation calculation failed: {e}")
             return {k: 0 for k in self.SECTOR_ETFS}
-    
-    def get_sector_for_symbol(self, symbol: str) -> str:
-        """Get the sector ETF most correlated with a symbol (simple heuristic)."""
-        # This is a simplified mapping - in production you'd use a sector database
-        # For now, we'll just return the symbol if it's a sector ETF, else None
-        if symbol in self.SECTOR_ETFS:
-            return symbol
-        return None
     
     def scan_catalysts(self, symbol: str) -> dict:
         """
@@ -1148,7 +1172,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             ai_insight = None
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal in ["BUY", "SELL"]:
                 try:
-                    import asyncio
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     ai_research = loop.run_until_complete(self.ai.research_symbol(symbol, lookback_days=2))
@@ -1212,8 +1235,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             (has_earnings: bool, earnings_date: datetime or None, days_until: int or None)
         """
         try:
-            import yfinance as yf
-            
             ticker = yf.Ticker(symbol)
             earnings_dates = ticker.earnings_dates
             
@@ -1258,6 +1279,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             (outperforming: bool, stock_return: float, spy_return: float, spread: float)
         """
         try:
+            # Guard against None or empty DataFrame
+            if df is None or df.empty or 'close' not in df.columns:
+                return (True, 0, 0, 0)
+            
             # Calculate stock return
             if len(df) < lookback_days:
                 return (True, 0, 0, 0)  # Not enough data, don't filter
@@ -1265,12 +1290,25 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             current_price = df['close'].iloc[-1]
             past_price = df['close'].iloc[-lookback_days]
             
-            if past_price <= 0:
+            if pd.isna(current_price) or pd.isna(past_price) or past_price <= 0:
                 return (True, 0, 0, 0)
             
             stock_return = ((current_price - past_price) / past_price) * 100
             
-            # Get SPY data
+            # Get SPY data (use cache if available for this cycle)
+            spy_symbol = "SPY"
+            if spy_symbol in self._market_data_cache:
+                # Use cached SPY data if available
+                cached_time, spy_df = self._market_data_cache.get(spy_symbol, (None, None))
+                if spy_df is not None and len(spy_df) >= lookback_days:
+                    spy_current = spy_df['close'].iloc[-1]
+                    spy_past = spy_df['close'].iloc[-lookback_days]
+                    if not pd.isna(spy_current) and not pd.isna(spy_past) and spy_past > 0:
+                        spy_return = ((spy_current - spy_past) / spy_past) * 100
+                        spread = stock_return - spy_return
+                        return (spread > 0, stock_return, spy_return, spread)
+            
+            # Fallback to yfinance if no cache
             spy = yf.Ticker("SPY")
             spy_hist = spy.history(period=f"{lookback_days+10}d")
             
@@ -1280,7 +1318,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             spy_current = spy_hist['Close'].iloc[-1]
             spy_past = spy_hist['Close'].iloc[-lookback_days]
             
-            if spy_past <= 0:
+            if pd.isna(spy_current) or pd.isna(spy_past) or spy_past <= 0:
                 return (True, 0, 0, 0)
             
             spy_return = ((spy_current - spy_past) / spy_past) * 100
@@ -1518,7 +1556,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
                 try:
                     # Get AI research (non-blocking)
-                    import asyncio
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     ai_research = loop.run_until_complete(self.ai.research_symbol(symbol, lookback_days=2))
@@ -1604,8 +1641,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """Check if there are pending orders for a symbol"""
         try:
             # Get all orders and filter for open/pending ones
-            from alpaca.trading.requests import GetOrdersRequest
-            from alpaca.trading.enums import OrderStatus
             
             # Get recent orders and filter for open ones
             orders = list(self.trading_client.get_orders())
@@ -1719,7 +1754,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 """
             
             # Send via Telegram Bot API directly
-            import requests
+
             bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
             if bot_token:
                 url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -1772,7 +1807,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 """
             
             # Send via Telegram
-            import requests
+
             bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
             if bot_token:
                 url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -2010,7 +2045,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # Try to get from database first
         if self.db.is_available():
             try:
-                import requests
                 headers = {
                     "apikey": self.db.api_key,
                     "Authorization": f"Bearer {self.db.api_key}",
@@ -2152,7 +2186,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             pending_order_symbols = set()
             try:
                 orders = list(self.trading_client.get_orders())
-                from alpaca.trading.enums import OrderStatus
                 open_statuses = {
                     OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
                     OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL,
@@ -2299,8 +2332,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         
         # Try Yahoo Finance for unmapped stocks (with timeout)
         try:
-            import yfinance as yf
-            from threading import Timer
             
             # Create a timer to timeout the Yahoo lookup
             result = {'sector': None}
@@ -2789,6 +2820,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
     
     def run_analysis(self, max_symbols: int = 50, max_trades: int = 3, use_ai: bool = False):
         """Run trading analysis with optional AI enhancement"""
+        # Clear market data cache for fresh analysis cycle
+        self._market_data_cache.clear()
+        self._cycle_start_time = datetime.now(timezone.utc)
+        
         # Log market regime at start of analysis
         if self.enable_regime_filter:
             try:
@@ -3696,7 +3731,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """Check if there's already an active stop-loss order for this symbol"""
         try:
             orders = list(self.trading_client.get_orders())
-            from alpaca.trading.enums import OrderStatus
             
             # Check for open/stop orders
             active_statuses = {
@@ -3724,7 +3758,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """Check if there are any pending orders for this symbol (that might hold shares)"""
         try:
             orders = list(self.trading_client.get_orders())
-            from alpaca.trading.enums import OrderStatus
             
             active_statuses = {
                 OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
