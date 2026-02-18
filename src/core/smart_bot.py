@@ -407,26 +407,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             })
         
         logging.info(f"🏁 Session ended: {self.symbols_processed} symbols, {self.trades_executed} trades")
-        
-        # Send session end notification to Telegram
-        if self.enable_telegram_notifications and self.telegram_chat_id:
-            try:
-                account = self.trading_client.get_account()
-                portfolio_value = float(account.portfolio_value)
-                positions = len(self.trading_client.get_all_positions())
-                unrealized_pl = sum(float(p.unrealized_pl) for p in self.trading_client.get_all_positions())
-                
-                self.send_summary_notification(
-                    loop_count=0,
-                    total_trades=self.trades_executed,
-                    portfolio_value=portfolio_value,
-                    unrealized_pl=unrealized_pl,
-                    positions=positions,
-                    summary_type="session_end",
-                    symbols_analyzed=self.symbols_processed
-                )
-            except Exception as e:
-                logging.debug(f"Could not send session end notification: {e}")
     
     def _detect_rate_limit_error(self, error_message):
         """Detect if error is a rate limit error"""
