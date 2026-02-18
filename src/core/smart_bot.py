@@ -44,15 +44,27 @@ logger.setLevel(logging.INFO)
 for h in logger.handlers[:]:
     logger.removeHandler(h)
 
+# Custom formatter that converts UTC to Central Time
+class CSTFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        import datetime
+        # Convert UTC to Central Time
+        utc_dt = datetime.datetime.fromtimestamp(record.created, datetime.timezone.utc)
+        # CST is UTC-6 (or UTC-5 during DST, but we'll use standard)
+        cst_dt = utc_dt.astimezone(datetime.timezone(datetime.timedelta(hours=-6)))
+        if datefmt:
+            return cst_dt.strftime(datefmt)
+        return cst_dt.strftime('%Y-%m-%d %H:%M:%S')
+
 # File handler
 file_handler = logging.FileHandler(log_path, mode='a')
 file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+file_handler.setFormatter(CSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 # Stream handler
 stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setLevel(logging.INFO)
-stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+stream_handler.setFormatter(CSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
