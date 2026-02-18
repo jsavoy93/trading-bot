@@ -407,6 +407,25 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             })
         
         logging.info(f"🏁 Session ended: {self.symbols_processed} symbols, {self.trades_executed} trades")
+        
+        # Send session end notification to Telegram
+        if self.enable_telegram_notifications and self.telegram_chat_id:
+            try:
+                account = self.trading_client.get_account()
+                portfolio_value = float(account.portfolio_value)
+                positions = len(self.trading_client.get_all_positions())
+                unrealized_pl = sum(float(p.unrealized_pl) for p in self.trading_client.get_all_positions())
+                
+                self.send_summary_notification(
+                    loop_count=0,
+                    total_trades=self.trades_executed,
+                    portfolio_value=portfolio_value,
+                    unrealized_pl=unrealized_pl,
+                    positions=positions,
+                    summary_type="session_end"
+                )
+            except Exception as e:
+                logging.debug(f"Could not send session end notification: {e}")
     
     def _detect_rate_limit_error(self, error_message):
         """Detect if error is a rate limit error"""
@@ -1852,10 +1871,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return False
     
     def send_summary_notification(self, loop_count: int, total_trades: int, portfolio_value: float, 
-                                unrealized_pl: float, positions: int) -> bool:
+                                unrealized_pl: float, positions: int, summary_type: str = "periodic") -> bool:
         """
         Send a periodic summary notification via Telegram.
         
+        Args:
+            loop_count: Current loop number
+            total_trades: Trades executed this session
+            portfolio_value: Current portfolio value
+            unrealized_pl: Unrealized P&L
+            positions: Number of open positions
+            summary_type: "periodic" or "session_end"
+            
         Returns:
             True if notification sent successfully, False otherwise
         """
@@ -1866,14 +1893,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return False
         
         try:
+            if summary_type == "session_end":
+                title = "🔄 SESSION ENDED"
+            else:
+                title = "📊 BOT SUMMARY"
+                
             message = f"""
-📊 *BOT SUMMARY*
+{title}
 
-*Loop:* #{loop_count}
 *Portfolio:* ${portfolio_value:,.2f}
 *Unrealized P&L:* ${unrealized_pl:,.2f}
 *Positions:* {positions}
-*Trades Today:* {total_trades}
+*Trades:* {total_trades}
 *Win Rate:* {self.get_win_rate():.1f}%
 
 ⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
