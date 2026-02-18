@@ -422,7 +422,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     portfolio_value=portfolio_value,
                     unrealized_pl=unrealized_pl,
                     positions=positions,
-                    summary_type="session_end"
+                    summary_type="session_end",
+                    symbols_analyzed=self.symbols_processed
                 )
             except Exception as e:
                 logging.debug(f"Could not send session end notification: {e}")
@@ -1871,7 +1872,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return False
     
     def send_summary_notification(self, loop_count: int, total_trades: int, portfolio_value: float, 
-                                unrealized_pl: float, positions: int, summary_type: str = "periodic") -> bool:
+                                unrealized_pl: float, positions: int, summary_type: str = "periodic",
+                                symbols_analyzed: int = 0) -> bool:
         """
         Send a periodic summary notification via Telegram.
         
@@ -1882,6 +1884,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             unrealized_pl: Unrealized P&L
             positions: Number of open positions
             summary_type: "periodic" or "session_end"
+            symbols_analyzed: Number of symbols analyzed
             
         Returns:
             True if notification sent successfully, False otherwise
@@ -1898,14 +1901,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             else:
                 title = "📊 BOT SUMMARY"
                 
+            # Get portfolio beta
+            beta = self.get_portfolio_beta()
+            beta_status = "⚠️" if beta > 1.5 else "✅"
+                
             message = f"""
 {title}
 
 *Portfolio:* ${portfolio_value:,.2f}
 *Unrealized P&L:* ${unrealized_pl:,.2f}
 *Positions:* {positions}
+*Symbols Analyzed:* {symbols_analyzed}
 *Trades:* {total_trades}
 *Win Rate:* {self.get_win_rate():.1f}%
+*{beta_status} Beta:* {beta:.2f}
 
 ⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
 """
