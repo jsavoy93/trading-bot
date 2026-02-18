@@ -4021,7 +4021,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.error(f"❌ Portfolio order failed for {symbol}: {e}")
             return False
 
-    def run_continuous_loop(self, max_symbols: int = 30, max_trades: int = 2, loop_delay: int = 300, summary_interval: int = 50, use_ai: bool = None):
+    def run_continuous_loop(self, max_symbols: int = 30, max_trades: int = 2, loop_delay: int = 300, summary_interval: int = 30, use_ai: bool = None):
         """Run trading bot in continuous loop with periodic summaries"""
         loop_count = 0
         total_trades = 0
@@ -4377,8 +4377,8 @@ def main():
                           help='Maximum symbols to analyze per loop (default: 30)')
         parser.add_argument('--max-trades', type=int, default=2,
                           help='Maximum trades to execute per loop (default: 2)')
-        parser.add_argument('--summary-interval', type=int, default=60,
-                          help='Show/send summary every N loops (default: 60 = ~30 min)')
+        parser.add_argument('--summary-interval', type=int, default=30,
+                          help='Show/send summary every N loops (default: 30 = ~5 min)')
         parser.add_argument('--logs', '-l', type=int, default=0,
                           help='Show last N lines of logs (default: 0 = off, use 50 for last 50 lines)')
         parser.add_argument('--tail', '-t', action='store_true',
