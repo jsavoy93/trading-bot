@@ -346,6 +346,10 @@
                                 <th>Symbol</th>
                                 <th>Score</th>
                                 <th>RSI</th>
+                                <th>RSI</th>
+                                <th>SMA</th>
+                                <th>MACD</th>
+                                <th>BB</th>
                                 <th>Qty</th>
                                 <th>Value</th>
                                 <th>P&L</th>
@@ -359,6 +363,18 @@
                                     <strong>{{ pos.score }}</strong>
                                 </td>
                                 <td>{{ pos.rsi if pos.rsi else '-' }}</td>
+                                <td class="{% if pos.score_rsi and pos.score_rsi > 0 %}green{% elif pos.score_rsi and pos.score_rsi < 0 %}red{% endif %}">
+                                    {{ pos.score_rsi if pos.score_rsi is not none else '-' }}
+                                </td>
+                                <td class="{% if pos.score_sma and pos.score_sma > 0 %}green{% elif pos.score_sma and pos.score_sma < 0 %}red{% endif %}">
+                                    {{ pos.score_sma if pos.score_sma is not none else '-' }}
+                                </td>
+                                <td class="{% if pos.score_macd and pos.score_macd > 0 %}green{% elif pos.score_macd and pos.score_macd < 0 %}red{% endif %}">
+                                    {{ pos.score_macd if pos.score_macd is not none else '-' }}
+                                </td>
+                                <td class="{% if pos.score_bb and pos.score_bb > 0 %}green{% elif pos.score_bb and pos.score_bb < 0 %}red{% endif %}">
+                                    {{ pos.score_bb if pos.score_bb is not none else '-' }}
+                                </td>
                                 <td>{{ pos.qty }}</td>
                                 <td>${{ "%.2f"|format(pos.market_value) }}</td>
                                 <td class="{% if pos.unrealized_pl >= 0 %}green{% else %}red{% endif %}">
@@ -414,6 +430,10 @@
                         <th>Signal</th>
                         <th>Score</th>
                         <th>RSI</th>
+                        <th>RSI</th>
+                        <th>SMA</th>
+                        <th>MACD</th>
+                        <th>BB</th>
                     </tr>
                 </thead>
                 <tbody id="opportunities-body">
@@ -700,12 +720,22 @@
                     const score = opp.total_score || 50;
                     const scoreClass = score >= 65 ? 'green' : (score <= 35 ? 'red' : '');
                     const signalClass = opp.signal === 'BUY' ? 'green' : (opp.signal === 'SELL' ? 'red' : '');
+                    
+                    const rsiScore = opp.rsi_score || 0;
+                    const smaScore = opp.sma_score || 0;
+                    const macdScore = opp.macd_score || 0;
+                    const bbScore = opp.bb_score || 0;
+                    
                     return `<tr>
                         <td class="symbol">${opp.symbol}</td>
                         <td>$${opp.price ? opp.price.toFixed(2) : 'N/A'}</td>
                         <td class="${signalClass}">${opp.signal}</td>
                         <td class="${scoreClass}" style="cursor: pointer;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${score.toFixed(0)}</strong>/100</td>
                         <td>${opp.rsi ? opp.rsi.toFixed(1) : 'N/A'}</td>
+                        <td class="${rsiScore > 0 ? 'green' : (rsiScore < 0 ? 'red' : '')}">${rsiScore > 0 ? '+' : ''}${rsiScore.toFixed(0)}</td>
+                        <td class="${smaScore > 0 ? 'green' : (smaScore < 0 ? 'red' : '')}">${smaScore > 0 ? '+' : ''}${smaScore.toFixed(0)}</td>
+                        <td class="${macdScore > 0 ? 'green' : (macdScore < 0 ? 'red' : '')}">${macdScore > 0 ? '+' : ''}${macdScore.toFixed(0)}</td>
+                        <td class="${bbScore > 0 ? 'green' : (bbScore < 0 ? 'red' : '')}">${bbScore > 0 ? '+' : ''}${bbScore.toFixed(0)}</td>
                     </tr>`;
                 }).join('');
                 

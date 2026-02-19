@@ -229,6 +229,12 @@ def get_positions() -> List[Dict]:
                             
                             score = 50 + rsi_score + sma_score + macd_score + bb_score
                             score = max(0, min(100, score))
+                            
+                            # Store individual scores
+                            rsi_val = round(rsi_score, 1) if rsi else 0
+                            sma_val = round(sma_score, 1)
+                            macd_val = round(macd_score, 1)
+                            bb_val = round(bb_score, 1)
                 except:
                     pass
                 
@@ -242,6 +248,10 @@ def get_positions() -> List[Dict]:
                     "current_price": float(p.current_price),
                     "sector": sector,
                     "score": round(score, 1),
+                    "score_rsi": rsi_val,
+                    "score_sma": sma_val,
+                    "score_macd": macd_val,
+                    "score_bb": bb_val,
                     "rsi": round(rsi, 1) if rsi else None,
                 })
         
@@ -514,6 +524,7 @@ def api_opportunities(limit: int = 10):
                     'rsi_score': round(rsi_score, 1),
                     'sma_score': round(sma_score, 1),
                     'macd_score': round(macd_score, 1),
+                    'bb_score': round(bb_score, 1),
                 })
                 
             except Exception as e:
