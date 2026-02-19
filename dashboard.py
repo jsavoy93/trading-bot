@@ -278,11 +278,25 @@ def get_orders(limit: int = 20) -> List[Dict]:
         for o in orders:
             # Convert created_at to Central Time
             created_dt = o.created_at.replace(tzinfo=timezone.utc).astimezone(central) if o.created_at else None
+            
+            # Calculate total cost - use filled_avg_price if filled, otherwise stop_price or limit_price
+            if o.filled_avg_price:
+                price = float(o.filled_avg_price)
+            elif o.limit_price:
+                price = float(o.limit_price)
+            elif o.stop_price:
+                price = float(o.stop_price)
+            else:
+                price = 0
+            total = price * float(o.qty)
+            
             result.append({
                 "symbol": o.symbol,
                 "side": o.side.value,
                 "qty": float(o.qty),
                 "filled_qty": float(o.filled_qty or 0),
+                "price": round(price, 2),
+                "total": round(total, 2),
                 "status": o.status.value,
                 "created_at": o.created_at,
                 "date": created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else None,

@@ -434,6 +434,7 @@
                         <th>Symbol</th>
                         <th>Side</th>
                         <th>Qty</th>
+                        <th>Total</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -444,6 +445,7 @@
                         <td class="symbol">{{ order.symbol }}</td>
                         <td class="side-{{ order.side }}">{{ order.side.upper() }}</td>
                         <td>{{ order.filled_qty }}/{{ order.qty }}</td>
+                        <td>${{ "%.2f"|format(order.total or 0) }}</td>
                         <td>
                             <span class="badge badge-{% if order.status == 'filled' %}filled{% elif order.status == 'pending' %}pending{% else %}cancelled{% endif %}">
                                 {{ order.status }}
