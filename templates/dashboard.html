@@ -430,6 +430,7 @@
             <table>
                 <thead>
                     <tr>
+                        <th>Date</th>
                         <th>Symbol</th>
                         <th>Side</th>
                         <th>Qty</th>
@@ -439,6 +440,7 @@
                 <tbody>
                     {% for order in orders %}
                     <tr>
+                        <td>{{ order.date or '-' }}</td>
                         <td class="symbol">{{ order.symbol }}</td>
                         <td class="side-{{ order.side }}">{{ order.side.upper() }}</td>
                         <td>{{ order.filled_qty }}/{{ order.qty }}</td>
