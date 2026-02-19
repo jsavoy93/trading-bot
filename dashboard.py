@@ -136,11 +136,18 @@ def get_trading_status() -> Dict:
 
 
 def get_positions() -> List[Dict]:
-    """Get current positions"""
+    """Get current positions with scores"""
+    import pandas as pd
+    
     if not trading_client:
         return {"positions": [], "by_sector": {}}
     try:
         positions = trading_client.get_all_positions()
+        
+        # Get bot for scoring
+        sys.path.insert(0, str(Path(__file__).parent / "src"))
+        from core.smart_bot import SmartTradingBot
+        bot = SmartTradingBot()
         
         # Sector mapping for common stocks
         sector_map = {
@@ -174,8 +181,56 @@ def get_positions() -> List[Dict]:
         for p in positions:
             if float(p.qty) > 0:
                 symbol = p.symbol
-                # Use mapping for sector
                 sector = sector_map.get(symbol, 'Other')
+                
+                # Calculate score for this position
+                score = 50
+                rsi = None
+                try:
+                    df = bot.get_market_data(symbol)
+                    if df is not None and len(df) >= bot.sma_slow:
+                        df = bot.calculate_indicators(df)
+                        latest = df.iloc[-1]
+                        
+                        if not pd.isna(latest.get(f'SMA_{bot.sma_fast}')) and not pd.isna(latest.get('RSI')):
+                            sma_fast = latest[f'SMA_{bot.sma_fast}']
+                            sma_slow = latest[f'SMA_{bot.sma_slow}']
+                            rsi = latest['RSI']
+                            price = latest['close']
+                            
+                            # RSI Score
+                            rsi_score = 0
+                            if rsi < 30:
+                                rsi_score = 25 * (1 - rsi / 30)
+                            elif rsi > 70:
+                                rsi_score = -25 * ((rsi - 70) / 30)
+                            
+                            # SMA Score
+                            sma_score = 0
+                            if sma_fast > sma_slow:
+                                sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
+                                sma_score = min(25, sma_pct * 5)
+                            elif sma_fast < sma_slow:
+                                sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
+                                sma_score = -min(25, sma_pct * 5)
+                            
+                            # MACD Score
+                            macd_hist = latest.get('MACD_histogram', 0)
+                            macd_score = max(-25, min(25, macd_hist * 100)) if pd.notna(macd_hist) else 0
+                            
+                            # Bollinger Score
+                            bb_lower = latest.get('BB_lower')
+                            bb_middle = latest.get('BB_middle')
+                            bb_upper = latest.get('BB_upper')
+                            bb_score = 0
+                            if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
+                                bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+                                bb_score = 25 - (bb_position * 50)
+                            
+                            score = 50 + rsi_score + sma_score + macd_score + bb_score
+                            score = max(0, min(100, score))
+                except:
+                    pass
                 
                 result.append({
                     "symbol": symbol,
@@ -186,6 +241,8 @@ def get_positions() -> List[Dict]:
                     "unrealized_plpc": float(p.unrealized_plpc),
                     "current_price": float(p.current_price),
                     "sector": sector,
+                    "score": round(score, 1),
+                    "rsi": round(rsi, 1) if rsi else None,
                 })
         
         # Group by sector

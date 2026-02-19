@@ -344,6 +344,8 @@
                         <thead>
                             <tr>
                                 <th>Symbol</th>
+                                <th>Score</th>
+                                <th>RSI</th>
                                 <th>Qty</th>
                                 <th>Value</th>
                                 <th>P&L</th>
@@ -353,6 +355,10 @@
                             {% for pos in positions_list %}
                             <tr>
                                 <td class="symbol">{{ pos.symbol }}</td>
+                                <td class="{% if pos.score >= 65 %}green{% elif pos.score <= 35 %}red{% endif %}">
+                                    <strong>{{ pos.score }}</strong>
+                                </td>
+                                <td>{{ pos.rsi if pos.rsi else '-' }}</td>
                                 <td>{{ pos.qty }}</td>
                                 <td>${{ "%.2f"|format(pos.market_value) }}</td>
                                 <td class="{% if pos.unrealized_pl >= 0 %}green{% else %}red{% endif %}">
