@@ -271,11 +271,18 @@ def get_orders(limit: int = 20) -> List[Dict]:
         request = GetOrdersRequest(limit=limit)
         orders = trading_client.get_orders(request)
         
+        # Filter to last 7 days
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=7)
+        
         # Central Time zone
         central = datetime.now().astimezone().tzinfo
         
         result = []
         for o in orders:
+            # Skip if created_at is older than 7 days
+            if o.created_at and o.created_at.replace(tzinfo=timezone.utc) < cutoff.replace(tzinfo=timezone.utc):
+                continue
             # Convert created_at to Central Time
             created_dt = o.created_at.replace(tzinfo=timezone.utc).astimezone(central) if o.created_at else None
             
@@ -360,7 +367,7 @@ def dashboard():
     try:
         account = get_account_info()
         positions = get_positions()
-        orders = get_orders(10)
+        orders = get_orders(100)  # Get more orders to cover last week
         db_trades = get_trades_from_db(10)
         sessions = get_recent_sessions(5)
         trading_status = get_trading_status()
