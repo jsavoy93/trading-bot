@@ -232,9 +232,11 @@ def api_sessions(limit: int = 5):
 
 
 @app.get("/api/logs")
-def api_logs(lines: int = 100):
-    """Get recent log entries"""
+def api_logs(session_id: int = None, lines: int = 200):
+    """Get log entries, optionally filtered by session"""
     import requests as _requests
+    from datetime import datetime
+    
     log_path = Path(__file__).parent / "trading_bot.log"
     if not log_path.exists():
         return {"logs": [], "error": "Log file not found"}
@@ -242,8 +244,69 @@ def api_logs(lines: int = 100):
     try:
         with open(log_path, 'r') as f:
             all_lines = f.readlines()
-            recent = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            return {"logs": recent}
+        
+        # If session_id provided, filter by session timestamps
+        if session_id and db.is_available():
+            try:
+                headers = {
+                    "apikey": db.api_key,
+                    "Authorization": f"Bearer {db.api_key}",
+                }
+                # Get session info
+                resp = requests.get(
+                    f"{db.rest_url}/trading_sessions?id=eq.{session_id}",
+                    headers=headers,
+                    timeout=5
+                )
+                if resp.status_code == 200 and resp.json():
+                    session = resp.json()[0]
+                    start = session.get('session_start')
+                    end = session.get('session_end')
+                    
+                    if start:
+                        # Filter lines within session time range
+                        filtered = []
+                        in_session = False
+                        for line in all_lines:
+                            if not line.strip():
+                                filtered.append(line)
+                                continue
+                            # Extract timestamp from log line (format: "2026-02-18 19:58:57 - INFO - ...")
+                            try:
+                                log_ts = line.split(' - ')[0].strip()
+                                log_time = datetime.strptime(log_ts, '%Y-%m-%d %H:%M:%S')
+                                
+                                if start:
+                                    start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                                    # Convert to CST (UTC-6) for comparison
+                                    from datetime import timezone, timedelta
+                                    start_cst = start_dt.astimezone(timezone(timedelta(hours=-6)))
+                                    start_str = start_cst.strftime('%Y-%m-%d %H:%M:%S')
+                                    
+                                    if log_time >= datetime.strptime(start_str, '%Y-%m-%d %H:%M:%S'):
+                                        in_session = True
+                                
+                                if end:
+                                    end_dt = datetime.fromisoformat(end.replace('Z', '+00:00'))
+                                    end_cst = end_dt.astimezone(timezone(timedelta(hours=-6)))
+                                    end_str = end_cst.strftime('%Y-%m-%d %H:%M:%S')
+                                    
+                                    if log_time > datetime.strptime(end_str, '%Y-%m-%d %H:%M:%S'):
+                                        in_session = False
+                                        
+                                if in_session:
+                                    filtered.append(line)
+                            except:
+                                # If we can't parse timestamp, include line if we're in session
+                                if in_session:
+                                    filtered.append(line)
+                        
+                        return {"logs": filtered[-lines:], "session_id": session_id}
+            except Exception as e:
+                pass  # Fall back to recent logs
+        
+        # Default: return most recent lines
+        return {"logs": all_lines[-lines:], "session_id": None}
     except Exception as e:
         return {"logs": [], "error": str(e)}
 
