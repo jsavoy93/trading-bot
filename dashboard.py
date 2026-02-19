@@ -266,21 +266,29 @@ def get_orders(limit: int = 20) -> List[Dict]:
         return []
     try:
         from alpaca.trading.requests import GetOrdersRequest
+        from datetime import datetime, timezone
         
         request = GetOrdersRequest(limit=limit)
         orders = trading_client.get_orders(request)
-        return [
-            {
+        
+        # Central Time zone
+        central = datetime.now().astimezone().tzinfo
+        
+        result = []
+        for o in orders:
+            # Convert created_at to Central Time
+            created_dt = o.created_at.replace(tzinfo=timezone.utc).astimezone(central) if o.created_at else None
+            result.append({
                 "symbol": o.symbol,
                 "side": o.side.value,
                 "qty": float(o.qty),
                 "filled_qty": float(o.filled_qty or 0),
                 "status": o.status.value,
                 "created_at": o.created_at,
+                "date": created_dt.strftime("%Y-%m-%d %H:%M") if created_dt else None,
                 "filled_at": o.filled_at,
-            }
-            for o in orders
-        ]
+            })
+        return result
     except Exception as e:
         logger.error(f"Failed to get orders: {e}")
         return []
