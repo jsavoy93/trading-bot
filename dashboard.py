@@ -330,6 +330,125 @@ def api_positions():
     return get_positions()
 
 
+@app.get("/api/opportunities")
+def api_opportunities(limit: int = 10):
+    """Get top stock opportunities based on analysis scores"""
+    import sys
+    from pathlib import Path
+    import pandas as pd
+    
+    # Add src to path
+    src_path = str(Path(__file__).parent / "src")
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+    
+    try:
+        from core.smart_bot import SmartTradingBot
+        
+        # Create bot instance (minimal init)
+        bot = SmartTradingBot()
+        
+        # Get symbols to analyze
+        tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
+                   'JNJ', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'CRM',
+                   'NFLX', 'INTC', 'AMD', 'CSCO', 'PFE', 'ABBV', 'T', 'VZ', 'KO', 'PEP']
+        
+        opportunities = []
+        analyzed = 0
+        
+        for symbol in tickers:
+            try:
+                analyzed += 1
+                
+                # Get data and calculate directly (bypass analyze_symbol issues)
+                df = bot.get_market_data(symbol)
+                if df is None or len(df) < bot.sma_slow:
+                    continue
+                
+                df = bot.calculate_indicators(df)
+                latest = df.iloc[-1]
+                
+                # Check for valid data
+                if pd.isna(latest.get(f'SMA_{bot.sma_fast}')) or pd.isna(latest.get('RSI')):
+                    continue
+                
+                # Calculate scores
+                sma_fast = latest[f'SMA_{bot.sma_fast}']
+                sma_slow = latest[f'SMA_{bot.sma_slow}']
+                rsi = latest['RSI']
+                price = latest['close']
+                
+                # RSI Score
+                rsi_score = 0
+                if rsi < 30:
+                    rsi_score = 25 * (1 - rsi / 30)
+                elif rsi > 70:
+                    rsi_score = -25 * ((rsi - 70) / 30)
+                
+                # SMA Score
+                sma_score = 0
+                if sma_fast > sma_slow:
+                    sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
+                    sma_score = min(25, sma_pct * 5)
+                elif sma_fast < sma_slow:
+                    sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
+                    sma_score = -min(25, sma_pct * 5)
+                
+                # MACD Score
+                macd_hist = latest.get('MACD_histogram', 0)
+                macd_score = max(-25, min(25, macd_hist * 100)) if pd.notna(macd_hist) else 0
+                
+                # Bollinger Score
+                bb_lower = latest.get('BB_lower')
+                bb_middle = latest.get('BB_middle')
+                bb_upper = latest.get('BB_upper')
+                bb_score = 0
+                if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
+                    bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+                    bb_score = 25 - (bb_position * 50)
+                
+                # Total Score
+                total_score = 50 + rsi_score + sma_score + macd_score + bb_score
+                total_score = max(0, min(100, total_score))
+                
+                # Signal
+                if total_score >= 65:
+                    signal = 'BUY'
+                    strength = 'STRONG' if total_score >= 80 else 'MEDIUM'
+                elif total_score <= 35:
+                    signal = 'SELL'
+                    strength = 'STRONG' if total_score <= 20 else 'MEDIUM'
+                else:
+                    signal = 'HOLD'
+                    strength = 'WEAK'
+                
+                opportunities.append({
+                    'symbol': symbol,
+                    'price': price,
+                    'signal': signal,
+                    'signal_strength': strength,
+                    'total_score': round(total_score, 1),
+                    'rsi': round(rsi, 1),
+                    'rsi_score': round(rsi_score, 1),
+                    'sma_score': round(sma_score, 1),
+                    'macd_score': round(macd_score, 1),
+                })
+                
+            except Exception as e:
+                logger.debug(f"Could not analyze {symbol}: {e}")
+        
+        # Sort by score (highest first)
+        opportunities.sort(key=lambda x: x.get('total_score', 0), reverse=True)
+        
+        return {"opportunities": opportunities[:limit], "analyzed": analyzed}
+        
+    except Exception as e:
+        logger.error(f"Failed to get opportunities: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"opportunities": [], "error": str(e)}
+
+
 @app.get("/api/orders")
 def api_orders(limit: int = 20):
     """API endpoint for orders"""

@@ -393,6 +393,28 @@
             {% endif %}
         </div>
 
+        <!-- Top Opportunities -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🎯 Top Opportunities</span>
+                <button onclick="loadOpportunities()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
+            </div>
+            <div id="opportunities-loading">Loading opportunities...</div>
+            <table id="opportunities-table" style="display: none;">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Price</th>
+                        <th>Signal</th>
+                        <th>Score</th>
+                        <th>RSI</th>
+                    </tr>
+                </thead>
+                <tbody id="opportunities-body">
+                </tbody>
+            </table>
+        </div>
+
         <!-- Recent Orders -->
         <div class="card">
             <div class="card-header">
@@ -639,6 +661,51 @@
         function refresh() {
             window.location.reload();
         }
+        
+        // Load top opportunities
+        async function loadOpportunities() {
+            const loading = document.getElementById('opportunities-loading');
+            const table = document.getElementById('opportunities-table');
+            const tbody = document.getElementById('opportunities-body');
+            
+            try {
+                const response = await fetch('/api/opportunities?limit=15');
+                const data = await response.json();
+                
+                if (data.error) {
+                    loading.textContent = 'Error: ' + data.error;
+                    return;
+                }
+                
+                const opportunities = data.opportunities || [];
+                if (opportunities.length === 0) {
+                    loading.textContent = 'No opportunities found';
+                    return;
+                }
+                
+                loading.style.display = 'none';
+                table.style.display = 'table';
+                
+                tbody.innerHTML = opportunities.map(opp => {
+                    const score = opp.total_score || 50;
+                    const scoreClass = score >= 65 ? 'green' : (score <= 35 ? 'red' : '');
+                    const signalClass = opp.signal === 'BUY' ? 'green' : (opp.signal === 'SELL' ? 'red' : '');
+                    return `<tr>
+                        <td class="symbol">${opp.symbol}</td>
+                        <td>$${opp.price ? opp.price.toFixed(2) : 'N/A'}</td>
+                        <td class="${signalClass}">${opp.signal}</td>
+                        <td class="${scoreClass}"><strong>${score.toFixed(0)}</strong>/100</td>
+                        <td>${opp.rsi ? opp.rsi.toFixed(1) : 'N/A'}</td>
+                    </tr>`;
+                }).join('');
+                
+            } catch (e) {
+                loading.textContent = 'Failed to load: ' + e;
+            }
+        }
+        
+        // Load opportunities on page load
+        document.addEventListener('DOMContentLoaded', loadOpportunities);
         
         // Toggle a single sector
         function toggleSector(id) {
