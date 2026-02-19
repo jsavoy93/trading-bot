@@ -355,7 +355,7 @@
                             {% for pos in positions_list %}
                             <tr>
                                 <td class="symbol">{{ pos.symbol }}</td>
-                                <td class="{% if pos.score >= 65 %}green{% elif pos.score <= 35 %}red{% endif %}">
+                                <td class="{% if pos.score >= 65 %}green{% elif pos.score <= 35 %}red{% endif %}" style="cursor: pointer;" onclick="showScoreBreakdown('{{ pos.symbol }}')">
                                     <strong>{{ pos.score }}</strong>
                                 </td>
                                 <td>{{ pos.rsi if pos.rsi else '-' }}</td>
@@ -700,7 +700,7 @@
                         <td class="symbol">${opp.symbol}</td>
                         <td>$${opp.price ? opp.price.toFixed(2) : 'N/A'}</td>
                         <td class="${signalClass}">${opp.signal}</td>
-                        <td class="${scoreClass}"><strong>${score.toFixed(0)}</strong>/100</td>
+                        <td class="${scoreClass}" style="cursor: pointer;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${score.toFixed(0)}</strong>/100</td>
                         <td>${opp.rsi ? opp.rsi.toFixed(1) : 'N/A'}</td>
                     </tr>`;
                 }).join('');
@@ -772,8 +772,99 @@
             document.getElementById('log-viewer').style.display = 'none';
         }
         
+        // Score breakdown modal
+        async function showScoreBreakdown(symbol) {
+            const modal = document.getElementById('score-modal');
+            const content = document.getElementById('score-modal-content');
+            
+            content.innerHTML = '<div style="text-align: center; padding: 20px;">Loading...</div>';
+            modal.style.display = 'flex';
+            
+            try {
+                const response = await fetch(`/api/score/${symbol}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    content.innerHTML = `<div style="padding: 20px;">Error: ${data.error}</div>`;
+                    return;
+                }
+                
+                const b = data.breakdown;
+                const s = data.scores;
+                
+                content.innerHTML = `
+                    <div style="padding: 20px; max-height: 70vh; overflow-y: auto;">
+                        <h2 style="margin: 0 0 10px 0;">${data.symbol} - Score: ${data.total_score}/100</h2>
+                        <p style="color: ${data.signal === 'BUY' ? '#3fb950' : (data.signal === 'SELL' ? '#da3633' : '#d29922')}; font-size: 18px; font-weight: bold;">${data.signal}</p>
+                        <p style="color: #8b949e;">Price: $${data.price}</p>
+                        
+                        <h3 style="margin-top: 20px; border-bottom: 1px solid #30363d; padding-bottom: 5px;">Score Breakdown</h3>
+                        
+                        <div style="display: grid; gap: 10px; margin-top: 10px;">
+                            <div style="background: #21262d; padding: 10px; border-radius: 6px;">
+                                <strong>RSI:</strong> ${b.rsi.value} → Score: ${s.rsi}/25
+                                <div style="font-size: 12px; color: #8b949e;">${b.rsi.desc}</div>
+                            </div>
+                            
+                            <div style="background: #21262d; padding: 10px; border-radius: 6px;">
+                                <strong>SMA:</strong> ${b.sma.fast} vs ${b.sma.slow} (${b.sma.separation}%) → Score: ${s.sma}/25
+                                <div style="font-size: 12px; color: #8b949e;">${b.sma.desc}</div>
+                            </div>
+                            
+                            <div style="background: #21262d; padding: 10px; border-radius: 6px;">
+                                <strong>MACD:</strong> ${b.macd.histogram} → Score: ${s.macd}/25
+                                <div style="font-size: 12px; color: #8b949e;">${b.macd.desc}</div>
+                            </div>
+                            
+                            <div style="background: #21262d; padding: 10px; border-radius: 6px;">
+                                <strong>Bollinger:</strong> Position ${b.bollinger.position}% → Score: ${s.bollinger}/25
+                                <div style="font-size: 12px; color: #8b949e;">${b.bollinger.desc}</div>
+                            </div>
+                            
+                            <div style="background: #21262d; padding: 10px; border-radius: 6px;">
+                                <strong>Catalyst:</strong> Score: ${s.catalyst}/25
+                                <div style="font-size: 12px; color: #8b949e;">${b.catalyst.desc}</div>
+                                ${b.catalyst.catalysts.length > 0 ? '<div style="font-size: 11px; color: #d29922;">' + b.catalyst.catalysts.join(', ') + '</div>' : ''}
+                            </div>
+                        </div>
+                        
+                        <h3 style="margin-top: 20px; border-bottom: 1px solid #30363d; padding-bottom: 5px;">Filters</h3>
+                        
+                        <div style="display: grid; gap: 8px; margin-top: 10px; font-size: 13px;">
+                            <div style="padding: 8px; background: ${b.earnings.has_earnings ? '#da3633' : '#21262d'}; border-radius: 4px;">
+                                <strong>Earnings:</strong> ${b.earnings.has_earnings ? 'In ' + b.earnings.days_until + ' days ⚠️' : 'OK ✅'}
+                            </div>
+                            
+                            <div style="padding: 8px; background: ${b.sp_relative && b.sp_relative.outperforming ? '#21262d' : '#da3633'}; border-radius: 4px;">
+                                <strong>SPY Relative:</strong> ${b.sp_relative && b.sp_relative.outperforming ? 'Outperforming SPY ✅' : 'Underperforming SPY ⚠️'}
+                            </div>
+                            
+                            <div style="padding: 8px; background: #21262d; border-radius: 4px;">
+                                <strong>Regime:</strong> ${b.regime.regime || 'Unknown'} (ADX: ${b.regime.adx})
+                            </div>
+                            
+                            <div style="padding: 8px; background: #21262d; border-radius: 4px;">
+                                <strong>Volatility:</strong> ${b.volatility.tier} (ATR: ${b.volatility.atr_pct}%)
+                            </div>
+                        </div>
+                        
+                        <button onclick="document.getElementById('score-modal').style.display = 'none'" 
+                                style="margin-top: 20px; padding: 10px 20px; background: #238636; color: white; border: none; border-radius: 6px; cursor: pointer;">Close</button>
+                    </div>
+                `;
+            } catch (e) {
+                content.innerHTML = `<div style="padding: 20px;">Error: ${e}</div>`;
+            }
+        }
+        
         // Auto-refresh every 30 seconds
         setInterval(refresh, 30000);
     </script>
+    
+    <!-- Score Modal -->
+    <div id="score-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center;">
+        <div id="score-modal-content" style="background: #161b22; border: 1px solid #30363d; border-radius: 8px; max-width: 500px; width: 90%; max-height: 80vh; overflow: hidden;">
+        </div>
+    </div>
 </body>
 </html>

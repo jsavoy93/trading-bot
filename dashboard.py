@@ -833,6 +833,107 @@ def api_analytics_rsi():
         return {"error": str(e)}
 
 
+
+
+@app.get("/api/score/{symbol}")
+def api_score_breakdown(symbol: str):
+    """Get full score breakdown for a symbol"""
+    import sys
+    from pathlib import Path
+    import pandas as pd
+    
+    src_path = str(Path(__file__).parent / "src")
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+    
+    try:
+        from core.smart_bot import SmartTradingBot
+        
+        bot = SmartTradingBot()
+        
+        # Get market data
+        df = bot.get_market_data(symbol)
+        if df is None or len(df) < bot.sma_slow:
+            return {"error": "Insufficient data"}
+        
+        df = bot.calculate_indicators(df)
+        latest = df.iloc[-1]
+        
+        if pd.isna(latest.get(f'SMA_{bot.sma_fast}')) or pd.isna(latest.get('RSI')):
+            return {"error": "Insufficient indicator data"}
+        
+        price = latest['close']
+        rsi = latest['RSI']
+        sma_fast = latest[f'SMA_{bot.sma_fast}']
+        sma_slow = latest[f'SMA_{bot.sma_slow}']
+        macd_hist = latest.get('MACD_histogram', 0)
+        atr = latest.get('ATR', 0)
+        
+        # Calculate scores
+        rsi_score = 0
+        if rsi < 30:
+            rsi_score = 25 * (1 - rsi / 30)
+        elif rsi > 70:
+            rsi_score = -25 * ((rsi - 70) / 30)
+        
+        sma_score = 0
+        sma_pct = 0
+        if sma_fast > sma_slow:
+            sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
+            sma_score = min(25, sma_pct * 5)
+        elif sma_fast < sma_slow:
+            sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
+            sma_score = -min(25, sma_pct * 5)
+        
+        macd_score = max(-25, min(25, macd_hist * 100)) if pd.notna(macd_hist) else 0
+        
+        bb_lower = latest.get('BB_lower')
+        bb_middle = latest.get('BB_middle')
+        bb_upper = latest.get('BB_upper')
+        bb_score = 0
+        bb_position = 50
+        if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
+            if (bb_upper - bb_lower) > 0:
+                bb_position = ((price - bb_lower) / (bb_upper - bb_lower)) * 100
+            bb_score = 25 - (bb_position / 2)
+        
+        catalyst_data = bot.scan_catalysts(symbol)
+        catalyst_score = catalyst_data.get('catalyst_score', 0)
+        
+        total_score = 50 + rsi_score + sma_score + macd_score + bb_score + catalyst_score
+        total_score = max(0, min(100, total_score))
+        
+        signal = 'HOLD'
+        if total_score >= 65:
+            signal = 'BUY'
+        elif total_score <= 35:
+            signal = 'SELL'
+        
+        return {
+            'symbol': symbol,
+            'price': round(price, 2),
+            'total_score': round(total_score, 1),
+            'signal': signal,
+            'breakdown': {
+                'rsi': {'value': round(rsi, 1), 'score': round(rsi_score, 1), 'max': 25},
+                'sma': {'fast': round(sma_fast, 2), 'slow': round(sma_slow, 2), 'separation': round(sma_pct, 2), 'score': round(sma_score, 1), 'max': 25},
+                'macd': {'histogram': round(macd_hist, 2) if pd.notna(macd_hist) else 0, 'score': round(macd_score, 1), 'max': 25},
+                'bollinger': {'position': round(bb_position, 1), 'score': round(bb_score, 1), 'max': 25},
+                'catalyst': {'score': catalyst_score, 'max': 25, 'catalysts': catalyst_data.get('catalysts', [])}
+            },
+            'scores': {
+                'rsi': round(rsi_score, 1),
+                'sma': round(sma_score, 1),
+                'macd': round(macd_score, 1),
+                'bollinger': round(bb_score, 1),
+                'catalyst': catalyst_score
+            }
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
