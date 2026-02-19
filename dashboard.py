@@ -231,6 +231,23 @@ def api_sessions(limit: int = 5):
     return get_recent_sessions(limit)
 
 
+@app.get("/api/logs")
+def api_logs(lines: int = 100):
+    """Get recent log entries"""
+    import requests as _requests
+    log_path = Path(__file__).parent / "trading_bot.log"
+    if not log_path.exists():
+        return {"logs": [], "error": "Log file not found"}
+    
+    try:
+        with open(log_path, 'r') as f:
+            all_lines = f.readlines()
+            recent = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            return {"logs": recent}
+    except Exception as e:
+        return {"logs": [], "error": str(e)}
+
+
 @app.post("/api/start-session")
 def api_start_session():
     """Start a new trading session"""

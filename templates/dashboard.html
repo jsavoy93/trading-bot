@@ -498,6 +498,7 @@
         <div class="card">
             <div class="card-header">
                 <span class="card-title">🟢 Recent Sessions</span>
+                <button onclick="loadLogs()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">📜 View Logs</button>
             </div>
             <table>
                 <thead>
@@ -506,6 +507,7 @@
                         <th>Start</th>
                         <th>Trades</th>
                         <th>Symbols</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -515,10 +517,20 @@
                         <td>{{ session.session_start[:10] if session.session_start else 'N/A' }}</td>
                         <td>{{ session.total_trades_executed or 0 }}</td>
                         <td>{{ session.total_symbols_processed or 0 }}</td>
+                        <td><button onclick="viewSessionLogs({{ session.id }})" class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;">Logs</button></td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+        
+        <!-- Log Viewer -->
+        <div class="card" id="log-viewer" style="display: none;">
+            <div class="card-header">
+                <span class="card-title">📜 Session Logs</span>
+                <button onclick="closeLogs()" class="btn btn-secondary" style="padding: 4px 8px;">✕ Close</button>
+            </div>
+            <pre id="log-content" style="background: #0d1117; padding: 10px; border-radius: 4px; overflow-x: auto; max-height: 400px; font-size: 11px; line-height: 1.4;"></pre>
         </div>
         {% endif %}
 
@@ -535,6 +547,33 @@
     <script>
         function refresh() {
             window.location.reload();
+        }
+        
+        // Load logs function
+        async function loadLogs() {
+            try {
+                const response = await fetch('/api/logs?lines=100');
+                const data = await response.json();
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+                document.getElementById('log-content').textContent = data.logs.join('');
+                document.getElementById('log-viewer').style.display = 'block';
+                document.getElementById('log-viewer').scrollIntoView({ behavior: 'smooth' });
+            } catch (e) {
+                alert('Failed to load logs: ' + e);
+            }
+        }
+        
+        // View session logs (same as load logs for now - shows recent logs)
+        async function viewSessionLogs(sessionId) {
+            await loadLogs();
+        }
+        
+        // Close logs viewer
+        function closeLogs() {
+            document.getElementById('log-viewer').style.display = 'none';
         }
         
         // Auto-refresh every 30 seconds
