@@ -2706,6 +2706,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if not signal:
                 return False
             
+            # STRICT: Block all trades if using margin (cash negative)
+            try:
+                account = self.trading_client.get_account()
+                cash = float(account.cash)
+                if cash < 0:
+                    logging.warning(f"🚫 MARGIN DETECTED - Cash: ${cash:.2f}. Blocking all trades until cash is positive.")
+                    return False
+            except Exception as e:
+                logging.debug(f"Could not check account cash: {e}")
+            
             # Get portfolio value for percentage-based calculations
             portfolio_value = self.get_portfolio_total_value()
             
@@ -4025,6 +4035,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             while True:
                 loop_count += 1
                 loop_start = datetime.now(timezone.utc)
+                
+                # STRICT: Check for margin usage at start of each loop
+                try:
+                    account = self.trading_client.get_account()
+                    cash = float(account.cash)
+                    if cash < 0:
+                        print(f"⚠️  MARGIN WARNING: Cash is negative (${cash:.2f}). No new BUY trades will execute!")
+                except:
+                    pass
                 
                 print(f"\n🔄 LOOP #{loop_count} - {loop_start.strftime('%H:%M:%S')}")
                 print("-" * 40)
