@@ -186,6 +186,46 @@
                 grid-template-columns: 1fr;
             }
         }
+        
+        .sector-group {
+            margin-bottom: 8px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        
+        .sector-header {
+            background: #21262d;
+            padding: 10px 12px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 500;
+        }
+        
+        .sector-header:hover {
+            background: #30363d;
+        }
+        
+        .sector-toggle {
+            font-size: 12px;
+            transition: transform 0.2s;
+        }
+        
+        .sector-content {
+            display: none;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .sector-content.expanded {
+            display: block;
+        }
+        
+        .sector-content table {
+            margin: 0;
+        }
     </style>
 </head>
 <body>
@@ -273,8 +313,43 @@
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📊 Positions ({{ positions|length }})</span>
+                <button onclick="toggleAllSectors()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">Expand All</button>
             </div>
-            {% if positions %}
+            
+            {% if positions_by_sector %}
+            {% for sector, positions_list in positions_by_sector.items() %}
+            <div class="sector-group">
+                <div class="sector-header" onclick="toggleSector('sector-{{ sector }}')">
+                    <span>📁 {{ sector }} ({{ positions_list|length }} positions, ${{ "%.2f"|format(positions_list|sum(attribute='market_value')) }})</span>
+                    <span class="sector-toggle">▼</span>
+                </div>
+                <div id="sector-{{ sector }}" class="sector-content">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Qty</th>
+                                <th>Value</th>
+                                <th>P&L</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for pos in positions_list %}
+                            <tr>
+                                <td class="symbol">{{ pos.symbol }}</td>
+                                <td>{{ pos.qty }}</td>
+                                <td>${{ "%.2f"|format(pos.market_value) }}</td>
+                                <td class="{% if pos.unrealized_pl >= 0 %}green{% else %}red{% endif %}">
+                                    ${{ "%.2f"|format(pos.unrealized_pl) }} ({{ "%.1f"|format(pos.unrealized_plpc * 100) }}%)
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endfor %}
+            {% elif positions %}
             <table>
                 <thead>
                     <tr>
@@ -547,6 +622,38 @@
     <script>
         function refresh() {
             window.location.reload();
+        }
+        
+        // Toggle a single sector
+        function toggleSector(id) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.toggle('expanded');
+                const header = el.previousElementSibling;
+                const toggle = header.querySelector('.sector-toggle');
+                if (toggle) {
+                    toggle.textContent = el.classList.contains('expanded') ? '▲' : '▼';
+                }
+            }
+        }
+        
+        // Toggle all sectors
+        function toggleAllSectors() {
+            const allContents = document.querySelectorAll('.sector-content');
+            const allToggles = document.querySelectorAll('.sector-toggle');
+            const btn = event.target;
+            
+            const anyExpanded = document.querySelector('.sector-content.expanded');
+            
+            if (anyExpanded) {
+                allContents.forEach(el => el.classList.remove('expanded'));
+                allToggles.forEach(el => el.textContent = '▼');
+                btn.textContent = 'Expand All';
+            } else {
+                allContents.forEach(el => el.classList.add('expanded'));
+                allToggles.forEach(el => el.textContent = '▲');
+                btn.textContent = 'Collapse All';
+            }
         }
         
         // Load logs function

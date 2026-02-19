@@ -90,25 +90,69 @@ def get_account_info() -> Dict:
 def get_positions() -> List[Dict]:
     """Get current positions"""
     if not trading_client:
-        return []
+        return {"positions": [], "by_sector": {}}
     try:
         positions = trading_client.get_all_positions()
-        return [
-            {
-                "symbol": p.symbol,
-                "qty": float(p.qty),
-                "avg_entry_price": float(p.avg_entry_price),
-                "market_value": float(p.market_value),
-                "unrealized_pl": float(p.unrealized_pl),
-                "unrealized_plpc": float(p.unrealized_plpc),
-                "current_price": float(p.current_price),
-            }
-            for p in positions
-            if float(p.qty) > 0
-        ]
+        
+        # Sector mapping for common stocks
+        sector_map = {
+            'AAPL': 'Technology', 'MSFT': 'Technology', 'GOOGL': 'Technology', 'GOOG': 'Technology',
+            'AMZN': 'Consumer', 'META': 'Technology', 'NVDA': 'Technology', 'TSLA': 'Consumer',
+            'BRK.B': 'Financial', 'JPM': 'Financial', 'V': 'Financial', 'JNJ': 'Healthcare',
+            'WMT': 'Consumer', 'PG': 'Consumer', 'MA': 'Financial', 'UNH': 'Healthcare',
+            'HD': 'Consumer', 'DIS': 'Communication', 'PYPL': 'Financial', 'BAC': 'Financial',
+            'ADBE': 'Technology', 'CRM': 'Technology', 'NFLX': 'Communication', 'INTC': 'Technology',
+            'AMD': 'Technology', 'CSCO': 'Technology', 'PFE': 'Healthcare', 'ABBV': 'Healthcare',
+            'T': 'Communication', 'VZ': 'Communication', 'KO': 'Consumer', 'PEP': 'Consumer',
+            'COST': 'Consumer', 'NKE': 'Consumer', 'MCD': 'Consumer', 'SBUX': 'Consumer',
+            'BA': 'Industrial', 'CAT': 'Industrial', 'GE': 'Industrial', 'MMM': 'Industrial',
+            'GS': 'Financial', 'MS': 'Financial', 'C': 'Financial', 'WFC': 'Financial',
+            'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy', 'SLB': 'Energy',
+            'PLD': 'Real Estate', 'AMT': 'Real Estate', 'CCI': 'Real Estate', 'EQIX': 'Real Estate',
+            'LMT': 'Industrial', 'RTX': 'Industrial', 'NOC': 'Industrial', 'UPS': 'Industrial',
+            'UNP': 'Industrial', 'HON': 'Industrial', 'LOW': 'Consumer',
+            'TGT': 'Consumer', 'TJX': 'Consumer', 'ROST': 'Consumer',
+            'AMAT': 'Technology', 'KLAC': 'Technology', 'LRCX': 'Technology', 'MU': 'Technology',
+            'SNOW': 'Technology', 'SHOP': 'Technology', 'CRWD': 'Technology', 'NET': 'Technology',
+            'DDOG': 'Technology', 'ZS': 'Technology', 'OKTA': 'Technology', 'MDB': 'Technology',
+            'PANW': 'Technology', 'FTNT': 'Technology', 'NOW': 'Technology', 'TEAM': 'Technology',
+            'ADSK': 'Technology', 'INTU': 'Technology', 'ADP': 'Technology', 'PAYX': 'Technology',
+            'ISRG': 'Healthcare', 'MDT': 'Healthcare', 'SYK': 'Healthcare', 'BMY': 'Healthcare',
+            'LLY': 'Healthcare', 'GILD': 'Healthcare', 'VRTX': 'Healthcare', 'REGN': 'Healthcare',
+            'KKR': 'Financial', 'EXPE': 'Consumer', 'CYPH': 'Healthcare',
+        }
+        
+        result = []
+        for p in positions:
+            if float(p.qty) > 0:
+                symbol = p.symbol
+                # Use mapping for sector
+                sector = sector_map.get(symbol, 'Other')
+                
+                result.append({
+                    "symbol": symbol,
+                    "qty": float(p.qty),
+                    "avg_entry_price": float(p.avg_entry_price),
+                    "market_value": float(p.market_value),
+                    "unrealized_pl": float(p.unrealized_pl),
+                    "unrealized_plpc": float(p.unrealized_plpc),
+                    "current_price": float(p.current_price),
+                    "sector": sector,
+                })
+        
+        # Group by sector
+        sectors = {}
+        for pos in result:
+            sec = pos.get('sector', 'Other')
+            if sec not in sectors:
+                sectors[sec] = []
+            sectors[sec].append(pos)
+        
+        return {"positions": result, "by_sector": sectors}
+        
     except Exception as e:
         logger.error(f"Failed to get positions: {e}")
-        return []
+        return {"positions": [], "by_sector": {}}
 
 
 def get_orders(limit: int = 20) -> List[Dict]:
@@ -197,6 +241,11 @@ def dashboard():
         db_trades = get_trades_from_db(10)
         sessions = get_recent_sessions(5)
         
+        # Get positions (returns dict with 'positions' and 'by_sector')
+        positions_data = get_positions()
+        positions = positions_data.get("positions", [])
+        positions_by_sector = positions_data.get("by_sector", {})
+        
         # Calculate totals
         total_position_value = sum(p["market_value"] for p in positions)
         total_unrealized_pl = sum(p["unrealized_pl"] for p in positions)
@@ -205,6 +254,7 @@ def dashboard():
         return template.render(
             account=account,
             positions=positions,
+            positions_by_sector=positions_by_sector,
             orders=orders,
             db_trades=db_trades,
             sessions=sessions,
