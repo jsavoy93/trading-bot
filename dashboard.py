@@ -87,6 +87,54 @@ def get_account_info() -> Dict:
         return {"error": str(e)}
 
 
+def get_trading_status() -> Dict:
+    """Get current trading rules status"""
+    status = {
+        "margin_ok": True,
+        "beta_ok": True,
+        "beta_value": 1.0,
+        "cash": 0,
+        "rules": []
+    }
+    
+    try:
+        account = trading_client.get_account()
+        status["cash"] = float(account.cash)
+        
+        if status["cash"] < 0:
+            status["margin_ok"] = False
+            status["rules"].append({
+                "type": "danger",
+                "icon": "🚫",
+                "text": f"MARGIN ACTIVE: Cash is negative (${status['cash']:.2f}) - No new trades allowed"
+            })
+        else:
+            status["rules"].append({
+                "type": "success",
+                "icon": "✅",
+                "text": f"Cash: ${status['cash']:.2f} - Trading allowed"
+            })
+        
+        # Check beta (simplified - would need actual calculation)
+        # For now, just show a placeholder
+        status["rules"].append({
+            "type": "info",
+            "icon": "📊",
+            "text": "Beta limit: 1.5 (BUYs blocked if > 1.5)"
+        })
+        
+        status["rules"].append({
+            "type": "info", 
+            "icon": "⏱️",
+            "text": "Trading windows: 9:30-9:45 AM & 3:45-4:00 PM ET"
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to get trading status: {e}")
+    
+    return status
+
+
 def get_positions() -> List[Dict]:
     """Get current positions"""
     if not trading_client:
@@ -240,6 +288,7 @@ def dashboard():
         orders = get_orders(10)
         db_trades = get_trades_from_db(10)
         sessions = get_recent_sessions(5)
+        trading_status = get_trading_status()
         
         # Get positions (returns dict with 'positions' and 'by_sector')
         positions_data = get_positions()
@@ -253,6 +302,7 @@ def dashboard():
         template = jinja_env.get_template("dashboard.html")
         return template.render(
             account=account,
+            trading_status=trading_status,
             positions=positions,
             positions_by_sector=positions_by_sector,
             orders=orders,

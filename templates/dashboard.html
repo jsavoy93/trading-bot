@@ -262,6 +262,22 @@
             </div>
         </div>
 
+        <!-- Trading Rules Status -->
+        {% if trading_status and trading_status.rules %}
+        <div class="card" style="{% if not trading_status.margin_ok %}border-color: #da3633;{% endif %}">
+            <div class="card-header">
+                <span class="card-title">⚠️ Trading Status</span>
+            </div>
+            <div style="padding: 10px;">
+                {% for rule in trading_status.rules %}
+                <div style="padding: 6px 0; border-bottom: 1px solid #30363d; {% if rule.type == 'danger' %}color: #da3633;{% elif rule.type == 'success' %}color: #3fb950;{% elif rule.type == 'warning' %}color: #d29922;{% else %}color: #8b949e;{% endif %}">
+                    {{ rule.icon }} {{ rule.text }}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Recent Sessions -->
         {% if sessions %}
         <div class="card">
