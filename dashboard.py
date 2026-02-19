@@ -659,22 +659,27 @@ def api_analytics_overview():
     
     try:
         trades = db.get_all_trades()
-        if not trades:
-            return {"error": "No trades found"}
+        
+        # Get unrealized P&L from open positions
+        positions_data = get_positions()
+        positions = positions_data.get("positions", []) if isinstance(positions_data, dict) else []
+        total_unrealized_pl = sum(p.get("unrealized_pl", 0) for p in positions)
         
         # Helper to safely get pnl (handle None)
         def safe_pnl(t):
             pnl = t.get('pnl')
             return pnl if pnl is not None else 0
         
-        # Basic stats
+        # Basic stats from closed trades
         total_trades = len(trades)
+        closed_pnl = sum(safe_pnl(t) for t in trades)
         winners = sum(1 for t in trades if safe_pnl(t) > 0)
         losers = sum(1 for t in trades if safe_pnl(t) < 0)
         win_rate = (winners / total_trades * 100) if total_trades > 0 else 0
         
-        total_pnl = sum(safe_pnl(t) for t in trades)
-        avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
+        # Total P&L = closed trades + unrealized from open positions
+        total_pnl = closed_pnl + total_unrealized_pl
+        avg_pnl = closed_pnl / total_trades if total_trades > 0 else 0
         
         # By signal type (if available)
         signal_types = {}
@@ -704,9 +709,12 @@ def api_analytics_overview():
         
         return {
             "total_trades": total_trades,
+            "closed_trades": total_trades,
             "winners": winners,
             "losers": losers,
             "win_rate": round(win_rate, 1),
+            "closed_pnl": round(closed_pnl, 2),
+            "unrealized_pnl": round(total_unrealized_pl, 2),
             "total_pnl": round(total_pnl, 2),
             "avg_pnl": round(avg_pnl, 2),
             "by_signal_type": signal_types,
