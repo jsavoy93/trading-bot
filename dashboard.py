@@ -909,6 +909,17 @@ def api_score_breakdown(symbol: str):
         elif total_score <= 35:
             signal = 'SELL'
         
+        # Additional checks
+        has_earnings, earnings_date, days_until = bot.check_earnings_calendar(symbol, bot.earnings_days_skip)
+        
+        atr_pct = (atr / price * 100) if price > 0 and pd.notna(atr) else 0
+        
+        try:
+            regime = bot.get_current_market_regime()
+            regime_info = {'regime': regime.get('regime'), 'adx': round(regime.get('adx', 0), 1)}
+        except:
+            regime_info = {'regime': 'Unknown', 'adx': 0}
+        
         return {
             'symbol': symbol,
             'price': round(price, 2),
@@ -919,7 +930,10 @@ def api_score_breakdown(symbol: str):
                 'sma': {'fast': round(sma_fast, 2), 'slow': round(sma_slow, 2), 'separation': round(sma_pct, 2), 'score': round(sma_score, 1), 'max': 25},
                 'macd': {'histogram': round(macd_hist, 2) if pd.notna(macd_hist) else 0, 'score': round(macd_score, 1), 'max': 25},
                 'bollinger': {'position': round(bb_position, 1), 'score': round(bb_score, 1), 'max': 25},
-                'catalyst': {'score': catalyst_score, 'max': 25, 'catalysts': catalyst_data.get('catalysts', [])}
+                'catalyst': {'score': catalyst_score, 'max': 25, 'catalysts': catalyst_data.get('catalysts', [])},
+                'earnings': {'has_earnings': has_earnings, 'days_until': days_until},
+                'volatility': {'atr_pct': round(atr_pct, 2), 'tier': 'low' if atr_pct < 2 else ('high' if atr_pct > 5 else 'mid')},
+                'regime': regime_info
             },
             'scores': {
                 'rsi': round(rsi_score, 1),

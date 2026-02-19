@@ -831,20 +831,16 @@
                         <h3 style="margin-top: 20px; border-bottom: 1px solid #30363d; padding-bottom: 5px;">Filters</h3>
                         
                         <div style="display: grid; gap: 8px; margin-top: 10px; font-size: 13px;">
-                            <div style="padding: 8px; background: ${b.earnings.has_earnings ? '#da3633' : '#21262d'}; border-radius: 4px;">
-                                <strong>Earnings:</strong> ${b.earnings.has_earnings ? 'In ' + b.earnings.days_until + ' days ⚠️' : 'OK ✅'}
-                            </div>
-                            
-                            <div style="padding: 8px; background: ${b.sp_relative && b.sp_relative.outperforming ? '#21262d' : '#da3633'}; border-radius: 4px;">
-                                <strong>SPY Relative:</strong> ${b.sp_relative && b.sp_relative.outperforming ? 'Outperforming SPY ✅' : 'Underperforming SPY ⚠️'}
+                            <div style="padding: 8px; background: ${(b.earnings && b.earnings.has_earnings) ? '#da3633' : '#21262d'}; border-radius: 4px;">
+                                <strong>Earnings:</strong> ${(b.earnings && b.earnings.has_earnings) ? 'In ' + b.earnings.days_until + ' days ⚠️' : 'OK ✅'}
                             </div>
                             
                             <div style="padding: 8px; background: #21262d; border-radius: 4px;">
-                                <strong>Regime:</strong> ${b.regime.regime || 'Unknown'} (ADX: ${b.regime.adx})
+                                <strong>Regime:</strong> ${(b.regime && b.regime.regime) || 'Unknown'} (ADX: ${(b.regime && b.regime.adx) || 0})
                             </div>
                             
                             <div style="padding: 8px; background: #21262d; border-radius: 4px;">
-                                <strong>Volatility:</strong> ${b.volatility.tier} (ATR: ${b.volatility.atr_pct}%)
+                                <strong>Volatility:</strong> ${(b.volatility && b.volatility.tier) || 'mid'} (ATR: ${(b.volatility && b.volatility.atr_pct) || 0}%)
                             </div>
                         </div>
                         
