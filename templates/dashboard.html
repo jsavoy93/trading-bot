@@ -243,7 +243,7 @@
                     {% for session in sessions %}
                     <tr>
                         <td>{{ session.id }}</td>
-                        <td>{{ session.session_start[:19] if session.session_start else 'N/A' }}</td>
+                        <td>{{ (session.session_start[:19] if session.session_start else 'N/A') | to_central }}</td>
                         <td>{{ session.total_trades_executed or 0 }}</td>
                         <td>{{ session.total_symbols_processed or 0 }}</td>
                         <td><button onclick="viewSessionLogs({{ session.id }})" class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;">Logs</button></td>

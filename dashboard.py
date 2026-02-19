@@ -38,6 +38,23 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 template_path = os.path.join(os.path.dirname(__file__), "templates")
 jinja_env = Environment(loader=FileSystemLoader(template_path))
 
+# Custom filter for timezone conversion
+def to_central_time(utc_str):
+    """Convert UTC ISO string to Central Time"""
+    if not utc_str:
+        return 'N/A'
+    try:
+        from datetime import datetime, timezone, timedelta
+        dt = datetime.fromisoformat(utc_str.replace('Z', '+00:00'))
+        # Convert to Central Time (UTC-6, or UTC-5 during DST)
+        # For simplicity, use UTC-6 (CST)
+        central = dt.astimezone(timezone(timedelta(hours=-6)))
+        return central.strftime('%Y-%m-%d %H:%M:%S')
+    except:
+        return utc_str[:19] if utc_str else 'N/A'
+
+jinja_env.filters['to_central'] = to_central_time
+
 # Alpaca client
 api_key = os.getenv("ALPACA_API_KEY")
 api_secret = os.getenv("ALPACA_API_SECRET")
