@@ -266,12 +266,8 @@ def get_orders(limit: int = 20) -> List[Dict]:
         return []
     try:
         from alpaca.trading.requests import GetOrdersRequest
-        from alpaca.trading.enums import OrderStatus
         
-        request = GetOrdersRequest(
-            status=OrderStatus.ALL,
-            limit=limit
-        )
+        request = GetOrdersRequest(limit=limit)
         orders = trading_client.get_orders(request)
         return [
             {
