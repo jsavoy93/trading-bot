@@ -198,12 +198,16 @@ def get_positions() -> List[Dict]:
                             rsi = latest['RSI']
                             price = latest['close']
                             
-                            # RSI Score
+                            # RSI Score (with partial credit)
                             rsi_score = 0
                             if rsi < 30:
-                                rsi_score = 25 * (1 - rsi / 30)
-                            elif rsi > 70:
-                                rsi_score = -25 * ((rsi - 70) / 30)
+                                rsi_score = 25 * (1 - rsi / 30)  # Full positive at oversold
+                            elif rsi < 50:
+                                rsi_score = 12.5 * (1 - (rsi - 30) / 20)  # Partial positive
+                            elif rsi < 70:
+                                rsi_score = -12.5 * ((rsi - 50) / 20)  # Partial negative
+                            else:
+                                rsi_score = -25 * min(1, (rsi - 70) / 30)  # Full negative at overbought
                             
                             # SMA Score
                             sma_score = 0
@@ -470,12 +474,16 @@ def api_opportunities(limit: int = 10):
                 rsi = latest['RSI']
                 price = latest['close']
                 
-                # RSI Score
+                # RSI Score (with partial credit)
                 rsi_score = 0
                 if rsi < 30:
                     rsi_score = 25 * (1 - rsi / 30)
-                elif rsi > 70:
-                    rsi_score = -25 * ((rsi - 70) / 30)
+                elif rsi < 50:
+                    rsi_score = 12.5 * (1 - (rsi - 30) / 20)
+                elif rsi < 70:
+                    rsi_score = -12.5 * ((rsi - 50) / 20)
+                else:
+                    rsi_score = -25 * min(1, (rsi - 70) / 30)
                 
                 # SMA Score
                 sma_score = 0
@@ -917,8 +925,12 @@ def api_score_breakdown(symbol: str):
         rsi_score = 0
         if rsi < 30:
             rsi_score = 25 * (1 - rsi / 30)
-        elif rsi > 70:
-            rsi_score = -25 * ((rsi - 70) / 30)
+        elif rsi < 50:
+            rsi_score = 12.5 * (1 - (rsi - 30) / 20)
+        elif rsi < 70:
+            rsi_score = -12.5 * ((rsi - 50) / 20)
+        else:
+            rsi_score = -25 * min(1, (rsi - 70) / 30)
         
         sma_score = 0
         sma_pct = 0
