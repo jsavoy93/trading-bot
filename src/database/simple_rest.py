@@ -480,6 +480,111 @@ class SimpleSupabaseREST:
             logging.debug(f"Error cleaning up old cooldowns: {e}")
         
         return False
+    
+    def save_analysis_result(self, symbol: str, analysis: Dict) -> bool:
+        """Save analysis result for a symbol"""
+        if not self.available:
+            return False
+        
+        try:
+            data = {
+                "symbol": symbol,
+                "analyzed_at": datetime.utcnow().isoformat(),
+                "signal": analysis.get('signal', 'HOLD'),
+                "total_score": analysis.get('total_score', 50),
+                "rsi": analysis.get('rsi'),
+                "price": analysis.get('price'),
+                "signal_strength": analysis.get('signal_strength', 'WEAK'),
+                "rsi_score": analysis.get('rsi_score'),
+                "sma_score": analysis.get('sma_score'),
+                "macd_score": analysis.get('macd_score'),
+                "bb_score": analysis.get('bb_score'),
+                "catalyst_score": analysis.get('catalyst_score', 0),
+            }
+            
+            response = requests.post(
+                f"{self.rest_url}/analysis_results",
+                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                json=data,
+                params={"on_conflict": "symbol"},
+                timeout=5
+            )
+            
+            return response.status_code in [200, 201]
+        except Exception as e:
+            logging.debug(f"Error saving analysis for {symbol}: {e}")
+            return False
+    
+    def get_analysis_results(self, limit: int = 100) -> List[Dict]:
+        """Get all analysis results ordered by analyzed time"""
+        if not self.available:
+            return []
+        
+        try:
+            response = requests.get(
+                f"{self.rest_url}/analysis_results?order=analyzed_at.desc&limit={limit}",
+                headers=self.headers,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            logging.debug(f"Error getting analysis results: {e}")
+        
+        return []
+    
+    def get_analysis_for_symbol(self, symbol: str) -> Optional[Dict]:
+        """Get the latest analysis for a specific symbol"""
+        if not self.available:
+            return None
+        
+        try:
+            response = requests.get(
+                f"{self.rest_url}/analysis_results?symbol=eq.{symbol}&order=analyzed_at.desc&limit=1",
+                headers=self.headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    return data[0]
+        except Exception as e:
+            logging.debug(f"Error getting analysis for {symbol}: {e}")
+        
+        return None
+    
+    def get_unanalyzed_symbols(self, all_symbols: List[str], limit: int = 30) -> List[str]:
+        """Get symbols that haven't been analyzed recently, in order of oldest analysis"""
+        if not self.available:
+            return all_symbols[:limit]
+        
+        try:
+            # Get all symbols with their last analysis time
+            response = requests.get(
+                f"{self.rest_url}/analysis_results?select=symbol,analyzed_at&order=analyzed_at.asc",
+                headers=self.headers,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                analyzed = response.json()
+                analyzed_symbols = {a['symbol'] for a in analyzed}
+                
+                # Filter out already analyzed symbols
+                unanalyzed = [s for s in all_symbols if s not in analyzed_symbols]
+                
+                # Get oldest analyzed symbols as fallback
+                oldest = [a['symbol'] for a in analyzed[:limit]]
+                
+                # Combine: unanalyzed first, then oldest
+                result = unanalyzed + oldest
+                return result[:limit]
+        except Exception as e:
+            logging.debug(f"Error getting unanalyzed symbols: {e}")
+        
+        return all_symbols[:limit]
 
 # Global instance - created when first imported
 simple_rest = None

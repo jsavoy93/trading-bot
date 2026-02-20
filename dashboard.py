@@ -64,6 +64,22 @@ trading_client = None
 if api_key and api_secret:
     trading_client = TradingClient(api_key, api_secret, paper=True)
 
+# Cached smart bot instance for analysis status
+_smart_bot_instance = None
+
+def get_smart_bot():
+    """Get or create cached SmartTradingBot instance"""
+    global _smart_bot_instance
+    if _smart_bot_instance is None:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent / "src"))
+            from core.smart_bot import SmartTradingBot
+            _smart_bot_instance = SmartTradingBot()
+        except Exception as e:
+            logger.error(f"Failed to create SmartTradingBot: {e}")
+            return None
+    return _smart_bot_instance
+
 # Database
 db = simple_rest
 
@@ -566,6 +582,59 @@ def api_trades(limit: int = 20):
 def api_sessions(limit: int = 5):
     """API endpoint for sessions"""
     return get_recent_sessions(limit)
+
+
+@app.get("/api/analysis")
+def api_analysis():
+    """Get current analysis status and recent analyses"""
+    try:
+        import json
+        from pathlib import Path
+        from datetime import datetime
+        
+        # Read from file
+        analysis_file = Path(__file__).parent / "analysis_status.json"
+        
+        central = datetime.now().astimezone().tzinfo
+        
+        if analysis_file.exists():
+            try:
+                data = json.loads(analysis_file.read_text())
+                
+                # Convert to list with datetime
+                analyses = []
+                for symbol, info in data.items():
+                    analyzed_at = info.get('analyzed_at', '')
+                    if analyzed_at:
+                        try:
+                            dt = datetime.fromisoformat(analyzed_at.replace('Z', '+00:00')).astimezone(central)
+                            analyzed_at = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except:
+                            pass
+                    
+                    analyses.append({
+                        'symbol': symbol,
+                        'analyzed_at': analyzed_at,
+                        'signal': info.get('signal', 'HOLD'),
+                        'total_score': info.get('total_score', 50),
+                        'rsi': info.get('rsi'),
+                        'price': info.get('price'),
+                    })
+                
+                # Sort by analyzed_at
+                analyses.sort(key=lambda x: x['analyzed_at'], reverse=True)
+                
+                return {
+                    'analyzed_today': len(analyses),
+                    'recent_analyses': analyses[:50],
+                    'updated_at': datetime.now(central).strftime("%Y-%m-%d %H:%M:%S")
+                }
+            except Exception as e:
+                return {"error": str(e)}
+        
+        return {"analyzed_today": 0, "recent_analyses": [], "updated_at": datetime.now(central).strftime("%Y-%m-%d %H:%M:%S")}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/logs")

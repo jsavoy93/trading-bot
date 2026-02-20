@@ -167,6 +167,9 @@ class SmartTradingBot:
         self._market_data_cache = {}  # symbol -> (timestamp, DataFrame)
         self._market_data_cache_ttl = 30  # Cache valid for 30 seconds
         self._cycle_start_time = None  # Track cycle start for cache invalidation
+        self._analysis_queue = []  # Queue of symbols to analyze in sequence
+        self._analyzed_today = {}  # Track analyzed symbols with timestamps {symbol: datetime}
+        self._current_analysis_index = 0  # Current position in the full symbol list
         
         # SPY Relative Strength Filter (enabled by default)
         self.enable_sp_filter = True  # Only buy stocks outperforming SPY
@@ -763,45 +766,123 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
     
     def _get_rolling_ticker_list(self, target_count: int = 30) -> List[str]:
         """
-        Get a rolling list of tickers that haven't been researched in 60 minutes.
-        This creates a continuous scan of all available US symbols.
+        Get a sequential list of tickers - each analyzed once before any repeats.
+        This ensures every stock gets analyzed before going back to the beginning.
         """
         # Get all US symbols
         all_symbols = self.get_all_us_symbols()
         
-        # Get recently researched (cooldown)
-        recently_researched = set(self.get_recently_researched_tickers(cooldown_minutes=240))
+        # Initialize queue if empty or we've gone through all symbols
+        if not self._analysis_queue or self._current_analysis_index >= len(self._analysis_queue):
+            # Get current portfolio and pending to exclude
+            portfolio_symbols = set()
+            try:
+                positions = self.trading_client.get_all_positions()
+                portfolio_symbols = {p.symbol for p in positions if float(p.qty) > 0}
+            except Exception:
+                pass
+            
+            pending_symbols = set()
+            try:
+                orders = list(self.trading_client.get_orders())
+                pending_symbols = {o.symbol for o in orders if o.status in [
+                    OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
+                    OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL
+                ]}
+            except Exception:
+                pass
+            
+            excluded = portfolio_symbols | pending_symbols
+            
+            # Create queue excluding portfolio and pending
+            self._analysis_queue = [s for s in all_symbols if s not in excluded]
+            self._current_analysis_index = 0
+            logging.info(f"🔄 Starting new analysis cycle: {len(self._analysis_queue)} symbols in queue")
         
-        # Get current portfolio positions to exclude
-        portfolio_symbols = set()
+        # Get next batch from queue
+        remaining = len(self._analysis_queue) - self._current_analysis_index
+        if remaining <= 0:
+            # Restart cycle
+            self._current_analysis_index = 0
+            remaining = len(self._analysis_queue)
+        
+        batch_size = min(target_count, remaining)
+        batch = self._analysis_queue[self._current_analysis_index:self._current_analysis_index + batch_size]
+        self._current_analysis_index += batch_size
+        
+        logging.info(f"📊 Analysis queue: {self._current_analysis_index}/{len(self._analysis_queue)} complete, returning {len(batch)} symbols")
+        
+        return batch
+    
+    def save_analysis_to_db(self, symbol: str, analysis: Dict):
+        logging.info(f"🔍 save_analysis_to_db called for {symbol}") -> None:
+        """Save analysis result to database and file"""
+        # Save to memory
+        self._analyzed_today[symbol] = {
+            'analyzed_at': datetime.now(timezone.utc),
+            'signal': analysis.get('signal', 'HOLD'),
+            'total_score': analysis.get('total_score', 50),
+            'rsi': analysis.get('rsi'),
+            'price': analysis.get('price'),
+        }
+        
+        # Also save to file for dashboard access
         try:
-            positions = self.trading_client.get_all_positions()
-            portfolio_symbols = {p.symbol for p in positions if float(p.qty) > 0}
-        except Exception:
-            pass
+            import json
+            from pathlib import Path
+            analysis_file = Path(__file__).parent.parent.parent / "analysis_status.json"
+            
+            # Load existing
+            data = {}
+            if analysis_file.exists():
+                try:
+                    data = json.loads(analysis_file.read_text())
+                except:
+                    pass
+            
+            # Update with new analysis
+            data[symbol] = {
+                'analyzed_at': datetime.now(timezone.utc).isoformat(),
+                'signal': analysis.get('signal', 'HOLD'),
+                'total_score': analysis.get('total_score', 50),
+                'rsi': analysis.get('rsi'),
+                'price': analysis.get('price'),
+            }
+            
+            # Keep only last 200
+            sorted_items = sorted(data.items(), key=lambda x: x[1].get('analyzed_at', ''), reverse=True)
+            data = dict(sorted_items[:200])
+            
+            analysis_file.write_text(json.dumps(data))
+            logging.info(f"✅ Wrote file successfully")
+            logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score')}")
+        except Exception as e:
+            logging.debug(f"File save error: {e}")
         
-        # Get symbols with pending orders
-        pending_symbols = set()
+        # Also try database
         try:
-            orders = list(self.trading_client.get_orders())
-            pending_symbols = {o.symbol for o in orders if o.status in [
-                OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
-                OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL
-            ]}
-        except Exception:
-            pass
+            if self.db.is_available():
+                self.db.save_analysis_result(symbol, analysis)
+        except Exception as e:
+            logging.debug(f"Could not save analysis to DB: {e}")
+    
+    def get_analysis_status(self) -> Dict:
+        """Get current analysis status for dashboard"""
+        total_in_queue = len(self._analysis_queue)
+        progress = self._current_analysis_index
+        analyzed_count = len(self._analyzed_today)
         
-        # Combine all exclusions
-        excluded = recently_researched | portfolio_symbols | pending_symbols
+        # Get recent analyses
+        recent = sorted(self._analyzed_today.items(), key=lambda x: x[1]['analyzed_at'], reverse=True)[:50]
         
-        # Filter and return
-        available = [s for s in all_symbols if s not in excluded]
-        
-        # Log the counts
-        logging.info(f"📊 Rolling ticker list: {len(all_symbols)} total, {len(excluded)} excluded, {len(available)} available")
-        
-        # Return up to target_count
-        return available[:target_count]
+        return {
+            'queue_total': total_in_queue,
+            'queue_progress': progress,
+            'analyzed_today': analyzed_count,
+            'recent_analyses': [
+                {'symbol': s, **data} for s, data in recent
+            ]
+        }
     
     def get_market_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """Get market data for analysis with request deduplication"""
@@ -3225,6 +3306,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     analysis = self.analyze_multi_timeframe(symbol, use_ai=ai_enabled)
                 else:
                     analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
+                
+                # Save analysis result
+                if analysis:
+                    self.save_analysis_to_db(symbol, analysis)
                 
                 # Apply liquidity filter - skip illiquid stocks for BUY signals
                 if analysis and analysis.get('signal') == 'BUY' and self.enable_liquidity_filter:
