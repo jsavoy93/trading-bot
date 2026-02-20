@@ -131,13 +131,38 @@ def get_trading_status() -> Dict:
                 "text": f"Cash: ${status['cash']:.2f} - Trading allowed"
             })
         
-        # Check beta (simplified - would need actual calculation)
-        # For now, just show a placeholder
-        status["rules"].append({
-            "type": "info",
-            "icon": "📊",
-            "text": "Beta limit: 1.5 (BUYs blocked if > 1.5)"
-        })
+        # Get actual portfolio beta from bot
+        beta_value = 1.0
+        beta_error = None
+        try:
+            sys.path.insert(0, str(Path(__file__).parent / "src"))
+            from core.smart_bot import SmartTradingBot
+            bot = SmartTradingBot()
+            beta_value = bot.get_portfolio_beta()
+            # If beta is very small (< 0.01), something went wrong - use default
+            if beta_value is None or beta_value < 0.01:
+                beta_value = 1.0
+                beta_error = "using default"
+        except Exception as e:
+            beta_error = str(e)[:30]
+            beta_value = 1.0
+        
+        status["beta_value"] = beta_value
+        
+        # Show beta with limit
+        if beta_value > 1.5:
+            status["beta_ok"] = False
+            status["rules"].append({
+                "type": "danger",
+                "icon": "🚫",
+                "text": f"⚠️ Beta: {beta_value:.2f} (limit: 1.5) - BUYs blocked!"
+            })
+        else:
+            status["rules"].append({
+                "type": "info",
+                "icon": "📊",
+                "text": f"📊 Beta: ~{beta_value:.1f} (limit: 1.5) - OK"
+            })
         
         status["rules"].append({
             "type": "info", 
