@@ -853,6 +853,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             data = dict(sorted_items[:200])
             
             analysis_file.write_text(json.dumps(data))
+            print(f'✅ SAVED: {symbol} to file!')
             logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score')}")
         except Exception as e:
             logging.debug(f"File save error: {e}")
@@ -1554,7 +1555,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 macd_score = 0
             
             # Bollinger Band Score: based on position within bands
-            if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0:
+            bb_score = 0
+            if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
                 bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
                 # Lower band = bullish (25), Upper = bearish (-25)
                 bb_score = 25 - (bb_position * 50)
@@ -3280,6 +3282,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         
         for i, symbol in enumerate(symbols, 1):
             try:
+                logging.info(f"📊 Analyzing {symbol}")
                 self.symbols_processed += 1
                 
                 if i % 10 == 0:
@@ -3292,13 +3295,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     logging.debug(f"⏭️  {symbol}: Skipping research - pending order exists")
                     continue
                 
-                # Note: Cooldown filtering now happens at ticker selection stage
-                # This check is kept as a safety net for edge cases
-                if self.is_in_research_cooldown(symbol, cooldown_minutes=240):
-                    symbols_skipped_cooldown += 1
-                    logging.debug(f"⏭️  {symbol}: Skipping research - in research cooldown period (safety check)")
-                    continue
-                
+                # Sequential analysis - no cooldown needed
                 # Use multi-timeframe analysis if enabled
                 if self.enable_multi_timeframe:
                     analysis = self.analyze_multi_timeframe(symbol, use_ai=ai_enabled)
@@ -3306,7 +3303,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
                 
                 # Save analysis result
-                print(f"DEBUG: analysis={analysis is not None} for {symbol}")
                 if analysis:
                     self.save_analysis_to_db(symbol, analysis)
                     # Direct file save as backup
@@ -3460,8 +3456,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         logging.info(f"   ⏸️  Signal detected but max trades reached ({max_trades})")
                         no_trade_reasons['max_trades_reached'] += 1
                 
-                elprint(f"DEBUG: analysis={analysis is not None} for {symbol}")
-                if analysis:
+                elif analysis:
                     # Has analysis but no actionable signal (HOLD)
                     score = analysis.get('total_score', 50)
                     rsi = analysis.get('rsi', 50)
