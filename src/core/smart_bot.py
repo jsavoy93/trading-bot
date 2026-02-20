@@ -815,7 +815,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         return batch
     
     def save_analysis_to_db(self, symbol: str, analysis: Dict):
-        logging.info(f"🔍 save_analysis_to_db called for {symbol}") -> None:
         """Save analysis result to database and file"""
         # Save to memory
         self._analyzed_today[symbol] = {
@@ -854,7 +853,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             data = dict(sorted_items[:200])
             
             analysis_file.write_text(json.dumps(data))
-            logging.info(f"✅ Wrote file successfully")
             logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score')}")
         except Exception as e:
             logging.debug(f"File save error: {e}")
@@ -3308,8 +3306,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
                 
                 # Save analysis result
+                print(f"DEBUG: analysis={analysis is not None} for {symbol}")
                 if analysis:
                     self.save_analysis_to_db(symbol, analysis)
+                    # Direct file save as backup
+                    try:
+                        import json
+                        from pathlib import Path
+                        f = Path(__file__).parent.parent.parent / "analysis_status.json"
+                        data = json.loads(f.read_text()) if f.exists() else {}
+                        data[symbol] = {"analyzed_at": datetime.now(timezone.utc).isoformat(), "signal": analysis.get("signal", "HOLD"), "total_score": analysis.get("total_score", 50), "rsi": analysis.get("rsi"), "price": analysis.get("price")}
+                        f.write_text(json.dumps(data))
+                    except:
+                        pass
                 
                 # Apply liquidity filter - skip illiquid stocks for BUY signals
                 if analysis and analysis.get('signal') == 'BUY' and self.enable_liquidity_filter:
@@ -3451,7 +3460,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         logging.info(f"   ⏸️  Signal detected but max trades reached ({max_trades})")
                         no_trade_reasons['max_trades_reached'] += 1
                 
-                elif analysis:
+                elprint(f"DEBUG: analysis={analysis is not None} for {symbol}")
+                if analysis:
                     # Has analysis but no actionable signal (HOLD)
                     score = analysis.get('total_score', 50)
                     rsi = analysis.get('rsi', 50)
