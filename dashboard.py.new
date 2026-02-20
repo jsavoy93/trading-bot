@@ -1,0 +1,51 @@
+
+
+@app.get("/api/analysis")
+def api_analysis():
+    """Get recent analyses from logs"""
+    try:
+        from pathlib import Path
+        log_path = Path(__file__).parent / "trading_bot.log"
+        
+        if not log_path.exists():
+            return {"error": "Log file not found"}
+        
+        # Read last 500 lines
+        import subprocess
+        result = subprocess.run(
+            ["tail", "-500", str(log_path)],
+            capture_output=True, text=True
+        )
+        
+        lines = result.stdout.split("\n")
+        
+        # Extract score lines
+        analyses = []
+        for line in lines:
+            if "Score:" in line and "RSI:" in line:
+                # Parse: 📊 AAPL: $123.45 | RSI:45 | MACD:+1.2 | BB:55% | VWAP:+2% | Score:75/100
+                import re
+                match = re.search(r'📊\s+(\w+):\s+\$?([\d.]+).*?RSI:(\d+).*?Score:(\d+)', line)
+                if match:
+                    analyses.append({
+                        'symbol': match.group(1),
+                        'price': float(match.group(2)),
+                        'rsi': int(match.group(3)),
+                        'total_score': int(match.group(4)),
+                        'line': line[-80:]
+                    })
+        
+        # Get unique symbols, keep last 50
+        seen = {}
+        for a in analyses:
+            seen[a['symbol']] = a
+        unique = list(seen.values())[:50]
+        
+        return {
+            'analyzed_today': len(unique),
+            'recent_analyses': unique
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+

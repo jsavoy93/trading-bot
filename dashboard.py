@@ -584,58 +584,54 @@ def api_sessions(limit: int = 5):
     return get_recent_sessions(limit)
 
 
+
 @app.get("/api/analysis")
 def api_analysis():
-    """Get current analysis status and recent analyses"""
+    """Get recent analyses from logs"""
     try:
-        import json
         from pathlib import Path
-        from datetime import datetime
+        import re
+        import subprocess
         
-        # Read from file
-        analysis_file = Path(__file__).parent / "analysis_status.json"
+        log_path = Path(__file__).parent / "trading_bot.log"
         
-        central = datetime.now().astimezone().tzinfo
+        if not log_path.exists():
+            return {"error": "Log file not found"}
         
-        if analysis_file.exists():
-            try:
-                data = json.loads(analysis_file.read_text())
-                
-                # Convert to list with datetime
-                analyses = []
-                for symbol, info in data.items():
-                    analyzed_at = info.get('analyzed_at', '')
-                    if analyzed_at:
-                        try:
-                            dt = datetime.fromisoformat(analyzed_at.replace('Z', '+00:00')).astimezone(central)
-                            analyzed_at = dt.strftime("%Y-%m-%d %H:%M:%S")
-                        except:
-                            pass
-                    
+        # Read last 500 lines
+        result = subprocess.run(
+            ["tail", "-500", str(log_path)],
+            capture_output=True, text=True
+        )
+        
+        lines = result.stdout.split("\n")
+        
+        # Extract score lines
+        analyses = []
+        for line in lines:
+            if "Score:" in line and "RSI:" in line:
+                match = re.search(r'📊\s+(\w+):\s+\$?([\d.]+).*?RSI:(\d+).*?Score:(\d+)', line)
+                if match:
                     analyses.append({
-                        'symbol': symbol,
-                        'analyzed_at': analyzed_at,
-                        'signal': info.get('signal', 'HOLD'),
-                        'total_score': info.get('total_score', 50),
-                        'rsi': info.get('rsi'),
-                        'price': info.get('price'),
+                        'symbol': match.group(1),
+                        'price': float(match.group(2)),
+                        'rsi': int(match.group(3)),
+                        'total_score': int(match.group(4)),
                     })
-                
-                # Sort by analyzed_at
-                analyses.sort(key=lambda x: x['analyzed_at'], reverse=True)
-                
-                return {
-                    'analyzed_today': len(analyses),
-                    'recent_analyses': analyses[:50],
-                    'updated_at': datetime.now(central).strftime("%Y-%m-%d %H:%M:%S")
-                }
-            except Exception as e:
-                return {"error": str(e)}
         
-        return {"analyzed_today": 0, "recent_analyses": [], "updated_at": datetime.now(central).strftime("%Y-%m-%d %H:%M:%S")}
+        # Get unique symbols, keep last 50
+        seen = {}
+        for a in analyses:
+            seen[a['symbol']] = a
+        unique = list(seen.values())[:50]
+        
+        return {
+            'analyzed_today': len(unique),
+            'recent_analyses': unique
+        }
+        
     except Exception as e:
         return {"error": str(e)}
-
 
 @app.get("/api/logs")
 def api_logs(session_id: int = None, lines: int = 200):
