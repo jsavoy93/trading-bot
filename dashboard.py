@@ -167,7 +167,7 @@ def get_trading_status() -> Dict:
         status["rules"].append({
             "type": "info", 
             "icon": "⏱️",
-            "text": "Trading windows: 9:30-9:45 AM & 3:45-4:00 PM ET"
+            "text": "Trading window: 9:45 AM - 3:45 PM ET (excludes first/last 15 min)"
         })
         
     except Exception as e:
