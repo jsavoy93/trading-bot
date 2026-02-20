@@ -853,6 +853,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             data = dict(sorted_items[:200])
             
             analysis_file.write_text(json.dumps(data))
+            logging.info(f'💾 SAVED {symbol} to file - score {analysis.get("total_score")}')
             print(f'✅ SAVED: {symbol} to file!')
             logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score')}")
         except Exception as e:
@@ -3309,6 +3310,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     try:
                         import json
                         from pathlib import Path
+                        logging.info(f'TRYING to save {symbol}...')
                         f = Path(__file__).parent.parent.parent / "analysis_status.json"
                         data = json.loads(f.read_text()) if f.exists() else {}
                         data[symbol] = {"analyzed_at": datetime.now(timezone.utc).isoformat(), "signal": analysis.get("signal", "HOLD"), "total_score": analysis.get("total_score", 50), "rsi": analysis.get("rsi"), "price": analysis.get("price")}
