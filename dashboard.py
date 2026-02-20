@@ -220,7 +220,7 @@ def get_positions() -> List[Dict]:
                             
                             # MACD Score
                             macd_hist = latest.get('MACD_histogram', 0)
-                            macd_score = max(-25, min(25, macd_hist * 100)) if pd.notna(macd_hist) else 0
+                            macd_score = max(-25, min(25, macd_hist * 10)) if pd.notna(macd_hist) else 0
                             
                             # Bollinger Score
                             bb_lower = latest.get('BB_lower')
@@ -496,7 +496,7 @@ def api_opportunities(limit: int = 10):
                 
                 # MACD Score
                 macd_hist = latest.get('MACD_histogram', 0)
-                macd_score = max(-25, min(25, macd_hist * 100)) if pd.notna(macd_hist) else 0
+                macd_score = max(-25, min(25, macd_hist * 10)) if pd.notna(macd_hist) else 0
                 
                 # Bollinger Score
                 bb_lower = latest.get('BB_lower')
@@ -941,7 +941,7 @@ def api_score_breakdown(symbol: str):
             sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
             sma_score = -min(25, sma_pct * 5)
         
-        macd_score = max(-25, min(25, macd_hist * 100)) if pd.notna(macd_hist) else 0
+        macd_score = max(-25, min(25, macd_hist * 10)) if pd.notna(macd_hist) else 0
         
         bb_lower = latest.get('BB_lower')
         bb_middle = latest.get('BB_middle')
