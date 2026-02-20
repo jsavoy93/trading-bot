@@ -193,6 +193,10 @@ class SmartTradingBot:
         self.enable_regime_filter = True  # Use ADX-based regime detection
         self.regime_symbol = "SPY"  # Symbol for regime detection
         self.adx_period = 14  # ADX calculation period
+        
+        # Position Rotation (enabled by default)
+        self.enable_rotation = True  # Sell weak positions to buy stronger ones
+        self.rotation_threshold = 20  # New opportunity must be X points better than worst position
         self.trend_threshold = 25.0  # ADX > this = trending
         self.range_threshold = 20.0  # ADX < this = ranging
         self._regime_classifier = None  # Will be initialized lazily
@@ -3091,6 +3095,66 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             
             return
         
+        # Position Rotation: Check if we should sell weak positions to buy better opportunities
+        if self.enable_rotation and remaining_trades > 0:
+            try:
+                # First, collect some buy candidates to compare
+                temp_candidates = []
+                symbols = self._get_rolling_ticker_list(20)  # Quick scan of 20 symbols
+                
+                for symbol in symbols[:20]:
+                    if self.has_pending_orders(symbol):
+                        continue
+                    if self.is_in_research_cooldown(symbol, cooldown_minutes=240):
+                        continue
+                    
+                    analysis = self.analyze_symbol(symbol, use_ai=False)
+                    if analysis and analysis.get('signal') == 'BUY' and analysis.get('total_score', 0) >= 60:
+                        temp_candidates.append(analysis)
+                
+                # Evaluate rotation
+                if temp_candidates:
+                    rotation_sells = self.evaluate_rotation(temp_candidates)
+                    
+                    if rotation_sells:
+                        rotation = rotation_sells[0]
+                        logging.info(f"\n🔄 ROTATION TRIGGERED: Selling {rotation['symbol']} → Buying {rotation['replace_with']}")
+                        
+                        # Execute the sell
+                        sell_analysis = {
+                            'symbol': rotation['symbol'],
+                            'signal': 'SELL',
+                            'signal_strength': 'MEDIUM',
+                            'price': 0,
+                            'rsi': 50,
+                            'sma_fast': 0,
+                            'sma_slow': 0,
+                            'ai_insight': rotation['reason'],
+                            'position_sell_qty': rotation['sell_qty']
+                        }
+                        
+                        if self.execute_trade(sell_analysis):
+                            trades_executed += 1
+                            remaining_trades -= 1
+                            logging.info(f"   ✅ Rotation sell executed")
+                            
+                            # Now execute the buy
+                            buy_analysis = None
+                            for c in temp_candidates:
+                                if c.get('symbol') == rotation['replace_with']:
+                                    buy_analysis = c
+                                    break
+                            
+                            if buy_analysis and remaining_trades > 0:
+                                if self.execute_trade(buy_analysis):
+                                    trades_executed += 1
+                                    logging.info(f"   ✅ Rotation buy executed")
+                                remaining_trades -= 1
+                            
+                            time.sleep(1)
+            except Exception as e:
+                logging.debug(f"Rotation evaluation failed: {e}")
+        
         logging.info(f"\n🔍 Looking for new opportunities ({remaining_trades} trades remaining)...")
         max_trades = remaining_trades  # Update for the buy loop
         
@@ -3737,6 +3801,91 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             
         except Exception as e:
             logging.error(f"❌ Position analysis failed: {e}")
+            return []
+    
+    def get_position_scores(self) -> list:
+        """Get scores for all current positions"""
+        try:
+            positions = self.trading_client.get_all_positions()
+            if not positions:
+                return []
+            
+            position_scores = []
+            for position in positions:
+                symbol = position.symbol
+                current_qty = float(position.qty)
+                market_value = float(position.market_value)
+                
+                if current_qty <= 0 or market_value < 50:
+                    continue
+                
+                # Get technical analysis
+                analysis = self.analyze_symbol(symbol, use_ai=False)
+                if not analysis:
+                    continue
+                
+                position_scores.append({
+                    'symbol': symbol,
+                    'score': analysis.get('total_score', 50),
+                    'qty': current_qty,
+                    'market_value': market_value,
+                    'unrealized_plpc': float(position.unrealized_plpc) * 100,
+                    'analysis': analysis
+                })
+            
+            # Sort by score (lowest first - worst positions)
+            position_scores.sort(key=lambda x: x['score'])
+            return position_scores
+            
+        except Exception as e:
+            logging.debug(f"Error getting position scores: {e}")
+            return []
+    
+    def evaluate_rotation(self, buy_candidates: list) -> list:
+        """Evaluate if we should rotate from weak positions to better opportunities"""
+        if not self.enable_rotation or not buy_candidates:
+            return []
+        
+        try:
+            # Get current position scores
+            position_scores = self.get_position_scores()
+            if not position_scores:
+                return []
+            
+            # Get worst position
+            worst_position = position_scores[0]
+            worst_score = worst_position['score']
+            
+            logging.info(f"\n🔄 ROTATION ANALYSIS:")
+            logging.info(f"   📉 Worst position: {worst_position['symbol']} (score: {worst_score:.1f})")
+            
+            rotation_sells = []
+            
+            # Check each buy candidate
+            for candidate in buy_candidates:
+                opp_score = candidate.get('total_score', 0)
+                score_diff = opp_score - worst_score
+                
+                logging.info(f"   📈 {candidate['symbol']}: score {opp_score:.1f} (diff: {score_diff:+.1f} vs worst)")
+                
+                # If opportunity is significantly better than worst position
+                if score_diff >= self.rotation_threshold:
+                    # Only rotate if the worst position isn't already a winner
+                    if worst_position['unrealized_plpc'] > -5:  # Not losing more than 5%
+                        rotation_sells.append({
+                            'symbol': worst_position['symbol'],
+                            'sell_qty': worst_position['qty'],
+                            'reason': f"Rotate to {candidate['symbol']} (score diff: {score_diff:.1f})",
+                            'replace_with': candidate['symbol'],
+                            'replace_score': opp_score
+                        })
+                        logging.info(f"      ✅ ROTATE: Sell {worst_position['symbol']} → Buy {candidate['symbol']}")
+                        break  # Only rotate one position at a time
+            
+            return rotation_sells
+            
+        except Exception as e:
+            logging.debug(f"Rotation evaluation failed: {e}")
             return []
     
     def execute_portfolio_actions(self, portfolio_analysis):
