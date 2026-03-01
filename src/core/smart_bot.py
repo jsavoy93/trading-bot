@@ -277,7 +277,40 @@ class SmartTradingBot:
         self.trade_times = {}  # symbol -> last trade timestamp
         self.position_sell_analysis_times = {}  # symbol -> last sell analysis timestamp
         self.research_times = {}  # symbol -> last research timestamp for AI ticker variety
-        
+
+        # Portfolio optimization engine
+        try:
+            from analysis.portfolio_optimizer import PortfolioOptimizer
+            self.portfolio_optimizer = PortfolioOptimizer(
+                risk_free_rate=0.05,
+                lookback_days=60,
+                max_position_weight=self.max_position_pct * 3,  # ~15% max
+                rebalance_threshold=0.05,
+            )
+            self._last_portfolio_opt_time = None
+            self.portfolio_opt_interval_loops = 6  # Run every 6 loops (~30 min at 5-min default)
+        except Exception as e:
+            logging.warning(f"Portfolio optimizer not available: {e}")
+            self.portfolio_optimizer = None
+
+        # Adaptive learning state
+        self._symbol_size_multipliers: Dict[str, float] = {}
+        self._last_learning_run = None
+        self.learning_interval_loops = 12  # Run adaptive learning every 12 loops (~1 hr)
+        try:
+            from analysis.adaptive_learning import AdaptiveLearningEngine
+            self.adaptive_learning = AdaptiveLearningEngine(db=self.db)
+        except Exception as e:
+            logging.warning(f"Adaptive learning engine not available: {e}")
+            self.adaptive_learning = None
+
+        # VIX cache
+        self._vix_cache = None
+        self._vix_cache_time = None
+
+        # Pending entry tranches tracking  {symbol: tranche_plan_dict}
+        self._pending_entry_tranches: Dict[str, dict] = {}
+
         logging.info("🤖 Smart Trading Bot initialized")
         if self.db.is_available():
             logging.info("✅ Database available via REST API")
@@ -764,6 +797,68 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.error(f"❌ Failed to get symbols: {e}")
             return []
     
+    def rank_by_relative_strength(self, symbols: List[str], lookback_days: int = 20, top_n: int = 150) -> List[str]:
+        """
+        Score and rank symbols by relative strength vs SPY.
+
+        Composite score (0-100):
+          - RS excess return vs SPY 20-day (0-40 pts)
+          - Proximity to 52-week high      (0-30 pts)
+          - Current volume vs 20-day avg   (0-30 pts)
+
+        Falls back to original order if SPY data unavailable.
+        """
+        try:
+            spy_df = self.get_market_data('SPY')
+            if spy_df is None or len(spy_df) < lookback_days:
+                return symbols[:top_n]
+
+            spy_start = float(spy_df['close'].iloc[-lookback_days])
+            spy_end = float(spy_df['close'].iloc[-1])
+            spy_return = (spy_end - spy_start) / spy_start if spy_start else 0.0
+
+            scored = []
+            for sym in symbols:
+                try:
+                    df = self.get_market_data(sym)
+                    if df is None or len(df) < max(lookback_days, 30):
+                        continue
+
+                    # 1. Relative strength vs SPY
+                    stock_start = float(df['close'].iloc[-lookback_days])
+                    stock_end = float(df['close'].iloc[-1])
+                    stock_return = (stock_end - stock_start) / stock_start if stock_start else 0.0
+                    rs_excess = stock_return - spy_return
+                    rs_score = max(0.0, min(40.0, (rs_excess + 0.10) * 200.0))
+
+                    # 2. Proximity to 52-week high
+                    lookback_high = min(252, len(df))
+                    high_52w = float(df['high'].tail(lookback_high).max())
+                    prox = stock_end / high_52w if high_52w > 0 else 0.0
+                    momentum_score = prox * 30.0
+
+                    # 3. Volume surge score
+                    avg_vol = float(df['volume'].tail(20).mean())
+                    curr_vol = float(df['volume'].iloc[-1])
+                    vol_ratio = curr_vol / avg_vol if avg_vol > 0 else 1.0
+                    vol_score = min(30.0, vol_ratio * 15.0)
+
+                    total = rs_score + momentum_score + vol_score
+                    scored.append((sym, total))
+                except Exception:
+                    continue
+
+            if not scored:
+                return symbols[:top_n]
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+            ranked = [s for s, _ in scored[:top_n]]
+            logging.info(f"RS Ranking: top 5 = {ranked[:5]} ({len(scored)} scored)")
+            return ranked
+        except Exception as e:
+            logging.debug(f"RS ranking failed: {e}")
+            return symbols[:top_n]
+
     def _get_rolling_ticker_list(self, target_count: int = 30) -> List[str]:
         """
         Get a sequential list of tickers - each analyzed once before any repeats.
@@ -795,7 +890,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             excluded = portfolio_symbols | pending_symbols
             
             # Create queue excluding portfolio and pending
-            self._analysis_queue = [s for s in all_symbols if s not in excluded]
+            candidate_queue = [s for s in all_symbols if s not in excluded]
+
+            # RS-rank the first 300 candidates so the highest-RS symbols are
+            # analyzed first each cycle (trades go to the best opportunities)
+            if len(candidate_queue) > 50:
+                try:
+                    top_candidates = candidate_queue[:300]
+                    remainder = candidate_queue[300:]
+                    ranked_top = self.rank_by_relative_strength(top_candidates, lookback_days=20, top_n=150)
+                    already_ranked = set(ranked_top)
+                    remaining_candidates = [s for s in top_candidates if s not in already_ranked]
+                    candidate_queue = ranked_top + remaining_candidates + remainder
+                    logging.info(f"RS-ranked queue: top 150 prioritized")
+                except Exception as e:
+                    logging.debug(f"RS ranking in queue failed: {e}")
+
+            self._analysis_queue = candidate_queue
             self._current_analysis_index = 0
             logging.info(f"🔄 Starting new analysis cycle: {len(self._analysis_queue)} symbols in queue")
         
@@ -884,6 +995,61 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             ]
         }
     
+    def get_vix_regime(self) -> dict:
+        """
+        Fetch the current VIX level and classify the volatility regime.
+        Results are cached for 15 minutes to avoid hammering yfinance.
+
+        Returns:
+            Dict with keys:
+              vix_level        (float)
+              regime           ('LOW' | 'NORMAL' | 'HIGH' | 'EXTREME')
+              should_reduce_sizing (bool)
+              size_multiplier  (float, 0.5 – 1.0)
+        """
+        _default = {
+            'vix_level': 20.0,
+            'regime': 'NORMAL',
+            'should_reduce_sizing': False,
+            'size_multiplier': 1.0
+        }
+        try:
+            now = datetime.now(timezone.utc)
+            # Return cached value if fresh (15-minute TTL)
+            if (hasattr(self, '_vix_cache')
+                    and self._vix_cache
+                    and (now - self._vix_cache_time).total_seconds() < 900):
+                return self._vix_cache
+
+            import yfinance as yf
+            hist = yf.Ticker("^VIX").history(period="5d")
+            if hist.empty:
+                return _default
+
+            vix = float(hist['Close'].iloc[-1])
+
+            if vix < 15:
+                regime, reduce, mult = 'LOW', False, 1.0
+            elif vix < 25:
+                regime, reduce, mult = 'NORMAL', False, 1.0
+            elif vix < 35:
+                regime, reduce, mult = 'HIGH', True, 0.75
+            else:
+                regime, reduce, mult = 'EXTREME', True, 0.50
+
+            result = {
+                'vix_level': round(vix, 1),
+                'regime': regime,
+                'should_reduce_sizing': reduce,
+                'size_multiplier': mult
+            }
+            self._vix_cache = result
+            self._vix_cache_time = now
+            return result
+        except Exception as e:
+            logging.debug(f"VIX check failed: {e}")
+            return _default
+
     def get_market_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """Get market data for analysis with request deduplication"""
         # Check if we have a valid cached result
@@ -1581,10 +1747,50 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             catalyst_data = self.scan_catalysts(symbol)
             catalyst_score = catalyst_data.get('catalyst_score', 0)
             
-            # Total Score (0-100 scale, 50 = neutral)
-            total_score = 50 + rsi_score + sma_score + macd_score + bb_score + catalyst_score
-            total_score = max(0, min(100, total_score))
-            
+            # Total Score (0-100 scale, 50 = neutral) — daily component
+            daily_score = 50 + rsi_score + sma_score + macd_score + bb_score + catalyst_score
+            daily_score = max(0, min(100, daily_score))
+
+            # Multi-timeframe blending: blend daily (70%) with hourly (30%)
+            # Hourly score uses RSI + SMA on 1-hour bars for intraday confirmation
+            hourly_score = None
+            if self.enable_multi_timeframe:
+                try:
+                    df_hourly = self.get_hourly_market_data(symbol, lookback_hours=120)
+                    if df_hourly is not None and len(df_hourly) >= self.sma_slow:
+                        df_hourly = self.calculate_indicators(df_hourly)
+                        h = df_hourly.iloc[-1]
+                        h_rsi = h.get('RSI', float('nan'))
+                        h_sma_fast = h.get(f'SMA_{self.sma_fast}', float('nan'))
+                        h_sma_slow = h.get(f'SMA_{self.sma_slow}', float('nan'))
+                        if pd.notna(h_rsi) and pd.notna(h_sma_fast) and pd.notna(h_sma_slow):
+                            # Simplified 0-100 score from hourly indicators
+                            h_rsi_score = 0
+                            if h_rsi < 30:
+                                h_rsi_score = 25 * (1 - h_rsi / 30)
+                            elif h_rsi > 70:
+                                h_rsi_score = -25 * ((h_rsi - 70) / 30)
+                            h_sma_score = 0
+                            if h_sma_fast > h_sma_slow:
+                                h_sma_pct = ((h_sma_fast - h_sma_slow) / h_sma_slow) * 100
+                                h_sma_score = min(25, h_sma_pct * 5)
+                            elif h_sma_fast < h_sma_slow:
+                                h_sma_pct = ((h_sma_slow - h_sma_fast) / h_sma_slow) * 100
+                                h_sma_score = -min(25, h_sma_pct * 5)
+                            hourly_score = max(0, min(100, 50 + h_rsi_score + h_sma_score))
+                except Exception as e:
+                    logging.debug(f"Hourly score failed for {symbol}: {e}")
+
+            if hourly_score is not None:
+                total_score = daily_score * (1 - self.hourly_weight) + hourly_score * self.hourly_weight
+                total_score = max(0, min(100, total_score))
+                logging.debug(
+                    f"MTF blend {symbol}: daily={daily_score:.1f} hourly={hourly_score:.1f} "
+                    f"→ blended={total_score:.1f}"
+                )
+            else:
+                total_score = daily_score
+
             # Determine signal based on score
             # BUY threshold: 65+, SELL threshold: 35-
             if total_score >= 65:
@@ -1653,7 +1859,17 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # ================================================
             # NEW: Wire up additional signal filters (Phases 6.2, 7.1, 7.2, 7.3)
             # ================================================
-            
+
+            # Volume Confirmation filter - require above-average volume for BUY signals
+            volume_warning = None
+            if signal == "BUY" and self.enable_volume_confirmation:
+                volume_ratio = latest.get('volume_ratio', 1.0)
+                if pd.notna(volume_ratio) and volume_ratio < 1.0:
+                    signal = "HOLD"
+                    signal_strength = "WEAK"
+                    volume_warning = f"Below-average volume ({volume_ratio:.2f}x avg)"
+                    logging.info(f"📊 {symbol}: Volume confirmation failed ({volume_ratio:.2f}x avg volume)")
+
             # Trading Windows filter (Phase 6.2) - skip if bad time
             if signal == "BUY":
                 try:
@@ -2119,8 +2335,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # Minimum and maximum constraints
         min_quantity = 1
         max_quantity = int(portfolio_value * self.max_position_pct / price)  # Max X% of portfolio
-        
-        return max(min_quantity, min(quantity, max_quantity))
+        quantity = max(min_quantity, min(quantity, max_quantity))
+
+        # VIX volatility regime: reduce position size in HIGH / EXTREME vol environments
+        try:
+            vix_info = self.get_vix_regime()
+            if vix_info.get('should_reduce_sizing'):
+                vix_mult = vix_info.get('size_multiplier', 1.0)
+                quantity = max(min_quantity, int(quantity * vix_mult))
+                logging.debug(
+                    f"VIX={vix_info['vix_level']} ({vix_info['regime']}): "
+                    f"Reduced {symbol} size by {(1 - vix_mult) * 100:.0f}%"
+                )
+        except Exception:
+            pass
+
+        # Apply per-symbol size multiplier from adaptive learning
+        if hasattr(self, '_symbol_size_multipliers') and symbol in self._symbol_size_multipliers:
+            multiplier = self._symbol_size_multipliers[symbol]
+            quantity = max(min_quantity, int(quantity * multiplier))
+            logging.debug(f"Applied learned size multiplier {multiplier:.2f}x for {symbol}")
+
+        return quantity
     
     def check_position_limits(self, symbol: str, new_quantity: int, price: float, portfolio_value: float) -> tuple:
         """Check if adding position would exceed concentration limits"""
@@ -2881,19 +3117,39 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if current_position_qty > 0:
                     new_total_qty = current_position_qty + quantity
                     logging.info(f"📊 {symbol} Position: Currently {current_position_qty} shares, adding {quantity} → {new_total_qty} total")
-            
+
+                # Position scaling: split into entry tranches and only buy Tranche 1 now
+                if quantity >= 3:
+                    try:
+                        from analysis.position_scaling.position_scaling import calculate_entry_tranches
+                        total_score = analysis.get('total_score', 75)
+                        tranche_plan = calculate_entry_tranches(symbol, quantity, signal_strength=int(total_score))
+                        tranche_1 = tranche_plan['tranches'][0]
+                        quantity = tranche_1['qty']  # Only execute first tranche immediately
+                        # Store remaining tranches for deferred execution
+                        tranche_plan['entry_price'] = price
+                        tranche_plan['created_at'] = datetime.now(timezone.utc)
+                        # Mark tranche 1 as pending-fill (will be marked filled after order)
+                        self._pending_entry_tranches[symbol] = tranche_plan
+                        logging.info(
+                            f"Tranche entry: buying {quantity}/{tranche_plan['total_qty']} shares now "
+                            f"(remaining tranches deferred)"
+                        )
+                    except Exception as e:
+                        logging.debug(f"Position scaling failed for {symbol}: {e}")
+
             if quantity <= 0:
                 return False
-            
+
             side = OrderSide.BUY if signal == 'BUY' else OrderSide.SELL
-            
+
             market_order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=quantity,
                 side=side,
                 time_in_force=TimeInForce.DAY
             )
-            
+
             order = self.trading_client.submit_order(order_data=market_order_data)
             
             # Log to database if available
@@ -2915,6 +3171,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 }
                 self.db.log_trade(self.session_id, trade_data)
             
+            # Mark tranche 1 as filled now that the order is submitted
+            if signal == 'BUY' and symbol in self._pending_entry_tranches:
+                plan = self._pending_entry_tranches[symbol]
+                tranches = plan.get('tranches', [])
+                if tranches:
+                    tranches[0]['status'] = 'filled'
+                    tranches[0]['filled_price'] = price
+
             # Send email notification
             self.send_trade_notification(
                 trade_type=signal,
@@ -3007,6 +3271,87 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             self.errors_count += 1
             return False
     
+    def _execute_pending_entry_tranches(self):
+        """
+        Check pending entry tranches (tranches 2 and 3) created by execute_trade()
+        and execute any whose triggers are now satisfied.
+
+        Called once per continuous loop iteration so it doesn't block the main
+        analysis path.
+        """
+        if not self._pending_entry_tranches:
+            return
+
+        from analysis.position_scaling.position_scaling import check_tranche_triggers
+
+        completed_symbols = []
+
+        for symbol, plan in list(self._pending_entry_tranches.items()):
+            try:
+                df = self.get_market_data(symbol)
+                if df is None:
+                    continue
+
+                df = self.calculate_indicators(df)
+                latest = df.iloc[-1]
+
+                current_price = float(latest['close'])
+                current_rsi = float(latest.get('RSI', 50))
+                vwap = float(latest.get('vwap', current_price))
+                vol_ratio = float(latest.get('volume_ratio', 1.0))
+
+                entry_price = plan.get('entry_price', current_price)
+                created_at = plan.get('created_at')
+                if created_at:
+                    hours_since = (
+                        datetime.now(timezone.utc) - created_at
+                    ).total_seconds() / 3600
+                else:
+                    hours_since = 0
+
+                current_data = {
+                    'price': current_price,
+                    'vwap': vwap,
+                    'rsi': current_rsi,
+                    'volume_ratio': vol_ratio,
+                    'hours_since_entry': hours_since,
+                    'entry_price': entry_price,
+                }
+
+                to_execute = check_tranche_triggers(plan, current_data)
+
+                for tranche in to_execute:
+                    qty = tranche.get('qty', 0)
+                    if qty < 1:
+                        continue
+                    try:
+                        order = self.trading_client.submit_order(
+                            order_data=MarketOrderRequest(
+                                symbol=symbol,
+                                qty=qty,
+                                side=OrderSide.BUY,
+                                time_in_force=TimeInForce.DAY,
+                            )
+                        )
+                        tranche['status'] = 'filled'
+                        logging.info(
+                            f"Tranche {tranche['tranche_num']} executed: "
+                            f"BUY {qty} {symbol} @ ~${current_price:.2f} "
+                            f"({tranche['trigger']})"
+                        )
+                    except Exception as e:
+                        logging.debug(f"Tranche order failed for {symbol}: {e}")
+
+                # Remove plan if all tranches are done (filled or skipped)
+                if all(t['status'] != 'pending' for t in plan.get('tranches', [])):
+                    completed_symbols.append(symbol)
+
+            except Exception as e:
+                logging.debug(f"Tranche check failed for {symbol}: {e}")
+
+        for sym in completed_symbols:
+            self._pending_entry_tranches.pop(sym, None)
+
     def run_analysis(self, max_symbols: int = 50, max_trades: int = 3, use_ai: bool = False):
         """Run trading analysis with optional AI enhancement"""
         # Clear market data cache for fresh analysis cycle
@@ -4291,13 +4636,24 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 print(f"\n🔄 LOOP #{loop_count} - {loop_start.strftime('%H:%M:%S')}")
                 print("-" * 40)
                 
-                # Log market regime at start of each loop
+                # Log market regime and VIX at start of each loop
                 if self.enable_regime_filter:
                     try:
                         regime = self.get_current_market_regime()
                         print(f"📊 Market Regime: {regime.get('regime', 'UNKNOWN')} (ADX: {regime.get('adx', 0):.1f})")
                     except Exception as e:
                         logging.debug(f"Could not get regime: {e}")
+
+                try:
+                    vix_info = self.get_vix_regime()
+                    vix_indicator = ("🟢" if vix_info['regime'] == 'LOW'
+                                     else "🟡" if vix_info['regime'] == 'NORMAL'
+                                     else "🟠" if vix_info['regime'] == 'HIGH'
+                                     else "🔴")
+                    print(f"{vix_indicator} VIX: {vix_info['vix_level']} ({vix_info['regime']})"
+                          + (" — sizing reduced" if vix_info['should_reduce_sizing'] else ""))
+                except Exception as e:
+                    logging.debug(f"Could not display VIX: {e}")
                 
                 try:
                     # Start session for this loop
@@ -4394,7 +4750,39 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     
                     # End session
                     self.end_session()
-                    
+
+                    # Execute any pending entry tranches (tranche 2 & 3 follow-ups)
+                    try:
+                        self._execute_pending_entry_tranches()
+                    except Exception as e:
+                        logging.debug(f"Pending tranche execution failed: {e}")
+
+                    # Portfolio optimisation (every N loops)
+                    if (self.portfolio_optimizer is not None
+                            and loop_count % self.portfolio_opt_interval_loops == 0):
+                        try:
+                            opt_result = self.portfolio_optimizer.run_optimization_pass(self)
+                            if opt_result and opt_result.get('rebalance_trades'):
+                                print(
+                                    f"📊 Portfolio Optimisation: "
+                                    f"Sharpe {opt_result['current_sharpe']:.3f} → "
+                                    f"{opt_result['optimal_sharpe']:.3f} "
+                                    f"({len(opt_result['rebalance_trades'])} suggestions)"
+                                )
+                        except Exception as e:
+                            logging.debug(f"Portfolio optimisation failed in loop: {e}")
+
+                    # Adaptive learning (every N loops)
+                    try:
+                        if (loop_count % self.learning_interval_loops == 0
+                                and hasattr(self, 'adaptive_learning')
+                                and self.adaptive_learning is not None):
+                            changes = self.adaptive_learning.run_analysis_and_apply(self)
+                            if changes:
+                                print(f"🧠 Adaptive learning updated {len(changes)} parameters")
+                    except Exception as e:
+                        logging.debug(f"Adaptive learning failed in loop: {e}")
+
                     # Show summary every N loops
                     if loop_count % summary_interval == 0:
                         self._show_performance_summary(loop_count, loop_performance, total_trades, total_opportunities, start_time, ticker_positions, ticker_transactions)
