@@ -434,6 +434,7 @@
                         <th>SMA⊕</th>
                         <th>MACD⊕</th>
                         <th>BB⊕</th>
+                        <th>Buy Criteria</th>
                     </tr>
                 </thead>
                 <tbody id="opportunities-body">
@@ -720,12 +721,25 @@
                     const score = opp.total_score || 50;
                     const scoreClass = score >= 65 ? 'green' : (score <= 35 ? 'red' : '');
                     const signalClass = opp.signal === 'BUY' ? 'green' : (opp.signal === 'SELL' ? 'red' : '');
-                    
+
                     const rsiScore = opp.rsi_score || 0;
                     const smaScore = opp.sma_score || 0;
                     const macdScore = opp.macd_score || 0;
                     const bbScore = opp.bb_score || 0;
-                    
+
+                    // Buy criteria cell
+                    let criteriaHtml;
+                    if (opp.passes_all_buy_criteria) {
+                        criteriaHtml = '<span class="green">✓ Passes all</span>';
+                    } else {
+                        const failed = opp.buy_criteria
+                            ? opp.buy_criteria.filter(c => !c.passed)
+                            : (opp.failed_criteria || []).map(n => ({ name: n, detail: '' }));
+                        criteriaHtml = failed.map(c =>
+                            `<span class="red">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
+                        ).join('<br>');
+                    }
+
                     return `<tr>
                         <td class="symbol">${opp.symbol}</td>
                         <td>$${opp.price ? opp.price.toFixed(2) : 'N/A'}</td>
@@ -736,6 +750,7 @@
                         <td class="${smaScore > 0 ? 'green' : (smaScore < 0 ? 'red' : '')}">${smaScore > 0 ? '+' : ''}${smaScore.toFixed(0)}</td>
                         <td class="${macdScore > 0 ? 'green' : (macdScore < 0 ? 'red' : '')}">${macdScore > 0 ? '+' : ''}${macdScore.toFixed(0)}</td>
                         <td class="${bbScore > 0 ? 'green' : (bbScore < 0 ? 'red' : '')}">${bbScore > 0 ? '+' : ''}${bbScore.toFixed(0)}</td>
+                        <td style="font-size: 12px; line-height: 1.6;">${criteriaHtml}</td>
                     </tr>`;
                 }).join('');
                 

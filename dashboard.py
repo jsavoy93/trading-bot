@@ -551,7 +551,12 @@ def api_opportunities(limit: int = 10):
                 # Total Score
                 total_score = 50 + rsi_score + sma_score + macd_score + bb_score
                 total_score = max(0, min(100, total_score))
-                
+
+                # Volume ratio
+                volume_ratio = latest.get('volume_ratio', None)
+                if volume_ratio is not None and pd.isna(volume_ratio):
+                    volume_ratio = None
+
                 # Signal
                 if total_score >= 65:
                     signal = 'BUY'
@@ -562,7 +567,41 @@ def api_opportunities(limit: int = 10):
                 else:
                     signal = 'HOLD'
                     strength = 'WEAK'
-                
+
+                # Buy criteria evaluation — check each condition individually
+                macd_val = float(macd_hist) if pd.notna(macd_hist) else None
+                buy_criteria = [
+                    {
+                        'name': 'Score ≥ 65',
+                        'passed': total_score >= 65,
+                        'detail': f'{total_score:.0f}/100',
+                    },
+                    {
+                        'name': 'RSI < 70',
+                        'passed': rsi < 70,
+                        'detail': f'{rsi:.1f}',
+                    },
+                    {
+                        'name': 'SMA uptrend',
+                        'passed': sma_fast > sma_slow,
+                        'detail': 'uptrend' if sma_fast > sma_slow else 'downtrend',
+                    },
+                    {
+                        'name': 'MACD positive',
+                        'passed': macd_val is not None and macd_val > 0,
+                        'detail': f'{macd_val:.3f}' if macd_val is not None else 'N/A',
+                    },
+                ]
+                if volume_ratio is not None:
+                    buy_criteria.append({
+                        'name': 'Volume ≥ avg',
+                        'passed': float(volume_ratio) >= 1.0,
+                        'detail': f'{float(volume_ratio):.2f}x',
+                    })
+
+                failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
+                passes_all_buy_criteria = len(failed_criteria) == 0
+
                 opportunities.append({
                     'symbol': symbol,
                     'price': price,
@@ -574,6 +613,9 @@ def api_opportunities(limit: int = 10):
                     'sma_score': round(sma_score, 1),
                     'macd_score': round(macd_score, 1),
                     'bb_score': round(bb_score, 1),
+                    'buy_criteria': buy_criteria,
+                    'passes_all_buy_criteria': passes_all_buy_criteria,
+                    'failed_criteria': failed_criteria,
                 })
                 
             except Exception as e:
