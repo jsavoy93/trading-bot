@@ -3015,6 +3015,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         classifier = self.get_regime_classifier()
         result = classifier.calculate_current_regime()
         result['modifiers'] = classifier.get_strategy_modifiers(result['regime'])
+        self._current_regime = result
         return result
     
     def execute_trade(self, analysis: Dict) -> bool:
@@ -3715,6 +3716,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         else:
                             bb_pos = 50
                         
+                        # Handle missing RSI
+                        if pd.isna(rsi):
+                            rsi = 50  # Neutral
+                        
                         # Calculate signal score from scratch (0-100, 50=neutral)
                         rsi_score = 0
                         if rsi < 30:
@@ -3739,8 +3744,81 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         total = 50 + rsi_score + sma_score + macd_score + bb_score
                         total = max(0, min(100, total))
                         
+                        # Calculate regime_score based on market regime
+                        regime_score = 0
+                        try:
+                            if hasattr(self, '_current_regime'):
+                                regime = self._current_regime.get('regime', 'UNKNOWN')
+                                adx = self._current_regime.get('adx', 0)
+                                if regime == 'TRENDING_BULLISH':
+                                    regime_score = 10  # Boost in bullish trend
+                                elif regime == 'TRENDING_BEARISH':
+                                    regime_score = -10  # Penalty in bearish trend
+                                elif regime == 'RANGING':
+                                    regime_score = 0
+                                # Strong trend (ADX > 25) modifies score
+                                if adx > 25:
+                                    regime_score = regime_score * (adx / 25)
+                        except:
+                            pass
+                        
+                        # Catalyst score - check for gap ups and momentum
+                        catalyst_score = 0
+                        try:
+                            if len(df) >= 2:
+                                prev_close = df.iloc[-2]['close']
+                                gap = (price - prev_close) / prev_close * 100 if prev_close > 0 else 0
+                                if gap > 5:
+                                    catalyst_score = 15  # Strong gap up
+                                elif gap > 2:
+                                    catalyst_score = 8   # Moderate gap up
+                                # Volume surge check
+                                if len(df) >= 20:
+                                    avg_vol = df['volume'].tail(20).mean()
+                                    curr_vol = df.iloc[-1]['volume']
+                                    if curr_vol > avg_vol * 2:
+                                        catalyst_score += 10
+                        except:
+                            pass
+                        
+                        # Calculate total score with regime and catalyst
+                        total = 50 + rsi_score + sma_score + macd_score + bb_score + regime_score + catalyst_score
+                        total = 50 + rsi_score + sma_score + macd_score + bb_score
+                        total = max(0, min(100, total))
+                        
                         # One-line summary: Symbol | Price | RSI | MACD | BB% | VWAP% | Score
                         logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
+                        # Save to SQLite since analyze_symbol returned None
+                        try:
+                            import sqlite3
+                            from pathlib import Path
+                            db_path = Path(__file__).parent.parent.parent / "analyzed_stocks.db"
+                            conn = sqlite3.connect(str(db_path))
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                CREATE TABLE IF NOT EXISTS analyzed_stocks (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    symbol TEXT NOT NULL UNIQUE,
+                                    price REAL, total_score INTEGER DEFAULT 0,
+                                    rsi REAL, rsi_score REAL DEFAULT 0, sma_score REAL DEFAULT 0,
+                                    macd_score REAL DEFAULT 0, bb_score REAL DEFAULT 0, vwap_score REAL DEFAULT 0,
+                                    regime_score REAL DEFAULT 0, catalyst_score REAL DEFAULT 0,
+                                    earnings_score REAL DEFAULT 0, volatility_score REAL DEFAULT 0,
+                                    last_analyzed TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+                            """)
+                            conn.commit()
+                            cursor.execute("""
+                                INSERT OR REPLACE INTO analyzed_stocks 
+                                (symbol, price, total_score, rsi, rsi_score, sma_score, macd_score, bb_score, 
+                                 vwap_score, regime_score, catalyst_score, earnings_score, volatility_score, last_analyzed)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                            """, (symbol, price, int(total), rsi, rsi_score, sma_score, macd_score, bb_score, 
+                                  vwap_dist, regime_score, catalyst_score, 0, 0))
+                            conn.commit()
+                            conn.close()
+                            logging.debug(f"💾 SAVED {symbol} to SQLite")
+                        except Exception as e3:
+                            logging.debug(f"SQLite save error: {e3}")
                         no_trade_reasons['no_signal'] += 1
                     continue
                     
