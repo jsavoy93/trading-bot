@@ -727,16 +727,18 @@
                     const macdScore = opp.macd_score || 0;
                     const bbScore = opp.bb_score || 0;
 
-                    // Buy criteria cell
+                    // Buy criteria cell — show each criterion with its status.
+                    const criteria = opp.buy_criteria || [];
                     let criteriaHtml;
-                    if (opp.passes_all_buy_criteria) {
-                        criteriaHtml = '<span class="green">✓ Passes all</span>';
+                    if (criteria.length === 0) {
+                        criteriaHtml = '<span style="color:#8b949e">—</span>';
+                    } else if (opp.passes_all_buy_criteria) {
+                        criteriaHtml = '<span style="color:#2ea043;font-weight:600">✓ Passes all</span>';
                     } else {
-                        const failed = opp.buy_criteria
-                            ? opp.buy_criteria.filter(c => !c.passed)
-                            : (opp.failed_criteria || []).map(n => ({ name: n, detail: '' }));
-                        criteriaHtml = failed.map(c =>
-                            `<span class="red">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
+                        criteriaHtml = criteria.map(c =>
+                            c.passed
+                                ? `<span style="color:#2ea043">✓ ${c.name}</span>`
+                                : `<span style="color:#da3633">✗ ${c.name}: ${c.detail || ''}</span>`
                         ).join('<br>');
                     }
 

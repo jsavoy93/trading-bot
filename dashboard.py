@@ -535,9 +535,13 @@ def api_opportunities(limit: int = 10):
                     sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
                     sma_score = -min(25, sma_pct * 5)
                 
-                # MACD Score
+                # MACD Score — normalize by price so high-priced stocks don't always max out.
+                # A histogram equal to 0.5% of price earns the maximum +25.
                 macd_hist = latest.get('MACD_histogram', 0)
-                macd_score = max(-25, min(25, macd_hist * 10)) if pd.notna(macd_hist) else 0
+                if pd.notna(macd_hist) and price > 0:
+                    macd_score = max(-25, min(25, (macd_hist / price) * 5000))
+                else:
+                    macd_score = 0
                 
                 # Bollinger Score
                 bb_lower = latest.get('BB_lower')
@@ -568,34 +572,36 @@ def api_opportunities(limit: int = 10):
                     signal = 'HOLD'
                     strength = 'WEAK'
 
-                # Buy criteria evaluation — check each condition individually
+                # Buy criteria evaluation — check each condition individually.
+                # All 'passed' values are cast to Python bool to avoid numpy bool
+                # serialization issues (numpy.bool_ serializes as 0/1, not true/false).
                 macd_val = float(macd_hist) if pd.notna(macd_hist) else None
                 buy_criteria = [
                     {
                         'name': 'Score ≥ 65',
-                        'passed': total_score >= 65,
+                        'passed': bool(total_score >= 65),
                         'detail': f'{total_score:.0f}/100',
                     },
                     {
-                        'name': 'RSI < 70',
-                        'passed': rsi < 70,
+                        'name': 'RSI not overbought',
+                        'passed': bool(rsi < 70),
                         'detail': f'{rsi:.1f}',
                     },
                     {
                         'name': 'SMA uptrend',
-                        'passed': sma_fast > sma_slow,
+                        'passed': bool(sma_fast > sma_slow),
                         'detail': 'uptrend' if sma_fast > sma_slow else 'downtrend',
                     },
                     {
                         'name': 'MACD positive',
-                        'passed': macd_val is not None and macd_val > 0,
+                        'passed': bool(macd_val is not None and macd_val > 0),
                         'detail': f'{macd_val:.3f}' if macd_val is not None else 'N/A',
                     },
                 ]
                 if volume_ratio is not None:
                     buy_criteria.append({
                         'name': 'Volume ≥ avg',
-                        'passed': float(volume_ratio) >= 1.0,
+                        'passed': bool(float(volume_ratio) >= 1.0),
                         'detail': f'{float(volume_ratio):.2f}x',
                     })
 
