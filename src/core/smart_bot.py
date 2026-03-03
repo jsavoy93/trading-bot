@@ -1714,10 +1714,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             else:
                 sma_score = 0
             
-            # MACD Score: based on histogram value normalized
+            # MACD Score: normalize by price so high-priced stocks don't always max out.
+            # A histogram equal to 0.5% of price earns the maximum +25.
             macd_hist = latest.get('MACD_histogram', 0)
-            if pd.notna(macd_hist):
-                macd_score = max(-25, min(25, macd_hist * 100))  # Scale by histogram
+            if pd.notna(macd_hist) and price > 0:
+                macd_score = max(-25, min(25, (macd_hist / price) * 5000))
             else:
                 macd_score = 0
             
