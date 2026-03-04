@@ -516,10 +516,15 @@ def api_opportunities(limit: int = 10):
                 pass
         
         if not tickers:
-            # Fallback to default tickers if database is empty
-            tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
-                   'JNJ', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'CRM',
-                   'NFLX', 'INTC', 'AMD', 'CSCO', 'PFE', 'ABBV', 'T', 'VZ', 'KO', 'PEP']
+            # Fallback: use symbols the bot has actually analyzed (from analysis_status.json),
+            # sorted by most recently analyzed first
+            if analysis_timestamps:
+                tickers = sorted(analysis_timestamps.keys(),
+                                 key=lambda s: analysis_timestamps[s] or '', reverse=True)[:100]
+            else:
+                tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
+                       'JNJ', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'CRM',
+                       'NFLX', 'INTC', 'AMD', 'CSCO', 'PFE', 'ABBV', 'T', 'VZ', 'KO', 'PEP']
         
         opportunities = []
         analyzed = 0
