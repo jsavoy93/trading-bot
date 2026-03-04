@@ -188,6 +188,7 @@ class SQLiteDB:
             "available": self.available,
             "db_path": str(DB_PATH),
             "tables_exist": self.available,
+            "schema_version": "1.0",
             "total_sessions": 0,
             "total_trades": 0,
         }
