@@ -443,10 +443,7 @@
         <div class="card">
             <div class="card-header">
                 <span class="card-title">🎯 Top Opportunities</span>
-                <span style="display:flex;align-items:center;gap:8px;">
-                    <span id="opp-updated" class="opp-updated"></span>
-                    <button onclick="loadOpportunities()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
-                </span>
+                <button onclick="loadOpportunities()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
             </div>
             <div id="opportunities-loading">Loading opportunities...</div>
             <table id="opportunities-table" style="display: none;">
@@ -459,6 +456,7 @@
                         <th>RSI</th>
                         <th>Components</th>
                         <th>Buy Criteria</th>
+                        <th>Score Updated</th>
                     </tr>
                 </thead>
                 <tbody id="opportunities-body">
@@ -741,21 +739,23 @@
                 loading.style.display = 'none';
                 table.style.display = 'table';
                 
-                // Stamp last-updated in Central time
-                const updatedEl = document.getElementById('opp-updated');
-                if (updatedEl) {
-                    updatedEl.textContent = 'Updated ' + new Date().toLocaleString('en-US', {
-                        timeZone: 'America/Chicago',
-                        month: 'short', day: 'numeric',
-                        hour: 'numeric', minute: '2-digit',
-                        hour12: true
-                    }) + ' CT';
-                }
-
                 function scoreBubble(label, val) {
                     const cls = val > 0 ? 'pos' : (val < 0 ? 'neg' : 'neu');
                     const sign = val > 0 ? '+' : '';
                     return `<span class="score-bubble ${cls}">${label} ${sign}${val.toFixed(0)}</span>`;
+                }
+
+                function fmtAnalyzedAt(isoUtc) {
+                    if (!isoUtc) return '<span style="color:#8b949e">—</span>';
+                    try {
+                        const d = new Date(isoUtc);
+                        return d.toLocaleString('en-US', {
+                            timeZone: 'America/Chicago',
+                            month: 'short', day: 'numeric',
+                            hour: 'numeric', minute: '2-digit',
+                            hour12: true
+                        }) + ' CT';
+                    } catch(e) { return isoUtc; }
                 }
 
                 tbody.innerHTML = opportunities.map(opp => {
@@ -795,6 +795,7 @@
                         <td>${opp.rsi ? opp.rsi.toFixed(1) : 'N/A'}</td>
                         <td>${bubblesHtml}</td>
                         <td style="font-size: 11px; line-height: 1.6;">${criteriaHtml}</td>
+                        <td class="opp-updated" style="white-space:nowrap;">${fmtAnalyzedAt(opp.analyzed_at)}</td>
                     </tr>`;
                 }).join('');
                 

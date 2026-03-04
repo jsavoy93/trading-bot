@@ -484,10 +484,21 @@ def api_opportunities(limit: int = 10):
     
     try:
         from core.smart_bot import SmartTradingBot
-        
+
         # Create bot instance (minimal init)
         bot = SmartTradingBot()
-        
+
+        # Load per-symbol analyzed_at timestamps from analysis_status.json
+        analysis_timestamps = {}
+        try:
+            import json as _json
+            _status_file = Path(__file__).parent / "analysis_status.json"
+            if _status_file.exists():
+                _status = _json.loads(_status_file.read_text())
+                analysis_timestamps = {sym: entry.get('analyzed_at') for sym, entry in _status.items()}
+        except Exception:
+            pass
+
         # Get symbols to analyze
         # Now reading from SQLite database instead of hardcoded tickers
         # Read from analyzed_stocks table
@@ -642,6 +653,7 @@ def api_opportunities(limit: int = 10):
                     'buy_criteria': buy_criteria,
                     'passes_all_buy_criteria': passes_all_buy_criteria,
                     'failed_criteria': failed_criteria,
+                    'analyzed_at': analysis_timestamps.get(symbol),
                 })
                 
             except Exception as e:
