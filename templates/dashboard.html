@@ -186,7 +186,31 @@
                 grid-template-columns: 1fr;
             }
         }
-        
+
+        /* Score component bubbles in opportunities table */
+        .score-bubbles {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3px;
+        }
+        .score-bubble {
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .score-bubble.pos { background: #1a3a1e; color: #2ea043; border: 1px solid #2ea04350; }
+        .score-bubble.neg { background: #3a1a1a; color: #da3633; border: 1px solid #da363350; }
+        .score-bubble.neu { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+
+        .opp-updated {
+            font-size: 11px;
+            color: #8b949e;
+            font-weight: 400;
+        }
+
         .sector-group {
             margin-bottom: 8px;
             border: 1px solid #30363d;
@@ -419,7 +443,10 @@
         <div class="card">
             <div class="card-header">
                 <span class="card-title">🎯 Top Opportunities</span>
-                <button onclick="loadOpportunities()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
+                <span style="display:flex;align-items:center;gap:8px;">
+                    <span id="opp-updated" class="opp-updated"></span>
+                    <button onclick="loadOpportunities()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
+                </span>
             </div>
             <div id="opportunities-loading">Loading opportunities...</div>
             <table id="opportunities-table" style="display: none;">
@@ -430,10 +457,7 @@
                         <th>Signal</th>
                         <th>Score</th>
                         <th>RSI</th>
-                        <th>RSI⊕</th>
-                        <th>SMA⊕</th>
-                        <th>MACD⊕</th>
-                        <th>BB⊕</th>
+                        <th>Components</th>
                         <th>Buy Criteria</th>
                     </tr>
                 </thead>
@@ -717,6 +741,23 @@
                 loading.style.display = 'none';
                 table.style.display = 'table';
                 
+                // Stamp last-updated in Central time
+                const updatedEl = document.getElementById('opp-updated');
+                if (updatedEl) {
+                    updatedEl.textContent = 'Updated ' + new Date().toLocaleString('en-US', {
+                        timeZone: 'America/Chicago',
+                        month: 'short', day: 'numeric',
+                        hour: 'numeric', minute: '2-digit',
+                        hour12: true
+                    }) + ' CT';
+                }
+
+                function scoreBubble(label, val) {
+                    const cls = val > 0 ? 'pos' : (val < 0 ? 'neg' : 'neu');
+                    const sign = val > 0 ? '+' : '';
+                    return `<span class="score-bubble ${cls}">${label} ${sign}${val.toFixed(0)}</span>`;
+                }
+
                 tbody.innerHTML = opportunities.map(opp => {
                     const score = opp.total_score || 50;
                     const scoreClass = score >= 65 ? 'green' : (score <= 35 ? 'red' : '');
@@ -727,18 +768,22 @@
                     const macdScore = opp.macd_score || 0;
                     const bbScore = opp.bb_score || 0;
 
+                    const bubblesHtml = `<div class="score-bubbles">
+                        ${scoreBubble('RSI', rsiScore)}${scoreBubble('SMA', smaScore)}${scoreBubble('MACD', macdScore)}${scoreBubble('BB', bbScore)}
+                    </div>`;
+
                     // Buy criteria cell — show each criterion with its status.
                     const criteria = opp.buy_criteria || [];
                     let criteriaHtml;
                     if (criteria.length === 0) {
                         criteriaHtml = '<span style="color:#8b949e">—</span>';
                     } else if (opp.passes_all_buy_criteria) {
-                        criteriaHtml = '<span style="color:#2ea043;font-weight:600">✓ Passes all</span>';
+                        criteriaHtml = '<span style="color:#2ea043;font-weight:600">✓ All</span>';
                     } else {
                         criteriaHtml = criteria.map(c =>
                             c.passed
-                                ? `<span style="color:#2ea043">✓ ${c.name}</span>`
-                                : `<span style="color:#da3633">✗ ${c.name}: ${c.detail || ''}</span>`
+                                ? `<span style="color:#2ea043;font-size:11px">✓ ${c.name}</span>`
+                                : `<span style="color:#da3633;font-size:11px">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
                         ).join('<br>');
                     }
 
@@ -746,13 +791,10 @@
                         <td class="symbol">${opp.symbol}</td>
                         <td>$${opp.price ? opp.price.toFixed(2) : 'N/A'}</td>
                         <td class="${signalClass}">${opp.signal}</td>
-                        <td class="${scoreClass}" style="cursor: pointer;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${score.toFixed(0)}</strong>/100</td>
+                        <td class="${scoreClass}" style="cursor:pointer;white-space:nowrap;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${score.toFixed(0)}</strong>/100</td>
                         <td>${opp.rsi ? opp.rsi.toFixed(1) : 'N/A'}</td>
-                        <td class="${rsiScore > 0 ? 'green' : (rsiScore < 0 ? 'red' : '')}">${rsiScore > 0 ? '+' : ''}${rsiScore.toFixed(0)}</td>
-                        <td class="${smaScore > 0 ? 'green' : (smaScore < 0 ? 'red' : '')}">${smaScore > 0 ? '+' : ''}${smaScore.toFixed(0)}</td>
-                        <td class="${macdScore > 0 ? 'green' : (macdScore < 0 ? 'red' : '')}">${macdScore > 0 ? '+' : ''}${macdScore.toFixed(0)}</td>
-                        <td class="${bbScore > 0 ? 'green' : (bbScore < 0 ? 'red' : '')}">${bbScore > 0 ? '+' : ''}${bbScore.toFixed(0)}</td>
-                        <td style="font-size: 12px; line-height: 1.6;">${criteriaHtml}</td>
+                        <td>${bubblesHtml}</td>
+                        <td style="font-size: 11px; line-height: 1.6;">${criteriaHtml}</td>
                     </tr>`;
                 }).join('');
                 
