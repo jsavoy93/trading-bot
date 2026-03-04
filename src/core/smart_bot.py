@@ -926,8 +926,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         return batch
     
     def save_analysis_to_db(self, symbol: str, analysis: Dict):
-        """Save analysis result to database and file"""
-        # Save to memory
+        """Save analysis result to SQLite database"""
         self._analyzed_today[symbol] = {
             'analyzed_at': datetime.now(timezone.utc),
             'signal': analysis.get('signal', 'HOLD'),
@@ -935,47 +934,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             'rsi': analysis.get('rsi'),
             'price': analysis.get('price'),
         }
-        
-        # Also save to file for dashboard access
-        try:
-            import json
-            from pathlib import Path
-            analysis_file = Path(__file__).parent.parent.parent / "analysis_status.json"
-            
-            # Load existing
-            data = {}
-            if analysis_file.exists():
-                try:
-                    data = json.loads(analysis_file.read_text())
-                except:
-                    pass
-            
-            # Update with new analysis
-            data[symbol] = {
-                'analyzed_at': datetime.now(timezone.utc).isoformat(),
-                'signal': analysis.get('signal', 'HOLD'),
-                'total_score': analysis.get('total_score', 50),
-                'rsi': analysis.get('rsi'),
-                'price': analysis.get('price'),
-            }
-            
-            # Keep only last 200
-            sorted_items = sorted(data.items(), key=lambda x: x[1].get('analyzed_at', ''), reverse=True)
-            data = dict(sorted_items[:200])
-            
-            analysis_file.write_text(json.dumps(data))
-            logging.info(f'💾 SAVED {symbol} to file - score {analysis.get("total_score")}')
-            print(f'✅ SAVED: {symbol} to file!')
-            logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score')}")
-        except Exception as e:
-            logging.debug(f"File save error: {e}")
-        
-        # Also try database
-        try:
-            if self.db.is_available():
-                self.db.save_analysis_result(symbol, analysis)
-        except Exception as e:
-            logging.debug(f"Could not save analysis to DB: {e}")
+        self.db.save_analysis_result(symbol, analysis)
+        logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score')}")
     
     def get_analysis_status(self) -> Dict:
         """Get current analysis status for dashboard"""
@@ -3656,17 +3616,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 # Save analysis result
                 if analysis:
                     self.save_analysis_to_db(symbol, analysis)
-                    # Direct file save as backup
-                    try:
-                        import json
-                        from pathlib import Path
-                        logging.info(f'TRYING to save {symbol}...')
-                        f = Path(__file__).parent.parent.parent / "analysis_status.json"
-                        data = json.loads(f.read_text()) if f.exists() else {}
-                        data[symbol] = {"analyzed_at": datetime.now(timezone.utc).isoformat(), "signal": analysis.get("signal", "HOLD"), "total_score": analysis.get("total_score", 50), "rsi": analysis.get("rsi"), "price": analysis.get("price")}
-                        f.write_text(json.dumps(data))
-                    except:
-                        pass
                 
                 # Apply liquidity filter - skip illiquid stocks for BUY signals
                 if analysis and analysis.get('signal') == 'BUY' and self.enable_liquidity_filter:
@@ -3798,37 +3747,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         
                         # One-line summary: Symbol | Price | RSI | MACD | BB% | VWAP% | Score
                         logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
-                        # Save to SQLite since analyze_symbol returned None
-                        try:
-                            import sqlite3
-                            from pathlib import Path
-                            db_path = Path(__file__).parent.parent.parent / "analyzed_stocks.db"
-                            conn = sqlite3.connect(str(db_path))
-                            cursor = conn.cursor()
-                            cursor.execute("""
-                                CREATE TABLE IF NOT EXISTS analyzed_stocks (
-                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                    symbol TEXT NOT NULL UNIQUE,
-                                    price REAL, total_score INTEGER DEFAULT 0,
-                                    rsi REAL, rsi_score REAL DEFAULT 0, sma_score REAL DEFAULT 0,
-                                    macd_score REAL DEFAULT 0, bb_score REAL DEFAULT 0, vwap_score REAL DEFAULT 0,
-                                    regime_score REAL DEFAULT 0, catalyst_score REAL DEFAULT 0,
-                                    earnings_score REAL DEFAULT 0, volatility_score REAL DEFAULT 0,
-                                    last_analyzed TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
-                            """)
-                            conn.commit()
-                            cursor.execute("""
-                                INSERT OR REPLACE INTO analyzed_stocks 
-                                (symbol, price, total_score, rsi, rsi_score, sma_score, macd_score, bb_score, 
-                                 vwap_score, regime_score, catalyst_score, earnings_score, volatility_score, last_analyzed)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                            """, (symbol, price, int(total), rsi, rsi_score, sma_score, macd_score, bb_score, 
-                                  vwap_dist, regime_score, catalyst_score, 0, 0))
-                            conn.commit()
-                            conn.close()
-                            logging.debug(f"💾 SAVED {symbol} to SQLite")
-                        except Exception as e3:
-                            logging.debug(f"SQLite save error: {e3}")
+                        self.db.save_analysis_result(symbol, {
+                            'price': price, 'total_score': int(total), 'signal': 'HOLD',
+                            'rsi': rsi, 'rsi_score': rsi_score, 'sma_score': sma_score,
+                            'macd_score': macd_score, 'bb_score': bb_score,
+                            'vwap_score': vwap_dist, 'regime_score': regime_score,
+                            'catalyst_score': catalyst_score,
+                        })
                         no_trade_reasons['no_signal'] += 1
                     continue
                     

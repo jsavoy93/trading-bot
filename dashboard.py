@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent / "src"))
-from database.simple_rest import simple_rest
+from database.sqlite_db import sqlite_db as simple_rest
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 
@@ -375,47 +375,12 @@ def get_orders(limit: int = 20) -> List[Dict]:
 
 def get_trades_from_db(limit: int = 20) -> List[Dict]:
     """Get trades from database"""
-    if not db.is_available():
-        return []
-    try:
-        # Get from Supabase
-        import requests
-        headers = {
-            "apikey": db.api_key,
-            "Authorization": f"Bearer {db.api_key}",
-        }
-        response = requests.get(
-            f"{db.rest_url}/trades?order=created_at.desc&limit={limit}",
-            headers=headers,
-            timeout=5
-        )
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to get trades from DB: {e}")
-    return []
+    return db.get_all_trades(limit)
 
 
 def get_recent_sessions(limit: int = 5) -> List[Dict]:
     """Get recent trading sessions"""
-    if not db.is_available():
-        return []
-    try:
-        import requests
-        headers = {
-            "apikey": db.api_key,
-            "Authorization": f"Bearer {db.api_key}",
-        }
-        response = requests.get(
-            f"{db.rest_url}/trading_sessions?order=session_start.desc&limit={limit}",
-            headers=headers,
-            timeout=5
-        )
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        logger.error(f"Failed to get sessions: {e}")
-    return []
+    return db.get_sessions(limit)
 
 
 # Routes
@@ -488,41 +453,14 @@ def api_opportunities(limit: int = 10):
         # Create bot instance (minimal init)
         bot = SmartTradingBot()
 
-        # Load per-symbol analyzed_at timestamps from analysis_status.json
-        analysis_timestamps = {}
-        try:
-            import json as _json
-            _status_file = Path(__file__).parent / "analysis_status.json"
-            if _status_file.exists():
-                _status = _json.loads(_status_file.read_text())
-                analysis_timestamps = {sym: entry.get('analyzed_at') for sym, entry in _status.items()}
-        except Exception:
-            pass
-
-        # Get symbols to analyze
-        # Now reading from SQLite database instead of hardcoded tickers
-        # Read from analyzed_stocks table
-        import sqlite3
-        db_path = Path(__file__).parent / "analyzed_stocks.db"
-        tickers = []
-        if db_path.exists():
-            try:
-                conn = sqlite3.connect(str(db_path))
-                cursor = conn.cursor()
-                cursor.execute("SELECT symbol FROM analyzed_stocks ORDER BY total_score DESC LIMIT 100")
-                tickers = [row[0] for row in cursor.fetchall()]
-                conn.close()
-            except:
-                pass
-        
-        if not tickers:
-            # Fallback: use symbols the bot has actually analyzed (from analysis_status.json),
-            # sorted by most recently analyzed first
-            if analysis_timestamps:
-                tickers = sorted(analysis_timestamps.keys(),
-                                 key=lambda s: analysis_timestamps[s] or '', reverse=True)[:100]
-            else:
-                tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
+        # Get symbols from SQLite (ordered by score so best candidates are analyzed first)
+        analyzed_rows = db.get_analysis_results(100)
+        if analyzed_rows:
+            tickers = [r['symbol'] for r in analyzed_rows]
+            analysis_timestamps = {r['symbol']: r.get('last_analyzed') for r in analyzed_rows}
+        else:
+            analysis_timestamps = {}
+            tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
                        'JNJ', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'CRM',
                        'NFLX', 'INTC', 'AMD', 'CSCO', 'PFE', 'ABBV', 'T', 'VZ', 'KO', 'PEP']
         
@@ -760,18 +698,10 @@ def api_logs(session_id: int = None, lines: int = 200):
         # If session_id provided, filter by session timestamps
         if session_id and db.is_available():
             try:
-                headers = {
-                    "apikey": db.api_key,
-                    "Authorization": f"Bearer {db.api_key}",
-                }
-                # Get session info
-                resp = requests.get(
-                    f"{db.rest_url}/trading_sessions?id=eq.{session_id}",
-                    headers=headers,
-                    timeout=5
-                )
-                if resp.status_code == 200 and resp.json():
-                    session = resp.json()[0]
+                sessions = db.get_sessions(limit=100)
+                matched = [s for s in sessions if str(s.get('id')) == str(session_id)]
+                if matched:
+                    session = matched[0]
                     start = session.get('session_start')
                     end = session.get('session_end')
                     
