@@ -270,7 +270,7 @@ def get_positions() -> List[Dict]:
                             bb_score = 0
                             if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
                                 bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
-                                bb_score = 25 - (bb_position * 50)
+                                bb_score = max(-25, min(25, 25 - (bb_position * 50)))
                             
                             score = 50 + rsi_score + sma_score + macd_score + bb_score
                             score = max(0, min(100, score))
@@ -486,7 +486,24 @@ def api_opportunities(limit: int = 10):
         bot = SmartTradingBot()
         
         # Get symbols to analyze
-        tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
+        # Now reading from SQLite database instead of hardcoded tickers
+        # Read from analyzed_stocks table
+        import sqlite3
+        db_path = Path(__file__).parent / "analyzed_stocks.db"
+        tickers = []
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                cursor = conn.cursor()
+                cursor.execute("SELECT symbol FROM analyzed_stocks ORDER BY total_score DESC LIMIT 100")
+                tickers = [row[0] for row in cursor.fetchall()]
+                conn.close()
+            except:
+                pass
+        
+        if not tickers:
+            # Fallback to default tickers if database is empty
+            tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
                    'JNJ', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'CRM',
                    'NFLX', 'INTC', 'AMD', 'CSCO', 'PFE', 'ABBV', 'T', 'VZ', 'KO', 'PEP']
         
@@ -550,7 +567,7 @@ def api_opportunities(limit: int = 10):
                 bb_score = 0
                 if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
                     bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
-                    bb_score = 25 - (bb_position * 50)
+                    bb_score = max(-25, min(25, 25 - (bb_position * 50)))
                 
                 # Total Score
                 total_score = 50 + rsi_score + sma_score + macd_score + bb_score

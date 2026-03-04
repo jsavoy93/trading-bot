@@ -1727,7 +1727,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
                 bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
                 # Lower band = bullish (25), Upper = bearish (-25)
-                bb_score = 25 - (bb_position * 50)
+                bb_score = max(-25, min(25, 25 - (bb_position * 50)))
             
             # Get volatility tier and adjust scoring
             # Low volatility = mean-reversion works better
