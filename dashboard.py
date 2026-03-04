@@ -259,9 +259,12 @@ def get_positions() -> List[Dict]:
                                 sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
                                 sma_score = -min(25, sma_pct * 5)
                             
-                            # MACD Score
+                            # MACD Score — normalize by price so high-priced stocks don't always max out.
                             macd_hist = latest.get('MACD_histogram', 0)
-                            macd_score = max(-25, min(25, macd_hist * 10)) if pd.notna(macd_hist) else 0
+                            if pd.notna(macd_hist) and price > 0:
+                                macd_score = max(-25, min(25, (macd_hist / price) * 5000))
+                            else:
+                                macd_score = 0
                             
                             # Bollinger Score
                             bb_lower = latest.get('BB_lower')
@@ -1096,8 +1099,11 @@ def api_score_breakdown(symbol: str):
             sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
             sma_score = -min(25, sma_pct * 5)
         
-        macd_score = max(-25, min(25, macd_hist * 10)) if pd.notna(macd_hist) else 0
-        
+        if pd.notna(macd_hist) and price > 0:
+            macd_score = max(-25, min(25, (macd_hist / price) * 5000))
+        else:
+            macd_score = 0
+
         bb_lower = latest.get('BB_lower')
         bb_middle = latest.get('BB_middle')
         bb_upper = latest.get('BB_upper')

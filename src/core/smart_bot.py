@@ -1697,11 +1697,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             
             # RSI-based score (contributes to total)
             rsi_score = 0
-            # RSI Score: 0 (overbought) to 25 (oversold) - always applies
             if rsi < 30:
-                rsi_score = 25 * (1 - rsi / 30)  # Max 25 at RSI 0
-            elif rsi > 70:
-                rsi_score = -25 * ((rsi - 70) / 30)  # Min -25 at RSI 100
+                rsi_score = 25 * (1 - rsi / 30)
+            elif rsi < 50:
+                rsi_score = 12.5 * (1 - (rsi - 30) / 20)
+            elif rsi < 70:
+                rsi_score = -12.5 * ((rsi - 50) / 20)
+            else:
+                rsi_score = -25 * min(1, (rsi - 70) / 30)
             
             # SMA Score: based on how far fast is above/below slow
             sma_score = 0
@@ -3725,9 +3728,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         rsi_score = 0
                         if rsi < 30:
                             rsi_score = 25 * (1 - rsi / 30)
-                        elif rsi > 70:
-                            rsi_score = -25 * ((rsi - 70) / 30)
-                        
+                        elif rsi < 50:
+                            rsi_score = 12.5 * (1 - (rsi - 30) / 20)
+                        elif rsi < 70:
+                            rsi_score = -12.5 * ((rsi - 50) / 20)
+                        else:
+                            rsi_score = -25 * min(1, (rsi - 70) / 30)
+
                         sma_score = 0
                         if sma_fast > sma_slow:
                             sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
@@ -3735,12 +3742,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         elif sma_fast < sma_slow:
                             sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
                             sma_score = -min(25, sma_pct * 5)
-                        
-                        macd_score = 0
-                        if pd.notna(macd) and pd.notna(macd_sig):
-                            macd_score = max(-25, min(25, (macd - macd_sig) * 100))
-                        
-                        bb_score = 25 - bb_pos  # Lower band = bullish, upper = bearish
+
+                        macd_hist_val = latest.get('MACD_histogram', 0)
+                        if pd.notna(macd_hist_val) and price > 0:
+                            macd_score = max(-25, min(25, (macd_hist_val / price) * 5000))
+                        else:
+                            macd_score = 0
+
+                        bb_score = 25 - (bb_pos / 2)  # Lower band = bullish (+25), upper = bearish (-25)
                         
                         total = 50 + rsi_score + sma_score + macd_score + bb_score
                         total = max(0, min(100, total))
