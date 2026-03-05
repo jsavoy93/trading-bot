@@ -415,7 +415,7 @@ class SQLiteDB:
             with _get_conn() as conn:
                 rows = conn.execute(
                     "SELECT *, last_analyzed AS analyzed_at FROM analyzed_stocks"
-                    " ORDER BY last_analyzed DESC LIMIT ?",
+                    " ORDER BY total_score DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
                 return [_row_to_dict(r) for r in rows]

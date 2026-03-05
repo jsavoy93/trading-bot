@@ -453,11 +453,12 @@ def api_opportunities(limit: int = 10):
         # Create bot instance (minimal init)
         bot = SmartTradingBot()
 
-        # Get symbols from SQLite (ordered by score so best candidates are analyzed first)
-        analyzed_rows = db.get_analysis_results(100)
+        # Get the best candidates across ALL ever-analyzed symbols (not just the most
+        # recent session). Ordered by stored total_score DESC so the top historical
+        # scorers are re-evaluated first; live re-fetch is capped at 50 for speed.
+        analyzed_rows = db.get_analysis_results(200)
         if analyzed_rows:
-            tickers = [r['symbol'] for r in analyzed_rows]
-            # analyzed_at is aliased by get_analysis_results
+            tickers = [r['symbol'] for r in analyzed_rows[:50]]
             db_timestamps = {r['symbol']: r.get('analyzed_at') for r in analyzed_rows}
         else:
             db_timestamps = {}
