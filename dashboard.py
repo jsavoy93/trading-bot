@@ -457,9 +457,10 @@ def api_opportunities(limit: int = 10):
         analyzed_rows = db.get_analysis_results(100)
         if analyzed_rows:
             tickers = [r['symbol'] for r in analyzed_rows]
-            analysis_timestamps = {r['symbol']: r.get('last_analyzed') for r in analyzed_rows}
+            # analyzed_at is aliased by get_analysis_results
+            db_timestamps = {r['symbol']: r.get('analyzed_at') for r in analyzed_rows}
         else:
-            analysis_timestamps = {}
+            db_timestamps = {}
             tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
                        'JNJ', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'CRM',
                        'NFLX', 'INTC', 'AMD', 'CSCO', 'PFE', 'ABBV', 'T', 'VZ', 'KO', 'PEP']
@@ -596,7 +597,7 @@ def api_opportunities(limit: int = 10):
                     'buy_criteria': buy_criteria,
                     'passes_all_buy_criteria': passes_all_buy_criteria,
                     'failed_criteria': failed_criteria,
-                    'analyzed_at': analysis_timestamps.get(symbol),
+                    'analyzed_at': db_timestamps.get(symbol) or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 })
                 
             except Exception as e:
