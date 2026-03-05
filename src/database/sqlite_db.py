@@ -100,7 +100,7 @@ class SQLiteDB:
                         catalyst_score REAL DEFAULT 0,
                         earnings_score REAL DEFAULT 0,
                         volatility_score REAL DEFAULT 0,
-                        last_analyzed TEXT DEFAULT (datetime('now'))
+                        last_analyzed TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
                     );
 
                     CREATE INDEX IF NOT EXISTS idx_analyzed_stocks_score
@@ -368,7 +368,7 @@ class SQLiteDB:
                         rsi, rsi_score, sma_score, macd_score, bb_score,
                         vwap_score, regime_score, catalyst_score, earnings_score,
                         volatility_score, last_analyzed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(symbol) DO UPDATE SET
                            price = excluded.price,
                            total_score = excluded.total_score,
@@ -401,6 +401,7 @@ class SQLiteDB:
                         analysis.get("catalyst_score", 0),
                         analysis.get("earnings_score", 0),
                         analysis.get("volatility_score", 0),
+                        datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     ),
                 )
             logging.debug(f"💾 Saved analysis for {symbol} to SQLite")
@@ -413,7 +414,8 @@ class SQLiteDB:
         try:
             with _get_conn() as conn:
                 rows = conn.execute(
-                    "SELECT * FROM analyzed_stocks ORDER BY last_analyzed DESC LIMIT ?",
+                    "SELECT *, last_analyzed AS analyzed_at FROM analyzed_stocks"
+                    " ORDER BY last_analyzed DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
                 return [_row_to_dict(r) for r in rows]
