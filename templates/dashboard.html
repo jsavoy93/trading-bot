@@ -700,12 +700,17 @@
         }
         </style>
 
-        <!-- Database Status -->
-        {% if not db_available %}
-        <div class="card" style="border-color: #d29922;">
-            <p style="color: #d29922;">⚠️ Database not connected - session tracking disabled</p>
+        <!-- Database Status Card -->
+        <div class="card" id="db-status-card" style="border-color: #30363d;">
+            <div class="card-header" style="cursor:pointer;" onclick="toggleDbStatus()">
+                <span class="card-title">🗄️ Database Status &nbsp;<span id="db-status-badge" style="font-size:11px; padding:2px 10px; border-radius:10px; background:#21262d; color:#8b949e;">checking…</span></span>
+                <span id="db-chevron" style="color:#8b949e; font-size:11px;">▼ expand</span>
+            </div>
+            <div id="db-status-body" style="display:none; padding-top:12px;">
+                <div id="db-status-content" style="color:#8b949e; font-size:13px;">Loading…</div>
+                <button onclick="loadDbStatus()" style="margin-top:12px; padding:4px 12px; font-size:12px; background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px; cursor:pointer;">🔄 Refresh</button>
+            </div>
         </div>
-        {% endif %}
 
         <p class="refresh-time">Last updated: {{ now.strftime('%H:%M:%S') }}</p>
     </div>
@@ -949,6 +954,100 @@
         
         // Auto-refresh every 30 seconds
         setInterval(refresh, 30000);
+
+        // ── Database Status ──────────────────────────────────────────────
+        function toggleDbStatus() {
+            const body = document.getElementById('db-status-body');
+            const chevron = document.getElementById('db-chevron');
+            if (body.style.display === 'none') {
+                body.style.display = 'block';
+                chevron.textContent = '▲ collapse';
+                loadDbStatus();
+            } else {
+                body.style.display = 'none';
+                chevron.textContent = '▼ expand';
+            }
+        }
+
+        async function loadDbStatus() {
+            const badge   = document.getElementById('db-status-badge');
+            const card    = document.getElementById('db-status-card');
+            const content = document.getElementById('db-status-content');
+            try {
+                const data = await fetch('/api/db-status').then(r => r.json());
+
+                // Badge colour
+                if (data.status === 'ok') {
+                    badge.textContent = '● Connected';
+                    badge.style.cssText = 'font-size:11px;padding:2px 10px;border-radius:10px;background:#1a3a1e;color:#2ea043;';
+                    card.style.borderColor = '#2ea04350';
+                } else if (data.status === 'empty') {
+                    badge.textContent = '● Empty – bot not run yet';
+                    badge.style.cssText = 'font-size:11px;padding:2px 10px;border-radius:10px;background:#2d2a1e;color:#d29922;';
+                    card.style.borderColor = '#d2992250';
+                } else if (data.status === 'missing') {
+                    badge.textContent = '● DB file missing';
+                    badge.style.cssText = 'font-size:11px;padding:2px 10px;border-radius:10px;background:#3a1a1a;color:#da3633;';
+                    card.style.borderColor = '#da363350';
+                } else {
+                    badge.textContent = '● Error';
+                    badge.style.cssText = 'font-size:11px;padding:2px 10px;border-radius:10px;background:#3a1a1a;color:#da3633;';
+                    card.style.borderColor = '#da363350';
+                }
+
+                // Table rows
+                const tableRows = Object.entries(data.tables || {}).map(([name, info]) => {
+                    let lastStr = '—';
+                    if (info.last_updated) {
+                        try {
+                            lastStr = new Date(info.last_updated).toLocaleString('en-US', {
+                                timeZone: 'America/Chicago',
+                                month: 'short', day: 'numeric',
+                                hour: 'numeric', minute: '2-digit', hour12: true
+                            }) + ' CT';
+                        } catch(e) { lastStr = info.last_updated; }
+                    }
+                    const countColor = info.count > 0 ? '#2ea043' : '#8b949e';
+                    return `<tr style="border-bottom:1px solid #21262d;">
+                        <td style="padding:5px 10px;font-family:monospace;font-size:12px;">${name}</td>
+                        <td style="padding:5px 10px;text-align:right;color:${countColor};font-weight:bold;">${info.count.toLocaleString()}</td>
+                        <td style="padding:5px 10px;font-size:11px;color:#8b949e;">${lastStr}</td>
+                    </tr>`;
+                }).join('');
+
+                const checkedAt = data.checked_at
+                    ? new Date(data.checked_at).toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true})
+                    : '';
+
+                content.innerHTML = `
+                    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">
+                        📁 <code style="color:#e6edf3;font-size:11px;">${data.db_path}</code>
+                        &nbsp;·&nbsp; <strong style="color:#e6edf3;">${data.db_size_human}</strong>
+                        &nbsp;·&nbsp; exists: <strong style="color:${data.db_exists ? '#2ea043' : '#da3633'}">${data.db_exists}</strong>
+                    </div>
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead>
+                            <tr style="border-bottom:1px solid #30363d;">
+                                <th style="padding:4px 10px;text-align:left;font-size:11px;color:#8b949e;font-weight:normal;">Table</th>
+                                <th style="padding:4px 10px;text-align:right;font-size:11px;color:#8b949e;font-weight:normal;">Rows</th>
+                                <th style="padding:4px 10px;text-align:left;font-size:11px;color:#8b949e;font-weight:normal;">Last Record</th>
+                            </tr>
+                        </thead>
+                        <tbody>${tableRows}</tbody>
+                    </table>
+                    ${data.status === 'empty' ? '<p style="color:#d29922;font-size:12px;margin-top:10px;">⚠️ No data yet — the bot needs to run at least one cycle to populate these tables.</p>' : ''}
+                    ${data.error ? '<p style="color:#da3633;font-size:12px;margin-top:8px;">Error: ' + data.error + '</p>' : ''}
+                    <p style="font-size:11px;color:#8b949e;margin-top:8px;text-align:right;">Checked at ${checkedAt}</p>
+                `;
+            } catch(e) {
+                badge.textContent = '● Unreachable';
+                badge.style.cssText = 'font-size:11px;padding:2px 10px;border-radius:10px;background:#3a1a1a;color:#da3633;';
+                content.innerHTML = `<span style="color:#da3633;">Failed to reach /api/db-status: ${e}</span>`;
+            }
+        }
+
+        // Load badge on page open (collapsed, badge only)
+        loadDbStatus();
     </script>
     
     <!-- Score Modal -->

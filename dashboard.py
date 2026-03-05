@@ -1113,6 +1113,59 @@ def api_score_breakdown(symbol: str):
         return {"error": str(e)}
 
 
+@app.get("/api/db-status")
+def api_db_status():
+    """Return SQLite database health — file info and per-table row counts."""
+    import os as _os
+    from database.sqlite_db import DB_PATH, _get_conn
+
+    result = {
+        "db_path": str(DB_PATH),
+        "db_exists": DB_PATH.exists(),
+        "db_size_bytes": 0,
+        "db_size_human": "0 B",
+        "tables": {},
+        "status": "missing",
+        "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    if DB_PATH.exists():
+        size = DB_PATH.stat().st_size
+        result["db_size_bytes"] = size
+        if size >= 1_048_576:
+            result["db_size_human"] = f"{size / 1_048_576:.1f} MB"
+        elif size >= 1024:
+            result["db_size_human"] = f"{size / 1024:.1f} KB"
+        else:
+            result["db_size_human"] = f"{size} B"
+
+        table_queries = {
+            "analyzed_stocks":      "SELECT COUNT(*), MAX(last_analyzed)      FROM analyzed_stocks",
+            "trades":               "SELECT COUNT(*), MAX(created_at)         FROM trades",
+            "trading_sessions":     "SELECT COUNT(*), MAX(session_start)      FROM trading_sessions",
+            "research_cooldowns":   "SELECT COUNT(*), MAX(updated_at)         FROM research_cooldowns",
+            "trade_cooldowns":      "SELECT COUNT(*), MAX(updated_at)         FROM trade_cooldowns",
+        }
+        total_rows = 0
+        try:
+            with _get_conn() as conn:
+                for table, query in table_queries.items():
+                    try:
+                        row = conn.execute(query).fetchone()
+                        count = row[0] if row else 0
+                        last  = row[1] if row else None
+                        result["tables"][table] = {"count": count, "last_updated": last}
+                        total_rows += count
+                    except Exception:
+                        result["tables"][table] = {"count": 0, "last_updated": None}
+            result["status"] = "ok" if total_rows > 0 else "empty"
+        except Exception as e:
+            result["status"] = "error"
+            result["error"] = str(e)
+
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
