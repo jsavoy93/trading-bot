@@ -187,23 +187,12 @@
             }
         }
 
-        /* Score component bubbles in opportunities table */
-        .score-bubbles {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 3px;
-        }
-        .score-bubble {
-            display: inline-block;
-            padding: 1px 5px;
-            border-radius: 10px;
-            font-size: 10px;
-            font-weight: 600;
-            white-space: nowrap;
-        }
-        .score-bubble.pos { background: #1a3a1e; color: #2ea043; border: 1px solid #2ea04350; }
-        .score-bubble.neg { background: #3a1a1a; color: #da3633; border: 1px solid #da363350; }
-        .score-bubble.neu { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+        /* Score component bar charts in opportunities table */
+        .score-bars { display: flex; flex-direction: column; gap: 3px; min-width: 130px; }
+        .score-bar-row { display: flex; align-items: center; gap: 5px; }
+        .score-bar-label { width: 30px; font-size: 10px; color: #8b949e; text-align: right; flex-shrink: 0; }
+        .score-bar-track { flex: 1; height: 6px; background: #21262d; border-radius: 3px; position: relative; overflow: hidden; }
+        .score-bar-value { width: 24px; font-size: 10px; font-weight: 600; text-align: right; flex-shrink: 0; }
 
         .opp-updated {
             font-size: 11px;
@@ -745,9 +734,24 @@
                 table.style.display = 'table';
                 
                 function scoreBubble(label, val) {
-                    const cls = val > 0 ? 'pos' : (val < 0 ? 'neg' : 'neu');
-                    const sign = val > 0 ? '+' : '';
-                    return `<span class="score-bubble ${cls}">${label} ${sign}${val.toFixed(0)}</span>`;
+                    // Bar fills from center: right = positive (green), left = negative (red)
+                    const MAX = 25;
+                    const pct = Math.min(Math.abs(val) / MAX * 50, 50); // 0–50% of track from centre
+                    const color  = val > 0 ? '#2ea043' : (val < 0 ? '#da3633' : '#8b949e');
+                    const sign   = val > 0 ? '+' : '';
+                    let fill;
+                    if (val > 0) {
+                        fill = `<div style="position:absolute;left:50%;top:0;height:100%;width:${pct}%;background:${color};border-radius:0 3px 3px 0;"></div>`;
+                    } else if (val < 0) {
+                        fill = `<div style="position:absolute;right:50%;top:0;height:100%;width:${pct}%;background:${color};border-radius:3px 0 0 3px;"></div>`;
+                    } else {
+                        fill = `<div style="position:absolute;left:50%;top:0;height:100%;width:1px;background:#30363d;"></div>`;
+                    }
+                    return `<div class="score-bar-row">
+                        <span class="score-bar-label">${label}</span>
+                        <div class="score-bar-track">${fill}</div>
+                        <span class="score-bar-value" style="color:${color};">${sign}${val.toFixed(0)}</span>
+                    </div>`;
                 }
 
                 function fmtAnalyzedAt(isoUtc) {
@@ -773,8 +777,11 @@
                     const macdScore = opp.macd_score || 0;
                     const bbScore = opp.bb_score || 0;
 
-                    const bubblesHtml = `<div class="score-bubbles">
-                        ${scoreBubble('RSI', rsiScore)}${scoreBubble('SMA', smaScore)}${scoreBubble('MACD', macdScore)}${scoreBubble('BB', bbScore)}
+                    const bubblesHtml = `<div class="score-bars">
+                        ${scoreBubble('RSI', rsiScore)}
+                        ${scoreBubble('SMA', smaScore)}
+                        ${scoreBubble('MACD', macdScore)}
+                        ${scoreBubble('BB', bbScore)}
                     </div>`;
 
                     // Buy criteria cell — show each criterion with its status.
