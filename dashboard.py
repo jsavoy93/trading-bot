@@ -437,186 +437,69 @@ def api_positions():
 
 @app.get("/api/opportunities")
 def api_opportunities(limit: int = 30):
-    """Get top stock opportunities based on analysis scores"""
-    import sys
-    from pathlib import Path
-    import pandas as pd
-    
-    # Add src to path
-    src_path = str(Path(__file__).parent / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
+    """Get top stock opportunities from SQLite database"""
+    import sqlite3
     
     try:
-        from core.smart_bot import SmartTradingBot
-
-        # Create bot instance (minimal init)
-        bot = SmartTradingBot()
-
-        # Get the best candidates across ALL ever-analyzed symbols (not just the most
-        # recent session). Ordered by stored total_score DESC so the top historical
-        # scorers are re-evaluated first; live re-fetch is capped at 50 for speed.
-        analyzed_rows = db.get_analysis_results(200)
-        if analyzed_rows:
-            tickers = [r['symbol'] for r in analyzed_rows[:50]]
-            db_timestamps = {r['symbol']: r.get('analyzed_at') for r in analyzed_rows}
-        else:
-            db_timestamps = {}
-            tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT',
-                       'JNJ', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'BAC', 'ADBE', 'CRM',
-                       'NFLX', 'INTC', 'AMD', 'CSCO', 'PFE', 'ABBV', 'T', 'VZ', 'KO', 'PEP']
+        db_path = Path(__file__).parent / "analyzed_stocks.db"
+        
+        if not db_path.exists():
+            return {"opportunities": [], "error": "Database not found", "analyzed": 0}
+        
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT symbol, price, total_score, rsi, rsi_score, sma_score, 
+                   macd_score, bb_score, regime_score, catalyst_score, last_analyzed
+            FROM analyzed_stocks
+            ORDER BY total_score DESC
+            LIMIT ?
+        """, (limit,))
+        
+        rows = cursor.fetchall()
+        conn.close()
         
         opportunities = []
-        analyzed = 0
+        for row in rows:
+            score = row['total_score'] or 0
+            
+            if score >= 65:
+                signal = 'BUY'
+                strength = 'STRONG' if score >= 80 else 'MEDIUM'
+            elif score <= 35:
+                signal = 'SELL'
+                strength = 'STRONG' if score <= 20 else 'MEDIUM'
+            else:
+                signal = 'HOLD'
+                strength = 'WEAK'
+            
+            opportunities.append({
+                'symbol': row['symbol'],
+                'price': row['price'],
+                'signal': signal,
+                'signal_strength': strength,
+                'total_score': score,
+                'rsi': row['rsi'],
+                'rsi_score': row['rsi_score'],
+                'sma_score': row['sma_score'],
+                'macd_score': row['macd_score'],
+                'bb_score': row['bb_score'],
+                'regime_score': row['regime_score'],
+                'catalyst_score': row['catalyst_score'],
+                'analyzed_at': row['last_analyzed'],
+            })
         
-        for symbol in tickers:
-            try:
-                analyzed += 1
-                
-                # Get data and calculate directly (bypass analyze_symbol issues)
-                df = bot.get_market_data(symbol)
-                if df is None or len(df) < bot.sma_slow:
-                    continue
-                
-                df = bot.calculate_indicators(df)
-                latest = df.iloc[-1]
-                
-                # Check for valid data
-                if pd.isna(latest.get(f'SMA_{bot.sma_fast}')) or pd.isna(latest.get('RSI')):
-                    continue
-                
-                # Calculate scores
-                sma_fast = latest[f'SMA_{bot.sma_fast}']
-                sma_slow = latest[f'SMA_{bot.sma_slow}']
-                rsi = latest['RSI']
-                price = latest['close']
-                
-                # RSI Score (with partial credit)
-                rsi_score = 0
-                if rsi < 30:
-                    rsi_score = 25 * (1 - rsi / 30)
-                elif rsi < 50:
-                    rsi_score = 12.5 * (1 - (rsi - 30) / 20)
-                elif rsi < 70:
-                    rsi_score = -12.5 * ((rsi - 50) / 20)
-                else:
-                    rsi_score = -25 * min(1, (rsi - 70) / 30)
-                
-                # SMA Score
-                sma_score = 0
-                if sma_fast > sma_slow:
-                    sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
-                    sma_score = min(25, sma_pct * 5)
-                elif sma_fast < sma_slow:
-                    sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
-                    sma_score = -min(25, sma_pct * 5)
-                
-                # MACD Score — normalize by price so high-priced stocks don't always max out.
-                # A histogram equal to 0.5% of price earns the maximum +25.
-                macd_hist = latest.get('MACD_histogram', 0)
-                if pd.notna(macd_hist) and price > 0:
-                    macd_score = max(-25, min(25, (macd_hist / price) * 5000))
-                else:
-                    macd_score = 0
-                
-                # Bollinger Score
-                bb_lower = latest.get('BB_lower')
-                bb_middle = latest.get('BB_middle')
-                bb_upper = latest.get('BB_upper')
-                bb_score = 0
-                if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
-                    bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
-                    bb_score = max(-25, min(25, 25 - (bb_position * 50)))
-                
-                # Total Score
-                total_score = 50 + rsi_score + sma_score + macd_score + bb_score
-                total_score = max(0, min(100, total_score))
-
-                # Volume ratio
-                volume_ratio = latest.get('volume_ratio', None)
-                if volume_ratio is not None and pd.isna(volume_ratio):
-                    volume_ratio = None
-
-                # Signal
-                if total_score >= 65:
-                    signal = 'BUY'
-                    strength = 'STRONG' if total_score >= 80 else 'MEDIUM'
-                elif total_score <= 35:
-                    signal = 'SELL'
-                    strength = 'STRONG' if total_score <= 20 else 'MEDIUM'
-                else:
-                    signal = 'HOLD'
-                    strength = 'WEAK'
-
-                # Buy criteria evaluation — check each condition individually.
-                # All 'passed' values are cast to Python bool to avoid numpy bool
-                # serialization issues (numpy.bool_ serializes as 0/1, not true/false).
-                macd_val = float(macd_hist) if pd.notna(macd_hist) else None
-                buy_criteria = [
-                    {
-                        'name': 'Score ≥ 65',
-                        'passed': bool(total_score >= 65),
-                        'detail': f'{total_score:.0f}/100',
-                    },
-                    {
-                        'name': 'RSI not overbought',
-                        'passed': bool(rsi < 70),
-                        'detail': f'{rsi:.1f}',
-                    },
-                    {
-                        'name': 'SMA uptrend',
-                        'passed': bool(sma_fast > sma_slow),
-                        'detail': 'uptrend' if sma_fast > sma_slow else 'downtrend',
-                    },
-                    {
-                        'name': 'MACD positive',
-                        'passed': bool(macd_val is not None and macd_val > 0),
-                        'detail': f'{macd_val:.3f}' if macd_val is not None else 'N/A',
-                    },
-                ]
-                if volume_ratio is not None:
-                    buy_criteria.append({
-                        'name': 'Volume ≥ avg',
-                        'passed': bool(float(volume_ratio) >= 1.0),
-                        'detail': f'{float(volume_ratio):.2f}x',
-                    })
-
-                failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
-                passes_all_buy_criteria = len(failed_criteria) == 0
-
-                opportunities.append({
-                    'symbol': symbol,
-                    'price': price,
-                    'signal': signal,
-                    'signal_strength': strength,
-                    'total_score': round(total_score, 1),
-                    'rsi': round(rsi, 1),
-                    'rsi_score': round(rsi_score, 1),
-                    'sma_score': round(sma_score, 1),
-                    'macd_score': round(macd_score, 1),
-                    'bb_score': round(bb_score, 1),
-                    'buy_criteria': buy_criteria,
-                    'passes_all_buy_criteria': passes_all_buy_criteria,
-                    'failed_criteria': failed_criteria,
-                    'analyzed_at': db_timestamps.get(symbol) or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                })
-                
-            except Exception as e:
-                logger.debug(f"Could not analyze {symbol}: {e}")
-        
-        # Sort by score (highest first)
-        opportunities.sort(key=lambda x: x.get('total_score', 0), reverse=True)
-        
-        return {"opportunities": opportunities[:limit], "analyzed": analyzed}
+        return {"opportunities": opportunities, "analyzed": len(opportunities)}
         
     except Exception as e:
         logger.error(f"Failed to get opportunities: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"opportunities": [], "error": str(e)}
+        return {"opportunities": [], "error": str(e), "analyzed": 0}
 
 
-@app.get("/api/orders")
+
+
 def api_orders(limit: int = 20):
     """API endpoint for orders"""
     return get_orders(limit)
