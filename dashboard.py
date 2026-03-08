@@ -436,7 +436,7 @@ def api_positions():
 
 
 @app.get("/api/opportunities")
-def api_opportunities(limit: int = 10):
+def api_opportunities(limit: int = 30):
     """Get top stock opportunities based on analysis scores"""
     import sys
     from pathlib import Path
