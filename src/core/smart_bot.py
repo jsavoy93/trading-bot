@@ -935,7 +935,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             'price': analysis.get('price'),
         }
         self.db.save_analysis_result(symbol, analysis)
-        logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score')}")
+        logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score', 50)}")
     
     def get_analysis_status(self) -> Dict:
         """Get current analysis status for dashboard"""
@@ -1424,6 +1424,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'rsi': rsi_daily,
                 'signal': signal,
                 'signal_strength': signal_strength,
+                'total_score': total_score,
+                'rsi_score': rsi_score_daily,
+                'sma_score': sma_score_daily,
+                'macd_score': macd_score_daily,
+                'bb_score': bb_score_daily,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
                 'multi_timeframe': True,
                 'volume_confirmed': volume_confirmed,
@@ -1932,6 +1937,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'bb_lower': latest.get('BB_lower', 0),
                 'signal': signal,
                 'signal_strength': signal_strength,
+                'total_score': total_score,
+                'rsi_score': rsi_score_daily,
+                'sma_score': sma_score_daily,
+                'macd_score': macd_score_daily,
+                'bb_score': bb_score_daily,
                 'total_score': total_score,
                 'rsi_score': rsi_score,
                 'sma_score': sma_score,

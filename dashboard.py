@@ -441,7 +441,7 @@ def api_opportunities(limit: int = 30):
     import sqlite3
     
     try:
-        db_path = Path(__file__).parent / "analyzed_stocks.db"
+        db_path = Path(__file__).parent / "trading_bot.db"
         
         if not db_path.exists():
             return {"opportunities": [], "error": "Database not found", "analyzed": 0}
