@@ -367,8 +367,8 @@ class SQLiteDB:
                        (symbol, price, total_score, signal, signal_strength,
                         rsi, rsi_score, sma_score, macd_score, bb_score,
                         vwap_score, regime_score, catalyst_score, earnings_score,
-                        volatility_score, last_analyzed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        volatility_score, buy_criteria, passes_all_buy_criteria, last_analyzed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(symbol) DO UPDATE SET
                            price = excluded.price,
                            total_score = excluded.total_score,
@@ -384,6 +384,8 @@ class SQLiteDB:
                            catalyst_score = excluded.catalyst_score,
                            earnings_score = excluded.earnings_score,
                            volatility_score = excluded.volatility_score,
+                           buy_criteria = excluded.buy_criteria,
+                           passes_all_buy_criteria = excluded.passes_all_buy_criteria,
                            last_analyzed = excluded.last_analyzed""",
                     (
                         symbol,
@@ -401,6 +403,8 @@ class SQLiteDB:
                         analysis.get("catalyst_score", 0),
                         analysis.get("earnings_score", 0),
                         analysis.get("volatility_score", 0),
+                        json.dumps(analysis.get("buy_criteria", [])),
+                        1 if analysis.get("passes_all_buy_criteria", False) else 0,
                         datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     ),
                 )

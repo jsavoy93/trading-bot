@@ -1416,6 +1416,39 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         self._handle_rate_limit_error(e)
                     logging.debug(f"AI analysis failed for {symbol}: {e}")
             
+            # Build buy_criteria for storage
+            buy_criteria = [
+                {
+                    'name': 'Score ≥ 65',
+                    'passed': bool(total_score >= 65),
+                    'detail': f'{total_score:.0f}/100',
+                },
+                {
+                    'name': 'RSI not overbought',
+                    'passed': bool(rsi_daily < 70),
+                    'detail': f'{rsi_daily:.1f}',
+                },
+                {
+                    'name': 'SMA uptrend',
+                    'passed': bool(sma_fast_daily > sma_slow_daily),
+                    'detail': 'uptrend' if sma_fast_daily > sma_slow_daily else 'downtrend',
+                },
+                {
+                    'name': 'MACD positive',
+                    'passed': bool(macd_hist is not None and macd_hist > 0),
+                    'detail': f'{macd_hist:.3f}' if macd_hist is not None else 'N/A',
+                },
+            ]
+            if vol_ratio is not None:
+                buy_criteria.append({
+                    'name': 'Volume ≥ avg',
+                    'passed': bool(float(vol_ratio) >= 1.0),
+                    'detail': f'{float(vol_ratio):.2f}x',
+                })
+            
+            failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
+            passes_all_buy_criteria = len(failed_criteria) == 0
+            
             analysis_result = {
                 'symbol': symbol,
                 'price': price,
@@ -1429,6 +1462,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'sma_score': sma_score_daily,
                 'macd_score': macd_score_daily,
                 'bb_score': bb_score_daily,
+                'buy_criteria': buy_criteria,
+                'passes_all_buy_criteria': passes_all_buy_criteria,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
                 'multi_timeframe': True,
                 'volume_confirmed': volume_confirmed,
@@ -3755,6 +3790,41 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         total = 50 + rsi_score + sma_score + macd_score + bb_score
                         total = max(0, min(100, total))
                         
+                        # Build buy_criteria for this analysis
+                        vol_ratio = latest.get('volume_ratio', None)
+                        macd_hist = latest.get('MACD_histogram', 0)
+                        buy_criteria = [
+                            {
+                                'name': 'Score ≥ 65',
+                                'passed': bool(total >= 65),
+                                'detail': f'{total:.0f}/100',
+                            },
+                            {
+                                'name': 'RSI not overbought',
+                                'passed': bool(rsi < 70),
+                                'detail': f'{rsi:.1f}',
+                            },
+                            {
+                                'name': 'SMA uptrend',
+                                'passed': bool(sma_fast > sma_slow),
+                                'detail': 'uptrend' if sma_fast > sma_slow else 'downtrend',
+                            },
+                            {
+                                'name': 'MACD positive',
+                                'passed': bool(macd_hist is not None and macd_hist > 0),
+                                'detail': f'{macd_hist:.3f}' if macd_hist is not None else 'N/A',
+                            },
+                        ]
+                        if vol_ratio is not None:
+                            buy_criteria.append({
+                                'name': 'Volume ≥ avg',
+                                'passed': bool(float(vol_ratio) >= 1.0),
+                                'detail': f'{float(vol_ratio):.2f}x',
+                            })
+                        
+                        failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
+                        passes_all = len(failed_criteria) == 0
+                        
                         # One-line summary: Symbol | Price | RSI | MACD | BB% | VWAP% | Score
                         logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
                         self.db.save_analysis_result(symbol, {
@@ -3763,6 +3833,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             'macd_score': macd_score, 'bb_score': bb_score,
                             'vwap_score': vwap_dist, 'regime_score': regime_score,
                             'catalyst_score': catalyst_score,
+                            'buy_criteria': buy_criteria,
+                            'passes_all_buy_criteria': passes_all,
                         })
                         no_trade_reasons['no_signal'] += 1
                     continue

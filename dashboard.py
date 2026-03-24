@@ -2,6 +2,7 @@
 Trading Bot Dashboard - Web Interface
 Mobile-friendly dashboard to monitor and control your trading bot.
 """
+import json
 import os
 import logging
 from datetime import datetime, timezone
@@ -452,9 +453,10 @@ def api_opportunities(limit: int = 30):
         
         cursor.execute("""
             SELECT symbol, price, total_score, rsi, rsi_score, sma_score, 
-                   macd_score, bb_score, regime_score, catalyst_score, last_analyzed
+                   macd_score, bb_score, regime_score, catalyst_score, 
+                   buy_criteria, passes_all_buy_criteria, last_analyzed
             FROM analyzed_stocks
-            ORDER BY total_score DESC
+            ORDER BY last_analyzed DESC, total_score DESC
             LIMIT ?
         """, (limit,))
         
@@ -475,6 +477,19 @@ def api_opportunities(limit: int = 30):
                 signal = 'HOLD'
                 strength = 'WEAK'
             
+            # Parse buy_criteria from JSON string
+            buy_criteria = []
+            passes_all = False
+            try:
+                if row['buy_criteria']:
+                    bc = row['buy_criteria']
+                    buy_criteria = json.loads(bc)
+                passes_all = bool(row['passes_all_buy_criteria'])
+            except Exception as e:
+                logger.debug(f"Error parsing buy_criteria for {row['symbol']}: {e}")
+            
+            failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
+            
             opportunities.append({
                 'symbol': row['symbol'],
                 'price': row['price'],
@@ -488,6 +503,9 @@ def api_opportunities(limit: int = 30):
                 'bb_score': row['bb_score'],
                 'regime_score': row['regime_score'],
                 'catalyst_score': row['catalyst_score'],
+                'buy_criteria': buy_criteria,
+                'passes_all_buy_criteria': passes_all,
+                'failed_criteria': failed_criteria,
                 'analyzed_at': row['last_analyzed'],
             })
         
