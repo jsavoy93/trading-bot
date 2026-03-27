@@ -426,6 +426,24 @@
             {% endif %}
         </div>
 
+        <!-- Ticker Search -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🔍 Search Ticker</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:12px;">
+                <input
+                    id="searchInput"
+                    type="text"
+                    placeholder="Enter ticker (e.g. AAPL)"
+                    style="flex:1;padding:8px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:14px;text-transform:uppercase;"
+                    onkeydown="if(event.key==='Enter') searchSymbol()"
+                />
+                <button onclick="searchSymbol()" class="btn btn-primary" style="padding:8px 16px;">Search</button>
+            </div>
+            <div id="searchResults" style="display:none;"></div>
+        </div>
+
         <!-- Top Opportunities -->
         <div class="card">
             <div class="card-header">
@@ -654,64 +672,7 @@
         
         // Load on page load
         loadAnalytics();
-        
-        async function searchSymbol() {
-            const symbol = document.getElementById('searchInput').value.trim().toUpperCase();
-            if (!symbol) return;
-            
-            const resultsDiv = document.getElementById('searchResults');
-            resultsDiv.style.display = 'block';
-            resultsDiv.innerHTML = '<div style="color:#8b949e">Loading...</div>';
-            
-            try {
-                const resp = await fetch('/api/search/' + symbol);
-                const data = await resp.json();
-                
-                if (data.error) {
-                    resultsDiv.innerHTML = '<div style="color:#da3633">' + data.error + '</div>';
-                    return;
-                }
-                
-                const criteriaHtml = data.buy_criteria && data.buy_criteria.length > 0
-                    ? data.buy_criteria.map(c => 
-                        c.passed 
-                        ? '<span style="color:#2ea043;font-size:12px;display:block;">✓ ' + c.name + ': ' + c.detail + '</span>'
-                        : '<span style="color:#da3633;font-size:12px;display:block;">✗ ' + c.name + ': ' + c.detail + '</span>'
-                    ).join('')
-                    : '<span style="color:#8b949e">No criteria data</span>';
-                
-                resultsDiv.innerHTML = `
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
-                        <div>
-                            <h3 style="margin:0 0 10px 0;">${data.symbol} - ${data.signal}</h3>
-                            <p style="color:#8b949e;font-size:14px;">Price: $${data.price ? data.price.toFixed(2) : 'N/A'}</p>
-                            <p style="font-size:24px;font-weight:bold;margin:5px 0;">Score: ${data.total_score}</p>
-                            <p style="color:#8b949e;font-size:14px;">${data.signal_strength}</p>
-                        </div>
-                        <div>
-                            <h4 style="margin:0 0 10px 0;">Components</h4>
-                            <div style="font-size:13px;">
-                                <div>RSI: ${data.rsi_score ? data.rsi_score.toFixed(1) : 'N/A'}</div>
-                                <div>SMA: ${data.sma_score ? data.sma_score.toFixed(1) : 'N/A'}</div>
-                                <div>MACD: ${data.macd_score ? data.macd_score.toFixed(1) : 'N/A'}</div>
-                                <div>BB: ${data.bb_score ? data.bb_score.toFixed(1) : 'N/A'}</div>
-                                <div>Regime: ${data.regime_score ? data.regime_score.toFixed(1) : '0'}</div>
-                                <div>Catalyst: ${data.catalyst_score ? data.catalyst_score.toFixed(1) : '0'}</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div style="margin-top:15px;">
-                        <h4 style="margin:0 0 10px 0;">Buy Criteria</h4>
-                        ${criteriaHtml}
-                    </div>
-                    <div style="margin-top:15px;color:#8b949e;font-size:12px;">
-                        Updated: ${data.last_analyzed ? data.last_analyzed.replace('T', ' ').replace('Z', ' UTC') : 'N/A'}
-                    </div>
-                `;
-            } catch (e) {
-                resultsDiv.innerHTML = '<div style="color:#da3633">Error: ' + e.message + '</div>';
-            }
-        }
+
 </script>
 
         <style>
@@ -1143,58 +1104,74 @@
         async function searchSymbol() {
             const symbol = document.getElementById('searchInput').value.trim().toUpperCase();
             if (!symbol) return;
-            
+
             const resultsDiv = document.getElementById('searchResults');
             resultsDiv.style.display = 'block';
-            resultsDiv.innerHTML = '<div style="color:#8b949e">Loading...</div>';
-            
+            resultsDiv.innerHTML = '<div style="color:#8b949e;padding:8px 0;">Loading...</div>';
+
             try {
                 const resp = await fetch('/api/search/' + symbol);
                 const data = await resp.json();
-                
+
                 if (data.error) {
-                    resultsDiv.innerHTML = '<div style="color:#da3633">' + data.error + '</div>';
+                    resultsDiv.innerHTML = `<div style="color:#da3633;padding:8px 0;">${data.error} — this ticker hasn't been analyzed yet.</div>`;
                     return;
                 }
-                
-                const criteriaHtml = data.buy_criteria && data.buy_criteria.length > 0
-                    ? data.buy_criteria.map(c => 
-                        c.passed 
-                        ? '<span style="color:#2ea043;font-size:12px;display:block;">✓ ' + c.name + ': ' + c.detail + '</span>'
-                        : '<span style="color:#da3633;font-size:12px;display:block;">✗ ' + c.name + ': ' + c.detail + '</span>'
-                    ).join('')
-                    : '<span style="color:#8b949e">No criteria data</span>';
-                
+
+                const score = data.total_score || 0;
+                const scoreColor = score >= 65 ? '#3fb950' : (score <= 35 ? '#da3633' : '#d29922');
+                const signalColor = data.signal === 'BUY' ? '#3fb950' : (data.signal === 'SELL' ? '#da3633' : '#8b949e');
+
+                const bubblesHtml = `<div class="score-bars">
+                    ${scoreBubble('RSI',  data.rsi_score      || 0)}
+                    ${scoreBubble('SMA',  data.sma_score      || 0)}
+                    ${scoreBubble('MACD', data.macd_score     || 0)}
+                    ${scoreBubble('BB',   data.bb_score       || 0)}
+                    ${scoreBubble('Cat',  data.catalyst_score || 0)}
+                    ${scoreBubble('Reg',  data.regime_score   || 0)}
+                </div>`;
+
+                const criteria = data.buy_criteria || [];
+                let criteriaHtml;
+                if (criteria.length === 0) {
+                    criteriaHtml = '<span style="color:#8b949e;font-size:12px;">No criteria data — re-analyze to populate.</span>';
+                } else if (data.passes_all_buy_criteria) {
+                    criteriaHtml = '<span style="color:#3fb950;font-weight:600;">✓ All criteria met</span>';
+                } else {
+                    criteriaHtml = criteria.map(c =>
+                        c.passed
+                            ? `<span style="color:#3fb950;font-size:12px;display:block;">✓ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
+                            : `<span style="color:#da3633;font-size:12px;display:block;">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
+                    ).join('');
+                }
+
                 resultsDiv.innerHTML = `
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                    <div style="display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:start;padding:4px 0 12px;">
                         <div>
-                            <h3 style="margin:0 0 10px 0;">${data.symbol} - ${data.signal}</h3>
-                            <p style="color:#8b949e;font-size:14px;">Price: $${data.price ? data.price.toFixed(2) : 'N/A'}</p>
-                            <p style="font-size:24px;font-weight:bold;margin:5px 0;">Score: ${data.total_score}</p>
-                            <p style="color:#8b949e;font-size:14px;">${data.signal_strength}</p>
+                            <div style="font-size:22px;font-weight:700;color:${scoreColor};">${score}</div>
+                            <div style="font-size:11px;color:#8b949e;">/ 100</div>
                         </div>
                         <div>
-                            <h4 style="margin:0 0 10px 0;">Components</h4>
-                            <div style="font-size:13px;">
-                                <div>RSI: ${data.rsi_score ? data.rsi_score.toFixed(1) : 'N/A'}</div>
-                                <div>SMA: ${data.sma_score ? data.sma_score.toFixed(1) : 'N/A'}</div>
-                                <div>MACD: ${data.macd_score ? data.macd_score.toFixed(1) : 'N/A'}</div>
-                                <div>BB: ${data.bb_score ? data.bb_score.toFixed(1) : 'N/A'}</div>
-                                <div>Regime: ${data.regime_score ? data.regime_score.toFixed(1) : '0'}</div>
-                                <div>Catalyst: ${data.catalyst_score ? data.catalyst_score.toFixed(1) : '0'}</div>
-                            </div>
+                            <span style="font-size:18px;font-weight:600;">${data.symbol}</span>
+                            <span style="color:${signalColor};font-weight:600;margin-left:10px;">${data.signal}</span>
+                            <span style="color:#8b949e;font-size:13px;margin-left:6px;">${data.signal_strength || ''}</span>
+                            <div style="color:#8b949e;font-size:13px;margin-top:2px;">$${data.price ? data.price.toFixed(2) : 'N/A'} &nbsp;|&nbsp; RSI ${data.rsi ? data.rsi.toFixed(1) : 'N/A'}</div>
                         </div>
                     </div>
-                    <div style="margin-top:15px;">
-                        <h4 style="margin:0 0 10px 0;">Buy Criteria</h4>
+                    <div style="border-top:1px solid #21262d;padding-top:12px;margin-bottom:12px;">
+                        <div style="font-size:11px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Components</div>
+                        ${bubblesHtml}
+                    </div>
+                    <div style="border-top:1px solid #21262d;padding-top:12px;margin-bottom:12px;">
+                        <div style="font-size:11px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Buy Criteria</div>
                         ${criteriaHtml}
                     </div>
-                    <div style="margin-top:15px;color:#8b949e;font-size:12px;">
-                        Updated: ${data.last_analyzed ? data.last_analyzed.replace('T', ' ').replace('Z', ' UTC') : 'N/A'}
+                    <div style="color:#8b949e;font-size:11px;">
+                        Last analyzed: ${fmtAnalyzedAt(data.last_analyzed)}
                     </div>
                 `;
             } catch (e) {
-                resultsDiv.innerHTML = '<div style="color:#da3633">Error: ' + e.message + '</div>';
+                resultsDiv.innerHTML = `<div style="color:#da3633">Error: ${e.message}</div>`;
             }
         }
 </script>
