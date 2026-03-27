@@ -762,114 +762,137 @@
         }
         
         // Load top opportunities
+        // ── Opportunities helpers (shared by initial load + background poll) ──
+
+        function scoreBubble(label, val) {
+            const MAX = 25;
+            const pct = Math.min(Math.abs(val) / MAX * 50, 50);
+            const color = val > 0 ? '#2ea043' : (val < 0 ? '#da3633' : '#8b949e');
+            const sign  = val > 0 ? '+' : '';
+            let fill;
+            if (val > 0) {
+                fill = `<div style="position:absolute;left:50%;top:0;height:100%;width:${pct}%;background:${color};border-radius:0 3px 3px 0;"></div>`;
+            } else if (val < 0) {
+                fill = `<div style="position:absolute;right:50%;top:0;height:100%;width:${pct}%;background:${color};border-radius:3px 0 0 3px;"></div>`;
+            } else {
+                fill = `<div style="position:absolute;left:50%;top:0;height:100%;width:1px;background:#30363d;"></div>`;
+            }
+            return `<div class="score-bar-row">
+                <span class="score-bar-label">${label}</span>
+                <div class="score-bar-track">${fill}</div>
+                <span class="score-bar-value" style="color:${color};">${sign}${val.toFixed(0)}</span>
+            </div>`;
+        }
+
+        function fmtAnalyzedAt(isoUtc) {
+            if (!isoUtc) return '<span style="color:#8b949e">—</span>';
+            try {
+                const d = new Date(isoUtc);
+                return d.toLocaleString('en-US', {
+                    timeZone: 'America/Chicago',
+                    month: 'short', day: 'numeric',
+                    hour: 'numeric', minute: '2-digit',
+                    hour12: true
+                }) + ' CT';
+            } catch(e) { return isoUtc; }
+        }
+
+        // Fingerprint = symbol:score pairs joined — changes only when top scorers change
+        let _oppFingerprint = '';
+        function _oppFingerprint_of(opps) {
+            return opps.map(o => o.symbol + ':' + Math.round(o.total_score || 0)).join('|');
+        }
+
+        function _renderOpportunities(opportunities) {
+            const loading = document.getElementById('opportunities-loading');
+            const table   = document.getElementById('opportunities-table');
+            const tbody   = document.getElementById('opportunities-body');
+
+            if (opportunities.length === 0) {
+                loading.textContent = 'No opportunities found yet — waiting for bot to analyze stocks.';
+                loading.style.display = 'block';
+                table.style.display = 'none';
+                return;
+            }
+
+            loading.style.display = 'none';
+            table.style.display = 'table';
+
+            tbody.innerHTML = opportunities.map(opp => {
+                const score = opp.total_score || 50;
+                const scoreClass = score >= 65 ? 'green' : (score <= 35 ? 'red' : '');
+
+                const bubblesHtml = `<div class="score-bars">
+                    ${scoreBubble('RSI',  opp.rsi_score     || 0)}
+                    ${scoreBubble('SMA',  opp.sma_score     || 0)}
+                    ${scoreBubble('MACD', opp.macd_score    || 0)}
+                    ${scoreBubble('BB',   opp.bb_score      || 0)}
+                    ${scoreBubble('Cat',  opp.catalyst_score|| 0)}
+                    ${scoreBubble('Reg',  opp.regime_score  || 0)}
+                </div>`;
+
+                const criteria = opp.buy_criteria || [];
+                let criteriaHtml;
+                if (criteria.length === 0) {
+                    criteriaHtml = '<span style="color:#8b949e">—</span>';
+                } else if (opp.passes_all_buy_criteria) {
+                    criteriaHtml = '<span style="color:#2ea043;font-weight:600">✓ All criteria met</span>';
+                } else {
+                    criteriaHtml = criteria.map(c =>
+                        c.passed
+                            ? `<span style="color:#2ea043;font-size:11px">✓ ${c.name}</span>`
+                            : `<span style="color:#da3633;font-size:11px">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
+                    ).join('<br>');
+                }
+
+                return `<tr>
+                    <td class="symbol" style="cursor:pointer;" onclick="showScoreBreakdown('${opp.symbol}')">
+                        <strong>${opp.symbol}</strong><br>
+                        <span style="color:#8b949e">$${opp.price ? opp.price.toFixed(2) : 'N/A'}</span><br>
+                        <span class="${scoreClass}">${score.toFixed(0)}</span>
+                    </td>
+                    <td>${bubblesHtml}</td>
+                    <td style="font-size:11px;line-height:1.6;">${criteriaHtml}</td>
+                    <td class="opp-updated" style="white-space:nowrap;">${fmtAnalyzedAt(opp.analyzed_at)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        // Initial load — shows the table immediately when the page opens
         async function loadOpportunities() {
             const loading = document.getElementById('opportunities-loading');
-            const table = document.getElementById('opportunities-table');
-            const tbody = document.getElementById('opportunities-body');
-            
             try {
-                const response = await fetch('/api/opportunities?limit=15');
+                const response = await fetch('/api/opportunities?limit=30');
                 const data = await response.json();
-                
-                if (data.error) {
-                    loading.textContent = 'Error: ' + data.error;
-                    return;
-                }
-                
-                const opportunities = data.opportunities || [];
-                if (opportunities.length === 0) {
-                    loading.textContent = 'No opportunities found';
-                    return;
-                }
-                
-                loading.style.display = 'none';
-                table.style.display = 'table';
-                
-                function scoreBubble(label, val) {
-                    // Bar fills from center: right = positive (green), left = negative (red)
-                    const MAX = 25;
-                    const pct = Math.min(Math.abs(val) / MAX * 50, 50); // 0–50% of track from centre
-                    const color  = val > 0 ? '#2ea043' : (val < 0 ? '#da3633' : '#8b949e');
-                    const sign   = val > 0 ? '+' : '';
-                    let fill;
-                    if (val > 0) {
-                        fill = `<div style="position:absolute;left:50%;top:0;height:100%;width:${pct}%;background:${color};border-radius:0 3px 3px 0;"></div>`;
-                    } else if (val < 0) {
-                        fill = `<div style="position:absolute;right:50%;top:0;height:100%;width:${pct}%;background:${color};border-radius:3px 0 0 3px;"></div>`;
-                    } else {
-                        fill = `<div style="position:absolute;left:50%;top:0;height:100%;width:1px;background:#30363d;"></div>`;
-                    }
-                    return `<div class="score-bar-row">
-                        <span class="score-bar-label">${label}</span>
-                        <div class="score-bar-track">${fill}</div>
-                        <span class="score-bar-value" style="color:${color};">${sign}${val.toFixed(0)}</span>
-                    </div>`;
-                }
-
-                function fmtAnalyzedAt(isoUtc) {
-                    if (!isoUtc) return '<span style="color:#8b949e">—</span>';
-                    try {
-                        const d = new Date(isoUtc);
-                        return d.toLocaleString('en-US', {
-                            timeZone: 'America/Chicago',
-                            month: 'short', day: 'numeric',
-                            hour: 'numeric', minute: '2-digit',
-                            hour12: true
-                        }) + ' CT';
-                    } catch(e) { return isoUtc; }
-                }
-
-                tbody.innerHTML = opportunities.map(opp => {
-                    const score = opp.total_score || 50;
-                    const scoreClass = score >= 65 ? 'green' : (score <= 35 ? 'red' : '');
-                    const signalClass = opp.signal === 'BUY' ? 'green' : (opp.signal === 'SELL' ? 'red' : '');
-
-                    const rsiScore = opp.rsi_score || 0;
-                    const smaScore = opp.sma_score || 0;
-                    const macdScore = opp.macd_score || 0;
-                    const bbScore = opp.bb_score || 0;
-                    const catalystScore = opp.catalyst_score || 0;
-                    const regimeScore = opp.regime_score || 0;
-
-                    const bubblesHtml = `<div class="score-bars">
-                        ${scoreBubble('RSI', rsiScore)}
-                        ${scoreBubble('SMA', smaScore)}
-                        ${scoreBubble('MACD', macdScore)}
-                        ${scoreBubble('BB', bbScore)}
-                        ${scoreBubble('Cat', catalystScore)}
-                        ${scoreBubble('Reg', regimeScore)}
-                    </div>`;
-
-                    // Buy criteria cell — show each criterion with its status.
-                    const criteria = opp.buy_criteria || [];
-                    let criteriaHtml;
-                    if (criteria.length === 0) {
-                        criteriaHtml = '<span style="color:#8b949e">—</span>';
-                    } else if (opp.passes_all_buy_criteria) {
-                        criteriaHtml = '<span style="color:#2ea043;font-weight:600">✓ All</span>';
-                    } else {
-                        criteriaHtml = criteria.map(c =>
-                            c.passed
-                                ? `<span style="color:#2ea043;font-size:11px">✓ ${c.name}</span>`
-                                : `<span style="color:#da3633;font-size:11px">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
-                        ).join('<br>');
-                    }
-
-                    return `<tr>
-                        <td class="symbol" style="cursor:pointer;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${opp.symbol}</strong><br><span style="color:#8b949e">$${opp.price ? opp.price.toFixed(2) : 'N/A'}</span><br><span class="${scoreClass}">${score.toFixed(0)}</span></td>
-                        <td>${bubblesHtml}</td>
-                        <td style="font-size: 11px; line-height: 1.6;">${criteriaHtml}</td>
-                        <td class="opp-updated" style="white-space:nowrap;">${fmtAnalyzedAt(opp.analyzed_at)}</td>
-                    </tr>`;
-                }).join('');
-                
+                if (data.error) { loading.textContent = 'Error: ' + data.error; return; }
+                const opps = data.opportunities || [];
+                _oppFingerprint = _oppFingerprint_of(opps);
+                _renderOpportunities(opps);
             } catch (e) {
                 loading.textContent = 'Failed to load: ' + e;
             }
         }
-        
-        // Load opportunities on page load
+
+        // Background poll — checks every 60 seconds but only re-renders if the
+        // top scorers have actually changed (new symbol entered top 30 or score changed).
+        async function pollOpportunities() {
+            try {
+                const response = await fetch('/api/opportunities?limit=30');
+                const data = await response.json();
+                const opps = data.opportunities || [];
+                const fp = _oppFingerprint_of(opps);
+                if (fp !== _oppFingerprint) {
+                    _oppFingerprint = fp;
+                    _renderOpportunities(opps);
+                }
+            } catch (e) {
+                // Silent — never disrupt the visible page on a background failure
+            }
+        }
+
+        // Load on page open, then poll every 60 seconds (only re-renders on change)
         document.addEventListener('DOMContentLoaded', loadOpportunities);
+        setInterval(pollOpportunities, 60000);
         
         // Toggle a single sector
         function toggleSector(id) {
@@ -1011,8 +1034,17 @@
             }
         }
         
-        // Auto-refresh every 30 seconds
-        setInterval(refresh, 30000);
+        // Positions/orders refresh every 30 seconds via targeted fetch (no full page reload)
+        async function refreshLiveSections() {
+            // Re-fetch positions quietly — if the section exists on the page, update it
+            try {
+                const r = await fetch('/api/positions');
+                const d = await r.json();
+                const el = document.getElementById('positions-count');
+                if (el && d.positions) el.textContent = d.positions.length;
+            } catch(e) {}
+        }
+        setInterval(refreshLiveSections, 30000);
 
         // ── Database Status ──────────────────────────────────────────────
         function toggleDbStatus() {
