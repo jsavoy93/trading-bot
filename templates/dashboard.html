@@ -358,8 +358,6 @@
                             <tr>
                                 <th>Symbol</th>
                                 <th>Score</th>
-                                <th>RSI</th>
-                                <th>RSI⊕</th>
                                 <th>SMA⊕</th>
                                 <th>MACD⊕</th>
                                 <th>BB⊕</th>
@@ -439,10 +437,6 @@
                 <thead>
                     <tr>
                         <th>Symbol</th>
-                        <th>Price</th>
-                        <th>Signal</th>
-                        <th>Score</th>
-                        <th>RSI</th>
                         <th>Components</th>
                         <th>Buy Criteria</th>
                         <th>Score Updated</th>
@@ -660,7 +654,65 @@
         
         // Load on page load
         loadAnalytics();
-        </script>
+        
+        async function searchSymbol() {
+            const symbol = document.getElementById('searchInput').value.trim().toUpperCase();
+            if (!symbol) return;
+            
+            const resultsDiv = document.getElementById('searchResults');
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<div style="color:#8b949e">Loading...</div>';
+            
+            try {
+                const resp = await fetch('/api/search/' + symbol);
+                const data = await resp.json();
+                
+                if (data.error) {
+                    resultsDiv.innerHTML = '<div style="color:#da3633">' + data.error + '</div>';
+                    return;
+                }
+                
+                const criteriaHtml = data.buy_criteria && data.buy_criteria.length > 0
+                    ? data.buy_criteria.map(c => 
+                        c.passed 
+                        ? '<span style="color:#2ea043;font-size:12px;display:block;">✓ ' + c.name + ': ' + c.detail + '</span>'
+                        : '<span style="color:#da3633;font-size:12px;display:block;">✗ ' + c.name + ': ' + c.detail + '</span>'
+                    ).join('')
+                    : '<span style="color:#8b949e">No criteria data</span>';
+                
+                resultsDiv.innerHTML = `
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                        <div>
+                            <h3 style="margin:0 0 10px 0;">${data.symbol} - ${data.signal}</h3>
+                            <p style="color:#8b949e;font-size:14px;">Price: $${data.price ? data.price.toFixed(2) : 'N/A'}</p>
+                            <p style="font-size:24px;font-weight:bold;margin:5px 0;">Score: ${data.total_score}</p>
+                            <p style="color:#8b949e;font-size:14px;">${data.signal_strength}</p>
+                        </div>
+                        <div>
+                            <h4 style="margin:0 0 10px 0;">Components</h4>
+                            <div style="font-size:13px;">
+                                <div>RSI: ${data.rsi_score ? data.rsi_score.toFixed(1) : 'N/A'}</div>
+                                <div>SMA: ${data.sma_score ? data.sma_score.toFixed(1) : 'N/A'}</div>
+                                <div>MACD: ${data.macd_score ? data.macd_score.toFixed(1) : 'N/A'}</div>
+                                <div>BB: ${data.bb_score ? data.bb_score.toFixed(1) : 'N/A'}</div>
+                                <div>Regime: ${data.regime_score ? data.regime_score.toFixed(1) : '0'}</div>
+                                <div>Catalyst: ${data.catalyst_score ? data.catalyst_score.toFixed(1) : '0'}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-top:15px;">
+                        <h4 style="margin:0 0 10px 0;">Buy Criteria</h4>
+                        ${criteriaHtml}
+                    </div>
+                    <div style="margin-top:15px;color:#8b949e;font-size:12px;">
+                        Updated: ${data.last_analyzed ? data.last_analyzed.replace('T', ' ').replace('Z', ' UTC') : 'N/A'}
+                    </div>
+                `;
+            } catch (e) {
+                resultsDiv.innerHTML = '<div style="color:#da3633">Error: ' + e.message + '</div>';
+            }
+        }
+</script>
 
         <style>
         .tabs {
@@ -776,12 +828,16 @@
                     const smaScore = opp.sma_score || 0;
                     const macdScore = opp.macd_score || 0;
                     const bbScore = opp.bb_score || 0;
+                    const catalystScore = opp.catalyst_score || 0;
+                    const regimeScore = opp.regime_score || 0;
 
                     const bubblesHtml = `<div class="score-bars">
                         ${scoreBubble('RSI', rsiScore)}
                         ${scoreBubble('SMA', smaScore)}
                         ${scoreBubble('MACD', macdScore)}
                         ${scoreBubble('BB', bbScore)}
+                        ${scoreBubble('Cat', catalystScore)}
+                        ${scoreBubble('Reg', regimeScore)}
                     </div>`;
 
                     // Buy criteria cell — show each criterion with its status.
@@ -800,11 +856,7 @@
                     }
 
                     return `<tr>
-                        <td class="symbol">${opp.symbol}</td>
-                        <td>$${opp.price ? opp.price.toFixed(2) : 'N/A'}</td>
-                        <td class="${signalClass}">${opp.signal}</td>
-                        <td class="${scoreClass}" style="cursor:pointer;white-space:nowrap;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${score.toFixed(0)}</strong>/100</td>
-                        <td>${opp.rsi ? opp.rsi.toFixed(1) : 'N/A'}</td>
+                        <td class="symbol" style="cursor:pointer;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${opp.symbol}</strong><br><span style="color:#8b949e">$${opp.price ? opp.price.toFixed(2) : 'N/A'}</span><br><span class="${scoreClass}">${score.toFixed(0)}</span></td>
                         <td>${bubblesHtml}</td>
                         <td style="font-size: 11px; line-height: 1.6;">${criteriaHtml}</td>
                         <td class="opp-updated" style="white-space:nowrap;">${fmtAnalyzedAt(opp.analyzed_at)}</td>
@@ -1055,7 +1107,65 @@
 
         // Load badge on page open (collapsed, badge only)
         loadDbStatus();
-    </script>
+    
+        async function searchSymbol() {
+            const symbol = document.getElementById('searchInput').value.trim().toUpperCase();
+            if (!symbol) return;
+            
+            const resultsDiv = document.getElementById('searchResults');
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<div style="color:#8b949e">Loading...</div>';
+            
+            try {
+                const resp = await fetch('/api/search/' + symbol);
+                const data = await resp.json();
+                
+                if (data.error) {
+                    resultsDiv.innerHTML = '<div style="color:#da3633">' + data.error + '</div>';
+                    return;
+                }
+                
+                const criteriaHtml = data.buy_criteria && data.buy_criteria.length > 0
+                    ? data.buy_criteria.map(c => 
+                        c.passed 
+                        ? '<span style="color:#2ea043;font-size:12px;display:block;">✓ ' + c.name + ': ' + c.detail + '</span>'
+                        : '<span style="color:#da3633;font-size:12px;display:block;">✗ ' + c.name + ': ' + c.detail + '</span>'
+                    ).join('')
+                    : '<span style="color:#8b949e">No criteria data</span>';
+                
+                resultsDiv.innerHTML = `
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                        <div>
+                            <h3 style="margin:0 0 10px 0;">${data.symbol} - ${data.signal}</h3>
+                            <p style="color:#8b949e;font-size:14px;">Price: $${data.price ? data.price.toFixed(2) : 'N/A'}</p>
+                            <p style="font-size:24px;font-weight:bold;margin:5px 0;">Score: ${data.total_score}</p>
+                            <p style="color:#8b949e;font-size:14px;">${data.signal_strength}</p>
+                        </div>
+                        <div>
+                            <h4 style="margin:0 0 10px 0;">Components</h4>
+                            <div style="font-size:13px;">
+                                <div>RSI: ${data.rsi_score ? data.rsi_score.toFixed(1) : 'N/A'}</div>
+                                <div>SMA: ${data.sma_score ? data.sma_score.toFixed(1) : 'N/A'}</div>
+                                <div>MACD: ${data.macd_score ? data.macd_score.toFixed(1) : 'N/A'}</div>
+                                <div>BB: ${data.bb_score ? data.bb_score.toFixed(1) : 'N/A'}</div>
+                                <div>Regime: ${data.regime_score ? data.regime_score.toFixed(1) : '0'}</div>
+                                <div>Catalyst: ${data.catalyst_score ? data.catalyst_score.toFixed(1) : '0'}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="margin-top:15px;">
+                        <h4 style="margin:0 0 10px 0;">Buy Criteria</h4>
+                        ${criteriaHtml}
+                    </div>
+                    <div style="margin-top:15px;color:#8b949e;font-size:12px;">
+                        Updated: ${data.last_analyzed ? data.last_analyzed.replace('T', ' ').replace('Z', ' UTC') : 'N/A'}
+                    </div>
+                `;
+            } catch (e) {
+                resultsDiv.innerHTML = '<div style="color:#da3633">Error: ' + e.message + '</div>';
+            }
+        }
+</script>
     
     <!-- Score Modal -->
     <div id="score-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center;">

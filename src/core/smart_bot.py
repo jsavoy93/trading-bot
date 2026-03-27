@@ -1752,8 +1752,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             catalyst_score = catalyst_data.get('catalyst_score', 0)
             
             # Total Score (0-100 scale, 50 = neutral) — daily component
-            daily_score = 50 + rsi_score + sma_score + macd_score + bb_score + catalyst_score
-            daily_score = max(0, min(100, daily_score))
+            daily_score = rsi_score + sma_score + macd_score + bb_score + catalyst_score
+            daily_score = daily_score
 
             # Multi-timeframe blending: blend daily (70%) with hourly (30%)
             # Hourly score uses RSI + SMA on 1-hour bars for intraday confirmation
@@ -1781,13 +1781,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             elif h_sma_fast < h_sma_slow:
                                 h_sma_pct = ((h_sma_slow - h_sma_fast) / h_sma_slow) * 100
                                 h_sma_score = -min(25, h_sma_pct * 5)
-                            hourly_score = max(0, min(100, 50 + h_rsi_score + h_sma_score))
+                            hourly_score = h_rsi_score + h_sma_score
                 except Exception as e:
                     logging.debug(f"Hourly score failed for {symbol}: {e}")
 
             if hourly_score is not None:
                 total_score = daily_score * (1 - self.hourly_weight) + hourly_score * self.hourly_weight
-                total_score = max(0, min(100, total_score))
+                total_score = total_score
                 logging.debug(
                     f"MTF blend {symbol}: daily={daily_score:.1f} hourly={hourly_score:.1f} "
                     f"→ blended={total_score:.1f}"
@@ -1797,13 +1797,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             # Determine signal based on score
             # BUY threshold: 65+, SELL threshold: 35-
-            if total_score >= 65:
+            if total_score >= 50:
                 signal = "BUY"
-                if total_score >= 80:
+                if total_score >= 65:
                     signal_strength = "STRONG"
                 else:
                     signal_strength = "MEDIUM"
-            elif total_score <= 35:
+            elif total_score <= -50:
                 signal = "SELL"
                 if total_score <= 20:
                     signal_strength = "STRONG"
@@ -1825,7 +1825,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         # Require stronger RSI for buy signals in trending
                         if signal == "BUY" and rsi >= mods.get('rsi_buy_threshold', 30):
                             # But only block if we have data and signal is weak
-                            if total_score < 75:
+                            if total_score < 65:
                                 signal = "HOLD"
                                 signal_strength = "WEAK"
                                 logging.debug(f"📊 {symbol}: Blocked by regime filter ({regime_info['regime']}, RSI: {rsi:.1f})")
@@ -1922,7 +1922,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     insider_score = get_insider_score(symbol)
                     if insider_score > 50:
                         # Boost signal strength for strong insider buying
-                        total_score = min(100, total_score + 10)
+                        total_score = total_score + 10
                         logging.info(f"📋 {symbol}: Insider score {insider_score} - signal boosted")
                 except Exception as e:
                     logging.debug(f"Insider check failed: {e}")
@@ -3745,8 +3745,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                         bb_score = 25 - (bb_pos / 2)  # Lower band = bullish (+25), upper = bearish (-25)
                         
-                        total = 50 + rsi_score + sma_score + macd_score + bb_score
-                        total = max(0, min(100, total))
+                        total = rsi_score + sma_score + macd_score + bb_score
+                        total = total
                         
                         # Calculate regime_score based on market regime
                         regime_score = 0
@@ -3786,9 +3786,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             pass
                         
                         # Calculate total score with regime and catalyst
-                        total = 50 + rsi_score + sma_score + macd_score + bb_score + regime_score + catalyst_score
-                        total = 50 + rsi_score + sma_score + macd_score + bb_score
-                        total = max(0, min(100, total))
+                        total = rsi_score + sma_score + macd_score + bb_score + regime_score + catalyst_score
+                        total = rsi_score + sma_score + macd_score + bb_score
+                        total = total
                         
                         # Build buy_criteria for this analysis
                         vol_ratio = latest.get('volume_ratio', None)

@@ -456,7 +456,7 @@ def api_opportunities(limit: int = 30):
                    macd_score, bb_score, regime_score, catalyst_score, 
                    buy_criteria, passes_all_buy_criteria, last_analyzed
             FROM analyzed_stocks
-            ORDER BY last_analyzed DESC, total_score DESC
+            ORDER BY total_score DESC
             LIMIT ?
         """, (limit,))
         
@@ -1011,6 +1011,63 @@ def api_score_breakdown(symbol: str):
             }
         }
         
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/search/{symbol}")
+def api_search_symbol(symbol: str):
+    """Search for a symbol and return stored analysis from database"""
+    import sqlite3
+    from pathlib import Path
+    
+    db_path = Path(__file__).parent / "trading_bot.db"
+    
+    if not db_path.exists():
+        return {"error": "Database not found"}
+    
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM analyzed_stocks WHERE symbol = ?
+        """, (symbol.upper(),))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return {"error": f"Symbol {symbol} not found in database"}
+        
+        # Parse buy_criteria
+        buy_criteria = []
+        try:
+            if row['buy_criteria']:
+                import json
+                buy_criteria = json.loads(row['buy_criteria'])
+        except:
+            pass
+        
+        return {
+            "symbol": row['symbol'],
+            "price": row['price'],
+            "total_score": row['total_score'],
+            "signal": row['signal'],
+            "signal_strength": row['signal_strength'],
+            "rsi": row['rsi'],
+            "rsi_score": row['rsi_score'],
+            "sma_score": row['sma_score'],
+            "macd_score": row['macd_score'],
+            "bb_score": row['bb_score'],
+            "regime_score": row['regime_score'],
+            "catalyst_score": row['catalyst_score'],
+            "buy_criteria": buy_criteria,
+            "passes_all_buy_criteria": bool(row['passes_all_buy_criteria']),
+            "last_analyzed": row['last_analyzed'],
+        }
+    
     except Exception as e:
         return {"error": str(e)}
 
