@@ -1815,11 +1815,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             
             # Apply market regime modifiers (if enabled)
             regime_info = None
+            regime_warning = None
             if self.enable_regime_filter:
                 try:
                     regime_info = self.get_current_market_regime()
                     mods = regime_info.get('modifiers', {})
-                    
+
                     if regime_info.get('regime') in ['TRENDING_BULLISH', 'TRENDING_BEARISH']:
                         # In trending markets, be more selective about BUY signals
                         # Require stronger RSI for buy signals in trending
@@ -1828,6 +1829,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             if total_score < 65:
                                 signal = "HOLD"
                                 signal_strength = "WEAK"
+                                regime_warning = f"Score {total_score:.0f} < 65 in {regime_info['regime']}"
                                 logging.debug(f"📊 {symbol}: Blocked by regime filter ({regime_info['regime']}, RSI: {rsi:.1f})")
                     
                     # Add regime info to result
@@ -1875,6 +1877,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     logging.info(f"📊 {symbol}: Volume confirmation failed ({volume_ratio:.2f}x avg volume)")
 
             # Trading Windows filter (Phase 6.2) - skip if bad time
+            window_warning = None
             if signal == "BUY":
                 try:
                     from src.analysis.trading_windows import is_trading_allowed
@@ -1882,6 +1885,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     if not allowed:
                         signal = "HOLD"
                         signal_strength = "WEAK"
+                        window_warning = f"Outside trading window ({time_reason})"
                         logging.info(f"⏰ {symbol}: Blocked by trading window ({time_reason})")
                 except Exception as e:
                     logging.debug(f"Trading window check failed: {e}")
@@ -1930,7 +1934,83 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # ================================================
             # End new filters
             # ================================================
-            
+
+            # Build comprehensive buy_criteria for dashboard display.
+            # Each entry captures one decision gate so the user can see exactly
+            # why a stock is BUY, HOLD, or blocked.
+            _macd_hist_val = latest.get('MACD_histogram', 0)
+            _vol_ratio_val = latest.get('volume_ratio', None)
+            _regime_val = regime_info.get('regime', 'N/A') if regime_info else 'N/A'
+            _regime_ok = regime_warning is None  # regime_warning is set only when regime blocks
+
+            buy_criteria = [
+                {
+                    'name': 'Score ≥ 50',
+                    'passed': bool(total_score >= 50),
+                    'detail': f'{total_score:.0f}/100',
+                },
+                {
+                    'name': 'RSI not overbought',
+                    'passed': bool(rsi < 70),
+                    'detail': f'{rsi:.1f}',
+                },
+                {
+                    'name': 'SMA uptrend',
+                    'passed': bool(sma_fast > sma_slow),
+                    'detail': 'uptrend' if sma_fast > sma_slow else 'downtrend',
+                },
+                {
+                    'name': 'MACD positive',
+                    'passed': bool(pd.notna(_macd_hist_val) and _macd_hist_val > 0),
+                    'detail': f'{_macd_hist_val:.3f}' if pd.notna(_macd_hist_val) else 'N/A',
+                },
+                {
+                    'name': 'Regime',
+                    'passed': bool(_regime_ok),
+                    'detail': regime_warning if regime_warning else _regime_val,
+                },
+                {
+                    'name': 'No earnings soon',
+                    'passed': bool(earnings_warning is None),
+                    'detail': earnings_warning if earnings_warning else 'Clear',
+                },
+                {
+                    'name': 'Outperforms SPY',
+                    'passed': bool(sp_warning is None),
+                    'detail': sp_warning if sp_warning else 'Yes',
+                },
+                {
+                    'name': 'Trading window',
+                    'passed': bool(window_warning is None),
+                    'detail': window_warning if window_warning else 'Open',
+                },
+                {
+                    'name': 'News sentiment',
+                    'passed': bool(news_warning is None),
+                    'detail': news_warning if news_warning else 'Neutral+',
+                },
+                {
+                    'name': 'Short interest',
+                    'passed': bool(short_warning is None),
+                    'detail': short_warning if short_warning else 'Normal',
+                },
+            ]
+            if _vol_ratio_val is not None and pd.notna(_vol_ratio_val):
+                buy_criteria.append({
+                    'name': 'Volume ≥ avg',
+                    'passed': bool(float(_vol_ratio_val) >= 1.0),
+                    'detail': f'{float(_vol_ratio_val):.2f}x',
+                })
+            if insider_score > 0:
+                buy_criteria.append({
+                    'name': 'Insider buying',
+                    'passed': bool(insider_score > 50),
+                    'detail': f'score {insider_score}',
+                })
+
+            passes_all_buy_criteria = all(c['passed'] for c in buy_criteria)
+
+
             # AI enhancement (if enabled globally, configured, and enabled at ticker level)
             if use_ai and self.ai.is_configured and self.use_ai_for_ticker_analysis and signal:
                 try:
@@ -1988,6 +2068,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'catalysts': catalyst_data.get('catalysts', []),
                 'earnings_warning': earnings_warning,
                 'sp_warning': sp_warning,
+                'buy_criteria': buy_criteria,
+                'passes_all_buy_criteria': passes_all_buy_criteria,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
             }
             
