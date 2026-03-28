@@ -1416,7 +1416,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         self._handle_rate_limit_error(e)
                     logging.debug(f"AI analysis failed for {symbol}: {e}")
             
-            # Build buy_criteria for storage
+            # Build buy_criteria — include every real gate so the dashboard
+            # shows exactly why a stock is BUY or blocked.
+            _macd_hist_val = latest.get('MACD_histogram', 0)
+            _hourly_ok = hourly_signal == 'BUY' if hourly_indicators is not None else None
+            _timeframes_agree = bool(
+                daily_signal and hourly_signal and daily_signal == hourly_signal
+            ) if hourly_indicators is not None else None
+
             buy_criteria = [
                 {
                     'name': 'Score ≥ 65',
@@ -1435,16 +1442,41 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 },
                 {
                     'name': 'MACD positive',
-                    'passed': bool(macd_hist is not None and macd_hist > 0),
-                    'detail': f'{macd_hist:.3f}' if macd_hist is not None else 'N/A',
+                    'passed': bool(pd.notna(_macd_hist_val) and _macd_hist_val > 0),
+                    'detail': f'{_macd_hist_val:.3f}' if pd.notna(_macd_hist_val) else 'N/A',
+                },
+                {
+                    'name': 'Daily signal BUY',
+                    'passed': bool(daily_signal == 'BUY'),
+                    'detail': daily_signal or 'No signal',
                 },
             ]
+
+            if hourly_indicators is not None:
+                buy_criteria.append({
+                    'name': 'Hourly signal BUY',
+                    'passed': bool(_hourly_ok),
+                    'detail': hourly_signal or 'No signal',
+                })
+                buy_criteria.append({
+                    'name': 'Timeframes agree',
+                    'passed': bool(_timeframes_agree),
+                    'detail': 'Yes' if _timeframes_agree else 'Conflicting',
+                })
+            else:
+                buy_criteria.append({
+                    'name': 'Hourly data',
+                    'passed': False,
+                    'detail': 'No hourly data — daily only',
+                })
+
             if vol_ratio is not None:
                 buy_criteria.append({
                     'name': 'Volume ≥ avg',
                     'passed': bool(float(vol_ratio) >= 1.0),
                     'detail': f'{float(vol_ratio):.2f}x',
                 })
+
             
             failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
             passes_all_buy_criteria = len(failed_criteria) == 0
@@ -3740,31 +3772,52 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 else:
                     analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
                 
-                # Save analysis result
-                if analysis:
-                    self.save_analysis_to_db(symbol, analysis)
-                
                 # Apply liquidity filter - skip illiquid stocks for BUY signals
+                liquidity_warning = None
                 if analysis and analysis.get('signal') == 'BUY' and self.enable_liquidity_filter:
                     passes_liquidity, avg_vol, spread, reason = self.check_liquidity(symbol, self.min_daily_volume)
                     if not passes_liquidity:
                         analysis['signal'] = 'HOLD'
                         analysis['signal_strength'] = 'WEAK'
+                        liquidity_warning = reason
                         analysis['liquidity_warning'] = reason
                         logging.debug(f"⏭️ {symbol}: Failed liquidity filter - {reason}")
-                
+
                 # Apply sector rotation filter - prefer stocks in strong sectors
+                sector_warning = None
                 if analysis and analysis.get('signal') == 'BUY' and self.enable_sector_filter:
-                    # Check if this is a sector ETF we're analyzing
                     sector = self.get_sector_for_symbol(symbol)
                     if sector and sector in self.sector_rotation_scores:
                         sector_score = self.sector_rotation_scores.get(sector, 0)
-                        # If sector is underperforming SPY by > 2%, downgrade signal
                         if sector_score < -2:
                             analysis['signal'] = 'HOLD'
                             analysis['signal_strength'] = 'WEAK'
-                            analysis['sector_warning'] = f"Sector {self.SECTOR_ETFS.get(sector, sector)} underperforming ({sector_score:+.1f}% vs SPY)"
+                            sector_warning = f"Sector {self.SECTOR_ETFS.get(sector, sector)} underperforming ({sector_score:+.1f}% vs SPY)"
+                            analysis['sector_warning'] = sector_warning
                             logging.debug(f"⏭️ {symbol}: Sector {sector} underperforming - {sector_score:+.1f}%")
+
+                # Append liquidity + sector results to buy_criteria before saving
+                # so the dashboard reflects every gate that was checked
+                if analysis and 'buy_criteria' in analysis:
+                    if self.enable_liquidity_filter:
+                        analysis['buy_criteria'].append({
+                            'name': 'Liquidity',
+                            'passed': liquidity_warning is None,
+                            'detail': liquidity_warning if liquidity_warning else 'OK',
+                        })
+                    if self.enable_sector_filter:
+                        analysis['buy_criteria'].append({
+                            'name': 'Sector strength',
+                            'passed': sector_warning is None,
+                            'detail': sector_warning if sector_warning else 'OK',
+                        })
+                    analysis['passes_all_buy_criteria'] = all(
+                        c['passed'] for c in analysis['buy_criteria']
+                    )
+
+                # Save analysis result (after all filters so criteria is complete)
+                if analysis:
+                    self.save_analysis_to_db(symbol, analysis)
                 if not analysis:
                     # Check why - no data vs no signal
                     df = self.get_market_data(symbol)
