@@ -100,6 +100,11 @@ class SQLiteDB:
                         catalyst_score REAL DEFAULT 0,
                         earnings_score REAL DEFAULT 0,
                         volatility_score REAL DEFAULT 0,
+                        analysis_successes INTEGER DEFAULT 0,
+                        analysis_failures INTEGER DEFAULT 0,
+                        filter_results TEXT,
+                        blocked_by TEXT,
+                        blocked_count INTEGER DEFAULT 0,
                         last_analyzed TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
                     );
 
@@ -107,11 +112,80 @@ class SQLiteDB:
                         ON analyzed_stocks(total_score DESC);
                     CREATE INDEX IF NOT EXISTS idx_analyzed_stocks_time
                         ON analyzed_stocks(last_analyzed DESC);
+                    CREATE INDEX IF NOT EXISTS idx_analyzed_stocks_failures
+                        ON analyzed_stocks(analysis_failures DESC);
                     CREATE INDEX IF NOT EXISTS idx_trades_session
                         ON trades(session_id);
                     CREATE INDEX IF NOT EXISTS idx_trades_time
                         ON trades(created_at DESC);
                 """)
+                
+                # Migration: Add analysis_successes/failures columns if they don't exist
+                # Migration: Add analysis_successes/failures columns if they don't exist
+                try:
+                    conn.execute("ALTER TABLE analyzed_stocks ADD COLUMN analysis_successes INTEGER DEFAULT 0;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                try:
+                    conn.execute("ALTER TABLE analyzed_stocks ADD COLUMN analysis_failures INTEGER DEFAULT 0;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                try:
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_analyzed_stocks_failures ON analyzed_stocks(analysis_failures DESC);")
+                except sqlite3.OperationalError:
+                    pass  # Index may already exist
+
+                # Migration: Add filter_results / blocked_by / blocked_count if they don't exist
+                try:
+                    conn.execute("ALTER TABLE analyzed_stocks ADD COLUMN filter_results TEXT;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                try:
+                    conn.execute("ALTER TABLE analyzed_stocks ADD COLUMN blocked_by TEXT;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                try:
+                    conn.execute("ALTER TABLE analyzed_stocks ADD COLUMN blocked_count INTEGER DEFAULT 0;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+
+                # ── failed_analyses: why BUY/SELL signals were rejected ──────────────────
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS failed_analyses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        symbol TEXT NOT NULL,
+                        timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                        signal_type TEXT NOT NULL,
+                        total_score REAL,
+                        rsi REAL,
+                        price REAL,
+                        failed_filters TEXT NOT NULL,
+                        filter_details TEXT,
+                        blocked_by TEXT,
+                        session_id INTEGER,
+                        threshold_key TEXT,
+                        threshold_value REAL,
+                        actual_value REAL
+                    )
+                """)
+                try:
+                    conn.execute("CREATE INDEX idx_failed_analyses_time ON failed_analyses(timestamp DESC);")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("CREATE INDEX idx_failed_analyses_symbol ON failed_analyses(symbol);")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("CREATE INDEX idx_failed_analyses_blocked ON failed_analyses(blocked_by);")
+                except sqlite3.OperationalError:
+                    pass
+
             self.available = True
             logging.info(f"✅ SQLite database ready: {DB_PATH}")
         except Exception as e:
@@ -367,8 +441,9 @@ class SQLiteDB:
                        (symbol, price, total_score, signal, signal_strength,
                         rsi, rsi_score, sma_score, macd_score, bb_score,
                         vwap_score, regime_score, catalyst_score, earnings_score,
-                        volatility_score, buy_criteria, passes_all_buy_criteria, last_analyzed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        volatility_score, buy_criteria, passes_all_buy_criteria,
+                        filter_results, blocked_by, blocked_count, last_analyzed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(symbol) DO UPDATE SET
                            price = excluded.price,
                            total_score = excluded.total_score,
@@ -386,6 +461,9 @@ class SQLiteDB:
                            volatility_score = excluded.volatility_score,
                            buy_criteria = excluded.buy_criteria,
                            passes_all_buy_criteria = excluded.passes_all_buy_criteria,
+                           filter_results = excluded.filter_results,
+                           blocked_by = excluded.blocked_by,
+                           blocked_count = excluded.blocked_count,
                            last_analyzed = excluded.last_analyzed""",
                     (
                         symbol,
@@ -405,6 +483,9 @@ class SQLiteDB:
                         analysis.get("volatility_score", 0),
                         json.dumps(analysis.get("buy_criteria", [])),
                         1 if analysis.get("passes_all_buy_criteria", False) else 0,
+                        json.dumps(analysis.get("filter_results", {})),
+                        analysis.get("blocked_by"),
+                        analysis.get("blocked_count", 0),
                         datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                     ),
                 )
@@ -412,6 +493,92 @@ class SQLiteDB:
             return True
         except Exception as e:
             logging.debug(f"Error saving analysis for {symbol}: {e}")
+            return False
+
+    def increment_analysis_success(self, symbol: str) -> bool:
+        """Increment the success counter for a symbol;
+        resets failures when symbol has 2+ total successes (unbans it)."""
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    """INSERT INTO analyzed_stocks (symbol, analysis_successes, last_analyzed)
+                       VALUES (?, 1, ?)
+                       ON CONFLICT(symbol) DO UPDATE SET
+                           analysis_successes = analysis_successes + 1,
+                           analysis_failures = CASE
+                               WHEN analysis_successes + 1 >= 2 THEN 0
+                               ELSE analysis_failures
+                           END,
+                           last_analyzed = excluded.last_analyzed""",
+                    (symbol, datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
+                )
+            return True
+        except Exception as e:
+            logging.debug(f"Error incrementing success for {symbol}: {e}")
+            return False
+
+    def increment_analysis_failure(self, symbol: str) -> bool:
+        """Increment the failure counter for a symbol"""
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    """INSERT INTO analyzed_stocks (symbol, analysis_failures, last_analyzed)
+                       VALUES (?, 1, ?)
+                       ON CONFLICT(symbol) DO UPDATE SET
+                           analysis_failures = analysis_failures + 1,
+                           last_analyzed = excluded.last_analyzed""",
+                    (symbol, datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
+                )
+            return True
+        except Exception as e:
+            logging.debug(f"Error incrementing failure for {symbol}: {e}")
+            return False
+
+    def get_analysis_stats(self, symbol: str) -> Dict:
+        """Get success/failure counts for a symbol"""
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT analysis_successes, analysis_failures FROM analyzed_stocks WHERE symbol = ?",
+                    (symbol,),
+                ).fetchone()
+                if row:
+                    return {
+                        "successes": row[0] or 0,
+                        "failures": row[1] or 0,
+                    }
+        except Exception as e:
+            logging.debug(f"Error getting stats for {symbol}: {e}")
+        return {"successes": 0, "failures": 0}
+
+    def get_consistently_failing_symbols(self, min_failures: int = 3, cooldown_days: int = 7) -> List[str]:
+        """Get symbols that have failed analysis min_failures or more times
+        AND haven't been attempted in the last cooldown_days."""
+        try:
+            with _get_conn() as conn:
+                rows = conn.execute(
+                    """SELECT symbol FROM analyzed_stocks
+                       WHERE analysis_failures >= ?
+                         AND last_analyzed < datetime('now', ?)
+                       ORDER BY analysis_failures DESC""",
+                    (min_failures, f"-{cooldown_days} days"),
+                ).fetchall()
+                return [r[0] for r in rows]
+        except Exception as e:
+            logging.debug(f"Error getting failing symbols: {e}")
+            return []
+
+    def reset_analysis_failures(self, symbol: str) -> bool:
+        """Reset failure count for a symbol (call when it succeeds)"""
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    "UPDATE analyzed_stocks SET analysis_failures = 0 WHERE symbol = ?",
+                    (symbol,),
+                )
+            return True
+        except Exception as e:
+            logging.debug(f"Error resetting failures for {symbol}: {e}")
             return False
 
     def get_analysis_results(self, limit: int = 100) -> List[Dict]:
@@ -437,6 +604,157 @@ class SQLiteDB:
         except Exception as e:
             logging.debug(f"Error getting analysis for {symbol}: {e}")
             return None
+
+    # ── Failed Analyses ──────────────────────────────────────────────────────────────
+
+    def save_failed_analysis(
+        self,
+        symbol: str,
+        signal_type: str,
+        total_score: float,
+        rsi: float,
+        failed_filters: List[str],
+        filter_details: Dict,
+        blocked_by: str,
+        price: float = None,
+        session_id: int = None,
+        threshold_key: str = None,
+        threshold_value: float = None,
+        actual_value: float = None,
+    ) -> bool:
+        """Save a record of why a BUY/SELL signal was rejected.
+
+        Args:
+            symbol:           Stock ticker
+            signal_type:       'BUY' or 'SELL'
+            total_score:       Composite score (0-100)
+            rsi:               RSI at time of analysis
+            failed_filters:    List of filter names that caused the failure
+            filter_details:    Dict of {filter_name: {passed, detail, value}}
+            blocked_by:        Primary failure reason label, e.g. 'Score < 55'
+            price:             Stock price at time of analysis
+            session_id:        Trading session ID
+            threshold_key:     The param name that caused failure, e.g. 'min_score_buy'
+            threshold_value:   The limit value in effect, e.g. 55
+            actual_value:      The stock's actual metric value, e.g. 40
+        """
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    """INSERT INTO failed_analyses
+                       (symbol, signal_type, total_score, rsi, price,
+                        failed_filters, filter_details, blocked_by, session_id,
+                        threshold_key, threshold_value, actual_value)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        symbol,
+                        signal_type,
+                        total_score,
+                        rsi,
+                        price,
+                        json.dumps(failed_filters),
+                        json.dumps(filter_details),
+                        blocked_by,
+                        session_id,
+                        threshold_key,
+                        threshold_value,
+                        actual_value,
+                    ),
+                )
+            return True
+        except Exception as e:
+            logging.debug(f"Error saving failed analysis for {symbol}: {e}")
+            return False
+
+    def get_failed_analyses(
+        self,
+        from_date: str = None,
+        to_date: str = None,
+        limit: int = 1000,
+    ) -> List[Dict]:
+        """Retrieve failed analysis records within a date range.
+
+        Args:
+            from_date:  ISO timestamp (inclusive), e.g. '2026-06-01T00:00:00Z'
+            to_date:    ISO timestamp (inclusive)
+            limit:      Max rows to return
+
+        Returns:
+            List of dicts ordered by timestamp DESC
+        """
+        try:
+            with _get_conn() as conn:
+                query = "SELECT * FROM failed_analyses WHERE 1=1"
+                params: List[Any] = []
+                if from_date:
+                    query += " AND timestamp >= ?"
+                    params.append(from_date)
+                if to_date:
+                    query += " AND timestamp <= ?"
+                    params.append(to_date)
+                query += " ORDER BY timestamp DESC LIMIT ?"
+                params.append(limit)
+                rows = conn.execute(query, params).fetchall()
+                results = []
+                for row in rows:
+                    r = dict(row)
+                    if r.get("failed_filters"):
+                        r["failed_filters"] = json.loads(r["failed_filters"])
+                    if r.get("filter_details"):
+                        r["filter_details"] = json.loads(r["filter_details"])
+                    results.append(r)
+                return results
+        except Exception as e:
+            logging.debug(f"Error getting failed analyses: {e}")
+            return []
+
+    def get_failed_analyses_summary(
+        self,
+        from_date: str = None,
+        to_date: str = None,
+    ) -> Dict:
+        """Aggregate failed analyses into a breakdown by blocked_by filter.
+
+        Returns:
+            {"total": N, "breakdown": [{"blocked_by": "...", "count": N, "pct": P}, ...]}
+        """
+        try:
+            with _get_conn() as conn:
+                base_query = "FROM failed_analyses WHERE 1=1"
+                params: List[Any] = []
+                if from_date:
+                    base_query += " AND timestamp >= ?"
+                    params.append(from_date)
+                if to_date:
+                    base_query += " AND timestamp <= ?"
+                    params.append(to_date)
+
+                total_row = conn.execute(
+                    f"SELECT COUNT(*) as cnt {base_query}", params
+                ).fetchone()
+                total = total_row[0] if total_row else 0
+
+                rows = conn.execute(
+                    f"""SELECT blocked_by, COUNT(*) as cnt
+                       {base_query}
+                       GROUP BY blocked_by
+                       ORDER BY cnt DESC""",
+                    params,
+                ).fetchall()
+                breakdown = []
+                for row in rows:
+                    cnt = row[1]
+                    breakdown.append({
+                        "blocked_by": row[0] or "unknown",
+                        "count": cnt,
+                        "pct": round(cnt / total * 100, 1) if total > 0 else 0,
+                    })
+                return {"total": total, "breakdown": breakdown}
+        except Exception as e:
+            logging.debug(f"Error getting failed analyses summary: {e}")
+            return {"total": 0, "breakdown": []}
+
+    # ── Remaining methods ───────────────────────────────────────────────────────────────
 
     def get_unanalyzed_symbols(self, all_symbols: List[str], limit: int = 30) -> List[str]:
         try:

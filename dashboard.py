@@ -56,6 +56,18 @@ def to_central_time(utc_str):
 
 jinja_env.filters['to_central'] = to_central_time
 
+# Settings persistence (SQLite) — shared with the trading bot
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+try:
+    from core.settings_service import get as _ss_get, save as _ss_save
+    _USE_SETTINGS_SERVICE = True
+except Exception:
+    _USE_SETTINGS_SERVICE = False
+    _ss_get = lambda k, d=None, t=None: d
+    _ss_save = lambda k, v: None
+
 # Alpaca client
 api_key = os.getenv("ALPACA_API_KEY")
 api_secret = os.getenv("ALPACA_API_SECRET")
@@ -67,6 +79,34 @@ if api_key and api_secret:
 
 # Cached smart bot instance for analysis status
 _smart_bot_instance = None
+
+# Trading parameters — editable via dashboard
+_TRADING_PARAMS = {
+    "rsi_buy_threshold":          {"value": 30,    "min": 10,     "max": 50,     "step": 1,  "type": "int",   "default": 30,   "description": "RSI must be below this to generate a BUY signal.",                    "category": "Signal Thresholds"},
+    "rsi_sell_threshold":         {"value": 70,    "min": 50,     "max": 90,     "step": 1,  "type": "int",   "default": 70,   "description": "RSI must be above this to generate a SELL signal.",                   "category": "Signal Thresholds"},
+    "min_score_buy":               {"value": 65,    "min": 0,      "max": 100,    "step": 1,  "type": "int",   "default": 65,   "description": "Minimum total score required for a BUY signal.",                       "category": "Signal Thresholds"},
+    "rotation_threshold":          {"value": 20,    "min": 0,      "max": 50,     "step": 1,  "type": "int",   "default": 20,   "description": "Rotation score advantage threshold.",                                 "category": "Signal Thresholds"},
+    "sma_fast":                   {"value": 10,    "min": 2,      "max": 50,     "step": 1,  "type": "int",   "default": 10,   "description": "Fast SMA period.",                                                   "category": "Indicator Periods"},
+    "sma_slow":                   {"value": 30,    "min": 5,      "max": 200,    "step": 1,  "type": "int",   "default": 30,   "description": "Slow SMA period.",                                                   "category": "Indicator Periods"},
+    "rsi_period":                 {"value": 14,    "min": 2,      "max": 50,     "step": 1,  "type": "int",   "default": 14,   "description": "RSI lookback period.",                                                "category": "Indicator Periods"},
+    "enable_multi_timeframe":     {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Require daily AND hourly agreement.",                             "category": "Multi-Timeframe"},
+    "hourly_weight":              {"value": 0.30,  "min": 0.0,    "max": 1.0,    "step": 0.05,"type": "float", "default": 0.30, "description": "Weight for hourly signals.",                                           "category": "Multi-Timeframe"},
+    "enable_volume_confirmation": {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Require volume above 20-day average.",                              "category": "Filters"},
+    "enable_mtf_conflict_filter":  {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Block BUY if daily/hourly signals conflict.",                      "category": "Filters"},
+    "enable_vol_downgrade_filter": {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Block BUY if volume is below average (vol downgrade).",              "category": "Filters"},
+    "enable_ai_conflict_filter":   {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Block BUY if AI recommendation conflicts with technical signal.",   "category": "Filters"},
+    "enable_regime_filter":       {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "ADX-based regime detection.",                                        "category": "Filters"},
+    "enable_sp_filter":           {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Only buy stocks outperforming SPY.",                                 "category": "Filters"},
+    "enable_liquidity_filter":    {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Skip illiquid stocks.",                                              "category": "Filters"},
+    "enable_sector_filter":       {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Prefer strong sectors.",                                              "category": "Filters"},
+    "loop_delay_seconds":         {"value": 300,   "min": 10,     "max": 3600,   "step": 10,   "type": "int",   "default": 300,   "description": "Seconds between analysis loops.",                                    "category": "Bot Settings"},
+    "atr_position_size_pct":       {"value": 2.0,   "min": 0.1,    "max": 10.0,   "step": 0.1, "type": "float", "default": 2.0,   "description": "Risk per trade as % of portfolio.",                              "category": "Risk & Sizing"},
+    "max_sector_concentration":   {"value": 0.25,  "min": 0.05,   "max": 0.80,   "step": 0.05,"type": "float", "default": 0.25,  "description": "Max % in any single sector.",                                   "category": "Risk & Sizing"},
+    "max_correlation":            {"value": 0.7,   "min": 0.0,    "max": 1.0,    "step": 0.05,"type": "float", "default": 0.7,   "description": "Max correlation with existing positions.",                        "category": "Risk & Sizing"},
+    "max_portfolio_beta":         {"value": 1.5,   "min": 0.0,    "max": 3.0,    "step": 0.1, "type": "float", "default": 1.5,   "description": "Max portfolio beta.",                                               "category": "Risk & Sizing"},
+    "max_drawdown_pct":           {"value": 10.0,  "min": 1.0,    "max": 50.0,   "step": 0.5, "type": "float", "default": 10.0,  "description": "Max drawdown before pause.",                                         "category": "Risk & Sizing"},
+    "daily_loss_limit_pct":       {"value": 5.0,   "min": 0.5,    "max": 20.0,   "step": 0.5, "type": "float", "default": 5.0,   "description": "Max daily loss before stopping.",                                    "category": "Risk & Sizing"},
+}
 
 def get_smart_bot():
     """Get or create cached SmartTradingBot instance"""
@@ -228,6 +268,7 @@ def get_positions() -> List[Dict]:
                 # Calculate score for this position
                 score = 50
                 rsi = None
+                rsi_val = sma_val = macd_val = bb_val = 0  # defaults in case exception fires
                 try:
                     df = bot.get_market_data(symbol)
                     if df is not None and len(df) >= bot.sma_slow:
@@ -510,12 +551,175 @@ def api_opportunities(limit: int = 30):
             })
         
         return {"opportunities": opportunities, "analyzed": len(opportunities)}
-        
+
     except Exception as e:
         logger.error(f"Failed to get opportunities: {e}")
         return {"opportunities": [], "error": str(e), "analyzed": 0}
 
 
+@app.get("/api/filter-dashboard")
+def api_filter_dashboard(hours: int = 24, symbol: str = None):
+    """Filter analysis dashboard — why symbols didn't generate BUY signals.
+
+    Returns blocked_by distribution, per-filter breakdown, top scored HOLD
+    signals, and most filtered symbols from the analyzed_stocks table.
+    """
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        db_path = Path(__file__).parent / "trading_bot.db"
+        if not db_path.exists():
+            return {"error": "Database not found", "sections": {}}
+
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+        sections = {}
+
+        # ── 1. blocked_by distribution ───────────────────────────────────
+        cur.execute("""
+            SELECT blocked_by, COUNT(*) as cnt
+            FROM analyzed_stocks
+            WHERE last_analyzed > ?
+            GROUP BY blocked_by
+            ORDER BY cnt DESC
+        """, (cutoff_str,))
+        rows = cur.fetchall()
+        total = sum(r["cnt"] for r in rows)
+        blocked_by_dist = [
+            {"label": str(r["blocked_by"]) if r["blocked_by"] else "(none — no block)",
+             "count": r["cnt"],
+             "pct": round(r["cnt"] / total * 100, 1) if total else 0}
+            for r in rows
+        ]
+        sections["blocked_by"] = {"total": total, "distribution": blocked_by_dist}
+
+        # ── 2. blocked_count distribution ──────────────────────────────
+        cur.execute("""
+            SELECT blocked_count, COUNT(*) as cnt
+            FROM analyzed_stocks
+            WHERE last_analyzed > ? AND blocked_count > 0
+            GROUP BY blocked_count
+            ORDER BY blocked_count
+        """, (cutoff_str,))
+        sections["blocked_count"] = [
+            {"blocked_count": r["blocked_count"], "count": r["cnt"]}
+            for r in cur.fetchall()
+        ]
+
+        # ── 3. Per-filter breakdown (from filter_results JSON) ────────
+        cur.execute("""
+            SELECT symbol, total_score, filter_results, blocked_by, blocked_count
+            FROM analyzed_stocks
+            WHERE last_analyzed > ? AND filter_results IS NOT NULL
+        """, (cutoff_str,))
+        rows = cur.fetchall()
+        filter_names = [
+            ("multi_timeframe_conflict", "MTF Conflict"),
+            ("volume_downgrade",         "Volume Downgrade"),
+            ("regime_filter",            "Market Regime"),
+            ("earnings_filter",          "Earnings Proximity"),
+            ("sp_relative_strength",     "SPY Underperformance"),
+            ("volume_confirmation",      "Volume Confirmation"),
+            ("trading_window",           "Trading Window"),
+            ("news_sentiment",           "News Sentiment"),
+            ("short_interest",           "Short Interest"),
+            ("ai_conflict",              "AI Conflict"),
+            ("liquidity_filter",         "Low Liquidity"),
+            ("sector_filter",            "Sector Underperformance"),
+        ]
+        per_filter = []
+        for key, label in filter_names:
+            blocked = sum(1 for r in rows if _parse_fr(r["filter_results"]).get(key, {}).get("blocked"))
+            passed  = sum(1 for r in rows if _parse_fr(r["filter_results"]).get(key, {}).get("passed", False))
+            denom = blocked + passed
+            per_filter.append({
+                "key":      key,
+                "label":    label,
+                "blocked":  blocked,
+                "passed":   passed,
+                "pct":      round(blocked / denom * 100, 1) if denom else 0,
+            })
+        sections["per_filter"] = per_filter
+
+        # ── 4. Most filtered symbols (2+ filters blocking) ─────────────
+        cur.execute("""
+            SELECT symbol, total_score, signal, blocked_by, blocked_count, filter_results
+            FROM analyzed_stocks
+            WHERE last_analyzed > ? AND blocked_count >= 2
+            ORDER BY blocked_count DESC, total_score DESC
+            LIMIT 15
+        """, (cutoff_str,))
+        most_filtered = []
+        for r in cur.fetchall():
+            fr = _parse_fr(r["filter_results"])
+            blocking = [k for k, v in fr.items() if v.get("blocked")]
+            most_filtered.append({
+                "symbol":       r["symbol"],
+                "score":        r["total_score"],
+                "signal":       r["signal"],
+                "blocked_by":   r["blocked_by"],
+                "blocked_count":r["blocked_count"],
+                "filters":      blocking,
+            })
+        sections["most_filtered"] = most_filtered
+
+        # ── 5. Top scored HOLD signals (high score, no BUY) ────────────
+        if symbol:
+            cur.execute("""
+                SELECT symbol, total_score, rsi, signal_strength, blocked_by, blocked_count, filter_results
+                FROM analyzed_stocks
+                WHERE symbol = ?
+            """, (symbol.upper(),))
+        else:
+            cur.execute("""
+                SELECT symbol, total_score, rsi, signal_strength, blocked_by, blocked_count, filter_results
+                FROM analyzed_stocks
+                WHERE last_analyzed > ? AND signal = 'HOLD' AND total_score >= 40
+                ORDER BY total_score DESC
+                LIMIT 20
+            """, (cutoff_str,))
+
+        top_holds = []
+        for r in (cur.fetchall() if symbol else cur.fetchall()):
+            fr = _parse_fr(r["filter_results"])
+            blocking = [k for k, v in fr.items() if v.get("blocked")]
+            top_holds.append({
+                "symbol":        r["symbol"],
+                "score":         r["total_score"],
+                "rsi":           r["rsi"],
+                "strength":       r["signal_strength"],
+                "blocked_by":     r["blocked_by"],
+                "blocked_count":  r["blocked_count"],
+                "filters":       blocking,
+            })
+        sections["top_holds"] = top_holds
+
+        conn.close()
+        return {
+            "hours":   hours,
+            "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "sections": sections,
+        }
+
+    except Exception as e:
+        logger.error(f"Filter dashboard error: {e}")
+        return {"error": str(e), "sections": {}}
+
+
+def _parse_fr(fr_json):
+    """Parse filter_results JSON, return {} on failure."""
+    if not fr_json:
+        return {}
+    try:
+        return json.loads(fr_json)
+    except Exception:
+        return {}
 
 
 def api_orders(limit: int = 20):
@@ -1123,6 +1327,83 @@ def api_db_status():
             result["error"] = str(e)
 
     return result
+
+
+@app.get("/api/failed-analyses")
+def api_get_failed_analyses(
+    from_date: str = None,
+    to_date: str = None,
+    summary_only: bool = False,
+):
+    """Get failed analysis records or summary for the pie chart.
+
+    Query params:
+        from_date:      ISO timestamp (e.g. '2026-06-01T00:00:00Z')
+        to_date:        ISO timestamp
+        summary_only:   If true, returns aggregated breakdown instead of rows
+    """
+    try:
+        from database.sqlite_db import sqlite_db
+        if summary_only:
+            result = sqlite_db.get_failed_analyses_summary(
+                from_date=from_date, to_date=to_date
+            )
+            return result
+        else:
+            records = sqlite_db.get_failed_analyses(
+                from_date=from_date, to_date=to_date, limit=500
+            )
+            return {"records": records, "count": len(records)}
+    except Exception as e:
+        logging.error(f"Error fetching failed analyses: {e}")
+        return {"error": str(e), "records": [], "count": 0}
+
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    """Return all trading parameters with metadata for the dashboard UI."""
+    result = {}
+    for key, param in _TRADING_PARAMS.items():
+        result[key] = {
+            "value": param["value"],
+            "min": param["min"],
+            "max": param["max"],
+            "step": param["step"],
+            "type": param["type"],
+            "default": param["default"],
+            "description": param["description"],
+            "category": param["category"],
+        }
+    return result
+
+
+@app.post("/api/settings")
+def api_update_settings(updates: Dict):
+    """Update one or more trading parameters. Returns updated values."""
+    global _TRADING_PARAMS, _smart_bot_instance
+    updated = {}
+    for key, new_val in updates.items():
+        if key not in _TRADING_PARAMS:
+            continue
+        param = _TRADING_PARAMS[key]
+        if param["type"] in ("int", "float"):
+            new_val = float(new_val)
+            if param["min"] is not None and new_val < param["min"]:
+                new_val = param["min"]
+            if param["max"] is not None and new_val > param["max"]:
+                new_val = param["max"]
+            if param["type"] == "int":
+                new_val = int(round(new_val))
+        elif param["type"] == "bool":
+            new_val = bool(new_val)
+        _TRADING_PARAMS[key]["value"] = new_val
+        updated[key] = new_val
+        if _USE_SETTINGS_SERVICE:
+            _ss_save(key, str(new_val))
+        if _smart_bot_instance is not None and hasattr(_smart_bot_instance, key):
+            setattr(_smart_bot_instance, key, new_val)
+    return {"updated": updated, "status": "ok"}
 
 
 if __name__ == "__main__":
