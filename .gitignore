@@ -104,3 +104,10 @@ celerybeat.pid
 .mypy_cache/
 .dmypy.json
 dmypy.json
+# Local database runtime files
+*.db-shm
+*.db-wal
+
+# Agent patch backups
+*.bak
+*_patched.py
