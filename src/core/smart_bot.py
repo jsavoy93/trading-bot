@@ -1927,7 +1927,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             if hourly_score is not None:
                 total_score = daily_score * (1 - self.hourly_weight) + hourly_score * self.hourly_weight
-                total_score = total_score
                 logging.debug(
                     f"MTF blend {symbol}: daily={daily_score:.1f} hourly={hourly_score:.1f} "
                     f"→ blended={total_score:.1f}"
