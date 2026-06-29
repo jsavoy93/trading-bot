@@ -4300,8 +4300,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.info(f"🧠 AI-Enhanced Trades: {ai_enhanced_trades}")
         symbols_researched = len(symbols) - symbols_skipped_orders - symbols_skipped_cooldown
         logging.info(f"📈 Symbols Analyzed: {symbols_researched} researched, {symbols_skipped_orders} skipped (pending orders), {symbols_skipped_cooldown} skipped (cooldown)")
-        import sys
-        print(f"DEBUG END OF LOOP - symbols_researched={symbols_researched}", file=sys.stderr, flush=True)
 
         # Final portfolio analysis
         logging.info("\n📊 POST-TRADING PORTFOLIO STATUS:")
