@@ -1,16 +1,28 @@
 {
   "initial_capital": 100000,
-  "final_capital": 78236.27,
-  "total_return_pct": -21.763729999999995,
-  "total_trades": 12,
-  "winning_trades": 2,
-  "losing_trades": 10,
-  "win_rate": 16.666666666666664,
-  "avg_profit": -1813.6441666666667,
-  "total_pnl": -21763.73,
-  "max_drawdown": 85.36387562795736,
-  "sharpe_ratio": 0.287899416114366,
+  "final_capital": 86539.49,
+  "total_return_pct": -13.460509999999996,
+  "total_trades": 18,
+  "winning_trades": 7,
+  "losing_trades": 11,
+  "win_rate": 38.88888888888889,
+  "avg_profit": -747.806111111111,
+  "total_pnl": -13460.509999999998,
+  "max_drawdown": 90.04333986884998,
+  "sharpe_ratio": 0.21061509226328745,
   "trades_by_symbol": {
+    "MSFT": {
+      "wins": 0,
+      "losses": 1
+    },
+    "AMZN": {
+      "wins": 1,
+      "losses": 0
+    },
+    "WMT": {
+      "wins": 1,
+      "losses": 0
+    },
     "CRM": {
       "wins": 1,
       "losses": 1
@@ -23,7 +35,7 @@
       "wins": 0,
       "losses": 1
     },
-    "AMZN": {
+    "META": {
       "wins": 0,
       "losses": 1
     },
@@ -51,9 +63,21 @@
       "wins": 0,
       "losses": 1
     },
+    "PYPL": {
+      "wins": 1,
+      "losses": 0
+    },
+    "NFLX": {
+      "wins": 1,
+      "losses": 0
+    },
     "ADBE": {
       "wins": 0,
       "losses": 1
+    },
+    "XOM": {
+      "wins": 1,
+      "losses": 0
     }
   }
 }

@@ -1579,9 +1579,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'signal_strength': signal_strength,
                 'total_score': total_score,
                 'rsi_score': rsi_score_daily,
-                'sma_score': sma_score_daily,
-                'macd_score': macd_score_daily,
-                'bb_score': bb_score_daily,
+                'sma_score': _sma_score_daily,
+                'macd_score': _macd_score_daily,
+                'bb_score': _bb_score_daily,
                 'buy_criteria': buy_criteria,
                 'passes_all_buy_criteria': passes_all_buy_criteria,
                 'filter_results': filter_results,
@@ -2240,9 +2240,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'signal_strength': signal_strength,
                 'total_score': total_score,
                 'rsi_score': rsi_score_daily,
-                'sma_score': sma_score_daily,
-                'macd_score': macd_score_daily,
-                'bb_score': bb_score_daily,
+                'sma_score': _sma_score_daily,
+                'macd_score': _macd_score_daily,
+                'bb_score': _bb_score_daily,
                 'total_score': total_score,
                 'rsi_score': rsi_score,
                 'sma_score': sma_score,
@@ -4056,8 +4056,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                         # Calculate total score with regime and catalyst
                         total = rsi_score + sma_score + macd_score + bb_score + regime_score + catalyst_score
-                        total = rsi_score + sma_score + macd_score + bb_score
-                        total = total
 
                         # Build buy_criteria for this analysis
                         vol_ratio = latest.get('volume_ratio', None)
