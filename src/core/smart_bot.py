@@ -4014,9 +4014,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                         bb_score = 25 - (bb_pos / 2)  # Lower band = bullish (+25), upper = bearish (-25)
 
-                        total = rsi_score + sma_score + macd_score + bb_score
-                        total = total
-
                         # Calculate regime_score based on market regime
                         regime_score = 0
                         try:
