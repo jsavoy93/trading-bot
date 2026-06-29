@@ -111,3 +111,11 @@ dmypy.json
 # Agent patch backups
 *.bak
 *_patched.py
+
+# OpenClaw agent workspace metadata
+.openclaw/
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
