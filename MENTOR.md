@@ -148,11 +148,11 @@ Each loop processes 30 symbols from the queue, then sleeps 5 minutes.
 
 5. **Alpaca API is fine** — the 97% figure was HOLD signals. Only "No market data" records indicate a data problem.
 
-6. **`filter_results` always empty in DB?** — Three bugs in `analyze_multi_timeframe` cause silent NameError → returns None:
+6. **`filter_results` always empty in DB?** — Three bugs in `analyze_multi_timeframe` caused silent failures → returns None:
    - `ai_research` referenced outside its `try` block (use `ai_research = None` before the block)
    - `total_score` used in `buy_criteria` but never computed in MTF function
    - `vol_ratio` typo (should be `volume_ratio`)
-   → Symptom: all DB records have `filter_results={}` and `blocked_by=None`
+   → **All three fixed.** `ai_research = None` is now set unconditionally before the block, `total_score` is computed before `buy_criteria` is built, and `volume_ratio` is used consistently throughout.
 
 7. **Dashboard JS errors (e.g. "Cannot access 'bb' before initialization")** — check `templates/dashboard.html` for duplicate `const` declarations in the same scope. The filter dashboard section uses `const bb = secs.blocked_by` twice — the second redeclaration causes a ReferenceError in strict JS mode. Dashboard errors are often template bugs, not API bugs — always verify the API response with `curl` first.
 
