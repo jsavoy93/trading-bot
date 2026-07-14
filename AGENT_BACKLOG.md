@@ -1,58 +1,221 @@
 # Agent Repair Backlog
 
+Agents may work only on items listed here or explicitly approved by Josh.
+
+## Status Values
+
+- TODO
+- IN_PROGRESS
+- BLOCKED
+- REVIEW
+- DONE
+
+---
+
 ## Phase A — Trustworthy Tests
 
-- Replace side-effect-heavy scripts with repeatable tests.
-- Fix syntax/runtime errors in analysis modules.
-- Add indicator calculation tests.
-- Add BUY, SELL, and HOLD decision tests.
-- Add owned vs unowned position tests.
-- Add paper-mode safety tests.
-- Add settings loading tests.
-- Ensure tests cannot contact live brokerage endpoints.
+### TEST-001 — Prevent live brokerage calls from tests
 
-## Phase B — Settings and Configuration
+Status: TODO  
+Owner: trading-exec  
+Priority: P0
 
-- Create authoritative strategy configuration object.
-- Load dashboard/database settings into that object.
-- Remove unused hardcoded thresholds where appropriate.
-- Validate settings at startup.
-- Log effective settings each session.
-- Ensure dashboard settings affect engine behavior.
+Acceptance criteria:
 
-## Phase C — Score Normalization
+- Automated tests cannot contact a live brokerage endpoint.
+- Paper or mocked brokerage clients are used.
+- A test fails if live mode is enabled.
 
-- Normalize indicator scores to predictable ranges.
-- Keep combined score within 0–100.
-- Document indicator weights.
-- Separate signal eligibility from candidate ranking.
-- Add bullish, neutral, and bearish scoring tests.
+Allowed areas:
+
+- tests/
+- test configuration
+- brokerage client abstractions
+
+### TEST-002 — Indicator calculation tests
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P0
+
+Acceptance criteria:
+
+- Known inputs produce expected RSI, SMA, MACD, Bollinger, and volume values.
+- Bullish, neutral, and bearish examples are covered.
+
+### TEST-003 — Decision-path tests
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P0
+
+Acceptance criteria:
+
+- BUY, SELL, and HOLD paths are tested separately.
+- Owned and unowned position behavior is tested.
+- Duplicate-order prevention is tested.
+
+### TEST-004 — Settings loading tests
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P0
+
+Acceptance criteria:
+
+- Defaults load correctly.
+- Database/dashboard overrides load correctly.
+- Invalid settings are rejected.
+
+---
+
+## Phase B — Configuration
+
+### CONFIG-001 — Authoritative strategy configuration
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P1
+
+Acceptance criteria:
+
+- One schema defines effective strategy settings.
+- The bot, tests, logs, and dashboard use the same schema.
+- Effective values are logged at startup.
+
+### CONFIG-002 — Dashboard-to-engine synchronization
+
+Status: TODO  
+Owner: dashboard-agent  
+Priority: P1
+
+Acceptance criteria:
+
+- Every displayed strategy setting maps to a real engine setting.
+- Saving a setting changes the next approved paper session.
+- Invalid settings are rejected.
+
+---
+
+## Phase C — Scoring
+
+### SCORE-001 — Normalize indicator scores
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P2
+
+Acceptance criteria:
+
+- Each indicator has a documented bounded range.
+- Combined score remains within 0–100.
+- MACD cannot dominate through incompatible scale.
+- Bullish, neutral, and bearish tests pass.
+
+### SCORE-002 — Separate eligibility from ranking
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P2
+
+Acceptance criteria:
+
+- Core strategy gates determine eligibility.
+- Score ranks otherwise eligible candidates.
+- Score does not silently duplicate strategy gates.
+
+---
 
 ## Phase D — Execution Paths
 
-- Verify daily-only analysis.
-- Verify multi-timeframe analysis.
-- Verify BUY order flow.
-- Verify SELL order flow.
-- Verify position lookup.
-- Verify duplicate-order prevention.
-- Verify market-hours behavior.
-- Verify paper-order submission.
-- Verify restart/recovery behavior.
+### EXEC-001 — Repair daily-only analysis
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P2
+
+### EXEC-002 — Verify multi-timeframe analysis
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P2
+
+### EXEC-003 — Verify BUY and SELL order paths
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P2
+
+### EXEC-004 — Verify restart and recovery behavior
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P2
+
+---
 
 ## Phase E — Stock Universe
 
-- Exclude ETFs, warrants, units, rights, preferred shares, OTC instruments, inactive assets, nontradable assets, illiquid stocks, and symbols without enough history.
-- Add representative classification tests.
+### UNIVERSE-001 — Common-stock filtering
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P3
+
+Acceptance criteria:
+
+- ETFs, funds, warrants, units, rights, preferred shares, OTC assets, inactive assets, and nontradable assets are excluded.
+- Representative classification tests exist.
+
+### UNIVERSE-002 — Liquidity and history filters
+
+Status: TODO  
+Owner: trading-exec  
+Priority: P3
+
+---
 
 ## Phase F — Dashboard
 
-- Inventory existing settings.
-- Create configuration schema.
-- Build read-only status page.
-- Add decision funnel.
-- Add per-symbol explanations.
-- Build organized settings UI.
-- Add configuration versioning and rollback.
-- Add safe paper-bot controls.
+### DASH-001 — Existing settings inventory
+
+Status: TODO  
+Owner: dashboard-agent  
+Priority: P1
+
+### DASH-002 — Read-only bot status page
+
+Status: TODO  
+Owner: dashboard-agent  
+Priority: P1
+
+### DASH-003 — Decision funnel
+
+Status: TODO  
+Owner: dashboard-agent  
+Priority: P2
+
+### DASH-004 — Per-symbol explanation
+
+Status: TODO  
+Owner: dashboard-agent  
+Priority: P2
+
+### DASH-005 — Versioned settings and rollback
+
+Status: TODO  
+Owner: dashboard-agent  
+Priority: P3
+
+### DASH-006 — Restricted paper-bot controls
+
+Status: BLOCKED  
+Owner: dashboard-agent  
+Priority: P4
+
+Blocked until:
+
+- Non-root paper user exists.
+- Restricted control wrapper exists.
+- Paper safety tests pass.
 

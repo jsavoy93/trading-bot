@@ -33,3 +33,45 @@ Hard rules:
 - Prefer branch-based, test-backed work.
 - Report exact files changed, tests run, risks, and next step.
 
+
+## Controlled Agent Workflow
+
+All agents must follow `AGENT_OPERATING_PLAN.md`, `AGENT_BACKLOG.md`, and `OWNERS.md`.
+
+Before modifying files:
+
+1. Verify the repository is clean.
+2. Select one approved backlog item.
+3. State measurable acceptance criteria.
+4. State the files allowed to change.
+5. Create or use the assigned agent branch.
+
+Hard restrictions:
+
+- Never merge into main.
+- Never push directly to main.
+- Never enable live trading.
+- Never use live brokerage credentials.
+- Never modify secrets or OpenClaw configuration without explicit authorization.
+- Never delete, move, or archive whole files without Josh's approval.
+- Never expand the assigned scope.
+- Never run an endless improvement loop.
+- Stop if another iteration is already active.
+- Stop if the repository is dirty.
+- Stop if required tests fail.
+- Stop if live trading configuration is detected.
+- Stop if acceptance criteria cannot be explained clearly.
+
+Every final report must include:
+
+- Backlog item
+- Branch
+- Commit
+- Files changed
+- Tests run
+- Test results
+- Backtest results, when relevant
+- Known risks
+- Manager review decision
+- Clear request for Josh's approval
+
