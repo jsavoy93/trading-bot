@@ -12,6 +12,27 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ---
 
+## Phase O — Governance
+
+### OPS-001 — Manager timebox and stale-task reporting
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- Every manager task report includes task start time, task end time, and elapsed time.
+- Every manager task report states whether the task ran continuously or was resumed later.
+- The manager reports blocked or stale status when a task cannot complete in reasonable time.
+- Before continuing a resumed task, the manager explains why it was paused and what changed.
+
+Allowed areas:
+
+- AGENTS.md
+- AGENT_OPERATING_PLAN.md
+- AGENT_BACKLOG.md
+
 ## Phase A — Trustworthy Tests
 
 ### TEST-001 — Prevent live brokerage calls from tests
