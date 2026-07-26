@@ -16,7 +16,7 @@ def get_pids(pattern):
         if result.stdout.strip():
             return result.stdout.strip().split('\n')
         return []
-    except:
+    except Exception:
         return []
 
 def start_process(cmd, name):
