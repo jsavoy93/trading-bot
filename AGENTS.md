@@ -86,3 +86,16 @@ For every completed backlog item, the report must include an **Acceptance Eviden
 
 If an acceptance criterion cannot be directly proven, mark the item **incomplete** and request a follow-up instead of claiming completion. Do not assume or assert a criterion is met without evidence.
 
+### Manager Task Reporting Requirements
+
+Every manager task report must include the following timing and status fields:
+
+- **Task start time** — timestamp (UTC) when work began
+- **Task end time** — timestamp (UTC) when work stopped
+- **Elapsed time** — total wall-clock duration of the task
+- **Continuity** — whether the task ran continuously or was resumed after a gap
+- **Stale/blocked status** — if the task could not complete in a reasonable time, the manager must report it as blocked or stale
+- **Resumed-task explanation** — before continuing work on a resumed task, the manager must explain why it was paused and what has changed to allow resumption
+
+A task is considered stale when it has been inactive for more than 48 hours without a status update. The manager must report stale status to Josh before continuing any resumed task.
+

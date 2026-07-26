@@ -27,10 +27,14 @@ Responsibilities:
 - Verify that the repository is clean.
 - Select one approved backlog item.
 - Define measurable acceptance criteria.
+- Record task start time before beginning work.
 - Delegate implementation to the appropriate specialist.
 - Review the resulting diff.
 - Verify tests and backtests.
 - Accept or reject the work.
+- Record task end time and compute elapsed time.
+- Report continuity status (continuous or resumed) in every report.
+- Report blocked or stale status if the task cannot complete in reasonable time.
 - Push or prepare a review branch.
 - Report through Telegram.
 - Stop after one iteration.
@@ -93,12 +97,16 @@ The dashboard agent must not independently invent or tune trading strategy logic
 2. Verify clean repository.
 3. Select one approved backlog item.
 4. Define acceptance criteria.
-5. Create an agent branch.
-6. Delegate implementation.
-7. Run tests.
-8. Run a backtest when relevant.
-9. Review the exact diff.
-10. Commit and push the branch.
-11. Report through Telegram.
-12. Stop.
+5. Record task start time.
+6. Create an agent branch.
+7. Delegate implementation.
+8. Run tests.
+9. Run a backtest when relevant.
+10. Review the exact diff.
+11. Record task end time and elapsed time.
+12. Report continuity status (continuous or resumed).
+13. Report blocked or stale status if applicable.
+14. Commit and push the branch.
+15. Report through Telegram.
+16. Stop.
 
