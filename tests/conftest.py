@@ -100,27 +100,101 @@ def sample_analysis_result():
     }
 
 
+# Known live Alpaca endpoints that must be blocked in tests
+_LIVE_ALPACA_ENDPOINTS = (
+    "https://api.alpaca.markets",
+    "https://live-api.alpaca.markets",
+    "https://data.alpaca.markets",  # live data endpoint
+)
+
+# Live mode environment variable patterns that indicate live trading is enabled
+_LIVE_MODE_ENV_PATTERNS = (
+    "ALPACA_LIVE_MODE",
+    "ENABLE_LIVE_TRADING",
+    "LIVE_TRADING_ENABLED",
+    "ALPACA_LIVE",
+)
+
+# Paper mode = False patterns
+_PAPER_DISABLED_PATTERNS = (
+    "PAPER_MODE=false",
+    "PAPER_TRADING=false",
+    "PAPER=false",
+    "USE_PAPER=0",
+    "PAPER_MODE=0",
+)
+
+
+def _check_live_mode():
+    """
+    Check if live trading mode is enabled via environment.
+    Returns a list of violations found.
+    """
+    violations = []
+
+    # Check for live mode flags
+    for var in _LIVE_MODE_ENV_PATTERNS:
+        if os.environ.get(var, "").lower() in ("true", "1", "yes"):
+            violations.append(f"{var} is enabled (live mode)")
+
+    # Check for paper mode disabled
+    for var in ("PAPER_MODE", "PAPER_TRADING", "PAPER", "USE_PAPER"):
+        val = os.environ.get(var, "").lower()
+        if val in ("false", "0", "no", "disabled"):
+            violations.append(f"{var}={os.environ.get(var)} (paper mode disabled)")
+
+    # Check for live Alpaca endpoint
+    base_url = os.environ.get("ALPACA_BASE_URL", "")
+    if base_url.rstrip("/") in _LIVE_ALPACA_ENDPOINTS:
+        violations.append(f"ALPACA_BASE_URL points to live endpoint: {base_url}")
+
+    # Check for non-test Alpaca API key (live keys don't start with PK)
+    alpaca_key = os.environ.get("ALPACA_API_KEY", "")
+    if alpaca_key and not alpaca_key.startswith("PK"):
+        violations.append(f"Non-test Alpaca API key detected (key prefix: {alpaca_key[:4]}...)")
+
+    return violations
+
+
 def pytest_configure(config):
     """
-    Pytest hook to validate test environment.
-    
-    This runs before any tests and ensures:
-    1. TESTING environment variable is set
-    2. No live brokerage credentials are being misused
+    Pytest hook to validate test environment BEFORE any tests run.
+
+    This runs before test collection and hard-fails if live trading
+    mode, disabled paper mode, or live Alpaca endpoints are detected.
     """
-    print("\n" + "="*60)
-    print("🛡️  TEST SAFETY CHECK")
-    print("="*60)
+    violations = _check_live_mode()
+
+    if violations:
+        error_lines = [
+            "",
+            "=" * 60,
+            "🚨 TEST SAFETY VIOLATION — LIVE BROKERAGE BLOCKED",
+            "=" * 60,
+            "The following live trading indicators were detected:",
+        ]
+        for v in violations:
+            error_lines.append(f"  • {v}")
+
+        error_lines += [
+            "",
+            "Tests cannot run with live brokerage enabled.",
+            "To fix: unset ALPACA_LIVE_MODE, set PAPER_MODE=true,",
+            "set ALPACA_BASE_URL to paper-api.alpaca.markets,",
+            "and use test API keys (starting with PK).",
+            "=" * 60,
+            "",
+        ]
+        pytest.fail("\n".join(error_lines))
+
+    print("\n" + "=" * 60)
+    print("🛡️  TEST SAFETY CHECK — PASSED")
+    print("=" * 60)
     print(f"TESTING environment: {os.environ.get('TESTING', 'NOT SET')}")
     print(f"UNIT_TESTING environment: {os.environ.get('UNIT_TESTING', 'NOT SET')}")
+    print(f"ALPACA_BASE_URL: {os.environ.get('ALPACA_BASE_URL', 'default (paper)')}")
     print("Live brokerage calls are BLOCKED in test mode")
-    print("="*60 + "\n")
-    
-    # Verify we're not accidentally using live API keys in tests
-    alpaca_key = os.environ.get('ALPACA_API_KEY', '')
-    if alpaca_key and not alpaca_key.startswith('PK'):  # Alpaca test keys often start with PK
-        # Allow but warn - real implementation should use completely separate keys
-        print("⚠️  WARNING: Non-test Alpaca API key detected")
+    print("=" * 60 + "\n")
 
 
 def pytest_collection_modifyitems(config, items):
