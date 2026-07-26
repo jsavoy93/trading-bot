@@ -75,3 +75,14 @@ Every final report must include:
 - Manager review decision
 - Clear request for Josh's approval
 
+### Acceptance Evidence (Required)
+
+For every completed backlog item, the report must include an **Acceptance Evidence** section with:
+
+1. **Each acceptance criterion** — the original criterion text
+2. **Proof method** — exact command or inspection used to verify it
+3. **Exact result** — the actual output, output snippet, or observation
+4. **Status** — `PASS` or `FAIL`
+
+If an acceptance criterion cannot be directly proven, mark the item **incomplete** and request a follow-up instead of claiming completion. Do not assume or assert a criterion is met without evidence.
+
