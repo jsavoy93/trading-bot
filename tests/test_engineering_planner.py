@@ -98,3 +98,36 @@ def test_build_execution_plan_combines_task_and_repository() -> None:
     assert plan.task is task
     assert plan.repository is repository
     assert plan.feature_branch == "agent/test-001-test-001"
+
+
+def test_execution_plan_starts_in_discover_state() -> None:
+    from pathlib import Path
+
+    from engineering.models import (
+        BacklogTask,
+        Priority,
+        RepositoryState,
+        TaskStatus,
+        WorkflowState,
+    )
+    from engineering.planner import build_execution_plan
+
+    task = BacklogTask(
+        task_id="TEST-001",
+        title="Prevent live brokerage calls from tests",
+        status=TaskStatus.TODO,
+        owner="trading-exec",
+        priority=Priority.P0,
+        acceptance_criteria=["Live brokerage calls are blocked."],
+        allowed_areas=["tests"],
+    )
+
+    repository = RepositoryState(
+        root=Path("/tmp/trading-bot"),
+        branch="source-branch",
+        is_clean=True,
+    )
+
+    plan = build_execution_plan(task, repository)
+
+    assert plan.workflow_state is WorkflowState.DISCOVER

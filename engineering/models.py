@@ -13,6 +13,18 @@ class TaskStatus(str, Enum):
     DONE = "DONE"
 
 
+class WorkflowState(str, Enum):
+    DISCOVER = "DISCOVER"
+    PLAN = "PLAN"
+    PREPARE_BRANCH = "PREPARE_BRANCH"
+    DELEGATE = "DELEGATE"
+    WAIT_FOR_AGENT = "WAIT_FOR_AGENT"
+    QA = "QA"
+    REVIEW = "REVIEW"
+    REPORT = "REPORT"
+    COMPLETE = "COMPLETE"
+
+
 class Priority(str, Enum):
     P0 = "P0"
     P1 = "P1"
@@ -48,3 +60,4 @@ class ExecutionPlan:
     task: BacklogTask
     repository: RepositoryState
     feature_branch: str
+    workflow_state: WorkflowState = WorkflowState.DISCOVER
