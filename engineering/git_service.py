@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+
 from engineering.models import RepositoryState
 
 
@@ -31,3 +32,45 @@ class GitService:
             branch=self.current_branch(),
             is_clean=self.is_clean(),
         )
+
+    def branch_exists(self, branch: str) -> bool:
+        result = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=self.repo_root,
+            check=False,
+        )
+        return result.returncode == 0
+
+    def create_and_checkout_branch(
+        self,
+        branch: str,
+        expected_source_branch: str,
+    ) -> RepositoryState:
+        state = self.repository_state()
+
+        if not state.is_clean:
+            raise RuntimeError(
+                "Refusing to create branch because the repository is not clean."
+            )
+
+        if state.branch != expected_source_branch:
+            raise RuntimeError(
+                "Refusing to create branch because the current branch "
+                f"is {state.branch!r}, expected {expected_source_branch!r}."
+            )
+
+        if self.branch_exists(branch):
+            raise RuntimeError(
+                f"Refusing to create branch because {branch!r} already exists."
+            )
+
+        self.run("switch", "-c", branch)
+
+        new_state = self.repository_state()
+
+        if new_state.branch != branch:
+            raise RuntimeError(
+                f"Branch creation did not switch to expected branch {branch!r}."
+            )
+
+        return new_state
