@@ -6,6 +6,7 @@ from engineering.backlog import load_backlog
 from engineering.config import missing_required_paths
 from engineering.git_service import GitService
 from engineering.planner import build_execution_plan, select_next_task
+from engineering.workflow_store import StoredWorkflow, WorkflowStore
 
 
 def main() -> int:
@@ -25,9 +26,12 @@ def main() -> int:
 
     git = GitService(repo_root)
     state = git.repository_state()
+    workflow_store = WorkflowStore(
+        repo_root / ".git" / "engineering-workflow.json"
+    )
+
     tasks = load_backlog(repo_root / "AGENT_BACKLOG.md")
     available_tasks = tuple(task for task in tasks if task.is_available)
-    next_task = select_next_task(tasks)
 
     print("Engineering Manager")
     print("===================")
@@ -37,6 +41,21 @@ def main() -> int:
     print(f"Clean:      {state.is_clean}")
     print(f"Tasks:      {len(tasks)}")
     print(f"Available:  {len(available_tasks)}")
+
+    if workflow_store.exists():
+        workflow = workflow_store.load()
+
+        print()
+        print("Workflow")
+        print("--------")
+        print("Action:         RESUME")
+        print(f"Task:           {workflow.task_id}")
+        print(f"Feature branch: {workflow.feature_branch}")
+        print(f"State:          {workflow.state.value}")
+
+        return 0
+
+    next_task = select_next_task(tasks)
 
     if next_task is None:
         print()
@@ -55,12 +74,22 @@ def main() -> int:
 
     plan = build_execution_plan(next_task, state)
 
+    workflow = StoredWorkflow(
+        task_id=plan.task.task_id,
+        feature_branch=plan.feature_branch,
+        state=plan.workflow_state,
+    )
+    workflow_store.save(workflow)
+
     print()
-    print("Execution plan")
-    print("--------------")
-    print(f"Source branch:  {plan.repository.branch}")
-    print(f"Feature branch: {plan.feature_branch}")
-    print("Action:         REPORT ONLY — no changes made")
+    print("Workflow")
+    print("--------")
+    print("Action:            START")
+    print(f"Task:              {workflow.task_id}")
+    print(f"Source branch:     {plan.repository.branch}")
+    print(f"Feature branch:    {workflow.feature_branch}")
+    print(f"State:             {workflow.state.value}")
+    print("Repository action: NONE")
 
     return 0
 
