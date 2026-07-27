@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from engineering.models import WorkflowState
+from engineering.workflow import discover
 from engineering.workflow_store import StoredWorkflow
 
 WorkflowHandler = Callable[[StoredWorkflow], StoredWorkflow]
@@ -14,7 +15,7 @@ def _report_state(workflow: StoredWorkflow) -> StoredWorkflow:
 
 
 _STATE_HANDLERS: dict[WorkflowState, WorkflowHandler] = {
-    WorkflowState.DISCOVER: _report_state,
+    WorkflowState.DISCOVER: discover.run,
     WorkflowState.PLAN: _report_state,
     WorkflowState.PREPARE_BRANCH: _report_state,
     WorkflowState.DELEGATE: _report_state,
