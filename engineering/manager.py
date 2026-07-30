@@ -6,6 +6,7 @@ from engineering.backlog import load_backlog
 from engineering.config import missing_required_paths
 from engineering.git_service import GitService
 from engineering.planner import build_execution_plan, select_next_task
+from engineering.workflow_engine import dispatch_workflow
 from engineering.workflow_store import StoredWorkflow, WorkflowStore
 
 
@@ -44,6 +45,8 @@ def main() -> int:
 
     if workflow_store.exists():
         workflow = workflow_store.load()
+        workflow = dispatch_workflow(workflow)
+        workflow_store.save(workflow)
 
         print()
         print("Workflow")
@@ -79,6 +82,8 @@ def main() -> int:
         feature_branch=plan.feature_branch,
         state=plan.workflow_state,
     )
+    workflow_store.save(workflow)
+    workflow = dispatch_workflow(workflow)
     workflow_store.save(workflow)
 
     print()
