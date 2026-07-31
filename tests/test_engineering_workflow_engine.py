@@ -20,7 +20,15 @@ def test_dispatch_workflow_handles_every_state(
 
     result = dispatch_workflow(workflow)
 
-    assert result == workflow
+    expected_state = (
+        WorkflowState.PLAN
+        if state is WorkflowState.DISCOVER
+        else state
+    )
+
+    assert result.task_id == workflow.task_id
+    assert result.feature_branch == workflow.feature_branch
+    assert result.state is expected_state
     assert capsys.readouterr().out == (
         f"Executing workflow state: {state.value}\n"
     )
