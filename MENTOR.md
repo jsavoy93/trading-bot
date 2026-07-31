@@ -187,3 +187,112 @@ for r in rows:
 for f in sorted(by_fail): print(f'{f} failures: {by_fail[f]} symbols')
 "
 ```
+
+---
+
+## Autonomous Engineering Workflow
+
+The deterministic engineering manager lives under `engineering/`.
+
+### Core files
+
+| File | Role |
+|---|---|
+| `engineering/manager.py` | Loads or creates the persisted workflow, dispatches one state, then saves the result |
+| `engineering/workflow_engine.py` | Routes the current `WorkflowState` to the matching state handler |
+| `engineering/workflow_store.py` | Persists and reloads the current workflow |
+| `engineering/workflow/` | Contains one independently testable handler module per workflow state |
+
+### Workflow states
+
+```text
+DISCOVER
+  ↓
+PLAN
+  ↓
+PREPARE_BRANCH
+  ↓
+DELEGATE
+  ↓
+WAIT_FOR_AGENT
+  ↓
+QA
+  ↓
+REVIEW
+  ↓
+REPORT
+  ↓
+COMPLETE
+
+
+
+
+```
+
+### State-handler contract
+
+Each workflow handler follows this contract:
+
+```python
+def run(workflow: StoredWorkflow) -> StoredWorkflow:
+    # Validate preconditions
+    # Perform this state's work
+    # Return the resulting workflow
+```
+
+Handlers must not directly invoke the next handler. They return a workflow with the next state, and the manager persists it before the next run.
+
+### Immutable workflow state
+
+`StoredWorkflow` is a frozen dataclass. Do not mutate fields directly.
+
+Incorrect:
+
+```python
+workflow.state = WorkflowState.PLAN
+```
+
+Correct:
+
+```python
+from dataclasses import replace
+
+return replace(
+    workflow,
+    state=WorkflowState.PLAN,
+)
+```
+
+This makes state transitions explicit and prevents accidental mutation.
+
+### Current implemented transition
+
+`engineering/workflow/discover.py` performs the first real transition:
+
+```text
+DISCOVER → PLAN
+```
+
+The transition is tested independently in:
+
+```text
+tests/test_engineering_discover.py
+```
+
+Dispatcher routing is tested separately in:
+
+```text
+tests/test_engineering_workflow_engine.py
+```
+
+The dispatcher test verifies routing and preserved workflow data. State-specific tests verify the behavior unique to each handler.
+
+### Current verification checkpoint
+
+At commit `3cfe9ea`:
+
+```text
+67 tests passed
+```
+
+The test safety guard confirms that live brokerage calls remain blocked during tests.
