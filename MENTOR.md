@@ -10,6 +10,40 @@ This file is the first thing to read before touching any part of this codebase. 
 
 ---
 
+## Mandatory Iteration Continuity Process
+
+Every agent must update this file after every bounded engineering iteration,
+before giving the final report to Josh. Session history, chat messages, and
+uncommitted workflow state are not sufficient handoff records.
+
+For each iteration, append a short entry to **Iteration Progress Log** at the
+end of this file containing:
+
+- UTC date and time
+- Backlog item and objective
+- Branch and commit (or `none`)
+- Status: `DONE`, `BLOCKED`, `REWORK`, or `IN_PROGRESS`
+- Files changed
+- Tests/backtests run and their exact results
+- Important decisions, discoveries, or remaining risks
+- The exact next action and whether Josh's approval is required
+
+Additional requirements:
+
+1. Update relevant architectural or troubleshooting sections when an
+   iteration changes how the system works; the progress log alone is not a
+   substitute for maintaining the code map.
+2. Never claim an iteration is complete without acceptance evidence.
+3. If work stops because of a dirty tree, failed test, stale workflow, safety
+   concern, or unclear scope, log the blocker and the recovery step.
+4. When starting a new session, read the latest progress-log entry before
+   selecting or resuming work, then verify it against Git and persisted
+   workflow state.
+5. Keep entries concise and factual. Never leave the only record of current
+   status in chat history.
+
+---
+
 ## Architecture Overview
 
 **Entry point:** `main.py` → starts `SmartBot` in continuous mode
@@ -305,3 +339,60 @@ writes, the full suite reached:
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.
+
+---
+
+## Iteration Progress Log
+
+Append new entries below this line in chronological order. Do not rewrite past
+entries except to correct a factual error explicitly.
+
+### 2026-07-31 12:41 UTC — Autonomous engineering handoff checkpoint
+
+- Backlog item/objective: Preserve the autonomous engineering manager handoff
+  and make it required reading for architectural or workflow changes.
+- Branch: `agent/ops-autonomous-workflow-v1`
+- Commit: `b19c8c0 Add autonomous engineering handoff`
+- Status: `DONE`
+- Files changed: `AGENTS.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`
+- Tests/backtests: Not run; documentation-only checkpoint.
+- Decisions/risks: The old persisted `TEST-001` workflow was more than 48 hours
+  stale and targeted a different branch. Josh approved clearing it before the
+  next milestone.
+- Next action: Restore the required test baseline, then implement the
+  deterministic PLAN workflow milestone. Josh approval was required before
+  clearing the stale workflow.
+
+### 2026-07-31 12:49 UTC — Portable trading-bot log path
+
+- Backlog item/objective: `OPS-002` — remove the host-specific log path that
+  prevented the test suite from collecting.
+- Branch: `agent/ops-autonomous-workflow-v1`
+- Commit: `23a1662 Make trading bot log path portable`
+- Status: `DONE`
+- Files changed: `src/core/smart_bot.py`,
+  `tests/test_smart_bot_log_path.py`, `AGENT_BACKLOG.md`, `MENTOR.md`
+- Tests/backtests: Focused tests `3 passed`; full suite `70 passed, 2 warnings`;
+  live brokerage calls were blocked. No backtest was applicable.
+- Decisions/risks: Production defaults to repository-root `trading_bot.log`;
+  `TRADING_BOT_LOG_PATH` overrides it; automated tests use the null device.
+  An explicitly configured path must have a writable parent directory.
+- Next action: Await Josh's approval of the completed prerequisite, then begin
+  the deterministic PLAN workflow milestone described in
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`.
+
+### 2026-07-31 12:52 UTC — Mandatory iteration continuity process
+
+- Backlog item/objective: Josh-approved governance update requiring durable
+  progress and next-step records after every engineering iteration.
+- Branch: `agent/ops-autonomous-workflow-v1`
+- Commit: This entry is included in the continuity-process commit.
+- Status: `DONE`
+- Files changed: `MENTOR.md`
+- Tests/backtests: Not run; documentation-only governance change.
+- Decisions/risks: Every agent must update both the relevant code-map section
+  and this progress log when applicable. Chat history is not an acceptable
+  substitute for the durable handoff.
+- Next action: Commit this governance update, obtain Josh's approval, then
+  begin the deterministic PLAN workflow milestone.
