@@ -5,6 +5,7 @@
 > **⚠️ This is a living document. When I discover something important, make a significant change, or fix a bug — I must update MENTOR.md and/or MEMORY.md so the knowledge persists.**
 
 **FIRST: Read `MENTOR.md` before answering any questions about this codebase.**
+Also read `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` before making architectural or workflow changes.
 It contains the correct understanding of how analysis, failures, scores, and the database tables actually work — and documents several mistakes to avoid.
 
 Key things that were misunderstood in past sessions:
