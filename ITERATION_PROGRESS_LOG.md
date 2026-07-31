@@ -99,3 +99,35 @@ explicitly.
   `ITERATION_PROGRESS_LOG.md` owns timestamped historical records.
 - Next action: Commit this documentation change, then begin the deterministic
   PLAN milestone after Josh's approval.
+
+## 2026-07-31 13:22:36–13:23:51 UTC — Deterministic PLAN workflow
+
+- Elapsed time: 1 minute 15 seconds after resumption; implementation began in
+  an earlier session and was paused before validation.
+- Continuity: Resumed. Work paused because the repository contained
+  uncommitted OPS-003 files whose ownership was not recorded. Josh confirmed
+  at 13:22 UTC that they were the intended unfinished work and approved
+  continuing from the dirty tree.
+- Backlog item/objective: `OPS-003` — implement deterministic execution-plan
+  enrichment and the real `PLAN → PREPARE_BRANCH` workflow transition.
+- Branch: `agent/ops-autonomous-workflow-v1`
+- Commit: Pending final OPS-003 commit.
+- Status: `DONE`
+- Files changed: `engineering/models.py`, `engineering/planner.py`,
+  `engineering/workflow/plan.py`, `engineering/workflow_engine.py`,
+  `tests/test_engineering_planner.py`, `tests/test_engineering_plan.py`,
+  `tests/test_engineering_workflow_engine.py`, `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Focused planner, PLAN-handler, and dispatcher tests:
+  `22 passed, 1 warning`; full suite: `76 passed, 2 warnings`. The test safety
+  guard passed and live brokerage calls remained blocked. No backtest was
+  applicable.
+- Decisions/risks: PLAN reconstructs its concrete plan from the authoritative
+  backlog and current repository state, validates the stored deterministic
+  feature branch, prints the plan, and immutably advances one state. The
+  compact workflow record still does not persist the richer plan, so backlog
+  edits during an active workflow can change reconstructed context.
+- Next action: Commit the completed OPS-003 iteration, then request Josh's
+  review and approval before beginning a separately approved PREPARE_BRANCH
+  backlog item.

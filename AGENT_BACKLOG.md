@@ -16,7 +16,7 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ### OPS-003 — Implement deterministic PLAN workflow
 
-Status: IN_PROGRESS
+Status: DONE
 Owner: trading-manager
 Priority: P0
 

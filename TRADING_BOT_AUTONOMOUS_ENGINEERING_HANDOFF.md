@@ -181,9 +181,8 @@ must not contact a live brokerage endpoint. ``` The
 current backlog includes or previously included: 
 ```text TEST-001 Prevent live brokerage calls from 
 tests ``` Before assuming this task remains active, 
-inspect the backlog. ──────── Immediate Next 
-Milestone: Implement PLAN The next work should make 
-PLAN a real state rather than a placeholder. Goal 
+inspect the backlog. ──────── Completed Milestone:
+Implement PLAN PLAN is now a real state rather than a placeholder. Goal
 The PLAN state should produce a concrete 
 deterministic execution plan from the selected 
 backlog task and repository context. The plan 
@@ -227,8 +226,8 @@ green. 6. Commit. 7. Then add
 engineering/workflow/plan.py. 8. Add its focused 
 behavior test. 9. Wire PLAN in workflow_engine.py. 
 10. Run the full suite and commit. This keeps the 
-milestone small and reversible. ──────── Later 
-Milestones PREPARE_BRANCH Responsibilities: • 
+milestone small and reversible. ──────── Immediate Next
+Milestone: PREPARE_BRANCH Responsibilities: •
 Verify repository exists. • Verify expected base 
 branch. • Verify working tree cleanliness. • Detect 
 whether the target feature branch already exists. • 

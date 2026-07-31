@@ -303,18 +303,32 @@ return replace(
 
 This makes state transitions explicit and prevents accidental mutation.
 
-### Current implemented transition
+### Current implemented transitions
 
-`engineering/workflow/discover.py` performs the first real transition:
+`engineering/workflow/discover.py` performs:
 
 ```text
 DISCOVER → PLAN
 ```
 
+`engineering/workflow/plan.py` deterministically resolves the stored task from
+`AGENT_BACKLOG.md`, validates its generated feature branch, builds and prints a
+concrete execution plan, and performs:
+
+```text
+PLAN → PREPARE_BRANCH
+```
+
+The execution plan includes the task's acceptance criteria and allowed areas,
+plus deterministic risk and complexity estimates. The richer plan is rebuilt
+from the authoritative backlog and repository state; it is not persisted in
+the compact workflow record.
+
 The transition is tested independently in:
 
 ```text
 tests/test_engineering_discover.py
+tests/test_engineering_plan.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -338,6 +352,12 @@ writes, the full suite reached:
 
 ```text
 70 tests passed
+```
+
+After implementing the deterministic PLAN state, the full suite reached:
+
+```text
+76 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.
