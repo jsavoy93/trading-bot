@@ -100,10 +100,11 @@ explicitly.
 - Next action: Commit this documentation change, then begin the deterministic
   PLAN milestone after Josh's approval.
 
-## 2026-07-31 13:22:36–13:23:51 UTC — Deterministic PLAN workflow
+## 2026-07-31 13:22:36–14:11:47 UTC — Deterministic PLAN workflow
 
-- Elapsed time: 1 minute 15 seconds after resumption; implementation began in
-  an earlier session and was paused before validation.
+- Elapsed time: 49 minutes 11 seconds after resumption, including the Git
+  permission approval wait; implementation began in an earlier session and
+  was paused before validation.
 - Continuity: Resumed. Work paused because the repository contained
   uncommitted OPS-003 files whose ownership was not recorded. Josh confirmed
   at 13:22 UTC that they were the intended unfinished work and approved
