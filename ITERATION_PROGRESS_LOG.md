@@ -111,7 +111,9 @@ explicitly.
 - Backlog item/objective: `OPS-003` — implement deterministic execution-plan
   enrichment and the real `PLAN → PREPARE_BRANCH` workflow transition.
 - Branch: `agent/ops-autonomous-workflow-v1`
-- Commit: Pending final OPS-003 commit.
+- Commits: `2e9aae1 Add deterministic execution plan estimates`,
+  `a360337 Implement deterministic PLAN workflow`; plus the documentation
+  commit containing this exact-hash correction.
 - Status: `DONE`
 - Files changed: `engineering/models.py`, `engineering/planner.py`,
   `engineering/workflow/plan.py`, `engineering/workflow_engine.py`,
