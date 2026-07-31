@@ -14,6 +14,34 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-003 — Implement deterministic PLAN workflow
+
+Status: IN_PROGRESS
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- Execution plans include acceptance criteria, allowed areas, deterministic risk, and deterministic complexity.
+- PLAN resolves the stored task from the authoritative backlog.
+- PLAN rejects a missing task or inconsistent feature branch.
+- PLAN presents the concrete execution plan and transitions to PREPARE_BRANCH.
+- Focused planner, PLAN-handler, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/models.py
+- engineering/planner.py
+- engineering/workflow/plan.py
+- engineering/workflow_engine.py
+- tests/test_engineering_planner.py
+- tests/test_engineering_plan.py
+- tests/test_engineering_workflow_engine.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-002 — Portable trading bot log path
 
 Status: DONE

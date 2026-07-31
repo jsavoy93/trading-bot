@@ -33,6 +33,18 @@ class Priority(str, Enum):
     P4 = "P4"
 
 
+class RiskLevel(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class Complexity(str, Enum):
+    SMALL = "SMALL"
+    MEDIUM = "MEDIUM"
+    LARGE = "LARGE"
+
+
 @dataclass(frozen=True)
 class BacklogTask:
     task_id: str
@@ -60,4 +72,8 @@ class ExecutionPlan:
     task: BacklogTask
     repository: RepositoryState
     feature_branch: str
+    acceptance_criteria: tuple[str, ...]
+    allowed_areas: tuple[str, ...]
+    risk: RiskLevel
+    complexity: Complexity
     workflow_state: WorkflowState = WorkflowState.DISCOVER

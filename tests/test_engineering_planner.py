@@ -1,5 +1,15 @@
-from engineering.models import BacklogTask, Priority, TaskStatus
-from engineering.planner import select_next_task
+from engineering.models import (
+    BacklogTask,
+    Complexity,
+    Priority,
+    RiskLevel,
+    TaskStatus,
+)
+from engineering.planner import (
+    estimate_complexity,
+    estimate_risk,
+    select_next_task,
+)
 
 
 def make_task(
@@ -98,6 +108,10 @@ def test_build_execution_plan_combines_task_and_repository() -> None:
     assert plan.task is task
     assert plan.repository is repository
     assert plan.feature_branch == "agent/test-001-test-001"
+    assert plan.acceptance_criteria == task.acceptance_criteria
+    assert plan.allowed_areas == task.allowed_areas
+    assert plan.risk is RiskLevel.LOW
+    assert plan.complexity is Complexity.SMALL
 
 
 def test_execution_plan_starts_in_discover_state() -> None:
@@ -131,3 +145,49 @@ def test_execution_plan_starts_in_discover_state() -> None:
     plan = build_execution_plan(task, repository)
 
     assert plan.workflow_state is WorkflowState.DISCOVER
+
+
+def test_estimate_risk_uses_deterministic_scope_terms() -> None:
+    low_risk_task = make_task("DOCS-001", Priority.P3)
+    medium_risk_task = BacklogTask(
+        task_id="OPS-003",
+        title="Implement workflow planning",
+        status=TaskStatus.TODO,
+        owner="trading-manager",
+        priority=Priority.P0,
+    )
+    high_risk_task = BacklogTask(
+        task_id="TEST-001",
+        title="Prevent live brokerage calls from tests",
+        status=TaskStatus.TODO,
+        owner="trading-exec",
+        priority=Priority.P0,
+    )
+
+    assert estimate_risk(low_risk_task) is RiskLevel.LOW
+    assert estimate_risk(medium_risk_task) is RiskLevel.MEDIUM
+    assert estimate_risk(high_risk_task) is RiskLevel.HIGH
+
+
+def test_estimate_complexity_uses_criteria_and_area_counts() -> None:
+    small_task = make_task("TASK-001", Priority.P3)
+    medium_task = BacklogTask(
+        task_id="TASK-002",
+        title="Medium task",
+        status=TaskStatus.TODO,
+        owner="test-agent",
+        priority=Priority.P2,
+        acceptance_criteria=("one", "two", "three"),
+    )
+    large_task = BacklogTask(
+        task_id="TASK-003",
+        title="Large task",
+        status=TaskStatus.TODO,
+        owner="test-agent",
+        priority=Priority.P2,
+        allowed_areas=("one", "two", "three", "four"),
+    )
+
+    assert estimate_complexity(small_task) is Complexity.SMALL
+    assert estimate_complexity(medium_task) is Complexity.MEDIUM
+    assert estimate_complexity(large_task) is Complexity.LARGE
