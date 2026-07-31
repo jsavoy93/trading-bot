@@ -33,8 +33,20 @@ load_dotenv()
 
 # Configure logging
 
-# Use absolute path for log file
-log_path = '/home/ubuntu/.openclaw/workspace/trading-bot/trading_bot.log'
+def _resolve_log_path() -> Path:
+    """Return a portable log destination without writing logs during tests."""
+    configured_path = os.getenv("TRADING_BOT_LOG_PATH")
+
+    if configured_path:
+        return Path(configured_path).expanduser()
+
+    if os.getenv("TESTING") == "1" or os.getenv("UNIT_TESTING") == "1":
+        return Path(os.devnull)
+
+    return Path(__file__).resolve().parents[2] / "trading_bot.log"
+
+
+log_path = _resolve_log_path()
 
 # Create and configure logger
 logger = logging.getLogger()

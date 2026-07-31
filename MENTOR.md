@@ -156,6 +156,8 @@ Each loop processes 30 symbols from the queue, then sleeps 5 minutes.
 
 7. **Dashboard JS errors (e.g. "Cannot access 'bb' before initialization")** — check `templates/dashboard.html` for duplicate `const` declarations in the same scope. The filter dashboard section uses `const bb = secs.blocked_by` twice — the second redeclaration causes a ReferenceError in strict JS mode. Dashboard errors are often template bugs, not API bugs — always verify the API response with `curl` first.
 
+8. **Logging paths must be portable** — `src/core/smart_bot.py` resolves `trading_bot.log` relative to the repository, supports `TRADING_BOT_LOG_PATH`, and uses the null device during automated tests. Do not restore a host-specific absolute path or let test imports modify runtime log files.
+
 ---
 
 ## How to Check Bot Health
@@ -289,10 +291,17 @@ The dispatcher test verifies routing and preserved workflow data. State-specific
 
 ### Current verification checkpoint
 
-At commit `3cfe9ea`:
+The autonomous workflow checkpoint at commit `3cfe9ea` had:
 
 ```text
 67 tests passed
+```
+
+After making the trading-bot log path portable and preventing test-mode log
+writes, the full suite reached:
+
+```text
+70 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.

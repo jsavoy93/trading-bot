@@ -14,6 +14,27 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-002 — Portable trading bot log path
+
+Status: DONE
+Owner: trading-exec
+Priority: P0
+
+Acceptance criteria:
+
+- Trading bot logging does not depend on a host-specific absolute path.
+- Production logging defaults to `trading_bot.log` in the repository root.
+- `TRADING_BOT_LOG_PATH` overrides the default destination.
+- Automated tests do not write runtime logs into the repository.
+- The focused regression tests and full test suite pass.
+
+Allowed areas:
+
+- src/core/smart_bot.py
+- tests/
+- AGENT_BACKLOG.md
+- MENTOR.md
+
 ### OPS-001 — Manager timebox and stale-task reporting
 
 Status: DONE
@@ -239,4 +260,3 @@ Blocked until:
 - Non-root paper user exists.
 - Restricted control wrapper exists.
 - Paper safety tests pass.
-
