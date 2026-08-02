@@ -211,6 +211,31 @@ class MigrationGenerator:
                     "CREATE UNIQUE INDEX idx_trade_cooldowns_symbol ON trade_cooldowns(symbol);",
                     "CREATE INDEX idx_trade_cooldowns_time ON trade_cooldowns(last_trade_time DESC);"
                 ]
+            ),
+            Table(
+                name="analyzed_stocks",
+                columns=[
+                    Column("id", "SERIAL", primary_key=True, nullable=False),
+                    Column("symbol", "VARCHAR(10)", nullable=False),
+                    Column("price", "FLOAT", nullable=True),
+                    Column("total_score", "INTEGER", default="0", nullable=False),
+                    Column("rsi", "FLOAT", nullable=True),
+                    Column("rsi_score", "FLOAT", default="0", nullable=False),
+                    Column("sma_score", "FLOAT", default="0", nullable=False),
+                    Column("macd_score", "FLOAT", default="0", nullable=False),
+                    Column("bb_score", "FLOAT", default="0", nullable=False),
+                    Column("vwap_score", "FLOAT", default="0", nullable=False),
+                    Column("regime_score", "FLOAT", default="0", nullable=False),
+                    Column("catalyst_score", "FLOAT", default="0", nullable=False),
+                    Column("earnings_score", "FLOAT", default="0", nullable=False),
+                    Column("volatility_score", "FLOAT", default="0", nullable=False),
+                    Column("last_analyzed", "TIMESTAMP", default="CURRENT_TIMESTAMP", nullable=False),
+                ],
+                indexes=[
+                    "CREATE UNIQUE INDEX idx_analyzed_stocks_symbol ON analyzed_stocks(symbol);",
+                    "CREATE INDEX idx_analyzed_stocks_score ON analyzed_stocks(total_score DESC);",
+                    "CREATE INDEX idx_analyzed_stocks_time ON analyzed_stocks(last_analyzed DESC);"
+                ]
             )
         ]
     

@@ -2,12 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Python dependencies
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
-COPY bot.py .
+# Copy application
+COPY . .
 
-# Run the bot
-CMD ["python", "bot.py"]
+# Run dashboard (web)
+CMD ["python", "dashboard.py"]

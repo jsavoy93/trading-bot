@@ -1,0 +1,83 @@
+{
+  "initial_capital": 100000,
+  "final_capital": 86539.49,
+  "total_return_pct": -13.460509999999996,
+  "total_trades": 18,
+  "winning_trades": 7,
+  "losing_trades": 11,
+  "win_rate": 38.88888888888889,
+  "avg_profit": -747.806111111111,
+  "total_pnl": -13460.509999999998,
+  "max_drawdown": 90.04333986884998,
+  "sharpe_ratio": 0.21061509226328745,
+  "trades_by_symbol": {
+    "MSFT": {
+      "wins": 0,
+      "losses": 1
+    },
+    "AMZN": {
+      "wins": 1,
+      "losses": 0
+    },
+    "WMT": {
+      "wins": 1,
+      "losses": 0
+    },
+    "CRM": {
+      "wins": 1,
+      "losses": 1
+    },
+    "INTC": {
+      "wins": 1,
+      "losses": 0
+    },
+    "GOOGL": {
+      "wins": 0,
+      "losses": 1
+    },
+    "META": {
+      "wins": 0,
+      "losses": 1
+    },
+    "TSLA": {
+      "wins": 0,
+      "losses": 1
+    },
+    "JPM": {
+      "wins": 0,
+      "losses": 1
+    },
+    "V": {
+      "wins": 0,
+      "losses": 1
+    },
+    "JNJ": {
+      "wins": 0,
+      "losses": 1
+    },
+    "MA": {
+      "wins": 0,
+      "losses": 1
+    },
+    "UNH": {
+      "wins": 0,
+      "losses": 1
+    },
+    "PYPL": {
+      "wins": 1,
+      "losses": 0
+    },
+    "NFLX": {
+      "wins": 1,
+      "losses": 0
+    },
+    "ADBE": {
+      "wins": 0,
+      "losses": 1
+    },
+    "XOM": {
+      "wins": 1,
+      "losses": 0
+    }
+  }
+}
