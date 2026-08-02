@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from engineering.models import WorkflowState
-from engineering.workflow import delegate, discover, plan, prepare_branch, wait_for_agent
+from engineering.workflow import delegate, discover, plan, prepare_branch, qa, wait_for_agent
 from engineering.workflow_store import StoredWorkflow
 
 WorkflowHandler = Callable[[StoredWorkflow], StoredWorkflow]
@@ -20,7 +20,7 @@ _STATE_HANDLERS: dict[WorkflowState, WorkflowHandler] = {
     WorkflowState.PREPARE_BRANCH: prepare_branch.run,
     WorkflowState.DELEGATE: delegate.run,
     WorkflowState.WAIT_FOR_AGENT: wait_for_agent.run,
-    WorkflowState.QA: _report_state,
+    WorkflowState.QA: qa.run,
     WorkflowState.REVIEW: _report_state,
     WorkflowState.REPORT: _report_state,
     WorkflowState.COMPLETE: _report_state,

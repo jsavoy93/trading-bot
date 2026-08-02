@@ -231,3 +231,32 @@ explicitly.
   idempotency still depends on the external wrapper honoring the request ID.
 - Next action: Request Josh's review and approval before defining and starting
   the separate QA milestone. No merge or push was performed.
+
+## 2026-08-02 16:09:55–16:16:02 UTC — Persist deterministic QA evidence
+
+- Elapsed time: 6 minutes 7 seconds
+- Continuity: Continuous
+- Backlog item/objective: `OPS-007` — run bounded, test-safe pytest validation,
+  persist deterministic QA evidence, and advance successful runs to review.
+- Branch: `agent/ops-007-qa-workflow`
+- Commit: The commit containing this progress entry (`Persist deterministic QA evidence`).
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `engineering/qa_runner.py`,
+  `engineering/workflow/qa.py`, `engineering/workflow_engine.py`,
+  `engineering/workflow_store.py`, `tests/test_engineering_qa.py`,
+  `tests/test_engineering_qa_runner.py`,
+  `tests/test_engineering_workflow_engine.py`,
+  `tests/test_engineering_workflow_store.py`, `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Baseline full suite `118 passed, 2 warnings`; final focused
+  QA-runner, QA-handler, workflow-store, and dispatcher suite: `34 passed, 1
+  warning`; final full suite: `132 passed, 2 warnings`. The brokerage safety
+  gate passed and live calls remained blocked. No backtest was applicable.
+- Decisions/risks: Manager review decision `ACCEPT`. QA accepts only an
+  explicitly configured Python `-m pytest` command, forces test-mode flags,
+  times out after five minutes, parses passed/failed counts, bounds persisted output to 4,000 characters,
+  validates persisted evidence, and does not rerun failed/timed-out evidence.
+  The configured pytest selection remains an operator-controlled input; REVIEW
+  must determine whether its coverage proves every acceptance criterion.
+- Next action: Request Josh's review and approval before defining and starting
+  the separate REVIEW milestone. No merge or push was performed.

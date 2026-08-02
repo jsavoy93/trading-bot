@@ -369,6 +369,23 @@ WAIT_FOR_AGENT → QA
 Every poll refreshes `updated_at` while preserving the original start time,
 run ID, specialist, and request ID. Tests use fake monitors only.
 
+`engineering/workflow/qa.py` requires a completed delegated run and invokes
+the configured `ENGINEERING_QA_COMMAND` through `engineering/qa_runner.py`.
+Only Python `-m pytest` commands are accepted. The subprocess is bounded to
+five minutes and receives forced `TESTING=1` and `UNIT_TESTING=1` flags.
+
+QA persists the exact command, exit code, runtime, parsed passed/failed counts,
+a bounded output summary, changed files, completion time, and timeout status. Successful evidence
+performs:
+
+```text
+QA → REVIEW
+```
+
+Failed or timed-out evidence remains in `QA` and prevents an automatic rerun.
+Legacy workflow JSON without QA evidence remains valid, while malformed QA
+records are rejected.
+
 The transition is tested independently in:
 
 ```text
@@ -377,6 +394,7 @@ tests/test_engineering_plan.py
 tests/test_engineering_prepare_branch.py
 tests/test_engineering_delegate.py
 tests/test_engineering_wait_for_agent.py
+tests/test_engineering_qa.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -424,6 +442,12 @@ After implementing WAIT_FOR_AGENT, the full suite reached:
 
 ```text
 118 tests passed
+```
+
+After implementing deterministic QA evidence, the full suite reached:
+
+```text
+132 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.

@@ -14,6 +14,37 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-007 — Persist deterministic QA evidence
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- QA requires a completed delegated run and refuses missing or incomplete delegation metadata.
+- QA runs only an explicitly configured, bounded pytest command with test-safe environment flags.
+- QA persists the command, exit code, runtime, bounded output summary, changed files, completion time, and timeout status.
+- Successful QA advances immutably to REVIEW; failed or timed-out QA remains stopped in QA and is not rerun automatically.
+- QA evidence remains backward compatible through workflow-store save and load.
+- Focused QA-runner, QA-handler, workflow-store, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/models.py
+- engineering/qa_runner.py
+- engineering/workflow/qa.py
+- engineering/workflow_engine.py
+- engineering/workflow_store.py
+- tests/test_engineering_qa_runner.py
+- tests/test_engineering_qa.py
+- tests/test_engineering_workflow_engine.py
+- tests/test_engineering_workflow_store.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-006 — Wait for delegated agent runs
 
 Status: DONE

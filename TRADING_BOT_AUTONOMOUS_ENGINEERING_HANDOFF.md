@@ -261,14 +261,20 @@ recognized statuses and check times, stops polling terminal failures/timeouts,
 and advances only completed runs. Delegation uses a deterministic request ID
 that the wrapper must treat idempotently across retries, closing the known
 manager-crash duplicate-launch window at the integration boundary.
-──────── Immediate Next
-Milestone: QA
+──────── Completed Milestone: QA
 Responsibilities: • Run configured tests. • Record:
   • command, • exit status, • passed/failed counts, 
   • runtime, • relevant output, • changed files.
 • Enforce brokerage safety before and during tests. 
-• Transition to REVIEW only when evidence exists. 
-REVIEW Responsibilities: • Compare code and QA 
+• Transition to REVIEW only when evidence exists. QA now requires a completed
+delegation, accepts only an explicitly configured Python `-m pytest` command,
+enforces test-mode flags and a five-minute bound, and persists command, exit
+code, runtime, passed/failed counts, bounded output, changed files, completion time, and timeout
+status. Successful evidence advances to REVIEW; failures and timeouts remain
+stopped in QA without an automatic rerun.
+──────── Immediate Next
+Milestone: REVIEW
+Responsibilities: • Compare code and QA
 evidence against every acceptance criterion. • 
 Produce explicit criterion-level results. • Do not 
 reduce review to “tests passed.” • Recommend:
