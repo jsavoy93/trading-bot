@@ -113,3 +113,76 @@ def test_refuses_when_feature_branch_already_exists(
         )
 
     assert git.current_branch() == "source-branch"
+
+
+def test_prepares_new_feature_branch(tmp_path: Path) -> None:
+    git = create_repository(tmp_path)
+
+    state = git.prepare_feature_branch("agent/test-001", "source-branch")
+
+    assert state.branch == "agent/test-001"
+    assert state.is_clean is True
+
+
+def test_resumes_existing_feature_branch_from_source(tmp_path: Path) -> None:
+    git = create_repository(tmp_path)
+    run_git(tmp_path, "branch", "agent/test-001")
+
+    state = git.prepare_feature_branch("agent/test-001", "source-branch")
+
+    assert state.branch == "agent/test-001"
+    assert state.is_clean is True
+
+
+def test_resumes_current_feature_branch(tmp_path: Path) -> None:
+    git = create_repository(tmp_path)
+    run_git(tmp_path, "switch", "-c", "agent/test-001")
+
+    state = git.prepare_feature_branch("agent/test-001", "source-branch")
+
+    assert state.branch == "agent/test-001"
+    assert state.is_clean is True
+
+
+def test_prepare_refuses_dirty_repository(tmp_path: Path) -> None:
+    git = create_repository(tmp_path)
+    (tmp_path / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="repository is not clean"):
+        git.prepare_feature_branch("agent/test-001", "source-branch")
+
+
+def test_prepare_refuses_unexpected_current_branch(tmp_path: Path) -> None:
+    git = create_repository(tmp_path)
+    run_git(tmp_path, "switch", "-c", "unrelated-branch")
+
+    with pytest.raises(RuntimeError, match="current branch is 'unrelated-branch'"):
+        git.prepare_feature_branch("agent/test-001", "source-branch")
+
+
+def test_prepare_refuses_missing_expected_source_branch(tmp_path: Path) -> None:
+    git = create_repository(tmp_path)
+
+    with pytest.raises(RuntimeError, match="expected source branch 'main' does not exist"):
+        git.prepare_feature_branch("agent/test-001", "main")
+
+
+def test_prepare_refuses_feature_branch_not_based_on_source(tmp_path: Path) -> None:
+    git = create_repository(tmp_path)
+    run_git(tmp_path, "switch", "--orphan", "agent/test-001")
+    (tmp_path / "README.md").write_text("unrelated history\n", encoding="utf-8")
+    run_git(tmp_path, "add", "README.md")
+    run_git(tmp_path, "commit", "-m", "Unrelated feature history")
+    run_git(tmp_path, "switch", "source-branch")
+
+    with pytest.raises(RuntimeError, match="is not based on 'source-branch'"):
+        git.prepare_feature_branch("agent/test-001", "source-branch")
+
+    assert git.current_branch() == "source-branch"
+
+
+def test_prepare_refuses_non_repository(tmp_path: Path) -> None:
+    git = GitService(tmp_path)
+
+    with pytest.raises(RuntimeError, match="Repository does not exist"):
+        git.prepare_feature_branch("agent/test-001", "source-branch")

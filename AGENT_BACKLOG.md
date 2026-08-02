@@ -14,6 +14,33 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-004 — Prepare workflow feature branches
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- PREPARE_BRANCH verifies the repository and expected base branch.
+- PREPARE_BRANCH refuses dirty repositories and unrelated current branches.
+- PREPARE_BRANCH safely creates or resumes the stored feature branch.
+- PREPARE_BRANCH advances immutably to DELEGATE only after successful preparation.
+- Focused Git-service, PREPARE_BRANCH-handler, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/git_service.py
+- engineering/workflow/prepare_branch.py
+- engineering/workflow_engine.py
+- tests/test_engineering_git_service.py
+- tests/test_engineering_prepare_branch.py
+- tests/test_engineering_workflow_engine.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-003 — Implement deterministic PLAN workflow
 
 Status: DONE

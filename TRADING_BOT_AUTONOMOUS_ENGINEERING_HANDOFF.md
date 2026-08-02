@@ -226,16 +226,19 @@ green. 6. Commit. 7. Then add
 engineering/workflow/plan.py. 8. Add its focused 
 behavior test. 9. Wire PLAN in workflow_engine.py. 
 10. Run the full suite and commit. This keeps the 
-milestone small and reversible. ──────── Immediate Next
-Milestone: PREPARE_BRANCH Responsibilities: •
+milestone small and reversible. ──────── Completed Milestone: PREPARE_BRANCH
+Responsibilities: •
 Verify repository exists. • Verify expected base 
 branch. • Verify working tree cleanliness. • Detect 
 whether the target feature branch already exists. • 
 Create or safely resume the feature branch. • 
 Refuse unsafe branch operations. • Transition to 
-DELEGATE. Existing Git-service tests should be 
-reused rather than duplicating Git logic. DELEGATE 
-Responsibilities: • Build a narrow coding-agent 
+DELEGATE. Existing Git-service tests are reused
+rather than duplicating Git logic. The implementation defaults to `main` as
+the expected base, requires a clean repository, validates ancestry before
+resuming an existing feature branch, and advances immutably to DELEGATE.
+──────── Immediate Next
+Milestone: DELEGATE Responsibilities: • Build a narrow coding-agent
 prompt from the execution plan. • Include:
   • task, • allowed areas, • acceptance criteria, • 
   safety constraints, • branch, • required tests, • 

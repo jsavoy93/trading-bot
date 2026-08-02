@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from engineering.models import WorkflowState
-from engineering.workflow_engine import dispatch_workflow
+from engineering.workflow import prepare_branch
+from engineering.workflow_engine import _STATE_HANDLERS, dispatch_workflow
 from engineering.workflow_store import StoredWorkflow
 
 
@@ -11,6 +12,7 @@ from engineering.workflow_store import StoredWorkflow
 def test_dispatch_workflow_handles_every_state(
     state: WorkflowState,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     feature_branch = (
         "agent/test-001-prevent-live-brokerage-calls-from-tests"
@@ -23,12 +25,25 @@ def test_dispatch_workflow_handles_every_state(
         state=state,
     )
 
+    if state is WorkflowState.PREPARE_BRANCH:
+        def prepare_stub(stored: StoredWorkflow) -> StoredWorkflow:
+            print("Executing workflow state: PREPARE_BRANCH")
+            return StoredWorkflow(
+                task_id=stored.task_id,
+                feature_branch=stored.feature_branch,
+                state=WorkflowState.DELEGATE,
+            )
+
+        monkeypatch.setitem(_STATE_HANDLERS, state, prepare_stub)
+
     result = dispatch_workflow(workflow)
 
     if state is WorkflowState.DISCOVER:
         expected_state = WorkflowState.PLAN
     elif state is WorkflowState.PLAN:
         expected_state = WorkflowState.PREPARE_BRANCH
+    elif state is WorkflowState.PREPARE_BRANCH:
+        expected_state = WorkflowState.DELEGATE
     else:
         expected_state = state
 
@@ -43,3 +58,7 @@ def test_dispatch_workflow_handles_every_state(
         assert "Task: TEST-001 — Prevent live brokerage calls from tests" in output
     else:
         assert output == f"Executing workflow state: {state.value}\n"
+
+
+def test_prepare_branch_handler_is_registered() -> None:
+    assert _STATE_HANDLERS[WorkflowState.PREPARE_BRANCH] is prepare_branch.run

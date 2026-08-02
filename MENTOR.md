@@ -324,11 +324,26 @@ plus deterministic risk and complexity estimates. The richer plan is rebuilt
 from the authoritative backlog and repository state; it is not persisted in
 the compact workflow record.
 
+`engineering/workflow/prepare_branch.py` uses the Git service to validate the
+repository, require a clean tree, verify the expected base branch, and create
+or resume the stored feature branch. Existing feature branches are resumed
+only when the expected base is an ancestor. Unrelated current branches and
+unrelated feature histories are rejected. After successful preparation it
+performs:
+
+```text
+PREPARE_BRANCH → DELEGATE
+```
+
+The default expected base branch is `main`; tests can inject a different base
+and Git service without changing the persisted workflow schema.
+
 The transition is tested independently in:
 
 ```text
 tests/test_engineering_discover.py
 tests/test_engineering_plan.py
+tests/test_engineering_prepare_branch.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -358,6 +373,12 @@ After implementing the deterministic PLAN state, the full suite reached:
 
 ```text
 76 tests passed
+```
+
+After implementing PREPARE_BRANCH, the full suite reached:
+
+```text
+87 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.
