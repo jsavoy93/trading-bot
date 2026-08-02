@@ -410,3 +410,197 @@ explicitly.
      safety violation, so all three enclosing rejection tests passed within
      the `36 passed` focused result.
    - Status: `PASS`
+## 2026-08-02 23:06:41–23:13:25 UTC — OPS-011 Codex wrapper foundation
+
+- Task start time: `2026-08-02 23:06:41 UTC`
+- Task end time: `2026-08-02 23:13:25 UTC`
+- Elapsed time: 6 minutes 44 seconds
+- Continuity: Continuous
+- Stale/blocked status: `BLOCKED`; the required focused test still failed
+  after the allowed correction attempt.
+- Backlog item/objective: `OPS-011` — implement the repository-owned,
+  idempotent Codex CLI wrapper foundation without workflow integration.
+- Branch: `agent/trading-ops-011-codex-wrapper`
+- Commit: `none`
+- Status: `BLOCKED`
+- Files changed: `.gitignore`, `engineering/codex_cli_wrapper.py`,
+  `tests/test_engineering_codex_cli_wrapper.py`, and this progress log.
+- Tests/backtests: First focused run: `8 passed, 3 failed, 1 warning`.
+  Allowed correction run: `10 passed, 1 failed, 1 warning`. The remaining
+  failure is the changed-branch identity-conflict case: the wrapper returns
+  `Assigned branch 'other' is not checked out` before checking the existing
+  request record, while the test requires `Request identity conflict`. The
+  complete safe suite was not run because the focused gate did not pass. No
+  backtest applies.
+- Decisions/risks: No real Codex process was intentionally invoked by the
+  fake-Codex tests. The test-mode guard test revealed that `/usr/bin/codex`
+  resolves to an installed Codex binary, and the guard was corrected to reject
+  the configured basename before execution. OPS-012 integration files were
+  not modified. The approved backlog entries and required architecture
+  documentation were not yet added because the iteration stopped at the
+  failed-test gate.
+- Manager review decision: `REWORK`; OPS-011 is incomplete and has no
+  acceptance claim.
+- Next action: Josh's approval is required to resume. On approval, check an
+  existing request identity before validating the newly supplied repository
+  branch, rerun the focused suite, and continue only if it passes.
+
+## 2026-08-02 23:25:09–23:25:41 UTC — Resume OPS-011 validation-order repair
+
+- Task start time: `2026-08-02 23:25:09 UTC`
+- Task end time: `2026-08-02 23:25:41 UTC`
+- Elapsed time: 32 seconds
+- Continuity: Resumed. The prior iteration paused after its allowed correction
+  left the changed-branch identity test failing; Josh explicitly approved the
+  narrow validation-order repair.
+- Stale/blocked status: `BLOCKED`; not stale. A required focused test failed,
+  and Josh instructed the iteration to stop on any required-test failure.
+- Backlog item/objective: `OPS-011` — make duplicate-request identity
+  validation precede validation of the newly supplied branch.
+- Branch: `agent/trading-ops-011-codex-wrapper`
+- Commit: `none`
+- Status: `BLOCKED`
+- Files changed: `.gitignore`, `engineering/codex_cli_wrapper.py`,
+  `tests/test_engineering_codex_cli_wrapper.py`, and this progress log remain
+  uncommitted from the combined OPS-011 work.
+- Tests/backtests: Focused command `TESTING=1 UNIT_TESTING=1
+  .venv/bin/python -m pytest tests/test_engineering_codex_cli_wrapper.py -q`
+  produced `10 passed, 1 failed, 1 warning in 5.13s`. The updated
+  identity-before-branch regression passed. The failure was
+  `test_concurrent_matching_launches_claim_once_and_return_one_run`: one of
+  two concurrent wrapper subprocesses exited with status 2 after observing
+  the claimed run directory before its `run.json` record was available. The
+  complete safe suite was not run. No backtest applies.
+- Decisions/risks: The smallest requested ordering change was made. It exposed
+  a claim-publication race in the pre-existing concurrent-launch coverage. No
+  real Codex service was invoked; tests used the injected fake executable.
+  No OPS-012 or workflow integration files were touched.
+- Manager review decision: `REWORK`; OPS-011 remains incomplete.
+- Next action: Stop for Josh's review. Further work requires explicit approval
+  for a narrow atomic-claim publication correction; do not begin OPS-012.
+
+## 2026-08-02 23:27:32–23:32:24 UTC — Complete OPS-011 claim publication
+
+- Task start time: `2026-08-02 23:27:32 UTC`
+- Task end time: `2026-08-02 23:32:24 UTC`
+- Elapsed time: 4 minutes 52 seconds
+- Continuity: Resumed. The prior iteration stopped when concurrent launchers
+  exposed a directory-before-record publication race; Josh approved one narrow
+  correction to that race.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `OPS-011` — complete the repository-owned,
+  idempotent Codex CLI wrapper foundation without OPS-012 integration.
+- Branch: `agent/trading-ops-011-codex-wrapper`
+- Commits: `aea4322 Add idempotent Codex wrapper foundation`; the documentation
+  and evidence commit containing this entry.
+- Status: `DONE`
+- Files changed: `.gitignore`, `engineering/codex_cli_wrapper.py`,
+  `tests/test_engineering_codex_cli_wrapper.py`, `AGENT_BACKLOG.md`,
+  `MENTOR.md`, `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, and
+  `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Focused wrapper command `TESTING=1 UNIT_TESTING=1
+  .venv/bin/python -m pytest tests/test_engineering_codex_cli_wrapper.py -q`
+  passed `13 passed, 1 warning in 5.25s`. Full safe command `TESTING=1
+  UNIT_TESTING=1 .venv/bin/python -m pytest` passed `186 passed, 2 warnings in
+  17.47s`; its safety gate reported the paper default and live brokerage calls
+  blocked. No backtest applies.
+- Decisions/risks: Initial `run.json` publication is create-once and atomic.
+  Matching launchers wait for at most one second; an incomplete publication
+  beyond that bound becomes `FAILED/125` for human review. Tests use only
+  injected fake Codex executables. Remaining risks are Linux `/proc`
+  dependence for worker identity, filesystem hard-link support, and operator
+  responsibility for runtime-directory durability and permissions. OPS-012
+  integration was not started.
+- Manager review decision: `ACCEPT`; all OPS-011 criteria have direct evidence.
+- Next action: Stop for Josh's review and approval before merge. Do not begin
+  OPS-012.
+
+### Acceptance Evidence
+
+1. **One repository-owned command wrapper is the sole implementation point for invoking `codex exec`; it accepts a bounded prompt through stdin, runs non-interactively in the specified repository and branch context with `workspace-write` sandboxing, and never uses approval- or sandbox-bypass flags.**
+   - Proof method: Inspected `engineering/codex_cli_wrapper.py` and ran
+     `test_launch_invokes_only_injected_fake_with_bounded_safe_arguments`.
+   - Exact result: The captured fake invocation was `exec --sandbox
+     workspace-write --cd <repo> -`, stdin equaled the bounded prompt, and no
+     dangerous bypass flag was present; the test passed.
+   - Status: `PASS`
+2. **Launch requests use a documented deterministic request ID. The wrapper atomically claims each request before spawning work, and concurrent or repeated matching launches return the same run ID without starting another Codex process.**
+   - Proof method: Ran the deterministic-ID, concurrent-launch, and forced
+     publication-race tests.
+   - Exact result: Matching identities produced one deterministic run ID and
+     one run directory; all three tests passed in the `13 passed` focused run.
+   - Status: `PASS`
+3. **Each durable request record includes the request ID, run ID, assigned agent, feature branch, prompt digest, lifecycle status, worker identity, start and update timestamps, timeout deadline, stdout and stderr artifact paths, exit code, completion timestamp, and bounded failure or timeout reason.**
+   - Proof method: Inspected the initial, worker, and terminal record updates
+     and the terminal-record assertions in the focused suite.
+   - Exact result: Atomic `run.json` records contain every listed identity,
+     lifecycle, worker, timing, artifact, and terminal field; focused tests
+     passed `13 passed`.
+   - Status: `PASS`
+4. **Reuse of a request ID with a different agent, branch, or prompt digest is rejected as an identity conflict and never starts a Codex process.**
+   - Proof method: Ran the three parameterized
+     `test_reused_request_identity_conflicts_are_rejected_before_new_branch_validation`
+     cases.
+   - Exact result: Agent, branch, and prompt changes each returned exit code 2
+     with `Request identity conflict`; all cases passed.
+   - Status: `PASS`
+5. **Run records and output artifacts are written atomically beneath a repository-local Git-ignored runtime directory; separate wrapper invocations can recover and inspect the same run without observing partial JSON.**
+   - Proof method: Inspected create-once `_publish_json_once`, atomic update
+     `_atomic_json`, `.gitignore`, and ran the publication-race and status tests.
+   - Exact result: A deliberately delayed winner published one complete
+     record, the matching process returned the same run, and no partial JSON
+     was observed; tests passed.
+   - Status: `PASS`
+6. **Codex stdout and stderr are captured separately from process start, persisted in bounded artifacts, and represented in returned metadata by paths and bounded diagnostic summaries.**
+   - Proof method: Ran safe-launch, nonzero-exit, and large-output tests.
+   - Exact result: Separate artifact paths and summaries persisted; the
+     configured 100-byte large-output artifact had exactly 100 bytes.
+   - Status: `PASS`
+7. **Every Codex subprocess has a configurable finite timeout with a conservative default. Timeout handling terminates the process group, waits for a bounded grace period, force-kills remaining processes if necessary, persists exit code `124`, and records `TIMED_OUT`.**
+   - Proof method: Ran `test_timeout_terminates_process_group_and_persists_124`
+     with a fake that spawned a child and slept.
+   - Exact result: The process group was terminated and the record became
+     `TIMED_OUT` with exit code `124`; the test passed.
+   - Status: `PASS`
+8. **Successful completion persists `COMPLETE` and exit code zero. Launch failures and nonzero exits persist `FAILED`, the exact available exit code, and all available bounded stdout/stderr evidence. Terminal runs are never automatically relaunched.**
+   - Proof method: Ran success, nonzero, test-mode guard, and repeated status
+     cases.
+   - Exact result: Success stored `COMPLETE/0`, fake failure stored
+     `FAILED/17` with stderr, guard failure stored `FAILED/125`, and status did
+     not relaunch work.
+   - Status: `PASS`
+9. **Status inspection rejects unknown, missing, malformed, or conflicting run records. A stale claimed or active record whose verified worker is no longer running is reconciled deterministically to `FAILED` or `TIMED_OUT` instead of remaining active indefinitely.**
+   - Proof method: Ran malformed/unknown/stale status coverage and incomplete
+     claim publication coverage.
+   - Exact result: Invalid records returned exit code 2; stale and incomplete
+     claims persisted explicit `FAILED` or `TIMED_OUT` terminal records.
+   - Status: `PASS`
+10. **Wrapper tests execute the real repository wrapper as a subprocess while injecting a temporary fake Codex executable that covers success, concurrent duplicate launch, identity conflict, slow execution, process-group timeout, malformed behavior, and nonzero exit.**
+    - Proof method: Inspected `tests/test_engineering_codex_cli_wrapper.py` and
+      ran it as the focused suite.
+    - Exact result: The wrapper subprocess tests collected 13 cases covering
+      every listed behavior and passed `13 passed, 1 warning`.
+    - Status: `PASS`
+11. **Automated tests cannot resolve or invoke a real Codex executable, contact the Codex service, require Codex authentication, or access the network. Test setup explicitly injects the fake executable and fails closed if any real Codex invocation is attempted.**
+    - Proof method: Inspected `_codex_command`, fake fixtures, and ran
+      `test_test_mode_fails_closed_before_real_codex_can_run`.
+    - Exact result: Test mode requires `ENGINEERING_CODEX_COMMAND` and rejects
+      configured executable basename `codex` before subprocess creation; the
+      guard test passed and all execution cases used temporary fakes.
+    - Status: `PASS`
+12. **Focused wrapper tests and the complete test suite pass. Existing live-brokerage safety gates remain unchanged and passing.**
+    - Proof method: Ran the focused and full commands recorded above.
+    - Exact result: Focused `13 passed, 1 warning in 5.25s`; full `186 passed,
+      2 warnings in 17.47s`; the safety banner reported live brokerage blocked.
+    - Status: `PASS`
+13. **`MENTOR.md`, `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, and `ITERATION_PROGRESS_LOG.md` document the wrapper command contract, durable runtime location, recovery behavior, test isolation, verification evidence, and remaining operational risks.**
+    - Proof method: Inspected the OPS-011 sections in all three files.
+    - Exact result: The command/runtime/recovery/test/verification/risk details
+      and criterion-level evidence are present.
+    - Status: `PASS`
+14. **OPS-011 does not modify or integrate `DELEGATE`, `WAIT_FOR_AGENT`, workflow delegation records, or workflow-state transitions.**
+    - Proof method: Ran `git diff --name-only main...HEAD` plus worktree status
+      inspection.
+    - Exact result: Only the seven OPS-011 allowed files listed above changed;
+      no executor, handler, model, workflow-store, or dispatcher file changed.
+    - Status: `PASS`
