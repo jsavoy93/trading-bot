@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from engineering.models import WorkflowState
 from engineering.workflow import (
+    complete,
     delegate,
     discover,
     plan,
@@ -18,11 +19,6 @@ from engineering.workflow_store import StoredWorkflow
 WorkflowHandler = Callable[[StoredWorkflow], StoredWorkflow]
 
 
-def _report_state(workflow: StoredWorkflow) -> StoredWorkflow:
-    print(f"Executing workflow state: {workflow.state.value}")
-    return workflow
-
-
 _STATE_HANDLERS: dict[WorkflowState, WorkflowHandler] = {
     WorkflowState.DISCOVER: discover.run,
     WorkflowState.PLAN: plan.run,
@@ -32,7 +28,7 @@ _STATE_HANDLERS: dict[WorkflowState, WorkflowHandler] = {
     WorkflowState.QA: qa.run,
     WorkflowState.REVIEW: review.run,
     WorkflowState.REPORT: report.run,
-    WorkflowState.COMPLETE: _report_state,
+    WorkflowState.COMPLETE: complete.run,
 }
 
 

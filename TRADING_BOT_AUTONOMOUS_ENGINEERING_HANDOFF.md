@@ -294,13 +294,14 @@ QA, review, and authoritative backlog evidence; stores both structured and
 rendered output; refuses incomplete or inconsistent evidence; never regenerates
 an existing report; requires human approval; and advances to COMPLETE without
 merging, pushing, or deploying.
-──────── Immediate Next
-Milestone: COMPLETE
-COMPLETE Responsibilities: •
-Finalize workflow metadata. • Clear active workflow 
-state only when appropriate. • Preserve reports and 
-audit evidence. • Return the manager to an idle 
-state. ──────── Desired Long-Term Artifact Model 
+──────── Completed Milestone: COMPLETE
+COMPLETE validates the persisted accepted report, prints the final report,
+archives the full workflow record under `.git/engineering-reports/`, and then
+clears the active workflow state. Invalid or inconsistent completion evidence
+is rejected before cleanup. The manager returns to idle and does not select a
+new task in the same invocation; non-COMPLETE states retain their existing
+atomic save behavior.
+──────── Desired Long-Term Artifact Model
 The architecture may eventually evolve from one 
 mutable-looking workflow record into staged 
 artifacts: ```text StoredWorkflow

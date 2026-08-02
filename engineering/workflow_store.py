@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 import os
 from dataclasses import dataclass
@@ -350,3 +351,27 @@ class WorkflowStore:
 
     def clear(self) -> None:
         self.state_path.unlink(missing_ok=True)
+
+    def archive_completed(self, workflow: StoredWorkflow) -> Path:
+        if workflow.state is not WorkflowState.COMPLETE or workflow.report is None:
+            raise RuntimeError("Only a completed workflow with a report can be archived.")
+        if workflow.report.task_id != workflow.task_id:
+            raise RuntimeError("Completed report task does not match the workflow.")
+
+        fingerprint = sha256(
+            workflow.report.generated_at.encode("utf-8")
+        ).hexdigest()[:12]
+        archive_path = (
+            self.state_path.parent
+            / "engineering-reports"
+            / f"{workflow.task_id.lower()}-{fingerprint}.json"
+        )
+        archive_store = WorkflowStore(archive_path)
+        if archive_store.exists():
+            if archive_store.load() != workflow:
+                raise RuntimeError(
+                    f"Completed workflow archive already exists with different evidence: {archive_path}"
+                )
+        else:
+            archive_store.save(workflow)
+        return archive_path

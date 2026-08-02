@@ -79,6 +79,27 @@ def test_clear_removes_workflow_state(tmp_path: Path) -> None:
         store.load()
 
 
+def test_archive_completed_preserves_evidence(tmp_path: Path) -> None:
+    from tests.test_engineering_complete import completed_workflow
+
+    workflow = completed_workflow()
+    store = WorkflowStore(tmp_path / "workflow.json")
+
+    archive_path = store.archive_completed(workflow)
+
+    assert archive_path.parent == tmp_path / "engineering-reports"
+    assert WorkflowStore(archive_path).load() == workflow
+
+
+def test_archive_completed_rejects_incomplete_workflow(tmp_path: Path) -> None:
+    store = WorkflowStore(tmp_path / "workflow.json")
+
+    with pytest.raises(RuntimeError, match="Only a completed workflow"):
+        store.archive_completed(
+            StoredWorkflow("TEST-001", "agent/test", WorkflowState.REPORT)
+        )
+
+
 def test_load_rejects_invalid_workflow_structure(tmp_path: Path) -> None:
     state_path = tmp_path / "workflow.json"
     state_path.write_text(

@@ -14,6 +14,36 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-010 — Complete and clear finished workflows
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- COMPLETE requires a persisted, internally consistent accepted report.
+- The manager prints the final report before removing active workflow state.
+- The completed workflow is cleared exactly once; no new task starts in the same invocation.
+- Non-COMPLETE workflows retain the existing save behavior.
+- Missing or malformed completion evidence is rejected without clearing state.
+- Focused COMPLETE, manager, workflow-store, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/manager.py
+- engineering/workflow/complete.py
+- engineering/workflow_engine.py
+- engineering/workflow_store.py
+- tests/test_engineering_complete.py
+- tests/test_engineering_manager.py
+- tests/test_engineering_workflow_engine.py
+- tests/test_engineering_workflow_store.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-009 — Generate deterministic engineering reports
 
 Status: DONE

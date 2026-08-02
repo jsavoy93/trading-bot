@@ -5,9 +5,22 @@ from pathlib import Path
 from engineering.backlog import load_backlog
 from engineering.config import missing_required_paths
 from engineering.git_service import GitService
+from engineering.models import WorkflowState
 from engineering.planner import build_execution_plan, select_next_task
 from engineering.workflow_engine import dispatch_workflow
 from engineering.workflow_store import StoredWorkflow, WorkflowStore
+
+
+def persist_workflow_result(
+    workflow_store: WorkflowStore, workflow: StoredWorkflow
+) -> Path | None:
+    if workflow.state is not WorkflowState.COMPLETE:
+        workflow_store.save(workflow)
+        return None
+
+    archive_path = workflow_store.archive_completed(workflow)
+    workflow_store.clear()
+    return archive_path
 
 
 def main() -> int:
@@ -46,7 +59,7 @@ def main() -> int:
     if workflow_store.exists():
         workflow = workflow_store.load()
         workflow = dispatch_workflow(workflow)
-        workflow_store.save(workflow)
+        archive_path = persist_workflow_result(workflow_store, workflow)
 
         print()
         print("Workflow")
@@ -55,6 +68,8 @@ def main() -> int:
         print(f"Task:           {workflow.task_id}")
         print(f"Feature branch: {workflow.feature_branch}")
         print(f"State:          {workflow.state.value}")
+        if archive_path is not None:
+            print(f"Audit archive:  {archive_path}")
 
         return 0
 
@@ -84,7 +99,7 @@ def main() -> int:
     )
     workflow_store.save(workflow)
     workflow = dispatch_workflow(workflow)
-    workflow_store.save(workflow)
+    archive_path = persist_workflow_result(workflow_store, workflow)
 
     print()
     print("Workflow")
@@ -94,6 +109,8 @@ def main() -> int:
     print(f"Source branch:     {plan.repository.branch}")
     print(f"Feature branch:    {workflow.feature_branch}")
     print(f"State:             {workflow.state.value}")
+    if archive_path is not None:
+        print(f"Audit archive:     {archive_path}")
     print("Repository action: NONE")
 
     return 0

@@ -320,3 +320,34 @@ explicitly.
   criterion evidence supplied to REVIEW.
 - Next action: Request Josh's review and approval before defining and starting
   the separate COMPLETE milestone. No merge or push was performed.
+
+## 2026-08-02 17:39:43–17:58:16 UTC — Complete and clear finished workflows
+
+- Elapsed time: 3 minutes 26 seconds of active work (2 minutes 58 seconds in
+  the original session plus 28 seconds after resumption).
+- Continuity: Resumed. The implementation and evidence had been prepared but
+  left uncommitted while awaiting Josh's approval; Josh explicitly instructed
+  the manager to continue at 17:57 UTC.
+- Backlog item/objective: `OPS-010` — validate and preserve completed workflow
+  evidence, clear active state, and return the manager to idle.
+- Branch: `agent/ops-010-complete-workflow`
+- Commit: The commit containing this progress entry (`Complete finished workflows`).
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `engineering/manager.py`,
+  `engineering/workflow/complete.py`, `engineering/workflow_engine.py`,
+  `engineering/workflow_store.py`, `tests/test_engineering_complete.py`,
+  `tests/test_engineering_manager.py`, `tests/test_engineering_workflow_engine.py`,
+  `tests/test_engineering_workflow_store.py`, `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Baseline full suite `163 passed, 2 warnings`; focused
+  COMPLETE, manager, workflow-store, and dispatcher suite `42 passed, 1
+  warning`; final full suite `173 passed, 2 warnings`. After resumption, the
+  focused suite again passed `42 passed, 1 warning` and the full suite again
+  passed `173 passed, 2 warnings`. Brokerage safety passed and live calls
+  remained blocked. No backtest was applicable.
+- Decisions/risks: Manager review decision `ACCEPT`. COMPLETE validates and
+  prints the accepted report, archives the full audit record under
+  `.git/engineering-reports/`, and only then clears active state. Archive
+  retention and backup follow the repository's `.git` retention policy.
+- Next action: Request Josh's review and approval. No merge or push was
+  performed.

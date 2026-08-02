@@ -415,6 +415,15 @@ REPORT → COMPLETE
 
 REPORT never merges, pushes, deploys, or enables live trading.
 
+`engineering/workflow/complete.py` validates that COMPLETE has a persisted
+ACCEPT report whose task, branch, and criterion results match the active
+workflow. It prints the final report before manager cleanup. The manager then
+archives the complete workflow record under `.git/engineering-reports/` and
+clears `.git/engineering-workflow.json`, returning the manager to idle without
+starting another task in the same invocation. Invalid completion evidence is
+rejected before archive or cleanup; non-COMPLETE states retain normal atomic
+save behavior.
+
 The transition is tested independently in:
 
 ```text
@@ -426,6 +435,8 @@ tests/test_engineering_wait_for_agent.py
 tests/test_engineering_qa.py
 tests/test_engineering_review.py
 tests/test_engineering_report.py
+tests/test_engineering_complete.py
+tests/test_engineering_manager.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -491,6 +502,13 @@ After implementing deterministic REPORT generation, the full suite reached:
 
 ```text
 163 tests passed
+```
+
+After implementing COMPLETE archival and active-state cleanup, the full suite
+reached:
+
+```text
+173 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.
