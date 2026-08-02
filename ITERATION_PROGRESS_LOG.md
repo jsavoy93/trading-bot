@@ -351,3 +351,62 @@ explicitly.
   retention and backup follow the repository's `.git` retention policy.
 - Next action: Request Josh's review and approval. No merge or push was
   performed.
+
+## 2026-08-02 22:28:18–22:30:17 UTC — Reconcile TEST-001 completion evidence
+
+- Task start time: `2026-08-02 22:28:18 UTC`
+- Task end time: `2026-08-02 22:30:17 UTC`
+- Elapsed time: 1 minute 59 seconds
+- Continuity: Continuous
+- Stale/blocked status: Not stale and not blocked
+- Backlog item/objective: `TEST-001` — audit the existing test brokerage
+  safeguards against every acceptance criterion and reconcile its backlog and
+  architecture documentation without beginning TEST-002.
+- Branch: `agent/test-001-backlog-reconciliation`
+- Commit: The commit containing this progress entry (`Reconcile TEST-001 completion evidence`).
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Focused safety suite
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_brokerage_safety_enforcement.py tests/test_brokerage_live_block.py
+  tests/test_brokerage_mock.py -v` passed `36 passed, 1 warning in 10.83s`.
+  Full safe suite `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest` passed
+  `173 passed, 2 warnings in 14.40s`. The startup gate reported test flags set,
+  the paper endpoint default, and live brokerage blocked. No backtest applied.
+- Manager review decision: `ACCEPT`; every TEST-001 criterion passed with
+  reproducible evidence.
+- Known risks: The suite still reports the existing unknown `timeout` pytest
+  option and websockets deprecation warnings. The safety gate is
+  environment/fixture based and must remain paired with its negative
+  subprocess tests; future tests must not bypass repository `conftest.py`.
+- Next action: Push this review branch and request Josh's approval. Do not
+  merge into main and do not begin TEST-002.
+
+### Acceptance Evidence
+
+1. **Automated tests cannot contact a live brokerage endpoint.**
+   - Proof method: Inspected `tests/conftest.py`, `src/brokerage/mock.py`, and
+     the focused safety suite above, including subprocess cases for
+     `https://api.alpaca.markets` and `https://data.alpaca.markets`.
+   - Exact result: Pytest's session gate rejects both live endpoints before
+     test execution; shared mocks contain no Alpaca or HTTP client and return
+     in-memory data; both live-endpoint rejection cases passed within the
+     `36 passed` focused result.
+   - Status: `PASS`
+2. **Paper or mocked brokerage clients are used.**
+   - Proof method: Inspected the fixtures in `tests/conftest.py`, the client
+     implementation in `src/brokerage/mock.py`, and ran the focused suite.
+   - Exact result: Shared fixtures construct `MockBrokerageClient(test_mode=True)`
+     and `MockMarketDataClient`; `is_live_mode()` returns `False`; the safe
+     paper endpoint case passed; all 36 focused tests passed.
+   - Status: `PASS`
+3. **A test fails if live mode is enabled.**
+   - Proof method: Ran the focused subprocess coverage in
+     `tests/test_brokerage_safety_enforcement.py` for `ALPACA_LIVE_MODE=true`,
+     `ENABLE_LIVE_TRADING=true`, and `LIVE_TRADING_ENABLED=yes`.
+   - Exact result: Each subprocess produced a nonzero pytest exit and a live
+     safety violation, so all three enclosing rejection tests passed within
+     the `36 passed` focused result.
+   - Status: `PASS`
