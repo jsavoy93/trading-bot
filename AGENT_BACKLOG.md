@@ -14,6 +14,37 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-005 — Delegate bounded agent runs
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- DELEGATE builds a deterministic prompt containing task scope, acceptance criteria, allowed areas, safety constraints, branch, required tests, and reporting requirements.
+- DELEGATE selects only the approved specialist named by the backlog task owner.
+- DELEGATE launches exactly one configured agent run and rejects duplicate delegation metadata.
+- The workflow store persists run ID, specialist, start time, and status while remaining backward compatible with existing workflow records.
+- DELEGATE advances immutably to WAIT_FOR_AGENT only after a successful launch.
+- Focused executor, DELEGATE-handler, workflow-store, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/executor.py
+- engineering/models.py
+- engineering/workflow/delegate.py
+- engineering/workflow_engine.py
+- engineering/workflow_store.py
+- tests/test_engineering_executor.py
+- tests/test_engineering_delegate.py
+- tests/test_engineering_workflow_engine.py
+- tests/test_engineering_workflow_store.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-004 — Prepare workflow feature branches
 
 Status: DONE

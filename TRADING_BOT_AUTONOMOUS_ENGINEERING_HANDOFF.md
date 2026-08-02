@@ -237,8 +237,7 @@ DELEGATE. Existing Git-service tests are reused
 rather than duplicating Git logic. The implementation defaults to `main` as
 the expected base, requires a clean repository, validates ancestry before
 resuming an existing feature branch, and advances immutably to DELEGATE.
-──────── Immediate Next
-Milestone: DELEGATE Responsibilities: • Build a narrow coding-agent
+──────── Completed Milestone: DELEGATE Responsibilities: • Build a narrow coding-agent
 prompt from the execution plan. • Include:
   • task, • allowed areas, • acceptance criteria, • 
   safety constraints, • branch, • required tests, • 
@@ -246,8 +245,12 @@ prompt from the execution plan. • Include:
 • Launch the configured agent. • Persist run ID, 
 timestamps, and status. • Transition to 
 WAIT_FOR_AGENT. The coding agent must not be 
-allowed to decide which task to work on. 
-WAIT_FOR_AGENT Responsibilities: • Resume safely 
+allowed to decide which task to work on. DELEGATE now accepts only approved
+specialist owners, produces the required bounded prompt, launches through an
+explicitly configured command wrapper, persists backward-compatible run
+metadata, blocks duplicate metadata, and advances immutably.
+──────── Immediate Next
+Milestone: WAIT_FOR_AGENT Responsibilities: • Resume safely
 after process restart. • Check whether the 
 delegated run is:
   • pending, • active, • complete, • failed, • 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from engineering.models import WorkflowState
-from engineering.workflow import prepare_branch
+from engineering.workflow import delegate, prepare_branch
 from engineering.workflow_engine import _STATE_HANDLERS, dispatch_workflow
 from engineering.workflow_store import StoredWorkflow
 
@@ -36,6 +36,17 @@ def test_dispatch_workflow_handles_every_state(
 
         monkeypatch.setitem(_STATE_HANDLERS, state, prepare_stub)
 
+    if state is WorkflowState.DELEGATE:
+        def delegate_stub(stored: StoredWorkflow) -> StoredWorkflow:
+            print("Executing workflow state: DELEGATE")
+            return StoredWorkflow(
+                task_id=stored.task_id,
+                feature_branch=stored.feature_branch,
+                state=WorkflowState.WAIT_FOR_AGENT,
+            )
+
+        monkeypatch.setitem(_STATE_HANDLERS, state, delegate_stub)
+
     result = dispatch_workflow(workflow)
 
     if state is WorkflowState.DISCOVER:
@@ -44,6 +55,8 @@ def test_dispatch_workflow_handles_every_state(
         expected_state = WorkflowState.PREPARE_BRANCH
     elif state is WorkflowState.PREPARE_BRANCH:
         expected_state = WorkflowState.DELEGATE
+    elif state is WorkflowState.DELEGATE:
+        expected_state = WorkflowState.WAIT_FOR_AGENT
     else:
         expected_state = state
 
@@ -62,3 +75,7 @@ def test_dispatch_workflow_handles_every_state(
 
 def test_prepare_branch_handler_is_registered() -> None:
     assert _STATE_HANDLERS[WorkflowState.PREPARE_BRANCH] is prepare_branch.run
+
+
+def test_delegate_handler_is_registered() -> None:
+    assert _STATE_HANDLERS[WorkflowState.DELEGATE] is delegate.run

@@ -6,7 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from engineering.models import WorkflowState
+from engineering.models import DelegationStatus, WorkflowState
+
+
+@dataclass(frozen=True)
+class DelegationRecord:
+    run_id: str
+    agent_name: str
+    started_at: str
+    status: DelegationStatus
 
 
 @dataclass(frozen=True)
@@ -14,6 +22,7 @@ class StoredWorkflow:
     task_id: str
     feature_branch: str
     state: WorkflowState
+    delegation: DelegationRecord | None = None
 
 
 class WorkflowStore:
@@ -32,10 +41,21 @@ class WorkflowStore:
         data = json.loads(self.state_path.read_text(encoding="utf-8"))
 
         try:
+            delegation_data = data.get("delegation")
+            delegation = None
+            if delegation_data is not None:
+                delegation = DelegationRecord(
+                    run_id=delegation_data["run_id"],
+                    agent_name=delegation_data["agent_name"],
+                    started_at=delegation_data["started_at"],
+                    status=DelegationStatus(delegation_data["status"]),
+                )
+
             return StoredWorkflow(
                 task_id=data["task_id"],
                 feature_branch=data["feature_branch"],
                 state=WorkflowState(data["state"]),
+                delegation=delegation,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
@@ -50,6 +70,14 @@ class WorkflowStore:
             "feature_branch": workflow.feature_branch,
             "state": workflow.state.value,
         }
+
+        if workflow.delegation is not None:
+            payload["delegation"] = {
+                "run_id": workflow.delegation.run_id,
+                "agent_name": workflow.delegation.agent_name,
+                "started_at": workflow.delegation.started_at,
+                "status": workflow.delegation.status.value,
+            }
 
         with NamedTemporaryFile(
             mode="w",

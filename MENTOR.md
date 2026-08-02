@@ -338,12 +338,27 @@ PREPARE_BRANCH → DELEGATE
 The default expected base branch is `main`; tests can inject a different base
 and Git service without changing the persisted workflow schema.
 
+`engineering/workflow/delegate.py` resolves the stored task, accepts only the
+approved `trading-exec` and `dashboard-agent` owners, builds a deterministic
+bounded prompt, and launches through the explicitly configured
+`ENGINEERING_AGENT_COMMAND` wrapper. Successful launches add run ID,
+specialist, UTC start time, and `ACTIVE` status to the workflow before:
+
+```text
+DELEGATE → WAIT_FOR_AGENT
+```
+
+Existing delegation metadata blocks a second launch. Legacy workflow JSON
+without delegation metadata remains valid. Automated tests inject a fake
+launcher and never start an external agent.
+
 The transition is tested independently in:
 
 ```text
 tests/test_engineering_discover.py
 tests/test_engineering_plan.py
 tests/test_engineering_prepare_branch.py
+tests/test_engineering_delegate.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -379,6 +394,12 @@ After implementing PREPARE_BRANCH, the full suite reached:
 
 ```text
 87 tests passed
+```
+
+After implementing DELEGATE, the full suite reached:
+
+```text
+101 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.
