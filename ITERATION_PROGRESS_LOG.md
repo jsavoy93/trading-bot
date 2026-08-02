@@ -163,3 +163,37 @@ explicitly.
   persist it.
 - Next action: Request Josh's review and approval before defining and starting
   a separate `DELEGATE` backlog item. No merge or push was performed.
+
+## 2026-08-02 14:38:09–14:54:13 UTC — Delegate bounded agent runs
+
+- Elapsed time: 16 minutes 4 seconds, including branch and commit approval
+  waits.
+- Continuity: Continuous
+- Backlog item/objective: `OPS-005` — construct a bounded specialist prompt,
+  launch one explicitly configured agent run, persist its metadata, and
+  advance `DELEGATE → WAIT_FOR_AGENT`.
+- Branch: `agent/ops-005-delegate-workflow`
+- Commit: `949a74e Implement DELEGATE workflow`; plus the documentation commit
+  containing this progress entry.
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `engineering/executor.py`,
+  `engineering/models.py`, `engineering/workflow/delegate.py`,
+  `engineering/workflow_engine.py`, `engineering/workflow_store.py`,
+  `tests/test_engineering_delegate.py`, `tests/test_engineering_executor.py`,
+  `tests/test_engineering_workflow_engine.py`,
+  `tests/test_engineering_workflow_store.py`, `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Baseline full suite `87 passed, 2 warnings`; final focused
+  suite `29 passed, 1 warning`; final full suite `101 passed, 2 warnings`.
+  Brokerage safety passed and live calls remained blocked. Tests used fake or
+  patched launchers; no external coding agent was launched. No backtest was
+  applicable.
+- Decisions/risks: Manager review decision `ACCEPT`. Only `trading-exec` and
+  `dashboard-agent` are accepted as specialists. The command wrapper must be
+  explicitly configured and return JSON run metadata within 30 seconds.
+  Persisted legacy workflows remain compatible. There is still a narrow crash
+  window after an external launcher succeeds but before the manager persists
+  the returned workflow; eliminating that requires an idempotent launch key or
+  pre-launch persistence in a separate milestone.
+- Next action: Request Josh's review and approval before defining and starting
+  a separate `WAIT_FOR_AGENT` backlog item. No merge or push was performed.
