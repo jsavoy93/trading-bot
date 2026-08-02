@@ -399,6 +399,22 @@ produces `ACCEPT` and performs `REVIEW → REPORT`; any failure produces
 automatic regeneration. REVIEW deliberately does not treat a passing test
 suite alone as proof that every acceptance criterion is satisfied.
 
+`engineering/workflow/report.py` requires delegation, successful QA, and an
+`ACCEPT` review. It resolves the authoritative task and uses
+`engineering/reporter.py` to produce a structured, human-readable report with
+task, branch, agent, elapsed time, changed files, test command/results, every
+criterion result, risks, recommendation, and next action. Elapsed time is
+calculated from the persisted delegation start and report generation time.
+
+The report is persisted in the workflow audit record, is never regenerated
+automatically, explicitly requires Josh's approval, and performs:
+
+```text
+REPORT → COMPLETE
+```
+
+REPORT never merges, pushes, deploys, or enables live trading.
+
 The transition is tested independently in:
 
 ```text
@@ -409,6 +425,7 @@ tests/test_engineering_delegate.py
 tests/test_engineering_wait_for_agent.py
 tests/test_engineering_qa.py
 tests/test_engineering_review.py
+tests/test_engineering_report.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -468,6 +485,12 @@ After implementing deterministic criterion-level REVIEW, the full suite reached:
 
 ```text
 152 tests passed
+```
+
+After implementing deterministic REPORT generation, the full suite reached:
+
+```text
+163 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.

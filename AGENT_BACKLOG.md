@@ -14,6 +14,36 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-009 — Generate deterministic engineering reports
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- REPORT requires complete delegation, successful QA, and an ACCEPT review, and resolves the authoritative backlog task.
+- The report includes task, branch, agent, elapsed time, changed files, test command/results, every criterion result, risks, recommendation, and next action.
+- Elapsed time and report content are derived deterministically from persisted workflow evidence.
+- The report persists backward compatibly, is not regenerated automatically, and advances immutably to COMPLETE.
+- Incomplete, inconsistent, or malformed report evidence is rejected.
+- Focused reporter, REPORT-handler, workflow-store, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/reporter.py
+- engineering/workflow/report.py
+- engineering/workflow_engine.py
+- engineering/workflow_store.py
+- tests/test_engineering_reporter.py
+- tests/test_engineering_report.py
+- tests/test_engineering_workflow_engine.py
+- tests/test_engineering_workflow_store.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-008 — Review acceptance criteria deterministically
 
 Status: DONE

@@ -13,6 +13,7 @@ from engineering.reviewer import CriterionEvidence
 from engineering.workflow_store import (
     DelegationRecord,
     QARecord,
+    ReportRecord,
     ReviewRecord,
     StoredWorkflow,
     WorkflowStore,
@@ -313,6 +314,50 @@ def test_load_rejects_malformed_review_evidence(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+    with pytest.raises(RuntimeError, match="Invalid workflow state file"):
+        WorkflowStore(state_path).load()
+
+
+def test_save_and_load_report_evidence(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    criterion = CriterionEvidence(
+        "Criterion one", "pytest -k one", "1 passed", CriterionStatus.PASS
+    )
+    workflow = StoredWorkflow(
+        "TEST-001",
+        "agent/test-001",
+        WorkflowState.COMPLETE,
+        report=ReportRecord(
+            "TEST-001", "Example", "agent/test-001", "trading-exec", 60.0,
+            ("src/a.py",), ("python", "-m", "pytest"), 0, 1, 0,
+            (criterion,), ("Human approval required.",),
+            ReviewRecommendation.ACCEPT, "Request approval", "2026-08-02T16:30:00+00:00",
+            "Task: TEST-001\n",
+        ),
+    )
+
+    WorkflowStore(state_path).save(workflow)
+
+    assert WorkflowStore(state_path).load() == workflow
+
+
+def test_loads_legacy_workflow_without_report_evidence(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    state_path.write_text(
+        json.dumps({"task_id": "TEST-001", "feature_branch": "agent/test", "state": "REPORT"}),
+        encoding="utf-8",
+    )
+    assert WorkflowStore(state_path).load().report is None
+
+
+def test_load_rejects_malformed_report_evidence(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    workflow = StoredWorkflow("TEST-001", "agent/test", WorkflowState.COMPLETE)
+    WorkflowStore(state_path).save(workflow)
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["report"] = {"changed_files": "src/a.py"}
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="Invalid workflow state file"):
         WorkflowStore(state_path).load()

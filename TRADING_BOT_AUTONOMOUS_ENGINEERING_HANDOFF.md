@@ -284,14 +284,19 @@ repository-local JSON evidence manifest that matches every authoritative
 criterion exactly once with proof method, exact result, and PASS/FAIL status.
 It derives ACCEPT only when all pass and otherwise derives REWORK, persists
 the criterion-level result, and never regenerates an existing review.
-──────── Immediate Next
-Milestone: REPORT
-REPORT
+──────── Completed Milestone: REPORT
 Responsibilities: Produce a clear engineering 
 report containing: ```text Task Branch Agent 
 Elapsed time Files modified Tests run Results 
 Acceptance criteria status Risks Recommendation 
-Next action ``` COMPLETE Responsibilities: • 
+Next action ``` REPORT now derives those fields from persisted delegation,
+QA, review, and authoritative backlog evidence; stores both structured and
+rendered output; refuses incomplete or inconsistent evidence; never regenerates
+an existing report; requires human approval; and advances to COMPLETE without
+merging, pushing, or deploying.
+──────── Immediate Next
+Milestone: COMPLETE
+COMPLETE Responsibilities: •
 Finalize workflow metadata. • Clear active workflow 
 state only when appropriate. • Preserve reports and 
 audit evidence. • Return the manager to an idle 

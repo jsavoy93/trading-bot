@@ -9,6 +9,7 @@ from engineering.workflow import (
     plan,
     prepare_branch,
     qa,
+    report,
     review,
     wait_for_agent,
 )
@@ -30,7 +31,7 @@ _STATE_HANDLERS: dict[WorkflowState, WorkflowHandler] = {
     WorkflowState.WAIT_FOR_AGENT: wait_for_agent.run,
     WorkflowState.QA: qa.run,
     WorkflowState.REVIEW: review.run,
-    WorkflowState.REPORT: _report_state,
+    WorkflowState.REPORT: report.run,
     WorkflowState.COMPLETE: _report_state,
 }
 

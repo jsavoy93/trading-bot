@@ -46,6 +46,26 @@ class ReviewRecord:
 
 
 @dataclass(frozen=True)
+class ReportRecord:
+    task_id: str
+    task_title: str
+    branch: str
+    agent_name: str
+    elapsed_seconds: float
+    changed_files: tuple[str, ...]
+    test_command: tuple[str, ...]
+    test_exit_code: int
+    passed_count: int | None
+    failed_count: int | None
+    criteria: tuple[CriterionEvidence, ...]
+    risks: tuple[str, ...]
+    recommendation: ReviewRecommendation
+    next_action: str
+    generated_at: str
+    rendered: str
+
+
+@dataclass(frozen=True)
 class StoredWorkflow:
     task_id: str
     feature_branch: str
@@ -53,6 +73,7 @@ class StoredWorkflow:
     delegation: DelegationRecord | None = None
     qa: QARecord | None = None
     review: ReviewRecord | None = None
+    report: ReportRecord | None = None
 
 
 class WorkflowStore:
@@ -162,6 +183,60 @@ class WorkflowStore:
                     completed_at=review_data["completed_at"],
                 )
 
+            report_data = data.get("report")
+            report = None
+            if report_data is not None:
+                for field_name in (
+                    "changed_files",
+                    "test_command",
+                    "risks",
+                ):
+                    values = report_data[field_name]
+                    if not isinstance(values, list) or not all(
+                        isinstance(value, str) for value in values
+                    ):
+                        raise TypeError(f"Report {field_name} must be a list of strings")
+                if not isinstance(report_data["criteria"], list):
+                    raise TypeError("Report criteria must be a list")
+                for field_name in (
+                    "task_id", "task_title", "branch", "agent_name",
+                    "next_action", "generated_at", "rendered", "recommendation",
+                ):
+                    if not isinstance(report_data[field_name], str):
+                        raise TypeError(f"Report {field_name} must be a string")
+                if not isinstance(report_data["elapsed_seconds"], (int, float)):
+                    raise TypeError("Report elapsed time must be numeric")
+                if not isinstance(report_data["test_exit_code"], int):
+                    raise TypeError("Report exit code must be an integer")
+                report = ReportRecord(
+                    task_id=report_data["task_id"],
+                    task_title=report_data["task_title"],
+                    branch=report_data["branch"],
+                    agent_name=report_data["agent_name"],
+                    elapsed_seconds=report_data["elapsed_seconds"],
+                    changed_files=tuple(report_data["changed_files"]),
+                    test_command=tuple(report_data["test_command"]),
+                    test_exit_code=report_data["test_exit_code"],
+                    passed_count=report_data.get("passed_count"),
+                    failed_count=report_data.get("failed_count"),
+                    criteria=tuple(
+                        CriterionEvidence(
+                            item["criterion"],
+                            item["proof_method"],
+                            item["exact_result"],
+                            CriterionStatus(item["status"]),
+                        )
+                        for item in report_data["criteria"]
+                    ),
+                    risks=tuple(report_data["risks"]),
+                    recommendation=ReviewRecommendation(
+                        report_data["recommendation"]
+                    ),
+                    next_action=report_data["next_action"],
+                    generated_at=report_data["generated_at"],
+                    rendered=report_data["rendered"],
+                )
+
             return StoredWorkflow(
                 task_id=data["task_id"],
                 feature_branch=data["feature_branch"],
@@ -169,6 +244,7 @@ class WorkflowStore:
                 delegation=delegation,
                 qa=qa,
                 review=review,
+                report=report,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
@@ -224,6 +300,34 @@ class WorkflowStore:
                 ],
                 "recommendation": workflow.review.recommendation.value,
                 "completed_at": workflow.review.completed_at,
+            }
+
+        if workflow.report is not None:
+            payload["report"] = {
+                "task_id": workflow.report.task_id,
+                "task_title": workflow.report.task_title,
+                "branch": workflow.report.branch,
+                "agent_name": workflow.report.agent_name,
+                "elapsed_seconds": workflow.report.elapsed_seconds,
+                "changed_files": list(workflow.report.changed_files),
+                "test_command": list(workflow.report.test_command),
+                "test_exit_code": workflow.report.test_exit_code,
+                "passed_count": workflow.report.passed_count,
+                "failed_count": workflow.report.failed_count,
+                "criteria": [
+                    {
+                        "criterion": item.criterion,
+                        "proof_method": item.proof_method,
+                        "exact_result": item.exact_result,
+                        "status": item.status.value,
+                    }
+                    for item in workflow.report.criteria
+                ],
+                "risks": list(workflow.report.risks),
+                "recommendation": workflow.report.recommendation.value,
+                "next_action": workflow.report.next_action,
+                "generated_at": workflow.report.generated_at,
+                "rendered": workflow.report.rendered,
             }
 
         with NamedTemporaryFile(

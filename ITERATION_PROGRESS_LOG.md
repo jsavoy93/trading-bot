@@ -291,3 +291,32 @@ explicitly.
   and completeness but cannot independently establish semantic truth.
 - Next action: Request Josh's review and approval before defining and starting
   the separate REPORT milestone. No merge or push was performed.
+
+## 2026-08-02 16:32:30–16:35:52 UTC — Generate deterministic engineering reports
+
+- Elapsed time: 3 minutes 22 seconds
+- Continuity: Continuous
+- Backlog item/objective: `OPS-009` — derive, render, and persist a complete
+  engineering report from authoritative workflow evidence.
+- Branch: `agent/ops-009-report-workflow`
+- Commit: The commit containing this progress entry (`Generate deterministic engineering reports`).
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `engineering/reporter.py`,
+  `engineering/workflow/report.py`, `engineering/workflow_engine.py`,
+  `engineering/workflow_store.py`, `tests/test_engineering_report.py`,
+  `tests/test_engineering_reporter.py`,
+  `tests/test_engineering_workflow_engine.py`,
+  `tests/test_engineering_workflow_store.py`, `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Baseline full suite `152 passed, 2 warnings`; final focused
+  reporter, REPORT-handler, workflow-store, and dispatcher suite: `39 passed,
+  1 warning`; final full suite: `163 passed, 2 warnings`. Brokerage safety
+  passed and live calls remained blocked. No backtest was applicable.
+- Decisions/risks: Manager review decision `ACCEPT`. REPORT derives all fields
+  from persisted evidence and authoritative task data, calculates elapsed time,
+  persists structured and rendered output, never regenerates automatically,
+  and advances to COMPLETE without external side effects. Its stated risks are
+  deterministic and conservative; task-specific risks still depend on the
+  criterion evidence supplied to REVIEW.
+- Next action: Request Josh's review and approval before defining and starting
+  the separate COMPLETE milestone. No merge or push was performed.
