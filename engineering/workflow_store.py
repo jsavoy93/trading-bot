@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from engineering.models import DelegationStatus, WorkflowState
+from engineering.models import (
+    CriterionStatus,
+    DelegationStatus,
+    ReviewRecommendation,
+    WorkflowState,
+)
+from engineering.reviewer import CriterionEvidence
 
 
 @dataclass(frozen=True)
@@ -33,12 +39,20 @@ class QARecord:
 
 
 @dataclass(frozen=True)
+class ReviewRecord:
+    criteria: tuple[CriterionEvidence, ...]
+    recommendation: ReviewRecommendation
+    completed_at: str
+
+
+@dataclass(frozen=True)
 class StoredWorkflow:
     task_id: str
     feature_branch: str
     state: WorkflowState
     delegation: DelegationRecord | None = None
     qa: QARecord | None = None
+    review: ReviewRecord | None = None
 
 
 class WorkflowStore:
@@ -108,12 +122,53 @@ class WorkflowStore:
                     failed_count=qa_data.get("failed_count"),
                 )
 
+            review_data = data.get("review")
+            review = None
+            if review_data is not None:
+                raw_criteria = review_data["criteria"]
+                if not isinstance(raw_criteria, list):
+                    raise TypeError("Review criteria must be a list")
+                if any(
+                    not isinstance(item, dict)
+                    or not all(
+                        isinstance(item.get(field), str)
+                        for field in (
+                            "criterion",
+                            "proof_method",
+                            "exact_result",
+                            "status",
+                        )
+                    )
+                    for item in raw_criteria
+                ):
+                    raise TypeError("Review criterion fields must be strings")
+                if not isinstance(review_data["recommendation"], str) or not isinstance(
+                    review_data["completed_at"], str
+                ):
+                    raise TypeError("Review metadata fields must be strings")
+                review = ReviewRecord(
+                    criteria=tuple(
+                        CriterionEvidence(
+                            criterion=item["criterion"],
+                            proof_method=item["proof_method"],
+                            exact_result=item["exact_result"],
+                            status=CriterionStatus(item["status"]),
+                        )
+                        for item in raw_criteria
+                    ),
+                    recommendation=ReviewRecommendation(
+                        review_data["recommendation"]
+                    ),
+                    completed_at=review_data["completed_at"],
+                )
+
             return StoredWorkflow(
                 task_id=data["task_id"],
                 feature_branch=data["feature_branch"],
                 state=WorkflowState(data["state"]),
                 delegation=delegation,
                 qa=qa,
+                review=review,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
@@ -155,6 +210,21 @@ class WorkflowStore:
                 payload["qa"]["passed_count"] = workflow.qa.passed_count
             if workflow.qa.failed_count is not None:
                 payload["qa"]["failed_count"] = workflow.qa.failed_count
+
+        if workflow.review is not None:
+            payload["review"] = {
+                "criteria": [
+                    {
+                        "criterion": item.criterion,
+                        "proof_method": item.proof_method,
+                        "exact_result": item.exact_result,
+                        "status": item.status.value,
+                    }
+                    for item in workflow.review.criteria
+                ],
+                "recommendation": workflow.review.recommendation.value,
+                "completed_at": workflow.review.completed_at,
+            }
 
         with NamedTemporaryFile(
             mode="w",

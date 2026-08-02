@@ -386,6 +386,19 @@ Failed or timed-out evidence remains in `QA` and prevents an automatic rerun.
 Legacy workflow JSON without QA evidence remains valid, while malformed QA
 records are rejected.
 
+`engineering/workflow/review.py` reconstructs the stored task from the
+authoritative backlog and requires successful persisted QA. It then loads a
+repository-local JSON manifest configured by
+`ENGINEERING_REVIEW_EVIDENCE_PATH`. The manifest is limited to 65,536 bytes
+and must cover every acceptance criterion exactly once, in authoritative
+order, with a nonblank proof method, exact result, and `PASS` or `FAIL`.
+
+The recommendation is derived rather than supplied: all criteria passing
+produces `ACCEPT` and performs `REVIEW → REPORT`; any failure produces
+`REWORK` and remains stopped in `REVIEW`. Persisted review evidence prevents
+automatic regeneration. REVIEW deliberately does not treat a passing test
+suite alone as proof that every acceptance criterion is satisfied.
+
 The transition is tested independently in:
 
 ```text
@@ -395,6 +408,7 @@ tests/test_engineering_prepare_branch.py
 tests/test_engineering_delegate.py
 tests/test_engineering_wait_for_agent.py
 tests/test_engineering_qa.py
+tests/test_engineering_review.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -448,6 +462,12 @@ After implementing deterministic QA evidence, the full suite reached:
 
 ```text
 132 tests passed
+```
+
+After implementing deterministic criterion-level REVIEW, the full suite reached:
+
+```text
+152 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.

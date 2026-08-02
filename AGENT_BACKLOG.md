@@ -14,6 +14,37 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-008 — Review acceptance criteria deterministically
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- REVIEW requires successful persisted QA evidence and resolves the stored task from the authoritative backlog.
+- Review evidence covers every acceptance criterion exactly once with a proof method, exact result, and PASS or FAIL status.
+- Missing, duplicate, unknown, blank, malformed, or oversized review evidence is rejected.
+- The recommendation is derived deterministically: all PASS produces ACCEPT and advances to REPORT; any FAIL produces REWORK and remains stopped in REVIEW.
+- Criterion-level review evidence and recommendation persist backward compatibly through the workflow store and are never regenerated automatically.
+- Focused reviewer, REVIEW-handler, workflow-store, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/models.py
+- engineering/reviewer.py
+- engineering/workflow/review.py
+- engineering/workflow_engine.py
+- engineering/workflow_store.py
+- tests/test_engineering_reviewer.py
+- tests/test_engineering_review.py
+- tests/test_engineering_workflow_engine.py
+- tests/test_engineering_workflow_store.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-007 — Persist deterministic QA evidence
 
 Status: DONE

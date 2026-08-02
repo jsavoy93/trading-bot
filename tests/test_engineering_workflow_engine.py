@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from engineering.models import WorkflowState
-from engineering.workflow import delegate, prepare_branch, qa, wait_for_agent
+from engineering.workflow import delegate, prepare_branch, qa, review, wait_for_agent
 from engineering.workflow_engine import _STATE_HANDLERS, dispatch_workflow
 from engineering.workflow_store import StoredWorkflow
 
@@ -61,6 +61,13 @@ def test_dispatch_workflow_handles_every_state(
 
         monkeypatch.setitem(_STATE_HANDLERS, state, qa_stub)
 
+    if state is WorkflowState.REVIEW:
+        def review_stub(stored: StoredWorkflow) -> StoredWorkflow:
+            print("Executing workflow state: REVIEW")
+            return stored
+
+        monkeypatch.setitem(_STATE_HANDLERS, state, review_stub)
+
     result = dispatch_workflow(workflow)
 
     if state is WorkflowState.DISCOVER:
@@ -101,3 +108,7 @@ def test_wait_for_agent_handler_is_registered() -> None:
 
 def test_qa_handler_is_registered() -> None:
     assert _STATE_HANDLERS[WorkflowState.QA] is qa.run
+
+
+def test_review_handler_is_registered() -> None:
+    assert _STATE_HANDLERS[WorkflowState.REVIEW] is review.run

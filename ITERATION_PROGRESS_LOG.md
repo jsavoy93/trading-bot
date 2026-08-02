@@ -260,3 +260,34 @@ explicitly.
   must determine whether its coverage proves every acceptance criterion.
 - Next action: Request Josh's review and approval before defining and starting
   the separate REVIEW milestone. No merge or push was performed.
+
+## 2026-08-02 16:21:27–16:25:41 UTC — Review acceptance criteria deterministically
+
+- Elapsed time: 4 minutes 14 seconds
+- Continuity: Continuous
+- Backlog item/objective: `OPS-008` — require explicit criterion-level proof,
+  derive an acceptance recommendation, and persist deterministic review evidence.
+- Branch: `agent/ops-008-review-workflow`
+- Commit: The commit containing this progress entry (`Review acceptance criteria deterministically`).
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `engineering/models.py`,
+  `engineering/reviewer.py`, `engineering/workflow/review.py`,
+  `engineering/workflow_engine.py`, `engineering/workflow_store.py`,
+  `tests/test_engineering_review.py`, `tests/test_engineering_reviewer.py`,
+  `tests/test_engineering_workflow_engine.py`,
+  `tests/test_engineering_workflow_store.py`, `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Baseline full suite `132 passed, 2 warnings`; the first
+  focused run found one invalid unknown-task test fixture (`41 passed, 1
+  failed`), which was corrected within the allowed attempt; final focused
+  reviewer, REVIEW-handler, workflow-store, and dispatcher suite: `44 passed,
+  1 warning`; final full suite: `152 passed, 2 warnings`. The brokerage safety
+  gate passed and live calls remained blocked. No backtest was applicable.
+- Decisions/risks: Manager review decision `ACCEPT`. Review evidence is
+  bounded, repository-local, exact and criterion-level. Recommendations are
+  deterministic: all PASS yields ACCEPT/REPORT; any FAIL yields REWORK/REVIEW.
+  The proof manifest remains human- or tool-authored input, so its claims must
+  cite reproducible commands or inspections; the manager validates structure
+  and completeness but cannot independently establish semantic truth.
+- Next action: Request Josh's review and approval before defining and starting
+  the separate REPORT milestone. No merge or push was performed.

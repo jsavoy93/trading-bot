@@ -272,15 +272,21 @@ enforces test-mode flags and a five-minute bound, and persists command, exit
 code, runtime, passed/failed counts, bounded output, changed files, completion time, and timeout
 status. Successful evidence advances to REVIEW; failures and timeouts remain
 stopped in QA without an automatic rerun.
-──────── Immediate Next
-Milestone: REVIEW
+──────── Completed Milestone: REVIEW
 Responsibilities: • Compare code and QA
 evidence against every acceptance criterion. • 
 Produce explicit criterion-level results. • Do not 
 reduce review to “tests passed.” • Recommend:
   • ACCEPT, • REJECT, • REWORK, • BLOCKED. A future 
 AI reviewer may assist, but deterministic evidence 
-and safety gates must remain authoritative. REPORT 
+and safety gates must remain authoritative. REVIEW now requires a bounded,
+repository-local JSON evidence manifest that matches every authoritative
+criterion exactly once with proof method, exact result, and PASS/FAIL status.
+It derives ACCEPT only when all pass and otherwise derives REWORK, persists
+the criterion-level result, and never regenerates an existing review.
+──────── Immediate Next
+Milestone: REPORT
+REPORT
 Responsibilities: Produce a clear engineering 
 report containing: ```text Task Branch Agent 
 Elapsed time Files modified Tests run Results 

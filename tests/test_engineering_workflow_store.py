@@ -3,10 +3,17 @@ from pathlib import Path
 
 import pytest
 
-from engineering.models import DelegationStatus, WorkflowState
+from engineering.models import (
+    CriterionStatus,
+    DelegationStatus,
+    ReviewRecommendation,
+    WorkflowState,
+)
+from engineering.reviewer import CriterionEvidence
 from engineering.workflow_store import (
     DelegationRecord,
     QARecord,
+    ReviewRecord,
     StoredWorkflow,
     WorkflowStore,
 )
@@ -235,6 +242,72 @@ def test_load_rejects_invalid_qa_evidence(tmp_path: Path) -> None:
                     "output_summary": "passed",
                     "changed_files": [],
                     "completed_at": "2026-08-02T16:15:00+00:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="Invalid workflow state file"):
+        WorkflowStore(state_path).load()
+
+
+def test_save_and_load_review_evidence(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    workflow = StoredWorkflow(
+        "TEST-001",
+        "agent/test-001",
+        WorkflowState.REPORT,
+        review=ReviewRecord(
+            criteria=(
+                CriterionEvidence(
+                    "Criterion one",
+                    "pytest -k one",
+                    "1 passed",
+                    CriterionStatus.PASS,
+                ),
+            ),
+            recommendation=ReviewRecommendation.ACCEPT,
+            completed_at="2026-08-02T16:25:00+00:00",
+        ),
+    )
+
+    WorkflowStore(state_path).save(workflow)
+
+    assert WorkflowStore(state_path).load() == workflow
+
+
+def test_loads_legacy_workflow_without_review_evidence(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    state_path.write_text(
+        json.dumps(
+            {"task_id": "TEST-001", "feature_branch": "agent/test-001", "state": "QA"}
+        ),
+        encoding="utf-8",
+    )
+
+    assert WorkflowStore(state_path).load().review is None
+
+
+def test_load_rejects_malformed_review_evidence(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "task_id": "TEST-001",
+                "feature_branch": "agent/test-001",
+                "state": "REVIEW",
+                "review": {
+                    "criteria": [
+                        {
+                            "criterion": "Criterion one",
+                            "proof_method": 123,
+                            "exact_result": "1 passed",
+                            "status": "PASS",
+                        }
+                    ],
+                    "recommendation": "ACCEPT",
+                    "completed_at": "2026-08-02T16:25:00+00:00",
                 },
             }
         ),

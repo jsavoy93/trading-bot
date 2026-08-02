@@ -33,6 +33,16 @@ class DelegationStatus(str, Enum):
     TIMED_OUT = "TIMED_OUT"
 
 
+class CriterionStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+
+
+class ReviewRecommendation(str, Enum):
+    ACCEPT = "ACCEPT"
+    REWORK = "REWORK"
+
+
 class Priority(str, Enum):
     P0 = "P0"
     P1 = "P1"
