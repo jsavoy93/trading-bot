@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import subprocess
+from hashlib import sha256
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -33,7 +34,22 @@ class LaunchedRun:
 
 
 class AgentLauncher(Protocol):
-    def launch(self, agent_name: str, branch: str, prompt: str) -> LaunchedRun: ...
+    def launch(
+        self,
+        agent_name: str,
+        branch: str,
+        prompt: str,
+        request_id: str,
+    ) -> LaunchedRun: ...
+
+
+class AgentMonitor(Protocol):
+    def status(self, run_id: str) -> DelegationStatus: ...
+
+
+def build_request_id(task_id: str, feature_branch: str) -> str:
+    identity = f"{task_id}\0{feature_branch}".encode("utf-8")
+    return f"delegation-{sha256(identity).hexdigest()[:24]}"
 
 
 def select_specialist(task: BacklogTask) -> str:
@@ -83,15 +99,15 @@ class CommandAgentLauncher:
         configured = os.environ.get("ENGINEERING_AGENT_COMMAND", "")
         self.command = command or tuple(shlex.split(configured))
 
-    def launch(self, agent_name: str, branch: str, prompt: str) -> LaunchedRun:
+    def _run(self, *args: str, input_text: str | None = None) -> dict[str, object]:
         if not self.command:
             raise RuntimeError(
                 "Agent launching is not configured; set ENGINEERING_AGENT_COMMAND."
             )
 
         result = subprocess.run(
-            [*self.command, "--agent", agent_name, "--branch", branch],
-            input=prompt,
+            [*self.command, *args],
+            input=input_text,
             capture_output=True,
             text=True,
             check=True,
@@ -100,16 +116,48 @@ class CommandAgentLauncher:
 
         try:
             payload = json.loads(result.stdout)
+            if not isinstance(payload, dict):
+                raise TypeError("launcher result must be an object")
+            return payload
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError("Agent wrapper returned invalid JSON metadata.") from exc
+
+    def launch(
+        self,
+        agent_name: str,
+        branch: str,
+        prompt: str,
+        request_id: str,
+    ) -> LaunchedRun:
+        payload = self._run(
+            "launch",
+            "--agent",
+            agent_name,
+            "--branch",
+            branch,
+            "--request-id",
+            request_id,
+            input_text=prompt,
+        )
+
+        try:
             run_id = payload["run_id"]
             status = DelegationStatus(payload["status"])
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("Agent launcher returned invalid run metadata.") from exc
 
         if not isinstance(run_id, str) or not run_id.strip():
             raise RuntimeError("Agent launcher returned an empty run ID.")
-        if status is not DelegationStatus.ACTIVE:
+        if status not in {DelegationStatus.PENDING, DelegationStatus.ACTIVE}:
             raise RuntimeError(
                 f"Agent launcher returned unexpected initial status: {status.value}"
             )
 
         return LaunchedRun(run_id=run_id, status=status)
+
+    def status(self, run_id: str) -> DelegationStatus:
+        payload = self._run("status", "--run-id", run_id)
+        try:
+            return DelegationStatus(payload["status"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Agent wrapper returned invalid status metadata.") from exc

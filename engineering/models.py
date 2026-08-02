@@ -26,9 +26,11 @@ class WorkflowState(str, Enum):
 
 
 class DelegationStatus(str, Enum):
+    PENDING = "PENDING"
     ACTIVE = "ACTIVE"
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
 
 
 class Priority(str, Enum):

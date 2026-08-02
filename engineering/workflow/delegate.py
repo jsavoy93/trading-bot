@@ -10,6 +10,7 @@ from engineering.executor import (
     AgentLauncher,
     CommandAgentLauncher,
     build_agent_prompt,
+    build_request_id,
     select_specialist,
 )
 from engineering.models import BacklogTask, WorkflowState
@@ -44,10 +45,12 @@ def run(
     task = _resolve_task(workflow.task_id, resolved_backlog)
     agent_name = select_specialist(task)
     prompt = build_agent_prompt(task, workflow.feature_branch)
+    request_id = build_request_id(task.task_id, workflow.feature_branch)
     launched = (launcher or CommandAgentLauncher()).launch(
         agent_name,
         workflow.feature_branch,
         prompt,
+        request_id,
     )
     started_at = (
         (clock or (lambda: datetime.now(UTC)))()
@@ -67,5 +70,7 @@ def run(
             agent_name=agent_name,
             started_at=started_at,
             status=launched.status,
+            request_id=request_id,
+            updated_at=started_at,
         ),
     )

@@ -28,10 +28,16 @@ Allowed areas:
 
 class StubLauncher:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str, str, str]] = []
 
-    def launch(self, agent_name: str, branch: str, prompt: str) -> LaunchedRun:
-        self.calls.append((agent_name, branch, prompt))
+    def launch(
+        self,
+        agent_name: str,
+        branch: str,
+        prompt: str,
+        request_id: str,
+    ) -> LaunchedRun:
+        self.calls.append((agent_name, branch, prompt, request_id))
         return LaunchedRun("run-123", DelegationStatus.ACTIVE)
 
 
@@ -64,10 +70,11 @@ def test_delegate_launches_once_records_run_and_advances(
     )
 
     assert len(launcher.calls) == 1
-    agent_name, branch, prompt = launcher.calls[0]
+    agent_name, branch, prompt, request_id = launcher.calls[0]
     assert agent_name == "trading-exec"
     assert branch == workflow.feature_branch
     assert "Tests cannot call live endpoints." in prompt
+    assert request_id.startswith("delegation-")
     assert workflow.state is WorkflowState.DELEGATE
     assert workflow.delegation is None
     assert result.state is WorkflowState.WAIT_FOR_AGENT
@@ -76,6 +83,8 @@ def test_delegate_launches_once_records_run_and_advances(
         agent_name="trading-exec",
         started_at="2026-08-02T15:00:00+00:00",
         status=DelegationStatus.ACTIVE,
+        request_id=request_id,
+        updated_at="2026-08-02T15:00:00+00:00",
     )
     output = capsys.readouterr().out
     assert "Run ID: run-123\n" in output
@@ -100,6 +109,17 @@ def test_delegate_rejects_existing_run_without_launching(tmp_path: Path) -> None
         run(workflow, backlog_path=write_backlog(tmp_path), launcher=launcher)
 
     assert launcher.calls == []
+
+
+def test_delegate_retries_use_the_same_idempotent_request_id(tmp_path: Path) -> None:
+    first_launcher = StubLauncher()
+    second_launcher = StubLauncher()
+    workflow = make_workflow()
+
+    run(workflow, backlog_path=write_backlog(tmp_path), launcher=first_launcher)
+    run(workflow, backlog_path=write_backlog(tmp_path), launcher=second_launcher)
+
+    assert first_launcher.calls[0][3] == second_launcher.calls[0][3]
 
 
 def test_delegate_rejects_unknown_task(tmp_path: Path) -> None:

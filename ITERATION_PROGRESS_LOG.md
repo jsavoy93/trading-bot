@@ -197,3 +197,37 @@ explicitly.
   pre-launch persistence in a separate milestone.
 - Next action: Request Josh's review and approval before defining and starting
   a separate `WAIT_FOR_AGENT` backlog item. No merge or push was performed.
+
+## 2026-08-02 15:57:15–16:04:44 UTC — Wait for delegated agent runs
+
+- Elapsed time: 7 minutes 29 seconds for the resumed review, validation, and
+  commit approval; the original unfinished implementation start time was not
+  durably recorded.
+- Continuity: Resumed. The iteration had paused with an uncommitted dirty tree
+  and no test evidence; Josh explicitly instructed the manager to continue.
+- Backlog item/objective: `OPS-006` — add idempotent delegation identity and a
+  deterministic, persisted `WAIT_FOR_AGENT` polling transition.
+- Branch: `agent/ops-006-wait-for-agent-workflow`
+- Commit: The commit containing this progress entry (`Implement WAIT_FOR_AGENT workflow`).
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `engineering/executor.py`,
+  `engineering/models.py`, `engineering/workflow/delegate.py`,
+  `engineering/workflow/wait_for_agent.py`, `engineering/workflow_engine.py`,
+  `engineering/workflow_store.py`, `tests/test_engineering_delegate.py`,
+  `tests/test_engineering_executor.py`,
+  `tests/test_engineering_wait_for_agent.py`,
+  `tests/test_engineering_workflow_engine.py`,
+  `tests/test_engineering_workflow_store.py`, `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Focused delegation, monitoring, workflow-store, and
+  dispatcher suite: `46 passed, 1 warning`; full suite: `118 passed, 2
+  warnings`. The brokerage safety gate passed and live brokerage calls remained
+  blocked. No backtest was applicable.
+- Decisions/risks: Manager review decision `ACCEPT`. Launch requests carry a
+  deterministic task-and-branch request ID that the configured wrapper must
+  enforce idempotently. Polling has a 30-second bound, rejects malformed
+  status metadata, refreshes persisted pending/active state, advances only
+  complete runs to QA, and stops polling persisted failures/timeouts. Correct
+  idempotency still depends on the external wrapper honoring the request ID.
+- Next action: Request Josh's review and approval before defining and starting
+  the separate QA milestone. No merge or push was performed.

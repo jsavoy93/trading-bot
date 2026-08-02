@@ -249,14 +249,20 @@ allowed to decide which task to work on. DELEGATE now accepts only approved
 specialist owners, produces the required bounded prompt, launches through an
 explicitly configured command wrapper, persists backward-compatible run
 metadata, blocks duplicate metadata, and advances immutably.
-──────── Immediate Next
-Milestone: WAIT_FOR_AGENT Responsibilities: • Resume safely
+──────── Completed Milestone: WAIT_FOR_AGENT Responsibilities: • Resume safely
 after process restart. • Check whether the 
 delegated run is:
   • pending, • active, • complete, • failed, • 
   timed out.
 • Avoid duplicate delegation. • Transition to QA 
-only when implementation is complete. QA 
+only when implementation is complete. WAIT_FOR_AGENT now requires persisted
+run metadata, polls through a bounded command-wrapper contract, persists all
+recognized statuses and check times, stops polling terminal failures/timeouts,
+and advances only completed runs. Delegation uses a deterministic request ID
+that the wrapper must treat idempotently across retries, closing the known
+manager-crash duplicate-launch window at the integration boundary.
+──────── Immediate Next
+Milestone: QA
 Responsibilities: • Run configured tests. • Record:
   • command, • exit status, • passed/failed counts, 
   • runtime, • relevant output, • changed files.

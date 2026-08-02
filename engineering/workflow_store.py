@@ -15,6 +15,8 @@ class DelegationRecord:
     agent_name: str
     started_at: str
     status: DelegationStatus
+    request_id: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,8 @@ class WorkflowStore:
                     agent_name=delegation_data["agent_name"],
                     started_at=delegation_data["started_at"],
                     status=DelegationStatus(delegation_data["status"]),
+                    request_id=delegation_data.get("request_id"),
+                    updated_at=delegation_data.get("updated_at"),
                 )
 
             return StoredWorkflow(
@@ -78,6 +82,10 @@ class WorkflowStore:
                 "started_at": workflow.delegation.started_at,
                 "status": workflow.delegation.status.value,
             }
+            if workflow.delegation.request_id is not None:
+                payload["delegation"]["request_id"] = workflow.delegation.request_id
+            if workflow.delegation.updated_at is not None:
+                payload["delegation"]["updated_at"] = workflow.delegation.updated_at
 
         with NamedTemporaryFile(
             mode="w",

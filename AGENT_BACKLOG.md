@@ -14,6 +14,39 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-006 — Wait for delegated agent runs
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- Delegation uses a deterministic request ID that the configured wrapper can treat idempotently across launch retries.
+- WAIT_FOR_AGENT requires persisted delegation metadata and never launches another agent.
+- PENDING and ACTIVE runs remain in WAIT_FOR_AGENT with refreshed persisted status metadata.
+- COMPLETE runs advance immutably to QA; FAILED and TIMED_OUT runs remain stopped with explicit persisted terminal status.
+- The configured wrapper status contract is bounded and rejects malformed results.
+- Focused delegation, monitoring, workflow-store, dispatcher, and full-suite tests pass.
+
+Allowed areas:
+
+- engineering/executor.py
+- engineering/models.py
+- engineering/workflow/delegate.py
+- engineering/workflow/wait_for_agent.py
+- engineering/workflow_engine.py
+- engineering/workflow_store.py
+- tests/test_engineering_executor.py
+- tests/test_engineering_delegate.py
+- tests/test_engineering_wait_for_agent.py
+- tests/test_engineering_workflow_engine.py
+- tests/test_engineering_workflow_store.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-005 — Delegate bounded agent runs
 
 Status: DONE

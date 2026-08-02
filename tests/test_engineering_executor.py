@@ -2,7 +2,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from engineering.executor import CommandAgentLauncher, build_agent_prompt, select_specialist
+from engineering.executor import (
+    CommandAgentLauncher,
+    build_agent_prompt,
+    build_request_id,
+    select_specialist,
+)
 from engineering.models import BacklogTask, DelegationStatus, Priority, TaskStatus
 
 
@@ -48,7 +53,9 @@ def test_command_launcher_requires_explicit_configuration(
     monkeypatch.delenv("ENGINEERING_AGENT_COMMAND", raising=False)
 
     with pytest.raises(RuntimeError, match="Agent launching is not configured"):
-        CommandAgentLauncher().launch("trading-exec", "agent/test-001", "prompt")
+        CommandAgentLauncher().launch(
+            "trading-exec", "agent/test-001", "prompt", "request-123"
+        )
 
 
 def test_command_launcher_invokes_configured_wrapper_and_parses_run(
@@ -63,10 +70,11 @@ def test_command_launcher_invokes_configured_wrapper_and_parses_run(
 
     monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
 
-    launched = CommandAgentLauncher(("agent-wrapper", "launch")).launch(
+    launched = CommandAgentLauncher(("agent-wrapper",)).launch(
         "trading-exec",
         "agent/test-001",
         "bounded prompt",
+        "request-123",
     )
 
     assert launched.run_id == "run-123"
@@ -78,7 +86,62 @@ def test_command_launcher_invokes_configured_wrapper_and_parses_run(
         "trading-exec",
         "--branch",
         "agent/test-001",
+        "--request-id",
+        "request-123",
     ]
     assert recorded["input"] == "bounded prompt"
     assert recorded["check"] is True
     assert recorded["timeout"] == 30
+
+
+def test_build_request_id_is_deterministic_and_task_scoped() -> None:
+    first = build_request_id("TEST-001", "agent/test-001")
+
+    assert first == build_request_id("TEST-001", "agent/test-001")
+    assert first != build_request_id("TEST-002", "agent/test-001")
+
+
+def test_command_monitor_requests_and_parses_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+        recorded["args"] = args
+        recorded.update(kwargs)
+        return SimpleNamespace(stdout='{"status":"COMPLETE"}')
+
+    monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
+
+    status = CommandAgentLauncher(("agent-wrapper",)).status("run-123")
+
+    assert status is DelegationStatus.COMPLETE
+    assert recorded["args"] == [
+        "agent-wrapper",
+        "status",
+        "--run-id",
+        "run-123",
+    ]
+    assert recorded["timeout"] == 30
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    (
+        "not-json",
+        "[]",
+        "{}",
+        '{"status":"UNKNOWN"}',
+    ),
+)
+def test_command_monitor_rejects_malformed_status_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+) -> None:
+    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(stdout=stdout)
+
+    monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="invalid (JSON|status) metadata"):
+        CommandAgentLauncher(("agent-wrapper",)).status("run-123")

@@ -121,6 +121,8 @@ def test_save_and_load_delegation_metadata(tmp_path: Path) -> None:
             agent_name="trading-exec",
             started_at="2026-08-02T15:00:00+00:00",
             status=DelegationStatus.ACTIVE,
+            request_id="request-123",
+            updated_at="2026-08-02T15:01:00+00:00",
         ),
     )
 
@@ -131,8 +133,10 @@ def test_save_and_load_delegation_metadata(tmp_path: Path) -> None:
     assert payload["delegation"] == {
         "agent_name": "trading-exec",
         "run_id": "run-123",
+        "request_id": "request-123",
         "started_at": "2026-08-02T15:00:00+00:00",
         "status": "ACTIVE",
+        "updated_at": "2026-08-02T15:01:00+00:00",
     }
 
 

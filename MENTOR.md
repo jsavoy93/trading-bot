@@ -352,6 +352,23 @@ Existing delegation metadata blocks a second launch. Legacy workflow JSON
 without delegation metadata remains valid. Automated tests inject a fake
 launcher and never start an external agent.
 
+Delegation launch requests now include a deterministic ID derived from the
+task and feature branch. The configured wrapper must treat this key
+idempotently, so retrying after a manager crash returns the same run rather
+than launching duplicate work.
+
+`engineering/workflow/wait_for_agent.py` polls the persisted run through the
+same explicitly configured wrapper. `PENDING` and `ACTIVE` remain in
+`WAIT_FOR_AGENT`; `FAILED` and `TIMED_OUT` are persisted as stopped terminal
+states and are not polled again; `COMPLETE` performs:
+
+```text
+WAIT_FOR_AGENT → QA
+```
+
+Every poll refreshes `updated_at` while preserving the original start time,
+run ID, specialist, and request ID. Tests use fake monitors only.
+
 The transition is tested independently in:
 
 ```text
@@ -359,6 +376,7 @@ tests/test_engineering_discover.py
 tests/test_engineering_plan.py
 tests/test_engineering_prepare_branch.py
 tests/test_engineering_delegate.py
+tests/test_engineering_wait_for_agent.py
 ```
 
 Dispatcher routing is tested separately in:
@@ -400,6 +418,12 @@ After implementing DELEGATE, the full suite reached:
 
 ```text
 101 tests passed
+```
+
+After implementing WAIT_FOR_AGENT, the full suite reached:
+
+```text
+118 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.
