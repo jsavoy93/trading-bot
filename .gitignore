@@ -125,3 +125,6 @@ USER.md
 
 # Repository-owned Codex wrapper runtime records and artifacts
 .codex-wrapper-runs/
+
+# Current rolling agent report (timestamped reports/ archives remain reviewable)
+REPORT.md

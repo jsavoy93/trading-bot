@@ -34,6 +34,42 @@ Hard rules:
 - Prefer branch-based, test-backed work.
 - Report exact files changed, tests run, risks, and next step.
 
+## Reporting Requirements
+
+For every completed task, audit, proposal, review, or merge-readiness check, the agent must:
+
+1. Write the full detailed output to `REPORT.md` in the repository root.
+2. Create `reports/` if it does not exist, then archive a timestamped copy at:
+   `reports/YYYY-MM-DD_HHMMSS_<TASK-ID-or-purpose>.md`.
+3. Use a UTC timestamp and a filesystem-safe task ID or purpose in the archived filename.
+4. Write both report files before printing the terminal response.
+5. Never overwrite an archived report. If the intended archive path already exists, use a new timestamp or another unique filesystem-safe purpose suffix.
+
+`REPORT.md` must always contain:
+
+- Executive summary
+- Task or purpose
+- Branch
+- Commit
+- Files changed
+- Tests run
+- Exact test results
+- Acceptance evidence
+- Known risks
+- Manager decision
+- Next recommended action
+
+The terminal response must be a concise summary only and include:
+
+- Report path
+- Decision
+- Tests result
+- Next action
+
+If a task fails or stops early, the agent must still write `REPORT.md` and its timestamped archive before printing the terminal response. The failed or stopped report must include the exact failure, stopped state, files changed, tests run, and approval needed, in addition to all otherwise applicable required report fields.
+
+`REPORT.md` is the current rolling report and must remain listed in `.gitignore`. The `reports/` directory must not be added to `.gitignore`; archived reports are reviewable and may be committed when the task requires it.
+
 
 ## Controlled Agent Workflow
 
@@ -99,4 +135,3 @@ Every manager task report must include the following timing and status fields:
 - **Resumed-task explanation** — before continuing work on a resumed task, the manager must explain why it was paused and what has changed to allow resumption
 
 A task is considered stale when it has been inactive for more than 48 hours without a status update. The manager must report stale status to Josh before continuing any resumed task.
-
