@@ -122,3 +122,6 @@ USER.md
 
 # Local agent iteration state
 .agent-state/
+
+# Repository-owned Codex wrapper runtime records and artifacts
+.codex-wrapper-runs/
