@@ -299,7 +299,7 @@ Allowed areas:
 
 ### TEST-001 — Prevent live brokerage calls from tests
 
-Status: TODO  
+Status: DONE
 Owner: trading-exec  
 Priority: P0
 

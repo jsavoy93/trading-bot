@@ -228,6 +228,22 @@ for f in sorted(by_fail): print(f'{f} failures: {by_fail[f]} symbols')
 
 ---
 
+## Test Brokerage Safety
+
+`TEST-001` is complete as of the audit at main commit `32b84db`. Pytest sets
+`TESTING=1` and `UNIT_TESTING=1` before project imports in `tests/conftest.py`.
+The session configuration rejects known live Alpaca endpoints, enabled live
+mode flags, disabled paper-mode flags, and non-paper API-key prefixes before
+tests run. Shared brokerage fixtures use `MockBrokerageClient` and
+`MockMarketDataClient`; those implementations return in-memory deterministic
+data and do not create network clients. Subprocess safety tests prove live
+mode, live endpoints, disabled paper mode, and non-test keys make pytest exit
+nonzero, while paper/test configurations pass.
+
+Do not weaken this gate, replace the mock fixtures with real clients, or infer
+that a normal green test run alone proves the gate: retain the negative
+subprocess tests in `tests/test_brokerage_safety_enforcement.py`.
+
 ## Autonomous Engineering Workflow
 
 The deterministic engineering manager lives under `engineering/`.

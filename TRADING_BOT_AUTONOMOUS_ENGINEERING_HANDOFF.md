@@ -180,8 +180,12 @@ Important test-related requirement: ```text Tests
 must not contact a live brokerage endpoint. ``` The 
 current backlog includes or previously included: 
 ```text TEST-001 Prevent live brokerage calls from 
-tests ``` Before assuming this task remains active, 
-inspect the backlog. ──────── Completed Milestone:
+tests ``` TEST-001 was audited complete at main commit `32b84db`: the
+pytest session gate rejects live endpoints, live-mode flags, disabled paper
+mode, and non-test key prefixes before test execution; shared fixtures use
+the network-free mock brokerage and market-data clients; and focused negative
+and safe-path coverage passed 36 tests. Preserve both the session gate and
+the subprocess rejection tests. ──────── Completed Milestone:
 Implement PLAN PLAN is now a real state rather than a placeholder. Goal
 The PLAN state should produce a concrete 
 deterministic execution plan from the selected 
