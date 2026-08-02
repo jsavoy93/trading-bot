@@ -134,3 +134,32 @@ explicitly.
 - Next action: Commit the completed OPS-003 iteration, then request Josh's
   review and approval before beginning a separately approved PREPARE_BRANCH
   backlog item.
+
+## 2026-08-02 14:24:56–14:30:59 UTC — Prepare workflow feature branches
+
+- Elapsed time: 6 minutes 3 seconds
+- Continuity: Continuous
+- Backlog item/objective: `OPS-004` — safely create or resume the stored
+  workflow feature branch and advance `PREPARE_BRANCH → DELEGATE`.
+- Branch: `agent/ops-004-prepare-branch-workflow`
+- Commit: `f085d62 Implement PREPARE_BRANCH workflow`; plus the documentation
+  commit containing this progress entry.
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `engineering/git_service.py`, `engineering/workflow/prepare_branch.py`,
+  `engineering/workflow_engine.py`, `tests/test_engineering_git_service.py`,
+  `tests/test_engineering_prepare_branch.py`,
+  `tests/test_engineering_workflow_engine.py`, `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: Baseline full suite `76 passed, 2 warnings`; final focused
+  suite `26 passed, 1 warning`; final full suite `87 passed, 2 warnings`.
+  Brokerage safety passed and live calls remained blocked. No backtest was
+  applicable.
+- Decisions/risks: Manager review decision `ACCEPT`. PREPARE_BRANCH requires a
+  clean repository, defaults to expected base `main`, verifies base ancestry
+  before resuming, rejects unrelated branches/history, and advances only after
+  Git confirms the intended clean branch. A non-`main` base must currently be
+  injected by a direct handler caller; the compact workflow record does not
+  persist it.
+- Next action: Request Josh's review and approval before defining and starting
+  a separate `DELEGATE` backlog item. No merge or push was performed.
