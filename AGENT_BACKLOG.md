@@ -77,7 +77,7 @@ Allowed areas:
 
 ### OPS-012 — Integrate the Codex wrapper with DELEGATE and WAIT_FOR_AGENT
 
-Status: TODO
+Status: DONE
 Owner: trading-exec
 Priority: P0
 
