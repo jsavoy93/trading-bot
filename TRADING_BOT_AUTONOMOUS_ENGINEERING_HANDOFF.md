@@ -356,6 +356,21 @@ warnings`, with the live-brokerage safety gate passing. Remaining operational
 risks are the OPS-011 filesystem and Linux process-identity dependencies plus
 operator responsibility for durable runtime retention.
 
+──────── Completed Milestone: OPS-013 bounded manager driver
+
+The manager's no-argument command still advances exactly one state. Explicit
+`--drive` mode reloads the persisted workflow before each dispatch and saves
+each result before continuing. Every run has finite step, elapsed-time, WAIT
+interval, and WAIT poll bounds. WAIT uses status-only polling and persisted
+OPS-012 identity; failures, timeouts, QA failure, REVIEW rework, stale state,
+exceptions, and bound exhaustion stop for human review.
+
+REPORT may advance to COMPLETE, but drive mode stops immediately without
+dispatching COMPLETE, clearing state, starting a new task, merging, pushing, or
+deploying. A later ordinary one-state manager invocation remains the explicit
+approval-gated completion path. Driver persistence records timing, continuity,
+resume explanation, stale/blocked state, counters, and the last stop reason.
+
 ──────── Desired Long-Term Artifact Model
 The architecture may eventually evolve from one 
 mutable-looking workflow record into staged 

@@ -693,3 +693,38 @@ explicitly.
   review before merge.
 - Next action: Stop for Josh's review. Do not merge, push main, or begin another
   task.
+
+## 2026-08-03 12:39:53–12:44:28 UTC — Bounded restart-safe manager driver
+
+- Task start time: `2026-08-03 12:39:53 UTC`
+- Task end time: `2026-08-03 12:44:28 UTC`
+- Elapsed time: 4 minutes 35 seconds
+- Continuity: Continuous; implementation began after Josh explicitly approved
+  the read-only OPS-013 proposal and the clean-tree/no-active-workflow gates passed.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `OPS-013` — add an opt-in deterministic driver that
+  repeatedly advances one persisted workflow within finite bounds.
+- Branch: `agent/ops-013-bounded-manager-driver`
+- Commit: The commit containing this entry (`Add bounded manager driver`).
+- Status: `DONE`
+- Files changed: `engineering/manager.py`, `engineering/manager_driver.py`,
+  `engineering/workflow_store.py`, their three focused test files,
+  `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, this progress log,
+  `REPORT.md`, and the timestamped report archive.
+- Focused tests: the approved 12-file command passed `128 passed, 1 warning in
+  6.31s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `215 passed, 2 warnings in 18.73s`; the safety gate reported live
+  brokerage calls blocked. No backtest applies.
+- Acceptance result: All 14 backlog criteria passed. Default operation remains
+  one-state; `--drive` is finite, restart-safe, stale-aware, status-only during
+  WAIT, and stops after REPORT persists COMPLETE. Fake handlers, clocks,
+  sleepers, statuses, and fail-closed service boundaries keep tests deterministic.
+- Risks: Handler calls are not preemptible by the driver itself and retain their
+  own existing timeouts. Crash recovery at delegation still depends on the
+  OPS-011/012 request-ID contract. COMPLETE intentionally requires a later
+  explicit one-state invocation.
+- Manager review decision: `ACCEPT`; request Josh's review before any merge.
+- Next action: Stop for Josh's review. Do not merge, push main, deploy, or start
+  another task.

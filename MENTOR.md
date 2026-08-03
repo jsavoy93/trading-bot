@@ -268,6 +268,7 @@ The deterministic engineering manager lives under `engineering/`.
 | File | Role |
 |---|---|
 | `engineering/manager.py` | Loads or creates the persisted workflow, dispatches one state, then saves the result |
+| `engineering/manager_driver.py` | Opt-in bounded loop that reloads and persists the active workflow around every state dispatch |
 | `engineering/workflow_engine.py` | Routes the current `WorkflowState` to the matching state handler |
 | `engineering/workflow_store.py` | Persists and reloads the current workflow |
 | `engineering/workflow/` | Contains one independently testable handler module per workflow state |
@@ -297,6 +298,28 @@ COMPLETE
 
 
 ```
+
+### Bounded manager drive mode
+
+`python -m engineering.manager` remains the one-state default. Repeated
+advancement is available only through `--drive`, with finite defaults of eight
+steps, 900 elapsed seconds, a 30-second WAIT interval, and 20 WAIT polls.
+Every result is atomically persisted before another step. WAIT polling is
+status-only and uses the OPS-012 delegation identity, so restarts recover the
+same wrapper run rather than launching another one.
+
+Drive mode stops for delegated failure/timeout, failed QA, REVIEW rework,
+stale state older than 48 hours, malformed state, handler failure, an exhausted
+bound, or an unchanged non-WAIT state. REPORT may persist COMPLETE, but the
+driver then stops. It never dispatches COMPLETE, archives or clears state, or
+selects another task; the ordinary one-state invocation retains that explicit
+approval-gated OPS-010 behavior.
+
+Driver timing and continuity metadata is stored backward compatibly with the
+workflow. Runtime limits use monotonic time; audit timestamps use UTC. Tests
+inject handlers, clocks, sleepers, and agent status, never sleep in real time,
+and fail if real Codex, brokerage, subprocess-launch, or network boundaries are
+used.
 
 ### State-handler contract
 
