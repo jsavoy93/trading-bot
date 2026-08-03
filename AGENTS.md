@@ -34,6 +34,97 @@ Hard rules:
 - Prefer branch-based, test-backed work.
 - Report exact files changed, tests run, risks, and next step.
 
+## Reporting Requirements
+
+For every completed task, audit, proposal, review, or merge-readiness check, the agent must:
+
+These reporting requirements apply to every future engineering task unless the current backlog item explicitly forbids creating report artifacts.
+
+Creating `REPORT.md` and `reports/<timestamp>_<task>.md` is considered part of the reporting process rather than part of the implementation scope. Unless a task explicitly prohibits report generation, these files may always be created even when they are not listed in the allowed implementation files.
+
+If `REPORT.md` cannot be created because of an explicit user instruction, the agent must clearly state that the report was intentionally omitted and why.
+
+REPORT.md is the current rolling report. It must be completely overwritten for every task. Never append to an existing REPORT.md.
+
+1. Write a concise executive report to `REPORT.md` in the repository root.
+2. Create `reports/` if it does not exist, then archive a timestamped copy at:
+   `reports/YYYY-MM-DD_HHMMSS_<TASK-ID-or-purpose>.md`.
+3. Use a UTC timestamp and a filesystem-safe task ID or purpose in the archived filename.
+4. Write both report files before printing the terminal response.
+5. Never overwrite an archived report. If the intended archive path already exists, use a new timestamp or another unique filesystem-safe purpose suffix.
+
+`REPORT.md` must always contain:
+
+- Executive summary
+- Task or purpose
+- Branch
+- Commit
+- Files changed
+- Tests run
+- Exact test summary
+- Overall acceptance result
+- Known risks
+- Manager decision
+- Next recommended action
+
+`REPORT.md` must not contain:
+
+- Full criterion-by-criterion acceptance evidence
+- Long command output
+- Complete diffs
+- Stack traces longer than a short diagnostic excerpt
+- Repeated sections
+- Full archived-report contents
+
+`REPORT.md` must contain no more than 150 lines, with no repeated headings or duplicated content.
+
+The timestamped archive at:
+
+`reports/YYYY-MM-DD_HHMMSS_<task>.md`
+
+must contain the complete detailed record, including:
+
+- Every acceptance criterion
+- Proof method
+- Exact result
+- PASS or FAIL
+- Full relevant diagnostics
+- Timing and continuity fields
+- Detailed risks
+- Complete stopped or failure state when applicable
+
+The archive is the authoritative audit record. `REPORT.md` is only the current executive summary.
+
+The terminal response is only a completion summary.
+
+It must:
+- never exceed 15 lines,
+- always fit on a single terminal screen without scrolling,
+- never include the contents of REPORT.md,
+- never include the contents of archived reports,
+- contain only:
+
+Task:
+Decision:
+Branch:
+Commit:
+Tests:
+Report:
+Archive:
+Next:
+
+The concise executive report must always be written to REPORT.md before the terminal summary is printed.
+
+A timestamped archive must always be written to:
+
+reports/YYYY-MM-DD_HHMMSS_<task>.md
+
+before the terminal summary is printed.
+
+If a task fails or stops early, the agent must still write `REPORT.md` and its timestamped archive before printing the terminal response. The archive must include the exact failure, stopped state, files changed, tests run, and approval needed, in addition to all otherwise applicable required archive fields. `REPORT.md` must contain only the concise executive summary of that stopped or failed task.
+
+`REPORT.md` is the current rolling report and must remain listed in `.gitignore`. The `reports/` directory must not be added to `.gitignore`; archived reports are reviewable and may be committed when the task requires it.
+
 
 ## Controlled Agent Workflow
 
@@ -99,4 +190,3 @@ Every manager task report must include the following timing and status fields:
 - **Resumed-task explanation** — before continuing work on a resumed task, the manager must explain why it was paused and what has changed to allow resumption
 
 A task is considered stale when it has been inactive for more than 48 hours without a status update. The manager must report stale status to Josh before continuing any resumed task.
-

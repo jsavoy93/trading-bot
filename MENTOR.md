@@ -463,6 +463,46 @@ tests/test_engineering_workflow_engine.py
 
 The dispatcher test verifies routing and preserved workflow data. State-specific tests verify the behavior unique to each handler.
 
+### Repository-owned Codex wrapper foundation (OPS-011)
+
+`engineering/codex_cli_wrapper.py` is the only repository-owned implementation
+that invokes `codex exec`. Its standalone contract is:
+
+```text
+python engineering/codex_cli_wrapper.py launch \
+  --agent <specialist> --branch <checked-out-branch> \
+  --request-id <deterministic-id> --repo <repository>
+
+python engineering/codex_cli_wrapper.py status --run-id <run-id>
+```
+
+Launch reads a bounded prompt from stdin, verifies a clean assigned branch,
+and invokes Codex non-interactively with `exec --sandbox workspace-write --cd
+<repository> -`. It never adds approval- or sandbox-bypass flags. OPS-011 does
+not connect this command to DELEGATE or WAIT_FOR_AGENT; that integration is the
+separate OPS-012 backlog item.
+
+The default durable runtime is `.agent-state/codex-runs/`, which is ignored by
+Git. A deterministic request ID maps to one run directory containing atomic
+`run.json`, bounded `stdout.log` and `stderr.log`, and the bounded prompt.
+Initial claim publication uses create-once atomic publication. A matching
+concurrent launcher waits at most one second for the complete claim record and
+returns the same run; an incomplete claim beyond that bound becomes an
+explicit `FAILED` record requiring human review. Identity reuse with a
+different agent, branch, or prompt digest is rejected.
+
+Workers have a finite default deadline, run in their own process group, and
+receive bounded TERM/KILL timeout handling. Status verifies PID plus Linux
+process start identity, reconciles dead workers and expired deadlines, and
+never relaunches terminal work. Output artifacts and diagnostic summaries are
+bounded.
+
+Tests execute the wrapper itself as a subprocess but set
+`ENGINEERING_CODEX_COMMAND` to a temporary fake executable. When `TESTING=1`
+or `UNIT_TESTING=1`, the wrapper fails closed if no injected command exists or
+if the configured executable is named `codex`; tests therefore do not contact
+the Codex service or require authentication.
+
 ### Current verification checkpoint
 
 The autonomous workflow checkpoint at commit `3cfe9ea` had:
@@ -525,6 +565,13 @@ reached:
 
 ```text
 173 tests passed
+```
+
+After implementing the standalone OPS-011 Codex wrapper foundation, the
+focused wrapper suite passed `13 tests` and the full safe suite reached:
+
+```text
+186 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.

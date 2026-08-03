@@ -305,6 +305,36 @@ clears the active workflow state. Invalid or inconsistent completion evidence
 is rejected before cleanup. The manager returns to idle and does not select a
 new task in the same invocation; non-COMPLETE states retain their existing
 atomic save behavior.
+──────── Completed Foundation: OPS-011 Codex CLI Wrapper
+`engineering/codex_cli_wrapper.py` now owns the bounded `codex exec`
+subprocess boundary. It accepts `launch` and `status` commands but remains
+deliberately disconnected from DELEGATE and WAIT_FOR_AGENT until OPS-012.
+
+Launch verifies the clean checked-out branch, reads a bounded prompt from
+stdin, uses `codex exec --sandbox workspace-write --cd <repo> -`, and never
+uses dangerous sandbox or approval bypasses. Deterministic request IDs map to
+durable records under `.agent-state/codex-runs/`. Request directories are
+claimed atomically and the complete initial JSON record is published
+create-once; matching concurrent requests wait for at most one second and
+return the same run. A publication that remains incomplete becomes an
+explicit failed claim for human review. Agent, branch, and prompt-digest
+conflicts are rejected.
+
+The worker captures bounded stdout and stderr separately, persists exact exit
+codes, applies a finite timeout to the complete process group, and records
+`COMPLETE`, `FAILED`, or `TIMED_OUT` terminal evidence. Status verifies worker
+PID plus process-start identity and reconciles dead or expired active records
+without automatic relaunch.
+
+Wrapper tests run the actual repository command around temporary fake Codex
+executables. Test mode requires explicit injection and rejects executables
+named `codex`, preventing real service, authentication, or network use. The
+OPS-011 focused suite passed `13 passed, 1 warning`; the complete safe suite
+passed `186 passed, 2 warnings`, with live brokerage calls blocked. Remaining
+operational risks are Linux `/proc` dependence for worker identity, runtime
+directory durability/permissions, and filesystem support for atomic hard-link
+publication. OPS-012 must integrate this contract without weakening it.
+
 ──────── Desired Long-Term Artifact Model
 The architecture may eventually evolve from one 
 mutable-looking workflow record into staged 
