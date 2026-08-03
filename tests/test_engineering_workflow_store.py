@@ -12,6 +12,7 @@ from engineering.models import (
 from engineering.reviewer import CriterionEvidence
 from engineering.workflow_store import (
     DelegationRecord,
+    DriverRecord,
     QARecord,
     ReportRecord,
     ReviewRecord,
@@ -222,6 +223,45 @@ def test_loads_legacy_workflow_without_delegation_metadata(tmp_path: Path) -> No
     loaded = WorkflowStore(state_path).load()
 
     assert loaded.delegation is None
+    assert loaded.driver is None
+
+
+def test_save_and_load_driver_metadata(tmp_path: Path) -> None:
+    store = WorkflowStore(tmp_path / "workflow.json")
+    workflow = StoredWorkflow(
+        "OPS-013",
+        "agent/ops-013",
+        WorkflowState.WAIT_FOR_AGENT,
+        driver=DriverRecord(
+            started_at="2026-08-03T12:00:00+00:00",
+            updated_at="2026-08-03T12:01:00+00:00",
+            accumulated_elapsed_seconds=60.0,
+            total_steps=3,
+            wait_polls=1,
+            continuity="RESUMED",
+            last_stop_reason="bounded stop",
+            blocked=False,
+            stale=False,
+            resume_explanation="explicit resume",
+        ),
+    )
+    store.save(workflow)
+    assert store.load() == workflow
+
+
+def test_load_rejects_invalid_driver_metadata(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    state_path.write_text(
+        json.dumps({
+            "task_id": "OPS-013",
+            "feature_branch": "agent/ops-013",
+            "state": "PLAN",
+            "driver": {"started_at": "invalid"},
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="Invalid workflow state file"):
+        WorkflowStore(state_path).load()
 
 
 def test_load_rejects_invalid_delegation_metadata(tmp_path: Path) -> None:

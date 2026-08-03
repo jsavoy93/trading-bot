@@ -73,6 +73,20 @@ class ReportRecord:
 
 
 @dataclass(frozen=True)
+class DriverRecord:
+    started_at: str
+    updated_at: str
+    accumulated_elapsed_seconds: float = 0.0
+    total_steps: int = 0
+    wait_polls: int = 0
+    continuity: str = "CONTINUOUS"
+    last_stop_reason: str = ""
+    blocked: bool = False
+    stale: bool = False
+    resume_explanation: str = ""
+
+
+@dataclass(frozen=True)
 class StoredWorkflow:
     task_id: str
     feature_branch: str
@@ -81,6 +95,7 @@ class StoredWorkflow:
     qa: QARecord | None = None
     review: ReviewRecord | None = None
     report: ReportRecord | None = None
+    driver: DriverRecord | None = None
 
 
 class WorkflowStore:
@@ -270,6 +285,48 @@ class WorkflowStore:
                     rendered=report_data["rendered"],
                 )
 
+            driver_data = data.get("driver")
+            driver = None
+            if driver_data is not None:
+                for field_name in (
+                    "started_at", "updated_at", "continuity",
+                    "last_stop_reason", "resume_explanation",
+                ):
+                    if not isinstance(driver_data.get(field_name), str):
+                        raise TypeError(f"Driver {field_name} must be a string")
+                if not isinstance(
+                    driver_data.get("accumulated_elapsed_seconds"), (int, float)
+                ):
+                    raise TypeError("Driver elapsed time must be numeric")
+                for field_name in ("total_steps", "wait_polls"):
+                    if not isinstance(driver_data.get(field_name), int):
+                        raise TypeError(f"Driver {field_name} must be an integer")
+                for field_name in ("blocked", "stale"):
+                    if not isinstance(driver_data.get(field_name), bool):
+                        raise TypeError(f"Driver {field_name} must be boolean")
+                if driver_data["continuity"] not in {"CONTINUOUS", "RESUMED"}:
+                    raise TypeError("Driver continuity is invalid")
+                if (
+                    driver_data["accumulated_elapsed_seconds"] < 0
+                    or driver_data["total_steps"] < 0
+                    or driver_data["wait_polls"] < 0
+                ):
+                    raise TypeError("Driver counters cannot be negative")
+                driver = DriverRecord(
+                    started_at=driver_data["started_at"],
+                    updated_at=driver_data["updated_at"],
+                    accumulated_elapsed_seconds=driver_data[
+                        "accumulated_elapsed_seconds"
+                    ],
+                    total_steps=driver_data["total_steps"],
+                    wait_polls=driver_data["wait_polls"],
+                    continuity=driver_data["continuity"],
+                    last_stop_reason=driver_data["last_stop_reason"],
+                    blocked=driver_data["blocked"],
+                    stale=driver_data["stale"],
+                    resume_explanation=driver_data["resume_explanation"],
+                )
+
             return StoredWorkflow(
                 task_id=data["task_id"],
                 feature_branch=data["feature_branch"],
@@ -278,6 +335,7 @@ class WorkflowStore:
                 qa=qa,
                 review=review,
                 report=report,
+                driver=driver,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(
@@ -373,6 +431,20 @@ class WorkflowStore:
                 "next_action": workflow.report.next_action,
                 "generated_at": workflow.report.generated_at,
                 "rendered": workflow.report.rendered,
+            }
+
+        if workflow.driver is not None:
+            payload["driver"] = {
+                "started_at": workflow.driver.started_at,
+                "updated_at": workflow.driver.updated_at,
+                "accumulated_elapsed_seconds": workflow.driver.accumulated_elapsed_seconds,
+                "total_steps": workflow.driver.total_steps,
+                "wait_polls": workflow.driver.wait_polls,
+                "continuity": workflow.driver.continuity,
+                "last_stop_reason": workflow.driver.last_stop_reason,
+                "blocked": workflow.driver.blocked,
+                "stale": workflow.driver.stale,
+                "resume_explanation": workflow.driver.resume_explanation,
             }
 
         with NamedTemporaryFile(

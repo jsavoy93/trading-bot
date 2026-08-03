@@ -14,6 +14,53 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-013 — Add a bounded restart-safe manager driver
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Depends on: OPS-010, OPS-012
+
+Acceptance criteria:
+
+- The existing `python -m engineering.manager` invocation remains the default one-state behavior; repeated advancement requires explicit `--drive` opt-in.
+- Drive mode validates finite positive step, elapsed-time, WAIT poll-interval, and WAIT poll-count bounds, with defaults of 8 steps, 900 seconds, 30 seconds, and 20 polls.
+- The driver reloads persisted state before every step and atomically persists every result before continuing, waiting, or stopping.
+- One driver invocation advances at most one approved backlog task and never starts another task after REPORT or COMPLETE.
+- Existing deterministic delegation identity prevents duplicate launches across retries and process restarts; WAIT_FOR_AGENT remains status-only.
+- PENDING and ACTIVE delegation states are polled only within all configured finite bounds and through an injectable sleeper; tests never sleep in real time.
+- FAILED or TIMED_OUT delegation, failed or timed-out QA, REVIEW rework/rejection, stale state, malformed evidence, exceptions, persistence failures, unchanged non-wait states, and exhausted bounds stop immediately for human review.
+- REPORT may generate and persist COMPLETE, after which drive mode stops without dispatching COMPLETE, archiving, clearing, or selecting another task. COMPLETE found at startup also stops for explicit one-state completion handling.
+- Persisted backward-compatible driver metadata records UTC timing, accumulated elapsed time, steps, polls, continuity, last stop reason, blocked status, stale status, and resume explanation. Inactivity beyond 48 hours stops as stale.
+- Driver tests use fake handlers, stores, clocks, sleepers, and agent statuses; they are deterministic and never sleep in real time.
+- Tests fail closed if real Codex, brokerage, subprocess-launch, or network boundaries are invoked; existing live-brokerage safety gates remain unchanged.
+- The driver never merges, pushes, deploys, enables live trading, bypasses approval gates, generates tasks, schedules multiple agents, configures cron/systemd, extracts repositories, or starts another backlog task.
+- Focused manager-driver and workflow tests pass, followed by the full safe suite.
+- `MENTOR.md`, `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, and `ITERATION_PROGRESS_LOG.md` document behavior and evidence.
+
+Allowed areas:
+
+- engineering/manager.py
+- engineering/manager_driver.py
+- engineering/workflow_store.py
+- tests/test_engineering_manager.py
+- tests/test_engineering_manager_driver.py
+- tests/test_engineering_workflow_store.py
+- tests/test_engineering_workflow_engine.py
+- tests/test_engineering_delegate.py
+- tests/test_engineering_wait_for_agent.py
+- tests/test_engineering_qa.py
+- tests/test_engineering_review.py
+- tests/test_engineering_report.py
+- tests/test_engineering_complete.py
+- tests/test_engineering_executor.py
+- tests/test_engineering_codex_cli_wrapper.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### GOV-001 — Eliminate reporting and merge deadlocks
 
 Status: DONE
