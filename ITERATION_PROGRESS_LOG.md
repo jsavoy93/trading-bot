@@ -728,3 +728,69 @@ explicitly.
 - Manager review decision: `ACCEPT`; request Josh's review before any merge.
 - Next action: Stop for Josh's review. Do not merge, push main, deploy, or start
   another task.
+
+## 2026-08-03 21:55:17–21:56:29 UTC — TEST-002 focused suite stopped
+
+- Task start time: `2026-08-03 21:55:17 UTC`
+- Task end time: `2026-08-03 21:56:29 UTC`
+- Elapsed time: 1 minute 12 seconds
+- Continuity: Continuous; implementation began after Josh approved exact
+  volume semantics and a test-only scope.
+- Stale/blocked status: `BLOCKED`; not stale. The required focused suite failed,
+  so repository rules required an immediate stop before correction or retry.
+- Backlog item/objective: `TEST-002` — add deterministic tests for
+  `calculate_indicators` only.
+- Branch: `agent/trading-test-002-indicator-tests`
+- Commit: none
+- Status: `REWORK`
+- Files changed: new untracked `tests/test_smart_bot_indicators.py`, this
+  continuity entry, `REPORT.md`, and the timestamped report archive.
+- Focused test: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_smart_bot_indicators.py -q` stopped at `3 failed, 4 passed, 2
+  warnings in 2.41s`; the safety banner confirmed paper defaults and live
+  brokerage calls blocked.
+- Exact failure: all three known-value parameter cases reached MACD assertions;
+  expected constants differed from actual pandas results by approximately
+  `3.8e-7` to `8.1e-7`. All approved volume-semantics tests passed. No
+  production contradiction was found.
+- Full safe suite/backtest: not run because the focused gate failed; no
+  backtest applies.
+- Manager review decision: `REWORK`; TEST-002 remains TODO and incomplete.
+- Next action: Josh's approval is required to resume. On approval, replace or
+  correct the independently recorded MACD expected constants/tolerances, rerun
+  the focused suite once, and proceed to the full safe suite only if green.
+
+## 2026-08-03 21:58:00–22:06:23 UTC — TEST-002 oracle correction completed
+
+- Task start time: `2026-08-03 21:58:00 UTC`
+- Task end time: `2026-08-03 22:06:23 UTC`
+- Elapsed time: 8 minutes 23 seconds
+- Continuity: Resumed. The prior iteration stopped at the focused gate because
+  three hand-entered MACD expectations disagreed with pandas. Josh explicitly
+  approved a bounded investigation and test-only correction.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `TEST-002` — prove deterministic RSI, SMA, MACD,
+  Bollinger, and approved volume semantics for bullish, neutral, and bearish
+  inputs without constructing service clients.
+- Branch: `agent/trading-test-002-indicator-tests`
+- Commit: the TEST-002 commit containing this entry.
+- Status: `DONE`
+- Files changed: `tests/test_smart_bot_indicators.py`, `AGENT_BACKLOG.md`,
+  `MENTOR.md`, this log, `REPORT.md`, the stopped archive, and the completion
+  archive. No production file changed.
+- Oracle diagnosis: the failed constants were copied beyond the precision of a
+  six-decimal exploratory display. A separate 50-digit Decimal recursive EMA
+  matched production's documented pandas `ewm(span=12/26/9, adjust=False)`
+  results within `1.1e-14` to `2.6e-14`. Production was correct; only MACD test
+  constants and a stable `1e-12` tolerance were corrected.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_smart_bot_indicators.py -q` passed `7 passed, 2 warnings in 2.58s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `222 passed, 2 warnings in 19.90s`; paper defaults were active and
+  live brokerage calls were blocked. No backtest applies.
+- Acceptance result: Both original criteria and all approved volume semantics
+  passed with direct evidence. Short-frame behavior and invalid zero-average
+  ratios are also pinned. No network or live client was used.
+- Manager review decision: `ACCEPT`; TEST-002 is ready for Josh's review.
+- Next action: Stop for Josh's review and approval before merge. Retain this
+  branch, do not push main, and do not begin TEST-003 or another task.
