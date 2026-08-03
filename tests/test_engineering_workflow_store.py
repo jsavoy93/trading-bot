@@ -157,6 +157,9 @@ def test_save_and_load_delegation_metadata(tmp_path: Path) -> None:
             status=DelegationStatus.ACTIVE,
             request_id="request-123",
             updated_at="2026-08-02T15:01:00+00:00",
+            deadline_at="2026-08-02T15:30:00+00:00",
+            stdout_path="/tmp/run-123/stdout.log",
+            stderr_path="/tmp/run-123/stderr.log",
         ),
     )
 
@@ -171,7 +174,36 @@ def test_save_and_load_delegation_metadata(tmp_path: Path) -> None:
         "started_at": "2026-08-02T15:00:00+00:00",
         "status": "ACTIVE",
         "updated_at": "2026-08-02T15:01:00+00:00",
+        "deadline_at": "2026-08-02T15:30:00+00:00",
+        "stdout_path": "/tmp/run-123/stdout.log",
+        "stderr_path": "/tmp/run-123/stderr.log",
     }
+
+
+def test_loads_legacy_delegation_without_ops_012_fields(tmp_path: Path) -> None:
+    state_path = tmp_path / "workflow.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "task_id": "TEST-001",
+                "feature_branch": "agent/test-001",
+                "state": "WAIT_FOR_AGENT",
+                "delegation": {
+                    "run_id": "run-123",
+                    "agent_name": "trading-exec",
+                    "started_at": "2026-08-02T15:00:00+00:00",
+                    "status": "ACTIVE",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = WorkflowStore(state_path).load()
+
+    assert loaded.delegation is not None
+    assert loaded.delegation.request_id is None
+    assert loaded.delegation.deadline_at is None
 
 
 def test_loads_legacy_workflow_without_delegation_metadata(tmp_path: Path) -> None:

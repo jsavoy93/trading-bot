@@ -371,25 +371,26 @@ and Git service without changing the persisted workflow schema.
 
 `engineering/workflow/delegate.py` resolves the stored task, accepts only the
 approved `trading-exec` and `dashboard-agent` owners, builds a deterministic
-bounded prompt, and launches through the explicitly configured
-`ENGINEERING_AGENT_COMMAND` wrapper. Successful launches add run ID,
-specialist, UTC start time, and `ACTIVE` status to the workflow before:
+bounded prompt, and launches through the repository-owned OPS-011 wrapper.
+Successful launches validate and persist the deterministic request ID plus
+the wrapper's complete identity, lifecycle, timing, artifact, and terminal
+metadata before:
 
 ```text
 DELEGATE → WAIT_FOR_AGENT
 ```
 
-Existing delegation metadata blocks a second launch. Legacy workflow JSON
-without delegation metadata remains valid. Automated tests inject a fake
-launcher and never start an external agent.
+Existing delegation metadata blocks a second launch. A retry after the wrapper
+claims work but before the manager persists the workflow derives the same
+request ID from task and branch; the wrapper therefore returns the existing
+run instead of launching duplicate work. Legacy workflow JSON without the
+OPS-012 fields remains loadable. Automated tests inject fake wrapper commands
+or fake launchers and never start real Codex or contact the network.
 
-Delegation launch requests now include a deterministic ID derived from the
-task and feature branch. The configured wrapper must treat this key
-idempotently, so retrying after a manager crash returns the same run rather
-than launching duplicate work.
-
-`engineering/workflow/wait_for_agent.py` polls the persisted run through the
-same explicitly configured wrapper. `PENDING` and `ACTIVE` remain in
+`engineering/workflow/wait_for_agent.py` queries only the persisted run through
+the same repository-owned wrapper and never launches work. `CLAIMED` maps to
+`PENDING`, `RUNNING` maps to `ACTIVE`, and wrapper terminal records map to
+`COMPLETE`, `FAILED`, or `TIMED_OUT`. `PENDING` and `ACTIVE` remain in
 `WAIT_FOR_AGENT`; `FAILED` and `TIMED_OUT` are persisted as stopped terminal
 states and are not polled again; `COMPLETE` performs:
 
@@ -397,8 +398,11 @@ states and are not polled again; `COMPLETE` performs:
 WAIT_FOR_AGENT → QA
 ```
 
-Every poll refreshes `updated_at` while preserving the original start time,
-run ID, specialist, and request ID. Tests use fake monitors only.
+Every status result must match the persisted request, run, specialist, and
+branch identity. It refreshes all wrapper-owned timestamps, deadline,
+stdout/stderr paths, exit code, completion time, and bounded reason. Restarted
+manager or shell processes resume from the same durable identifiers. Tests use
+fake monitors only.
 
 `engineering/workflow/qa.py` requires a completed delegated run and invokes
 the configured `ENGINEERING_QA_COMMAND` through `engineering/qa_runner.py`.
@@ -493,9 +497,9 @@ python engineering/codex_cli_wrapper.py status --run-id <run-id>
 
 Launch reads a bounded prompt from stdin, verifies a clean assigned branch,
 and invokes Codex non-interactively with `exec --sandbox workspace-write --cd
-<repository> -`. It never adds approval- or sandbox-bypass flags. OPS-011 does
-not connect this command to DELEGATE or WAIT_FOR_AGENT; that integration is the
-separate OPS-012 backlog item.
+<repository> -`. It never adds approval- or sandbox-bypass flags. OPS-012 now
+connects this wrapper to DELEGATE and WAIT_FOR_AGENT through the validated
+metadata contract described above.
 
 The default durable runtime is `.agent-state/codex-runs/`, which is ignored by
 Git. A deterministic request ID maps to one run directory containing atomic
@@ -587,6 +591,13 @@ focused wrapper suite passed `13 tests` and the full safe suite reached:
 
 ```text
 186 tests passed
+```
+
+After integrating the wrapper with DELEGATE and WAIT_FOR_AGENT in OPS-012, the
+focused integration suite passed `84 tests` and the full safe suite reached:
+
+```text
+196 tests passed
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.

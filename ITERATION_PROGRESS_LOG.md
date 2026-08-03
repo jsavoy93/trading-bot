@@ -648,3 +648,48 @@ explicitly.
   review before merge.
 - Next action: Stop for Josh's review. Do not merge, push main, begin OPS-012,
   or start another task.
+
+## 2026-08-03 02:05:39–02:12:42 UTC — Complete OPS-012 wrapper integration
+
+- Task start time: `2026-08-03 02:05:39 UTC`
+- Task end time: `2026-08-03 02:12:42 UTC`
+- Elapsed time: 7 minutes 3 seconds
+- Continuity: Continuous; OPS-012 began only after the main dependency and
+  preflight gates passed.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `OPS-012` — integrate the repository-owned Codex
+  wrapper with DELEGATE and WAIT_FOR_AGENT without adding a manager driver
+  loop.
+- Branch: `agent/trading-ops-012-integrate-codex-wrapper`
+- Commits: `7a30cf7 Integrate Codex wrapper with workflow states`; the
+  documentation and acceptance-evidence commit containing this entry.
+- Status: `DONE`
+- Files changed: `engineering/executor.py`, `engineering/workflow/delegate.py`,
+  `engineering/workflow/wait_for_agent.py`, `engineering/workflow_store.py`,
+  their four focused test files, `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, and this progress log.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_engineering_codex_cli_wrapper.py tests/test_engineering_executor.py
+  tests/test_engineering_delegate.py tests/test_engineering_wait_for_agent.py
+  tests/test_engineering_workflow_store.py
+  tests/test_engineering_workflow_engine.py -q` passed `84 passed, 1 warning in
+  6.12s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `196 passed, 2 warnings in 18.01s`; the safety gate reported paper
+  defaults and live brokerage calls blocked. No backtest applies.
+- Acceptance result: All 14 OPS-012 criteria passed. The launcher is bound to
+  the repository wrapper with bounded command execution; DELEGATE uses the
+  deterministic identity and persists complete validated metadata;
+  WAIT_FOR_AGENT performs status-only resume, preserves stopped terminal
+  states, and advances only completion to QA. Legacy records remain loadable,
+  and all execution tests used injected fakes without real Codex or network
+  access.
+- Decisions/risks: No bounded manager driver loop or unrelated subsystem was
+  changed. Remaining operational risks are Linux `/proc` worker identity,
+  atomic-hard-link filesystem support, runtime-directory durability and
+  permissions, and the deliberate requirement for human intervention after
+  failed or timed-out runs.
+- Manager review decision: `ACCEPT`; OPS-012 is complete and ready for Josh's
+  review before merge.
+- Next action: Stop for Josh's review. Do not merge, push main, or begin another
+  task.

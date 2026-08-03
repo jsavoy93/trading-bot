@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from engineering.executor import AgentRun
 from engineering.models import DelegationStatus, WorkflowState
 from engineering.workflow.wait_for_agent import run
 from engineering.workflow_store import DelegationRecord, StoredWorkflow
@@ -12,9 +13,35 @@ class StubMonitor:
         self.returned_status = status
         self.calls: list[str] = []
 
-    def status(self, run_id: str) -> DelegationStatus:
+    def status(self, run_id: str) -> AgentRun:
         self.calls.append(run_id)
-        return self.returned_status
+        terminal = self.returned_status in {
+            DelegationStatus.COMPLETE,
+            DelegationStatus.FAILED,
+            DelegationStatus.TIMED_OUT,
+        }
+        exit_code = None
+        if self.returned_status is DelegationStatus.COMPLETE:
+            exit_code = 0
+        elif self.returned_status is DelegationStatus.TIMED_OUT:
+            exit_code = 124
+        elif self.returned_status is DelegationStatus.FAILED:
+            exit_code = 17
+        return AgentRun(
+            request_id="request-123",
+            run_id=run_id,
+            agent_name="trading-exec",
+            feature_branch="agent/test-001",
+            status=self.returned_status,
+            started_at="2026-08-02T15:00:00+00:00",
+            updated_at="2026-08-02T15:05:00+00:00",
+            deadline_at="2026-08-02T15:30:00+00:00",
+            stdout_path="/tmp/run-123/stdout.log",
+            stderr_path="/tmp/run-123/stderr.log",
+            exit_code=exit_code,
+            completed_at="2026-08-02T15:05:00+00:00" if terminal else None,
+            failure_reason="failed" if exit_code not in {None, 0} else "",
+        )
 
 
 def make_workflow(
@@ -30,6 +57,16 @@ def make_workflow(
             started_at="2026-08-02T15:00:00+00:00",
             status=status,
             request_id="request-123",
+            updated_at="2026-08-02T15:00:00+00:00",
+            deadline_at="2026-08-02T15:30:00+00:00",
+            stdout_path="/tmp/run-123/stdout.log",
+            stderr_path="/tmp/run-123/stderr.log",
+            exit_code=(17 if status is DelegationStatus.FAILED else 124)
+            if status in {DelegationStatus.FAILED, DelegationStatus.TIMED_OUT}
+            else None,
+            completed_at="2026-08-02T15:01:00+00:00"
+            if status in {DelegationStatus.FAILED, DelegationStatus.TIMED_OUT}
+            else None,
         ),
     )
 
@@ -114,6 +151,30 @@ def test_wait_requires_delegation_metadata() -> None:
 
     with pytest.raises(RuntimeError, match="requires persisted delegation metadata"):
         run(workflow, monitor=StubMonitor(DelegationStatus.ACTIVE))
+
+
+def test_wait_requires_complete_delegation_metadata() -> None:
+    workflow = make_workflow()
+    incomplete = __import__("dataclasses").replace(
+        workflow,
+        delegation=__import__("dataclasses").replace(
+            workflow.delegation,
+            deadline_at=None,
+        ),
+    )
+    with pytest.raises(RuntimeError, match="complete delegation metadata"):
+        run(incomplete, monitor=StubMonitor(DelegationStatus.ACTIVE))
+
+
+def test_wait_rejects_mismatched_status_identity() -> None:
+    class MismatchedMonitor(StubMonitor):
+        def status(self, run_id: str) -> AgentRun:
+            return __import__("dataclasses").replace(
+                super().status(run_id), request_id="other"
+            )
+
+    with pytest.raises(RuntimeError, match="request identity"):
+        run(make_workflow(), monitor=MismatchedMonitor(DelegationStatus.ACTIVE))
 
 
 def test_wait_rejects_wrong_workflow_state() -> None:

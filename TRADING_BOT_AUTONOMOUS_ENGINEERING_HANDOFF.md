@@ -250,21 +250,24 @@ prompt from the execution plan. • Include:
 timestamps, and status. • Transition to 
 WAIT_FOR_AGENT. The coding agent must not be 
 allowed to decide which task to work on. DELEGATE now accepts only approved
-specialist owners, produces the required bounded prompt, launches through an
-explicitly configured command wrapper, persists backward-compatible run
-metadata, blocks duplicate metadata, and advances immutably.
+specialist owners, produces the required bounded prompt, launches only through
+the repository-owned OPS-011 wrapper, validates and persists its complete run
+metadata, blocks duplicate metadata, and advances immutably. Deterministic
+task-and-branch request IDs recover an already claimed run after a manager or
+shell restart instead of launching duplicate work.
 ──────── Completed Milestone: WAIT_FOR_AGENT Responsibilities: • Resume safely
 after process restart. • Check whether the 
 delegated run is:
   • pending, • active, • complete, • failed, • 
   timed out.
 • Avoid duplicate delegation. • Transition to QA 
-only when implementation is complete. WAIT_FOR_AGENT now requires persisted
-run metadata, polls through a bounded command-wrapper contract, persists all
-recognized statuses and check times, stops polling terminal failures/timeouts,
-and advances only completed runs. Delegation uses a deterministic request ID
-that the wrapper must treat idempotently across retries, closing the known
-manager-crash duplicate-launch window at the integration boundary.
+only when implementation is complete. WAIT_FOR_AGENT now requires complete
+persisted run metadata, invokes only wrapper status for that run, validates
+request/run/agent/branch identity, and never launches work. It refreshes
+lifecycle timestamps, deadline, artifact paths, exact exit code, completion
+time, and bounded reason. Pending and active runs remain waiting, complete runs
+advance immutably to QA, and failed or timed-out runs stop without polling or
+automatic relaunch.
 ──────── Completed Milestone: QA
 Responsibilities: • Run configured tests. • Record:
   • command, • exit status, • passed/failed counts, 
@@ -307,8 +310,9 @@ new task in the same invocation; non-COMPLETE states retain their existing
 atomic save behavior.
 ──────── Completed Foundation: OPS-011 Codex CLI Wrapper
 `engineering/codex_cli_wrapper.py` now owns the bounded `codex exec`
-subprocess boundary. It accepts `launch` and `status` commands but remains
-deliberately disconnected from DELEGATE and WAIT_FOR_AGENT until OPS-012.
+subprocess boundary. It accepts `launch` and `status` commands; OPS-012 connects
+those commands to DELEGATE and WAIT_FOR_AGENT without moving subprocess
+ownership into either handler.
 
 Launch verifies the clean checked-out branch, reads a bounded prompt from
 stdin, uses `codex exec --sandbox workspace-write --cd <repo> -`, and never
@@ -333,7 +337,24 @@ OPS-011 focused suite passed `13 passed, 1 warning`; the complete safe suite
 passed `186 passed, 2 warnings`, with live brokerage calls blocked. Remaining
 operational risks are Linux `/proc` dependence for worker identity, runtime
 directory durability/permissions, and filesystem support for atomic hard-link
-publication. OPS-012 must integrate this contract without weakening it.
+publication.
+
+──────── Completed Integration: OPS-012 DELEGATE and WAIT_FOR_AGENT
+The executor invokes the repository-owned wrapper with a finite 30-second
+command timeout, transports the bounded prompt on stdin, and parses the full
+wrapper record. DELEGATE persists validated wrapper identity and lifecycle
+metadata before moving to WAIT_FOR_AGENT. Deterministic request IDs make a
+pre-persistence retry recover the wrapper's existing run.
+
+WAIT_FOR_AGENT performs status-only inspection of the persisted run. It maps
+claimed/running/terminal wrapper states deterministically, refreshes the full
+record, advances only COMPLETE to QA, and leaves FAILED or TIMED_OUT stopped
+for human review. Existing workflow JSON remains loadable. All automated
+execution uses injected fake wrappers or fake Codex executables; focused tests
+passed `84 passed, 1 warning` and the complete safe suite passed `196 passed, 2
+warnings`, with the live-brokerage safety gate passing. Remaining operational
+risks are the OPS-011 filesystem and Linux process-identity dependencies plus
+operator responsibility for durable runtime retention.
 
 ──────── Desired Long-Term Artifact Model
 The architecture may eventually evolve from one 
