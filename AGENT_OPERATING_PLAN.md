@@ -110,3 +110,10 @@ The dashboard agent must not independently invent or tune trading strategy logic
 15. Report through Telegram.
 16. Stop.
 
+## Deterministic Reporting Location
+
+- Normal repository-modifying engineering tasks use implementation reporting mode: overwrite ignored root `REPORT.md` and write the authoritative timestamped archive under repository `reports/`.
+- Merge readiness, merge execution, audit, review, dependency gates, preflight validation, verification-only work, documentation inspection, and any task promising no repository modification use read-only reporting mode.
+- Tasks requiring `git diff --check`, clean `git status`, merge, push, or merge-readiness verification also use read-only reporting mode, even when combined with another operation.
+- Read-only reporting writes no repository artifact. Its only archive is `/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md`.
+- If classification is uncertain, use read-only mode. Never require the user to request an exception, and never fall back to a repository-local report if the external archive fails.

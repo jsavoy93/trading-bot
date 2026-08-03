@@ -14,6 +14,34 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### GOV-001 — Eliminate reporting and merge deadlocks
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- Normal repository-modifying engineering tasks continue to overwrite ignored root `REPORT.md` and write authoritative timestamped archives under reviewable repository `reports/`.
+- Merge readiness, merge execution, audit, review, dependency-gate, preflight-validation, verification-only, documentation-inspection, and repository-nonmodifying tasks never create or modify repository reporting artifacts.
+- Read-only tasks write their authoritative archive to `/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md` using the existing detailed archive format.
+- Reporting mode is selected automatically before artifacts are created; uncertain classification fails safe to read-only mode and never requires a user-requested exception.
+- Any task requiring `git diff --check`, clean `git status`, merge, push, or merge-readiness verification uses read-only reporting so reporting cannot dirty the repository.
+- Report format, archive format, acceptance evidence, PASS/FAIL semantics, and the concise terminal summary format remain unchanged; only artifact location selection changes.
+- Governance documentation consistently describes implementation reporting, read-only reporting, automatic selection, external archive location, and the clean-tree guarantee.
+- No engineering, trading, brokerage, workflow implementation, test, dashboard, secret, deployment, or OpenClaw runtime file changes.
+- `git diff --check` passes and the branch contains only approved governance/reporting artifacts before review.
+
+Allowed areas:
+
+- AGENTS.md
+- AGENT_OPERATING_PLAN.md
+- AGENT_BACKLOG.md
+- MENTOR.md
+- ITERATION_PROGRESS_LOG.md
+- REPORT.md
+- reports/
+
 ### OPS-011 — Implement the repository-owned idempotent Codex CLI wrapper foundation
 
 Status: DONE

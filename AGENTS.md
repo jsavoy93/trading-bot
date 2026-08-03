@@ -36,13 +36,19 @@ Hard rules:
 
 ## Reporting Requirements
 
-For every completed task, audit, proposal, review, or merge-readiness check, the agent must:
+For every completed or stopped task, the agent must select exactly one reporting mode before creating any report artifact.
 
-These reporting requirements apply to every future engineering task unless the current backlog item explicitly forbids creating report artifacts.
+### Automatic reporting-mode selection
 
-Creating `REPORT.md` and `reports/<timestamp>_<task>.md` is considered part of the reporting process rather than part of the implementation scope. Unless a task explicitly prohibits report generation, these files may always be created even when they are not listed in the allowed implementation files.
+Use **read-only reporting mode** when any part of the task is a merge readiness check, merge execution, audit, review, dependency gate check, preflight validation, verification-only task, documentation inspection, or promises not to modify the repository. Also use read-only reporting mode whenever the task requires `git diff --check`, a clean `git status`, a merge, a push, or merge-readiness verification. These rules take precedence over implementation reporting even when the operation changes Git refs or combines verification with an otherwise modifying workflow.
 
-If `REPORT.md` cannot be created because of an explicit user instruction, the agent must clearly state that the report was intentionally omitted and why.
+Use **implementation reporting mode** only for a normal engineering task that modifies repository content and does not match any read-only condition above. If classification is uncertain, select read-only reporting mode so reporting cannot dirty the repository.
+
+The selection is automatic. The user must never need to request a reporting exception.
+
+### Implementation reporting mode
+
+Creating `REPORT.md` and `reports/<timestamp>_<task>.md` is considered part of the reporting process rather than part of implementation scope. These files may be created even when they are not listed in the allowed implementation files, unless the task explicitly prohibits repository-local reports.
 
 REPORT.md is the current rolling report. It must be completely overwritten for every task. Never append to an existing REPORT.md.
 
@@ -95,6 +101,18 @@ must contain the complete detailed record, including:
 
 The archive is the authoritative audit record. `REPORT.md` is only the current executive summary.
 
+### Read-only reporting mode
+
+Read-only reporting must never create or modify `REPORT.md`, `reports/`, `ITERATION_PROGRESS_LOG.md`, or any other repository file. Write only the authoritative timestamped archive outside the repository at:
+
+`/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md`
+
+Derive `<repository-name>` from the repository root directory name. Use the same UTC timestamp, filesystem-safe task name, archive format, acceptance evidence, diagnostics, timing, continuity, risks, and stopped/failure requirements as the repository-local archive. Never overwrite an external archive; choose a new timestamp or unique filesystem-safe suffix on collision.
+
+The external archive is the authoritative audit record for a read-only task. Do not create a rolling `REPORT.md` for that task. If the external archive cannot be written, stop and report the archive failure without falling back to a repository-local artifact.
+
+This mode guarantees that reporting cannot change `git status` during clean-tree validation, merge, push, audit, review, or other read-only work.
+
 The terminal response is only a completion summary.
 
 It must:
@@ -113,15 +131,9 @@ Report:
 Archive:
 Next:
 
-The concise executive report must always be written to REPORT.md before the terminal summary is printed.
+Before the terminal summary, implementation reporting mode must write both `REPORT.md` and `reports/YYYY-MM-DD_HHMMSS_<task>.md`. Read-only reporting mode must write only `/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md` and must use `Report: Not created (read-only task)` in the terminal summary.
 
-A timestamped archive must always be written to:
-
-reports/YYYY-MM-DD_HHMMSS_<task>.md
-
-before the terminal summary is printed.
-
-If a task fails or stops early, the agent must still write `REPORT.md` and its timestamped archive before printing the terminal response. The archive must include the exact failure, stopped state, files changed, tests run, and approval needed, in addition to all otherwise applicable required archive fields. `REPORT.md` must contain only the concise executive summary of that stopped or failed task.
+If an implementation task fails or stops early, the agent must still write `REPORT.md` and its repository-local archive before printing the terminal response. If a read-only task fails or stops early, it must still write its external archive without modifying the repository. The authoritative archive must include the exact failure, stopped state, files changed, tests run, and approval needed, in addition to all otherwise applicable archive fields. An implementation `REPORT.md` must contain only the concise executive summary of that stopped or failed task.
 
 `REPORT.md` is the current rolling report and must remain listed in `.gitignore`. The `reports/` directory must not be added to `.gitignore`; archived reports are reviewable and may be committed when the task requires it.
 
