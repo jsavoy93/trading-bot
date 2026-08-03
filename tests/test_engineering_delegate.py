@@ -38,7 +38,18 @@ class StubLauncher:
         request_id: str,
     ) -> LaunchedRun:
         self.calls.append((agent_name, branch, prompt, request_id))
-        return LaunchedRun("run-123", DelegationStatus.ACTIVE)
+        return LaunchedRun(
+            request_id=request_id,
+            run_id="run-123",
+            agent_name=agent_name,
+            feature_branch=branch,
+            status=DelegationStatus.ACTIVE,
+            started_at="2026-08-02T15:00:00+00:00",
+            updated_at="2026-08-02T15:00:01+00:00",
+            deadline_at="2026-08-02T15:30:00+00:00",
+            stdout_path="/tmp/run-123/stdout.log",
+            stderr_path="/tmp/run-123/stderr.log",
+        )
 
 
 def write_backlog(tmp_path: Path) -> Path:
@@ -84,7 +95,10 @@ def test_delegate_launches_once_records_run_and_advances(
         started_at="2026-08-02T15:00:00+00:00",
         status=DelegationStatus.ACTIVE,
         request_id=request_id,
-        updated_at="2026-08-02T15:00:00+00:00",
+        updated_at="2026-08-02T15:00:01+00:00",
+        deadline_at="2026-08-02T15:30:00+00:00",
+        stdout_path="/tmp/run-123/stdout.log",
+        stderr_path="/tmp/run-123/stderr.log",
     )
     output = capsys.readouterr().out
     assert "Run ID: run-123\n" in output
@@ -120,6 +134,20 @@ def test_delegate_retries_use_the_same_idempotent_request_id(tmp_path: Path) -> 
     run(workflow, backlog_path=write_backlog(tmp_path), launcher=second_launcher)
 
     assert first_launcher.calls[0][3] == second_launcher.calls[0][3]
+
+
+def test_delegate_rejects_mismatched_wrapper_identity(tmp_path: Path) -> None:
+    class MismatchedLauncher(StubLauncher):
+        def launch(self, *args: str) -> LaunchedRun:
+            launched = super().launch(*args)
+            return __import__("dataclasses").replace(launched, request_id="other")
+
+    with pytest.raises(RuntimeError, match="request identity"):
+        run(
+            make_workflow(),
+            backlog_path=write_backlog(tmp_path),
+            launcher=MismatchedLauncher(),
+        )
 
 
 def test_delegate_rejects_unknown_task(tmp_path: Path) -> None:

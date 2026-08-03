@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -12,6 +12,7 @@ from engineering.executor import (
     build_agent_prompt,
     build_request_id,
     select_specialist,
+    validate_run_identity,
 )
 from engineering.models import BacklogTask, WorkflowState
 from engineering.workflow_store import DelegationRecord, StoredWorkflow
@@ -52,10 +53,12 @@ def run(
         prompt,
         request_id,
     )
-    started_at = (
-        (clock or (lambda: datetime.now(UTC)))()
-        .astimezone(UTC)
-        .isoformat()
+    validate_run_identity(
+        launched,
+        request_id=request_id,
+        run_id=None,
+        agent_name=agent_name,
+        feature_branch=workflow.feature_branch,
     )
 
     print(f"Agent: {agent_name}")
@@ -68,9 +71,15 @@ def run(
         delegation=DelegationRecord(
             run_id=launched.run_id,
             agent_name=agent_name,
-            started_at=started_at,
+            started_at=launched.started_at,
             status=launched.status,
             request_id=request_id,
-            updated_at=started_at,
+            updated_at=launched.updated_at,
+            deadline_at=launched.deadline_at,
+            stdout_path=launched.stdout_path,
+            stderr_path=launched.stderr_path,
+            exit_code=launched.exit_code,
+            completed_at=launched.completed_at,
+            failure_reason=launched.failure_reason,
         ),
     )

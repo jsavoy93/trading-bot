@@ -23,6 +23,29 @@ def make_task(owner: str = "trading-exec") -> BacklogTask:
     )
 
 
+def run_payload(status: str = "RUNNING", **overrides: object) -> str:
+    terminal = status in {"COMPLETE", "FAILED", "TIMED_OUT"}
+    payload: dict[str, object] = {
+        "request_id": "request-123",
+        "run_id": "run-123",
+        "agent_name": "trading-exec",
+        "feature_branch": "agent/test-001",
+        "status": status,
+        "started_at": "2026-08-03T00:00:00+00:00",
+        "updated_at": "2026-08-03T00:01:00+00:00",
+        "deadline_at": "2026-08-03T00:30:00+00:00",
+        "stdout_path": "/tmp/run-123/stdout.log",
+        "stderr_path": "/tmp/run-123/stderr.log",
+        "exit_code": 0 if status == "COMPLETE" else (17 if terminal else None),
+        "completed_at": "2026-08-03T00:02:00+00:00" if terminal else None,
+        "failure_reason": "failed" if terminal and status != "COMPLETE" else "",
+    }
+    if status == "TIMED_OUT":
+        payload["exit_code"] = 124
+    payload.update(overrides)
+    return __import__("json").dumps(payload)
+
+
 def test_build_agent_prompt_contains_bounded_assignment() -> None:
     prompt = build_agent_prompt(make_task(), "agent/test-001")
 
@@ -47,15 +70,23 @@ def test_select_specialist_rejects_unapproved_owner() -> None:
         select_specialist(make_task("trading-manager"))
 
 
-def test_command_launcher_requires_explicit_configuration(
+def test_command_launcher_defaults_to_repository_owned_wrapper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("ENGINEERING_AGENT_COMMAND", raising=False)
+    recorded: dict[str, object] = {}
 
-    with pytest.raises(RuntimeError, match="Agent launching is not configured"):
-        CommandAgentLauncher().launch(
-            "trading-exec", "agent/test-001", "prompt", "request-123"
-        )
+    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+        recorded["args"] = args
+        return SimpleNamespace(stdout=run_payload())
+
+    monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
+    CommandAgentLauncher(repo_root=__import__("pathlib").Path("/tmp/repo")).launch(
+        "trading-exec", "agent/test-001", "prompt", "request-123"
+    )
+
+    args = recorded["args"]
+    assert isinstance(args, list)
+    assert args[1].endswith("engineering/codex_cli_wrapper.py")
 
 
 def test_command_launcher_invokes_configured_wrapper_and_parses_run(
@@ -66,7 +97,7 @@ def test_command_launcher_invokes_configured_wrapper_and_parses_run(
     def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
         recorded["args"] = args
         recorded.update(kwargs)
-        return SimpleNamespace(stdout='{"run_id":"run-123","status":"ACTIVE"}')
+        return SimpleNamespace(stdout=run_payload())
 
     monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
 
@@ -88,10 +119,14 @@ def test_command_launcher_invokes_configured_wrapper_and_parses_run(
         "agent/test-001",
         "--request-id",
         "request-123",
+        "--repo",
+        str(__import__("pathlib").Path.cwd()),
     ]
     assert recorded["input"] == "bounded prompt"
     assert recorded["check"] is True
     assert recorded["timeout"] == 30
+    assert launched.request_id == "request-123"
+    assert launched.deadline_at == "2026-08-03T00:30:00+00:00"
 
 
 def test_build_request_id_is_deterministic_and_task_scoped() -> None:
@@ -109,13 +144,14 @@ def test_command_monitor_requests_and_parses_status(
     def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
         recorded["args"] = args
         recorded.update(kwargs)
-        return SimpleNamespace(stdout='{"status":"COMPLETE"}')
+        return SimpleNamespace(stdout=run_payload("COMPLETE"))
 
     monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
 
     status = CommandAgentLauncher(("agent-wrapper",)).status("run-123")
 
-    assert status is DelegationStatus.COMPLETE
+    assert status.status is DelegationStatus.COMPLETE
+    assert status.exit_code == 0
     assert recorded["args"] == [
         "agent-wrapper",
         "status",
@@ -131,7 +167,7 @@ def test_command_monitor_requests_and_parses_status(
         "not-json",
         "[]",
         "{}",
-        '{"status":"UNKNOWN"}',
+        run_payload("UNKNOWN"),
     ),
 )
 def test_command_monitor_rejects_malformed_status_metadata(
@@ -143,5 +179,58 @@ def test_command_monitor_rejects_malformed_status_metadata(
 
     monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
 
-    with pytest.raises(RuntimeError, match="invalid (JSON|status) metadata"):
+    with pytest.raises(RuntimeError, match="invalid (JSON|run metadata|lifecycle status)"):
         CommandAgentLauncher(("agent-wrapper",)).status("run-123")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        run_payload("RUNNING", request_id="other"),
+        run_payload("COMPLETE", exit_code=17),
+        run_payload("TIMED_OUT", exit_code=17),
+        run_payload("FAILED", completed_at=None),
+    ),
+)
+def test_command_launcher_rejects_conflicting_or_incomplete_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: str,
+) -> None:
+    monkeypatch.setattr(
+        "engineering.executor.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=payload),
+    )
+    with pytest.raises(RuntimeError):
+        CommandAgentLauncher(("fake-wrapper",)).launch(
+            "trading-exec", "agent/test-001", "prompt", "request-123"
+        )
+
+
+def test_command_monitor_rejects_mismatched_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "engineering.executor.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout=run_payload("RUNNING", run_id="other")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="mismatched status run ID"):
+        CommandAgentLauncher(("fake-wrapper",)).status("run-123")
+
+
+def test_command_wrapper_failure_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise __import__("subprocess").CalledProcessError(
+            125, ["fake-wrapper"], stderr="x" * 3000
+        )
+
+    monkeypatch.setattr("engineering.executor.subprocess.run", fail)
+
+    with pytest.raises(RuntimeError) as error:
+        CommandAgentLauncher(("fake-wrapper",)).status("run-123")
+
+    assert len(str(error.value)) <= 2040

@@ -24,6 +24,12 @@ class DelegationRecord:
     status: DelegationStatus
     request_id: str | None = None
     updated_at: str | None = None
+    deadline_at: str | None = None
+    stdout_path: str | None = None
+    stderr_path: str | None = None
+    exit_code: int | None = None
+    completed_at: str | None = None
+    failure_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,26 @@ class WorkflowStore:
             delegation_data = data.get("delegation")
             delegation = None
             if delegation_data is not None:
+                for field_name in (
+                    "run_id", "agent_name", "started_at", "status",
+                ):
+                    if not isinstance(delegation_data.get(field_name), str):
+                        raise TypeError(f"Delegation {field_name} must be a string")
+                for field_name in (
+                    "request_id", "updated_at", "deadline_at", "stdout_path",
+                    "stderr_path", "completed_at",
+                ):
+                    value = delegation_data.get(field_name)
+                    if value is not None and not isinstance(value, str):
+                        raise TypeError(
+                            f"Delegation {field_name} must be a string or null"
+                        )
+                exit_code = delegation_data.get("exit_code")
+                if exit_code is not None and not isinstance(exit_code, int):
+                    raise TypeError("Delegation exit_code must be an integer or null")
+                failure_reason = delegation_data.get("failure_reason", "")
+                if not isinstance(failure_reason, str) or len(failure_reason) > 2000:
+                    raise TypeError("Delegation failure_reason must be a string")
                 delegation = DelegationRecord(
                     run_id=delegation_data["run_id"],
                     agent_name=delegation_data["agent_name"],
@@ -103,6 +129,12 @@ class WorkflowStore:
                     status=DelegationStatus(delegation_data["status"]),
                     request_id=delegation_data.get("request_id"),
                     updated_at=delegation_data.get("updated_at"),
+                    deadline_at=delegation_data.get("deadline_at"),
+                    stdout_path=delegation_data.get("stdout_path"),
+                    stderr_path=delegation_data.get("stderr_path"),
+                    exit_code=exit_code,
+                    completed_at=delegation_data.get("completed_at"),
+                    failure_reason=failure_reason,
                 )
 
             qa_data = data.get("qa")
@@ -272,6 +304,18 @@ class WorkflowStore:
                 payload["delegation"]["request_id"] = workflow.delegation.request_id
             if workflow.delegation.updated_at is not None:
                 payload["delegation"]["updated_at"] = workflow.delegation.updated_at
+            if workflow.delegation.deadline_at is not None:
+                payload["delegation"]["deadline_at"] = workflow.delegation.deadline_at
+            if workflow.delegation.stdout_path is not None:
+                payload["delegation"]["stdout_path"] = workflow.delegation.stdout_path
+            if workflow.delegation.stderr_path is not None:
+                payload["delegation"]["stderr_path"] = workflow.delegation.stderr_path
+            if workflow.delegation.exit_code is not None:
+                payload["delegation"]["exit_code"] = workflow.delegation.exit_code
+            if workflow.delegation.completed_at is not None:
+                payload["delegation"]["completed_at"] = workflow.delegation.completed_at
+            if workflow.delegation.failure_reason:
+                payload["delegation"]["failure_reason"] = workflow.delegation.failure_reason
 
         if workflow.qa is not None:
             payload["qa"] = {
