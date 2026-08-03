@@ -38,6 +38,12 @@ Hard rules:
 
 For every completed task, audit, proposal, review, or merge-readiness check, the agent must:
 
+These reporting requirements apply to every future engineering task unless the current backlog item explicitly forbids creating report artifacts.
+
+Creating `REPORT.md` and `reports/<timestamp>_<task>.md` is considered part of the reporting process rather than part of the implementation scope. Unless a task explicitly prohibits report generation, these files may always be created even when they are not listed in the allowed implementation files.
+
+If `REPORT.md` cannot be created because of an explicit user instruction, the agent must clearly state that the report was intentionally omitted and why.
+
 1. Write the full detailed output to `REPORT.md` in the repository root.
 2. Create `reports/` if it does not exist, then archive a timestamped copy at:
    `reports/YYYY-MM-DD_HHMMSS_<TASK-ID-or-purpose>.md`.
@@ -60,6 +66,8 @@ For every completed task, audit, proposal, review, or merge-readiness check, the
 - Next recommended action
 
 The terminal response must be a concise summary only and include:
+
+Do not print REPORT.md contents to the terminal.
 
 - Report path
 - Decision
