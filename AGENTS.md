@@ -46,7 +46,7 @@ If `REPORT.md` cannot be created because of an explicit user instruction, the ag
 
 REPORT.md is the current rolling report. It must be completely overwritten for every task. Never append to an existing REPORT.md.
 
-1. Write the full detailed output to `REPORT.md` in the repository root.
+1. Write a concise executive report to `REPORT.md` in the repository root.
 2. Create `reports/` if it does not exist, then archive a timestamped copy at:
    `reports/YYYY-MM-DD_HHMMSS_<TASK-ID-or-purpose>.md`.
 3. Use a UTC timestamp and a filesystem-safe task ID or purpose in the archived filename.
@@ -61,11 +61,39 @@ REPORT.md is the current rolling report. It must be completely overwritten for e
 - Commit
 - Files changed
 - Tests run
-- Exact test results
-- Acceptance evidence
+- Exact test summary
+- Overall acceptance result
 - Known risks
 - Manager decision
 - Next recommended action
+
+`REPORT.md` must not contain:
+
+- Full criterion-by-criterion acceptance evidence
+- Long command output
+- Complete diffs
+- Stack traces longer than a short diagnostic excerpt
+- Repeated sections
+- Full archived-report contents
+
+`REPORT.md` must contain no more than 150 lines, with no repeated headings or duplicated content.
+
+The timestamped archive at:
+
+`reports/YYYY-MM-DD_HHMMSS_<task>.md`
+
+must contain the complete detailed record, including:
+
+- Every acceptance criterion
+- Proof method
+- Exact result
+- PASS or FAIL
+- Full relevant diagnostics
+- Timing and continuity fields
+- Detailed risks
+- Complete stopped or failure state when applicable
+
+The archive is the authoritative audit record. `REPORT.md` is only the current executive summary.
 
 The terminal response is only a completion summary.
 
@@ -85,7 +113,7 @@ Report:
 Archive:
 Next:
 
-The complete report must always be written to REPORT.md before the terminal summary is printed.
+The concise executive report must always be written to REPORT.md before the terminal summary is printed.
 
 A timestamped archive must always be written to:
 
@@ -93,7 +121,7 @@ reports/YYYY-MM-DD_HHMMSS_<task>.md
 
 before the terminal summary is printed.
 
-If a task fails or stops early, the agent must still write `REPORT.md` and its timestamped archive before printing the terminal response. The failed or stopped report must include the exact failure, stopped state, files changed, tests run, and approval needed, in addition to all otherwise applicable required report fields.
+If a task fails or stops early, the agent must still write `REPORT.md` and its timestamped archive before printing the terminal response. The archive must include the exact failure, stopped state, files changed, tests run, and approval needed, in addition to all otherwise applicable required archive fields. `REPORT.md` must contain only the concise executive summary of that stopped or failed task.
 
 `REPORT.md` is the current rolling report and must remain listed in `.gitignore`. The `reports/` directory must not be added to `.gitignore`; archived reports are reviewable and may be committed when the task requires it.
 
