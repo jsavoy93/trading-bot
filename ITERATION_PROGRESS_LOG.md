@@ -604,3 +604,47 @@ explicitly.
     - Exact result: Only the seven OPS-011 allowed files listed above changed;
       no executor, handler, model, workflow-store, or dispatcher file changed.
     - Status: `PASS`
+
+## 2026-08-03 00:32:49 UTC — Resume and reverify OPS-011 completion
+
+- Task start time: `2026-08-03 00:25:00 UTC` (audit began during this
+  continuous session before the final timestamp was captured)
+- Task end time: `2026-08-03 00:33:43 UTC`
+- Elapsed time: 8 minutes 43 seconds
+- Continuity: Resumed. OPS-011 implementation and acceptance evidence were
+  completed previously; Josh explicitly requested a current branch audit,
+  fresh focused and full-safe verification, and completion of the remaining
+  documentation state.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `OPS-011` — reverify the standalone repository-owned
+  Codex wrapper after the bounded one-second atomic-claim publication
+  correction and close its documentation state without beginning OPS-012.
+- Branch: `agent/trading-ops-011-codex-wrapper`
+- Starting HEAD: `94260b985a19dd70498f87dbef36296d72208719`
+- Status: `DONE`
+- Files changed in this resumed iteration: `AGENT_BACKLOG.md`,
+  `ITERATION_PROGRESS_LOG.md`, `REPORT.md`, and the timestamped report archive.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_engineering_codex_cli_wrapper.py -q` passed `13 passed, 1 warning
+  in 5.17s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest`
+  passed `186 passed, 2 warnings in 17.49s`; the safety gate reported paper
+  defaults and live brokerage calls blocked.
+- Acceptance evidence: All 14 authoritative OPS-011 criteria remain `PASS`.
+  The wrapper remains the sole `codex exec` boundary; deterministic request IDs,
+  atomic create-once claims, the bounded one-second publication wait,
+  explicit incomplete-claim `FAILED/125`, identity conflicts, bounded
+  artifacts, timeout `124`, stale reconciliation, fake-only test execution,
+  complete documentation, and the prohibition on OPS-012 integration were
+  verified by code inspection, commit-scope inspection, and the green focused
+  and full suites. The original criterion-level proof remains immediately
+  above this entry and is incorporated into the current report.
+- Decisions/risks: No implementation correction was necessary. No real Codex
+  service was invoked. No DELEGATE, WAIT_FOR_AGENT, executor, model,
+  workflow-store, or dispatcher file was modified. Remaining risks are Linux
+  `/proc` dependence, filesystem hard-link support, and operator management of
+  runtime-directory durability, permissions, and retention.
+- Manager review decision: `ACCEPT`; OPS-011 is complete and ready for Josh's
+  review before merge.
+- Next action: Stop for Josh's review. Do not merge, push main, begin OPS-012,
+  or start another task.

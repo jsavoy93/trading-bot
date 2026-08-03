@@ -16,7 +16,7 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ### OPS-011 — Implement the repository-owned idempotent Codex CLI wrapper foundation
 
-Status: TODO
+Status: DONE
 Owner: trading-exec
 Priority: P0
 
