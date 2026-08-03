@@ -491,7 +491,7 @@ Approved volume semantics:
 
 ### TEST-003 — Decision-path tests
 
-Status: TODO  
+Status: DONE  
 Owner: trading-exec  
 Priority: P0
 

@@ -3315,7 +3315,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             price = analysis['price']
             signal_strength = analysis.get('signal_strength', 'WEAK')
 
-            if not signal:
+            if signal not in {'BUY', 'SELL'}:
+                logging.info(f"🚫 Cannot execute {symbol}: Unsupported signal {signal!r}")
                 return False
 
             # STRICT: Block all trades if using margin (cash negative)
