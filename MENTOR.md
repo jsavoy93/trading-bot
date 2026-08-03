@@ -13,9 +13,11 @@ This file is the first thing to read before touching any part of this codebase. 
 ## Mandatory Iteration Continuity Process
 
 Every agent must update `ITERATION_PROGRESS_LOG.md` after every bounded
-engineering iteration, before giving the final report to Josh. Session
+implementation iteration, before giving the final report to Josh. Session
 history, chat messages, and uncommitted workflow state are not sufficient
-handoff records.
+handoff records. Read-only reporting tasks must not update this log or any
+repository file; their authoritative handoff is the external timestamped
+archive under `/root/.openclaw/audit-archives/<repository-name>/`.
 
 For each iteration, append a short entry to `ITERATION_PROGRESS_LOG.md`
 containing:
@@ -43,6 +45,19 @@ Additional requirements:
    workflow state. Consult older history when needed.
 5. Keep entries concise and factual. Never leave the only record of current
    status in chat history.
+
+### Reporting location and clean-tree continuity
+
+Reporting mode is selected automatically before artifacts are created.
+Implementation tasks overwrite ignored `REPORT.md`, append the required
+implementation continuity entry here, and write a reviewable archive under
+`reports/`. Merge readiness, merge execution, audits, reviews, dependency
+gates, preflight checks, verification-only work, documentation inspections,
+tasks promising no repository changes, and any workflow requiring a clean
+tree use read-only reporting mode. Read-only mode writes only to
+`/root/.openclaw/audit-archives/<repository-name>/` and never changes this
+repository. Uncertain classification fails safe to read-only mode, so clean
+tree checks cannot be invalidated by mandatory reporting.
 
 ---
 
