@@ -259,6 +259,26 @@ Do not weaken this gate, replace the mock fixtures with real clients, or infer
 that a normal green test run alone proves the gate: retain the negative
 subprocess tests in `tests/test_brokerage_safety_enforcement.py`.
 
+## Indicator Calculation Test Contract
+
+`TEST-002` is covered by `tests/test_smart_bot_indicators.py` without
+constructing `SmartTradingBot` or any brokerage/data client. The focused tests
+invoke `calculate_indicators` with a lightweight object containing only the
+configured SMA and RSI periods.
+
+MACD is the repository's existing 12/26/9 calculation: pandas exponential
+moving averages with `adjust=False`, initialized recursively from the first
+value. Bollinger bands use a 20-row rolling mean and pandas' sample standard
+deviation. Known rising, alternating, and falling price inputs pin RSI, SMA,
+MACD, Bollinger, and volume results.
+
+The volume contract is exact: input `volume` is unchanged;
+`volume_sma_20` includes the current row and preceding 19 rows; its first 19
+rows are NaN; and `volume_ratio` is raw volume divided by that SMA. A zero,
+missing, or non-finite denominator leaves the ratio NaN. These are
+timeframe-agnostic dataframe semantics, not persistence, API, dashboard,
+liquidity, catalyst, ranking, or signal-confirmation requirements.
+
 ## Autonomous Engineering Workflow
 
 The deterministic engineering manager lives under `engineering/`.

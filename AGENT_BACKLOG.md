@@ -469,14 +469,25 @@ Allowed areas:
 
 ### TEST-002 — Indicator calculation tests
 
-Status: TODO  
-Owner: trading-exec  
+Status: DONE
+Owner: trading-exec
 Priority: P0
 
 Acceptance criteria:
 
 - Known inputs produce expected RSI, SMA, MACD, Bollinger, and volume values.
 - Bullish, neutral, and bearish examples are covered.
+
+Approved volume semantics:
+
+- Raw input volume is preserved unchanged.
+- `volume_sma_20` is the arithmetic mean of the current row and preceding 19
+  rows; the first 19 rows remain NaN.
+- `volume_ratio` is `volume / volume_sma_20`; a zero, missing, or non-finite
+  denominator leaves the ratio NaN rather than normalizing it.
+- Scope is limited to deterministic `calculate_indicators` tests. Persistence,
+  database, API, dashboard, liquidity, catalyst, ranking, signal confirmation,
+  and production behavior changes are excluded.
 
 ### TEST-003 — Decision-path tests
 
