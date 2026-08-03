@@ -44,6 +44,8 @@ Creating `REPORT.md` and `reports/<timestamp>_<task>.md` is considered part of t
 
 If `REPORT.md` cannot be created because of an explicit user instruction, the agent must clearly state that the report was intentionally omitted and why.
 
+REPORT.md is the current rolling report. It must be completely overwritten for every task. Never append to an existing REPORT.md.
+
 1. Write the full detailed output to `REPORT.md` in the repository root.
 2. Create `reports/` if it does not exist, then archive a timestamped copy at:
    `reports/YYYY-MM-DD_HHMMSS_<TASK-ID-or-purpose>.md`.
@@ -65,14 +67,31 @@ If `REPORT.md` cannot be created because of an explicit user instruction, the ag
 - Manager decision
 - Next recommended action
 
-The terminal response must be a concise summary only and include:
+The terminal response is only a completion summary.
 
-Do not print REPORT.md contents to the terminal.
+It must:
+- never exceed 15 lines,
+- always fit on a single terminal screen without scrolling,
+- never include the contents of REPORT.md,
+- never include the contents of archived reports,
+- contain only:
 
-- Report path
-- Decision
-- Tests result
-- Next action
+Task:
+Decision:
+Branch:
+Commit:
+Tests:
+Report:
+Archive:
+Next:
+
+The complete report must always be written to REPORT.md before the terminal summary is printed.
+
+A timestamped archive must always be written to:
+
+reports/YYYY-MM-DD_HHMMSS_<task>.md
+
+before the terminal summary is printed.
 
 If a task fails or stops early, the agent must still write `REPORT.md` and its timestamped archive before printing the terminal response. The failed or stopped report must include the exact failure, stopped state, files changed, tests run, and approval needed, in addition to all otherwise applicable required report fields.
 
