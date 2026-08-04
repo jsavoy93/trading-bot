@@ -27,6 +27,7 @@ class EventType(str, Enum):
     REPORT_GENERATED = "report.generated"
     MANAGER_PAUSED = "manager.paused"
     MANAGER_RESUMED = "manager.resumed"
+    TELEGRAM_ACCESS_DENIED = "telegram.access_denied"
 
 
 class EventSeverity(str, Enum):
@@ -68,6 +69,7 @@ _ALLOWED_PAYLOAD_FIELDS = frozenset(
         "paused",
         "actor",
         "reason",
+        "revision",
     }
 )
 
