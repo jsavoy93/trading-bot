@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import math
 import time
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
 
 from engineering.engineering_control import ControlResult, EngineeringControlService
 from engineering.engineering_events import (
@@ -88,6 +88,9 @@ class TelegramEngineeringAdapter:
         bounds: AdapterBounds = AdapterBounds(),
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleeper: Callable[[float], None] = time.sleep,
+        runtime_event_sink: Callable[[str, Mapping[str, object]], None] = (
+            lambda event, fields: None
+        ),
     ) -> None:
         if authorized_chat_id <= 0:
             raise ValueError("Telegram allowlisted chat ID is invalid")
@@ -103,20 +106,29 @@ class TelegramEngineeringAdapter:
         self.bounds = bounds
         self.clock = clock
         self.sleeper = sleeper
+        self.runtime_event_sink = runtime_event_sink
         self._leased = False
 
-    def poll_once(self) -> PollResult:
+    def poll_once(self, *, poll_timeout_seconds: int | None = None) -> PollResult:
+        timeout_seconds = (
+            self.bounds.poll_timeout_seconds
+            if poll_timeout_seconds is None
+            else poll_timeout_seconds
+        )
+        if not 1 <= timeout_seconds <= self.bounds.poll_timeout_seconds:
+            raise ValueError("Telegram poll timeout override is outside finite bounds")
         state = self.event_store.claim_telegram_consumer(
             TELEGRAM_DESTINATION,
             lease_owner=self.worker_id,
             lease_seconds=self.bounds.consumer_lease_seconds,
         )
         if state is None:
+            self.runtime_event_sink("competing_poller", {})
             return PollResult(0, 0, 0, False)
         self._leased = True
         updates = self.transport.get_updates(
             offset=state.update_offset,
-            timeout_seconds=self.bounds.poll_timeout_seconds,
+            timeout_seconds=timeout_seconds,
             limit=self.bounds.update_batch_size,
         )
         handled = 0
@@ -163,6 +175,7 @@ class TelegramEngineeringAdapter:
                 TELEGRAM_DESTINATION, lease_owner=self.worker_id
             )
             self._leased = False
+            self.runtime_event_sink("lease_released", {})
 
     def _authorized(self, update: TelegramUpdate) -> bool:
         return (
@@ -182,6 +195,7 @@ class TelegramEngineeringAdapter:
             severity=EventSeverity.WARNING,
         )
         self.event_store.append(event)
+        self.runtime_event_sink("access_denied", {})
 
     def _handle_update(self, update: TelegramUpdate) -> None:
         if not self._authorized(update):
@@ -195,6 +209,7 @@ class TelegramEngineeringAdapter:
             self._send("Unknown command. Use /status, /current, /next, /report, /pause, or /resume.")
             return
         command = parts[0]
+        self.runtime_event_sink("authorized_command", {"command": command})
         if command == "/pause":
             self._send(self._render_control("paused", self.control_service.pause()))
         elif command == "/resume":
@@ -285,6 +300,9 @@ class TelegramEngineeringAdapter:
                 lease_owner=self.worker_id,
                 receipt_id=receipt,
             )
+            self.runtime_event_sink(
+                "notification_sent", {"event_type": event.event_type.value}
+            )
             sent += 1
         return sent
 
@@ -302,6 +320,13 @@ class TelegramEngineeringAdapter:
             lease_owner=self.worker_id,
             diagnostic=f"Telegram delivery failed: {type(error).__name__}",
             retry_at=retry_at,
+        )
+        status = self.event_store.get_delivery(
+            delivery.event_id, TELEGRAM_DESTINATION
+        ).status
+        self.runtime_event_sink(
+            "notification_failed",
+            {"delivery_status": status, "reason_code": "telegram_transport"},
         )
 
     @staticmethod
