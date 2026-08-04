@@ -1193,3 +1193,15 @@ explicitly.
   documented compatibility changes.
 - Next action: commit and push fixes to PR #9, then stop for another read-only
   human review. No merge approval is implied.
+
+## 2026-08-04 23:30:43–23:36:05 UTC — ENGDASH-002 PR #11 final route-surface review fix
+
+- Backlog item/objective: `ENGDASH-002` — final review of PR #11 for Josh's merge decision, including repository/PR state, architecture/security review, route inventory, and verification.
+- Branch: `agent/engdash-002-read-only-api-ui`.
+- Commit: pending at log-write time; previous branch tip was `017a6324e3ff36b0ab782ce2e2e58c49952a9791`.
+- Status: `DONE` implementation fix, pending commit/push and human merge decision.
+- Files changed: `dashboard_api/app.py`, `tests/test_dashboard_api_app.py`, `AGENT_BACKLOG.md`, `docs/2026-08-04_232153_ENGDASH-002-implementation-audit.md`, `ITERATION_PROGRESS_LOG.md`, plus required report artifacts.
+- Tests/evidence: route inventory smoke test showed only `/api/engineering/snapshot` GET and `/engineering` GET, with `/openapi.json` returning 404; `git diff --check` passed with no output; `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py` passed `23 passed, 2 warnings in 1.72s`; `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py tests/test_settings_service.py -k 'dashboard or engineering_read_model' tests/test_engineering_query_service.py tests/test_engineering_event_projection.py` passed `33 passed, 33 deselected, 2 warnings in 3.57s`; `git diff --check && .venv/bin/python -m pytest tests` passed `366 passed, 82 warnings in 35.97s`.
+- Important decisions/discoveries: final HTTP surface review found FastAPI's automatic `/openapi.json`, `/docs`, and `/redoc` routes were still registered. They were read-only but outside the approved two-route surface, so they were disabled with `docs_url=None`, `redoc_url=None`, and `openapi_url=None`; tests now assert the exact registered route set.
+- Remaining risks: standalone default app remains intentionally degraded until production wiring injects a real provider; GitHub metadata remains injected-only; no deployment/runtime service integration is included.
+- Next action: commit and push this narrow PR #11 fix, update the PR description, then stop for Josh's human merge decision. No merge approval is implied.

@@ -1,7 +1,7 @@
 # ENGDASH-001 — Engineering Dashboard Read Model
 
 ENGDASH-001 adds a reusable read-only engineering dashboard snapshot model under
-`dashboard-api/engineering_read_model.py`.
+`dashboard_api/engineering_read_model.py`.
 
 ## Boundary
 

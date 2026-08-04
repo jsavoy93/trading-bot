@@ -12,13 +12,13 @@ Status: DONE
 
 ## Scope notes
 
-Josh approved implementation writes under `dashboard/**`, `dashboard-api/**`, `docs/**`, `tests/**`, `scripts/**`, and `config/**`. The earlier approval packet proposed `engineering/**` and `AGENT_BACKLOG.md`, but those were not in the final allowed implementation areas. This implementation therefore keeps the read model under `dashboard-api/` and does not modify engineering internals or backlog governance files.
+Josh approved implementation writes under `dashboard/**`, `dashboard_api/**`, `docs/**`, `tests/**`, `scripts/**`, and `config/**`. The earlier approval packet proposed `engineering/**` and `AGENT_BACKLOG.md`, but those were not in the final allowed implementation areas. This implementation therefore keeps the read model under `dashboard_api/` and does not modify engineering internals or backlog governance files.
 
 The initial untracked `memory/` runtime directory was resolved safely by adding `memory/` to `.git/info/exclude`, a local Git exclude file outside repository contents. The directory was not deleted or committed.
 
 ## Files changed
 
-- `dashboard-api/engineering_read_model.py`
+- `dashboard_api/engineering_read_model.py`
 - `docs/ENGDASH-001.md`
 - `docs/2026-08-04_225934_ENGDASH-001-implementation-audit.md`
 - `tests/test_dashboard_engineering_read_model.py`
@@ -46,7 +46,7 @@ The initial untracked `memory/` runtime directory was resolved safely by adding 
    - Status: PASS
 
 5. Exact output types defined.
-   - Proof: frozen dataclasses in `dashboard-api/engineering_read_model.py`: `DashboardSnapshot`, `RepositorySummary`, `BacklogSummary`, `WorkflowSummary`, `ApprovalSummary`, `TestSummary`, `PullRequestSummary`, `ReportSummary`, `HealthWarning`.
+   - Proof: frozen dataclasses in `dashboard_api/engineering_read_model.py`: `DashboardSnapshot`, `RepositorySummary`, `BacklogSummary`, `WorkflowSummary`, `ApprovalSummary`, `TestSummary`, `PullRequestSummary`, `ReportSummary`, `HealthWarning`.
    - Result: PASS.
    - Status: PASS
 
@@ -75,7 +75,7 @@ Warnings were pre-existing/config/deprecation warnings, including unknown pytest
 
 ## Known risks and follow-up
 
-- The implementation uses `dashboard-api/` because that path was explicitly approved. Python package import ergonomics would be cleaner in `dashboard_api/` or `engineering/`, but those were not approved in the final scope.
+- The implementation uses `dashboard_api/` because that path was explicitly approved. Python package import ergonomics would be cleaner in `dashboard_api/` or `engineering/`, but those were not approved in the final scope.
 - The backlog definition was not added to `AGENT_BACKLOG.md` because that file was outside final approved implementation areas.
 - PR metadata is interface-ready but not connected to a live GitHub reader; missing metadata intentionally returns unavailable plus a health warning.
 - Repository summary is injected; ENGDASH-001 deliberately does not run Git from the read model.
