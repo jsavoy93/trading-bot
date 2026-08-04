@@ -226,6 +226,15 @@ def test_run_has_finite_backoff_and_graceful_release(tmp_path: Path) -> None:
     assert events.claim_telegram_consumer("telegram", lease_owner="after") is not None
 
 
+def test_poll_timeout_override_can_only_shorten_configured_long_poll(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    instance, _ = adapter(tmp_path, transport)
+    instance.poll_once(poll_timeout_seconds=2)
+    assert transport.polls == [(0, 2, 20)]
+    with pytest.raises(ValueError, match="override"):
+        instance.poll_once(poll_timeout_seconds=6)
+
+
 def test_snapshot_values_are_bounded_and_control_char_sanitized(tmp_path: Path) -> None:
     query = FakeQuery({
         "current_task": None, "pause": {"paused": False},

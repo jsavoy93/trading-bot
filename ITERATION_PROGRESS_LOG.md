@@ -983,3 +983,77 @@ explicitly.
   targeting `main`, verified clean, and not merged.
 - Next action: Stop for Josh's review of PR #7. Do not begin DASH-007, OPS-016,
   CONFIG-001, or another task.
+
+## 2026-08-04 02:55:00–03:16:01 UTC — OPS-017 automated launcher stage
+
+- Task start time: `2026-08-04 02:55:00 UTC`
+- Task end time: `2026-08-04 03:16:01 UTC`
+- Elapsed time: 21 minutes 1 second
+- Continuity: Resumed from the intentionally uncommitted proposal after Josh
+  approved the revised 20-poll/300-second isolated-smoke plan.
+- Stale/blocked status: `BLOCKED`; not stale. Automated implementation is green,
+  but external secret creation and real Telegram I/O require separate approval.
+- Backlog item/objective: `OPS-017` — add a finite foreground launcher and
+  controlled manual smoke setup for OPS-015.
+- Branch: `agent/ops-017-telegram-smoke-launcher`
+- Starting commit: `d8dbe31`; governance commit: `ea598d0`; implementation
+  commit: `46af146`; stopped-evidence commit is the commit containing this entry.
+- Status: `BLOCKED`
+- Files changed: approved proposal/backlog; new Telegram smoke launcher; narrow
+  adapter event/timeout hook; focused service/adapter tests; mentor, handoff,
+  this log, ignored `REPORT.md`, and the timestamped stopped report archive.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_engineering_telegram_service.py
+  tests/test_engineering_telegram_adapter.py
+  tests/test_engineering_telegram_transport.py tests/test_engineering_control.py
+  tests/test_engineering_event_store.py tests/test_engineering_query_service.py
+  -q` passed `67 passed, 1 warning in 1.75s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `317 passed, 2 warnings in 21.53s`; paper defaults were active and live
+  brokerage calls were blocked. No backtest applies.
+- Acceptance result: Criteria 2, 3, 8, and 9 pass from automated evidence.
+  Criteria 1, 4, 5, 6, 7, and 10 remain incomplete until Josh approves external
+  secret provisioning and the real seven-interaction Telegram smoke test.
+- Safety: No `/etc/trading-bot/ops-015.env`, smoke database, real token, real
+  Telegram request, daemon, service, push, or PR was created.
+- Manager review decision: `BLOCKED` at the explicit external-action gate.
+- Next action: Josh reviews the exact secret setup and smoke command. On separate
+  approval, provision secrets interactively, run one bounded smoke sequence,
+  capture sanitized evidence, cleanup, rerun required verification if needed,
+  then push and create a PR. Do not begin any other task.
+
+## 2026-08-04 11:59:48 UTC — OPS-017 governance and review classification
+
+- Task start time: `2026-08-04 11:59:48 UTC`
+- Task end time: `2026-08-04 12:02:40 UTC`
+- Elapsed time: 2 minutes 52 seconds.
+- Continuity: Resumed after the authorized bounded Telegram smoke completed;
+  the earlier pause was the external-action approval gate Josh later cleared.
+- Stale/blocked status: Not stale and not blocked. One operational check is
+  pending because a second Telegram account is unavailable.
+- Backlog item/objective: `OPS-017` — record smoke evidence and distinguish
+  completed implementation from unavailable operational prerequisites.
+- Branch: `agent/ops-017-telegram-smoke-launcher`; starting commit: `c5b434d`;
+  completion commit: the later OPS-017 governance/reporting commit on this
+  feature branch.
+- Status: `DONE` for this governance iteration; OPS-017 backlog status remains
+  machine-parseable `REVIEW`, with review classification `Manual Operational
+  Verification Pending`.
+- Files changed: governance/backlog, mentor, handoff, this continuity log,
+  ignored `REPORT.md`, and the timestamped OPS-017 review archive. No code,
+  tests, secrets, database, generated result, or configuration changed.
+- Tests/evidence: focused PASS (`67 passed, 1 warning in 1.75s`); full safe
+  PASS (`317 passed, 2 warnings in 21.53s`); operator-reported smoke PASS for
+  `/status`, `/current`, `/report`, `/pause`, repeated `/pause`, `/resume`,
+  cleanup, lease release, and pause-state restoration. No backtest.
+- Acceptance result: IMPLEMENTATION COMPLETE; AUTOMATED VERIFICATION PASSED;
+  MANUAL OPERATIONAL VERIFICATION PENDING only for unauthorized-user denial.
+  No defect, code change, implementation reopening, or rework is requested.
+- Known risk: second-account denial and its sanitized audit event have not been
+  observed operationally, although automated denial coverage passes.
+- Manager review decision: Keep OPS-017 in REVIEW, not FAIL.
+- Risk acceptance: Josh explicitly accepted the remaining operational risk on
+  `2026-08-04`; unauthorized-user denial remains deferred and may be verified
+  later without reopening implementation.
+- Next action: Commit and push this feature branch, create or update the
+  OPS-017 PR targeting `main`, then stop for human review. Agents must not merge.

@@ -14,6 +14,103 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-017 — Add bounded OPS-015 launcher and manual smoke setup
+
+Status: REVIEW
+Review classification: Manual Operational Verification Pending
+Owner: trading-manager
+Priority: P1
+
+Depends on: OPS-014, OPS-015
+
+Verification state:
+
+- IMPLEMENTATION COMPLETE
+- AUTOMATED VERIFICATION PASSED
+- MANUAL OPERATIONAL VERIFICATION PENDING — one denial check from an
+  unauthorized second Telegram account remains unavailable. No software defect
+  is known; do not reopen implementation or create rework for this prerequisite.
+
+Acceptance criteria:
+
+- Runtime configuration uses exactly `ENGINEERING_TELEGRAM_BOT_TOKEN` and
+  `ENGINEERING_TELEGRAM_JOSH_CHAT_ID`. Real values exist only in
+  `/etc/trading-bot/ops-015.env`, outside Git, with mode `0600`, owned by the
+  invoking operator, and are never requested in chat, committed, printed,
+  logged, persisted, included in reports, or passed as command-line values.
+- A repository-owned launcher provides the exact supported command
+  `.venv/bin/python -m engineering.telegram_service --env-file
+  /etc/trading-bot/ops-015.env --smoke --event-store
+  .agent-state/telegram-smoke-events.sqlite3 --max-polls 20 --max-seconds
+  300`. It validates the environment file, repository paths, both finite
+  bounds, fixed Telegram origin, and exact isolated smoke event-store path
+  before making a network request.
+- Smoke mode is foreground-only, uses Telegram long polling, performs at most
+  20 polls and runs at most 300 elapsed seconds, stopping when either bound is
+  reached. It handles `SIGINT`/`SIGTERM` with graceful lease release, never
+  daemonizes, never polls endlessly, never restarts automatically, and never
+  installs, starts, enables, or modifies a service.
+- Before the real smoke test, an operator verifies that Josh initiated a
+  private chat and that the observed `message.chat.id` and `message.from.id`
+  are identical to the configured positive numeric allowlist. The token and
+  inbound message text are not displayed as evidence.
+- The approved Josh private chat receives deterministic bounded responses for
+  `/status`, `/current`, and `/report`; exact observed responses are recorded
+  with secret-free state context. No other read command, raw report, log,
+  artifact, file, environment value, or unbounded output is exposed.
+- An unauthorized second Telegram account receives no response. Exactly one
+  sanitized `telegram.access_denied` audit event is verified in the isolated
+  `.agent-state/telegram-smoke-events.sqlite3` store, and neither the
+  unauthorized ID nor inbound content is persisted or logged. The normal
+  `.agent-state/engineering-events.sqlite3` database is never opened, created,
+  read, or modified by smoke mode.
+- `/pause` and `/resume` are exercised only through
+  `EngineeringControlService`; the smoke record proves revisioned idempotent
+  state changes and corresponding `manager.paused` and `manager.resumed`
+  events in the isolated smoke store. The isolated manager pause record is
+  restored to its exact pre-smoke state during cleanup, including when either
+  the poll or elapsed-time bound ends the run; the normal engineering manager
+  event/control database remains untouched.
+- The launcher emits bounded one-line structured JSON logs to stderr for
+  startup, configuration validation, poll lifecycle, authorized command type,
+  denied access, delivery retry/dead-letter summary, shutdown, and terminal
+  outcome. Logs use an explicit field allowlist and never contain tokens,
+  chat/sender IDs, message text, query payloads, exceptions with request URLs,
+  or raw Telegram responses.
+- A competing consumer lease fails closed before polling and exits with code
+  `3`. A permanent Telegram transport error is distinguishable from a normal
+  bounded smoke completion and exits with code `4`; configuration errors exit
+  `2`, runtime/store failures exit `5`, graceful success exits `0`, and signal
+  interruption follows the documented shell convention. Transient errors
+  retain bounded retry/backoff behavior.
+- Automated tests use fake Telegram transport, query/control boundaries,
+  clocks, signals, and sleepers and make no external request. After focused
+  tests and the full safe suite pass, the separately approved real smoke test
+  verifies the full ordered sequence `/status`, `/current`, `/report`,
+  `/pause`, repeated `/pause`, `/resume`, and unauthorized `/status`. Cleanup
+  stops the launcher, releases or expires leases, restores the pre-smoke
+  isolated pause state even at either bound, preserves auditable state,
+  removes no file without Josh's approval, and documents token revocation plus
+  branch/commit rollback procedures.
+
+Allowed areas:
+
+- engineering/telegram_service.py
+- engineering/telegram_adapter.py
+- engineering/telegram_transport.py
+- engineering/engineering_control.py
+- engineering/event_store.py
+- engineering/query_service.py
+- tests/test_engineering_telegram_service.py
+- tests/test_engineering_telegram_adapter.py
+- tests/test_engineering_telegram_transport.py
+- tests/test_engineering_control.py
+- tests/test_engineering_event_store.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-015 — Add allowlisted Telegram engineering adapter
 
 Status: REVIEW

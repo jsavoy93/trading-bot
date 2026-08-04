@@ -110,6 +110,31 @@ The dashboard agent must not independently invent or tune trading strategy logic
 15. Report through Telegram.
 16. Stop.
 
+## Infrastructure-Dependent Verification States
+
+For work that depends on an external operational prerequisite such as a second
+account, DNS, certificates, email delivery, Telegram, or Slack, report these
+facts independently:
+
+- `IMPLEMENTATION COMPLETE` — the approved repository changes are finished.
+- `AUTOMATED VERIFICATION PASSED` — required deterministic safe tests pass.
+- `MANUAL OPERATIONAL VERIFICATION PENDING` — a real-environment check cannot
+  run because its external prerequisite is unavailable.
+
+When implementation and automated verification are complete and no software
+defect is known, an unavailable external prerequisite is not a failure. Keep
+the machine-parseable backlog status as `REVIEW` and record `Manual Operational
+Verification Pending` as review classification/detail, not as the status enum.
+Do not reopen implementation, create rework, or request code changes solely to
+satisfy the missing prerequisite. Recommend merge only after Josh explicitly
+accepts the documented residual operational risk, or defer the one-time check
+until the prerequisite becomes available.
+
+Use `FAIL`, `REWORK`, or an implementation blocker only when evidence identifies
+an actual software defect, failed automated requirement, unsafe configuration,
+or incomplete implementation. Name the missing prerequisite, exact evidence
+still required, and residual risk for every pending operational check.
+
 ## Deterministic Reporting Location
 
 - Normal repository-modifying engineering tasks use implementation reporting mode: overwrite ignored root `REPORT.md` and write the authoritative timestamped archive under repository `reports/`.
