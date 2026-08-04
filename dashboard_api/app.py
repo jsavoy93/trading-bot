@@ -71,7 +71,13 @@ def create_default_read_model() -> EngineeringDashboardReadModel:
 
 def create_app(snapshot_provider: SnapshotProvider | None = None) -> FastAPI:
     provider = snapshot_provider or create_default_read_model()
-    app = FastAPI(title="Engineering Dashboard", version="1.0.0")
+    app = FastAPI(
+        title="Engineering Dashboard",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     @app.get(SNAPSHOT_ROUTE, name="engineering_snapshot")
     def engineering_snapshot() -> JSONResponse:

@@ -208,8 +208,7 @@ def test_no_mutation_http_methods_or_routes():
     app = create_app(StaticProvider(populated_snapshot()))
     routes = {route.path: route.methods for route in app.routes if hasattr(route, "methods")}
 
-    assert routes[SNAPSHOT_ROUTE] == {"GET"}
-    assert routes[DASHBOARD_ROUTE] == {"GET"}
+    assert routes == {SNAPSHOT_ROUTE: {"GET"}, DASHBOARD_ROUTE: {"GET"}}
     client = TestClient(app)
     for method in (client.post, client.put, client.patch, client.delete):
         assert method(SNAPSHOT_ROUTE).status_code == 405
@@ -264,7 +263,7 @@ def test_no_import_filename_or_route_collision_with_legacy_dashboard_py():
     assert not Path("dashboard-api").exists()
     app = create_app(StaticProvider(populated_snapshot()))
     assert {SNAPSHOT_ROUTE, DASHBOARD_ROUTE}.issubset({route.path for route in app.routes})
-    assert "/" not in {SNAPSHOT_ROUTE, DASHBOARD_ROUTE}
+    assert {route.path for route in app.routes} == {SNAPSHOT_ROUTE, DASHBOARD_ROUTE}
 
 
 def test_launch_command_documented_and_no_route_exposes_controls():

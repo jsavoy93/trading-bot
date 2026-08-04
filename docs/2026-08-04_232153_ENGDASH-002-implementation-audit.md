@@ -74,6 +74,7 @@ The app is separate from the trading dashboard and is not mounted into `dashboar
 - The app consumes ENGDASH-001 `DashboardSnapshot` through an injected snapshot provider/read model.
 - The app does not import trading strategy, brokerage, Alpaca, trading database, or legacy trading dashboard code.
 - No POST/PUT/PATCH/DELETE routes exist for engineering dashboard paths.
+- FastAPI automatic `/openapi.json`, `/docs`, and `/redoc` routes are disabled so only the approved read-only routes are registered.
 - No approval, retry, pause, resume, execution, merge, or write controls are registered or rendered.
 - HTML output escapes rendered values.
 - JSON warning details are suppressed to avoid exposing raw exception messages.
@@ -83,8 +84,9 @@ The app is separate from the trading dashboard and is not mounted into `dashboar
 
 ## Tests run
 
-- `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py` — 23 passed, 3 warnings.
+- `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py` — 23 passed, 2 warnings.
 - `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py tests/test_settings_service.py -k 'dashboard or engineering_read_model' tests/test_engineering_query_service.py tests/test_engineering_event_projection.py` — 33 passed, 33 deselected, 2 warnings.
+- Final review route inventory: `/api/engineering/snapshot` GET only; `/engineering` GET only.
 - `git diff --check && .venv/bin/python -m pytest tests` — 366 passed, 82 warnings.
 
 Warnings were existing pytest config/dependency/datetime deprecation warnings.

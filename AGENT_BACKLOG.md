@@ -991,8 +991,8 @@ Required tests:
 Completed evidence:
 
 - Branch: `agent/engdash-002-read-only-api-ui`.
-- Focused API/read-model tests: `23 passed, 3 warnings`.
-- Relevant focused/regression tests: `33 passed, 33 deselected, 2 warnings`.
+- Focused API/read-model tests: `23 passed, 2 warnings`.
+- Relevant focused/regression tests after final route-surface fix: `33 passed, 33 deselected, 2 warnings`.
 - Full safe suite: `366 passed, 82 warnings`.
 
 ---
