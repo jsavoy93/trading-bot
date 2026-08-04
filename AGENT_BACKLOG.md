@@ -16,7 +16,7 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ### OPS-017 — Add bounded OPS-015 launcher and manual smoke setup
 
-Status: TODO
+Status: BLOCKED
 Owner: trading-manager
 Priority: P1
 

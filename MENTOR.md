@@ -723,3 +723,31 @@ Git, affect the trading bot, or represent approval.
 OPS-015 focused tests passed 61 tests and the full safe suite passed 291 tests.
 No adapter service was installed, enabled, or started. DASH-007, OPS-016, and
 CONFIG-001 remain unstarted.
+
+## Bounded Telegram manual smoke launcher (OPS-017)
+
+`python -m engineering.telegram_service` is the only supported manual OPS-015
+launcher. It accepts only smoke mode, the external
+`/etc/trading-bot/ops-015.env` credential file, the exact isolated
+`.agent-state/telegram-smoke-events.sqlite3` store, and exact bounds of 20 polls
+and 300 monotonic seconds. It is a finite foreground process: no daemonization,
+systemd, endless polling, child process, or automatic restart exists.
+
+Smoke mode must never open, create, read, migrate, lock, or modify the normal
+`.agent-state/engineering-events.sqlite3` database. Its query, control, audit,
+offset, lease, and delivery state all use the isolated smoke database. The
+pre-smoke isolated pause boolean is restored in unconditional cleanup after
+success, failure, signals, competing pollers, and either finite bound.
+
+The launcher reads exactly `ENGINEERING_TELEGRAM_BOT_TOKEN` and
+`ENGINEERING_TELEGRAM_JOSH_CHAT_ID` from a regular, nonsymlink, operator-owned
+0600 file. Structured JSON stderr logs contain only allowlisted bounded fields
+and fixed reason codes. Exit codes are 0 success, 2 configuration, 3 competing
+poller, 4 permanent Telegram failure, 5 runtime/cleanup/incomplete sequence,
+130 SIGINT, and 143 SIGTERM.
+
+OPS-017 automated focused tests passed 67 tests and the full safe suite passed
+317 tests. No real token, external secret file, Telegram request, smoke state,
+push, or PR was created. OPS-017 remains BLOCKED pending Josh's separate
+approval for external secret provisioning and the real seven-interaction smoke
+sequence. DASH-007, OPS-016, and CONFIG-001 remain unstarted.

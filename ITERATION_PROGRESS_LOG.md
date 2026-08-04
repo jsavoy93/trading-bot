@@ -983,3 +983,41 @@ explicitly.
   targeting `main`, verified clean, and not merged.
 - Next action: Stop for Josh's review of PR #7. Do not begin DASH-007, OPS-016,
   CONFIG-001, or another task.
+
+## 2026-08-04 02:55:00–03:16:01 UTC — OPS-017 automated launcher stage
+
+- Task start time: `2026-08-04 02:55:00 UTC`
+- Task end time: `2026-08-04 03:16:01 UTC`
+- Elapsed time: 21 minutes 1 second
+- Continuity: Resumed from the intentionally uncommitted proposal after Josh
+  approved the revised 20-poll/300-second isolated-smoke plan.
+- Stale/blocked status: `BLOCKED`; not stale. Automated implementation is green,
+  but external secret creation and real Telegram I/O require separate approval.
+- Backlog item/objective: `OPS-017` — add a finite foreground launcher and
+  controlled manual smoke setup for OPS-015.
+- Branch: `agent/ops-017-telegram-smoke-launcher`
+- Starting commit: `d8dbe31`; governance commit: `ea598d0`; implementation
+  commit: `46af146`; stopped-evidence commit is the commit containing this entry.
+- Status: `BLOCKED`
+- Files changed: approved proposal/backlog; new Telegram smoke launcher; narrow
+  adapter event/timeout hook; focused service/adapter tests; mentor, handoff,
+  this log, ignored `REPORT.md`, and the timestamped stopped report archive.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_engineering_telegram_service.py
+  tests/test_engineering_telegram_adapter.py
+  tests/test_engineering_telegram_transport.py tests/test_engineering_control.py
+  tests/test_engineering_event_store.py tests/test_engineering_query_service.py
+  -q` passed `67 passed, 1 warning in 1.75s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `317 passed, 2 warnings in 21.53s`; paper defaults were active and live
+  brokerage calls were blocked. No backtest applies.
+- Acceptance result: Criteria 2, 3, 8, and 9 pass from automated evidence.
+  Criteria 1, 4, 5, 6, 7, and 10 remain incomplete until Josh approves external
+  secret provisioning and the real seven-interaction Telegram smoke test.
+- Safety: No `/etc/trading-bot/ops-015.env`, smoke database, real token, real
+  Telegram request, daemon, service, push, or PR was created.
+- Manager review decision: `BLOCKED` at the explicit external-action gate.
+- Next action: Josh reviews the exact secret setup and smoke command. On separate
+  approval, provision secrets interactively, run one bounded smoke sequence,
+  capture sanitized evidence, cleanup, rerun required verification if needed,
+  then push and create a PR. Do not begin any other task.

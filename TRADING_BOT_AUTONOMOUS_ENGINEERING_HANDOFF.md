@@ -484,3 +484,30 @@ The focused OPS-015 suite passed 61 tests and the full safe suite passed 291
 tests with live brokerage blocked. No real Telegram request was made and no
 service was installed or started. Operational credential provisioning and
 service deployment remain explicitly outside OPS-015.
+
+──────── Bounded Telegram Smoke Launcher (OPS-017)
+
+OPS-017 adds `engineering.telegram_service`, a foreground-only launcher for a
+manual real-bot smoke test. The command is fixed to an external 0600 secret
+file, the isolated `.agent-state/telegram-smoke-events.sqlite3` state database,
+20 polls, and 300 seconds. The first bound reached stops the launcher. There is
+no daemonization, supervisor, systemd integration, endless loop, or automatic
+restart.
+
+The smoke database owns all temporary query/control/audit/lease state. The
+normal `.agent-state/engineering-events.sqlite3` database is rejected by path
+validation and must remain unopened and unchanged. Unconditional cleanup
+releases the adapter lease and restores the pre-smoke isolated pause boolean
+after success, every failure, SIGINT, SIGTERM, competing poller, max-polls, or
+max-seconds.
+
+The external secret parser accepts only `ENGINEERING_TELEGRAM_BOT_TOKEN` and
+`ENGINEERING_TELEGRAM_JOSH_CHAT_ID` from an operator-owned nonsymlink regular
+file with exact mode 0600. Structured stderr logs are bounded JSON with an
+explicit safe field set. Deterministic exit codes distinguish configuration,
+competing poller, permanent Telegram, runtime/cleanup, and signal outcomes.
+
+Automated tests use fake Telegram boundaries. Focused OPS-017 tests passed 67
+tests and the full safe suite passed 317 tests with live brokerage blocked.
+The real secret file and real Telegram smoke test have not been authorized or
+performed, so OPS-017 remains blocked before push and PR creation.
