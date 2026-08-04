@@ -503,7 +503,7 @@ Acceptance criteria:
 
 ### TEST-004 — Settings loading tests
 
-Status: TODO  
+Status: DONE
 Owner: trading-exec  
 Priority: P0
 

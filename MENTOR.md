@@ -654,3 +654,14 @@ truthiness check or infer SELL from “not BUY.” Deterministic mocked tests co
 exact BUY/SELL sides, HOLD and unknown rejection, owned and unowned SELLs, and
 pending-order duplicate prevention. TEST-003 passed 7 focused tests and the
 full safe suite passed 229 tests.
+
+## TEST-004 settings loading contract
+
+`src/core/settings_service.py` is tested against an isolated temporary SQLite
+database; tests must never point it at `trading_bot.db`. Missing typed settings
+return the caller-supplied default. Dashboard-format persisted strings load as
+`int`, `float`, `bool`, or `str`, including the documented true/false spellings.
+Malformed numeric values raise `ValueError`, and a failed typed numeric save
+does not persist a row. TEST-004 passed 12 focused tests and the full safe suite
+passed 241 tests. This test-only item does not establish an authoritative
+cross-process settings schema; that broader reconciliation remains CONFIG-001.
