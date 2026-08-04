@@ -61,12 +61,17 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 try:
-    from core.settings_service import get as _ss_get, save as _ss_save
+    from core.settings_service import (
+        STRATEGY_SETTINGS_SCHEMA,
+        dashboard_parameters,
+        save_typed as _ss_save_typed,
+    )
     _USE_SETTINGS_SERVICE = True
 except Exception:
+    STRATEGY_SETTINGS_SCHEMA = {}
+    dashboard_parameters = lambda: {}
     _USE_SETTINGS_SERVICE = False
-    _ss_get = lambda k, d=None, t=None: d
-    _ss_save = lambda k, v: None
+    _ss_save_typed = lambda k, v: None
 
 # Alpaca client
 api_key = os.getenv("ALPACA_API_KEY")
@@ -80,33 +85,42 @@ if api_key and api_secret:
 # Cached smart bot instance for analysis status
 _smart_bot_instance = None
 
-# Trading parameters — editable via dashboard
-_TRADING_PARAMS = {
-    "rsi_buy_threshold":          {"value": 30,    "min": 10,     "max": 50,     "step": 1,  "type": "int",   "default": 30,   "description": "RSI must be below this to generate a BUY signal.",                    "category": "Signal Thresholds"},
-    "rsi_sell_threshold":         {"value": 70,    "min": 50,     "max": 90,     "step": 1,  "type": "int",   "default": 70,   "description": "RSI must be above this to generate a SELL signal.",                   "category": "Signal Thresholds"},
-    "min_score_buy":               {"value": 65,    "min": 0,      "max": 100,    "step": 1,  "type": "int",   "default": 65,   "description": "Minimum total score required for a BUY signal.",                       "category": "Signal Thresholds"},
-    "rotation_threshold":          {"value": 20,    "min": 0,      "max": 50,     "step": 1,  "type": "int",   "default": 20,   "description": "Rotation score advantage threshold.",                                 "category": "Signal Thresholds"},
-    "sma_fast":                   {"value": 10,    "min": 2,      "max": 50,     "step": 1,  "type": "int",   "default": 10,   "description": "Fast SMA period.",                                                   "category": "Indicator Periods"},
-    "sma_slow":                   {"value": 30,    "min": 5,      "max": 200,    "step": 1,  "type": "int",   "default": 30,   "description": "Slow SMA period.",                                                   "category": "Indicator Periods"},
-    "rsi_period":                 {"value": 14,    "min": 2,      "max": 50,     "step": 1,  "type": "int",   "default": 14,   "description": "RSI lookback period.",                                                "category": "Indicator Periods"},
-    "enable_multi_timeframe":     {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Require daily AND hourly agreement.",                             "category": "Multi-Timeframe"},
-    "hourly_weight":              {"value": 0.30,  "min": 0.0,    "max": 1.0,    "step": 0.05,"type": "float", "default": 0.30, "description": "Weight for hourly signals.",                                           "category": "Multi-Timeframe"},
-    "enable_volume_confirmation": {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Require volume above 20-day average.",                              "category": "Filters"},
-    "enable_mtf_conflict_filter":  {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Block BUY if daily/hourly signals conflict.",                      "category": "Filters"},
-    "enable_vol_downgrade_filter": {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Block BUY if volume is below average (vol downgrade).",              "category": "Filters"},
-    "enable_ai_conflict_filter":   {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Block BUY if AI recommendation conflicts with technical signal.",   "category": "Filters"},
-    "enable_regime_filter":       {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "ADX-based regime detection.",                                        "category": "Filters"},
-    "enable_sp_filter":           {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Only buy stocks outperforming SPY.",                                 "category": "Filters"},
-    "enable_liquidity_filter":    {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Skip illiquid stocks.",                                              "category": "Filters"},
-    "enable_sector_filter":       {"value": True,  "min": None,   "max": None,   "step": None,"type": "bool",  "default": True,  "description": "Prefer strong sectors.",                                              "category": "Filters"},
-    "loop_delay_seconds":         {"value": 300,   "min": 10,     "max": 3600,   "step": 10,   "type": "int",   "default": 300,   "description": "Seconds between analysis loops.",                                    "category": "Bot Settings"},
-    "atr_position_size_pct":       {"value": 2.0,   "min": 0.1,    "max": 10.0,   "step": 0.1, "type": "float", "default": 2.0,   "description": "Risk per trade as % of portfolio.",                              "category": "Risk & Sizing"},
-    "max_sector_concentration":   {"value": 0.25,  "min": 0.05,   "max": 0.80,   "step": 0.05,"type": "float", "default": 0.25,  "description": "Max % in any single sector.",                                   "category": "Risk & Sizing"},
-    "max_correlation":            {"value": 0.7,   "min": 0.0,    "max": 1.0,    "step": 0.05,"type": "float", "default": 0.7,   "description": "Max correlation with existing positions.",                        "category": "Risk & Sizing"},
-    "max_portfolio_beta":         {"value": 1.5,   "min": 0.0,    "max": 3.0,    "step": 0.1, "type": "float", "default": 1.5,   "description": "Max portfolio beta.",                                               "category": "Risk & Sizing"},
-    "max_drawdown_pct":           {"value": 10.0,  "min": 1.0,    "max": 50.0,   "step": 0.5, "type": "float", "default": 10.0,  "description": "Max drawdown before pause.",                                         "category": "Risk & Sizing"},
-    "daily_loss_limit_pct":       {"value": 5.0,   "min": 0.5,    "max": 20.0,   "step": 0.5, "type": "float", "default": 5.0,   "description": "Max daily loss before stopping.",                                    "category": "Risk & Sizing"},
-}
+# Trading parameters — editable via dashboard and derived from the shared schema
+_TRADING_PARAMS = dashboard_parameters()
+
+
+def _refresh_trading_params():
+    """Refresh dashboard metadata from persisted effective strategy settings."""
+    global _TRADING_PARAMS
+    if _USE_SETTINGS_SERVICE:
+        _TRADING_PARAMS = dashboard_parameters()
+    return _TRADING_PARAMS
+
+
+def _update_cached_trading_param(key: str, value):
+    if key in _TRADING_PARAMS:
+        _TRADING_PARAMS[key]["value"] = value
+
+
+def _coerce_dashboard_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def _normalize_dashboard_value(key: str, value):
+    definition = STRATEGY_SETTINGS_SCHEMA[key]
+    if _USE_SETTINGS_SERVICE:
+        _ss_save_typed(key, value)
+        _refresh_trading_params()
+        return _TRADING_PARAMS[key]["value"]
+    if definition.param_type == "bool":
+        return _coerce_dashboard_bool(value)
+    if definition.param_type == "int":
+        return int(float(value))
+    if definition.param_type == "float":
+        return float(value)
+    return str(value)
 
 def get_smart_bot():
     """Get or create cached SmartTradingBot instance"""
@@ -1363,9 +1377,9 @@ def api_get_failed_analyses(
 @app.get("/api/settings")
 def api_get_settings():
     """Return all trading parameters with metadata for the dashboard UI."""
-    result = {}
-    for key, param in _TRADING_PARAMS.items():
-        result[key] = {
+    params = _refresh_trading_params()
+    return {
+        key: {
             "value": param["value"],
             "min": param["min"],
             "max": param["max"],
@@ -1375,34 +1389,27 @@ def api_get_settings():
             "description": param["description"],
             "category": param["category"],
         }
-    return result
+        for key, param in params.items()
+    }
 
 
 @app.post("/api/settings")
 def api_update_settings(updates: Dict):
     """Update one or more trading parameters. Returns updated values."""
-    global _TRADING_PARAMS, _smart_bot_instance
+    global _smart_bot_instance
     updated = {}
+    _refresh_trading_params()
     for key, new_val in updates.items():
         if key not in _TRADING_PARAMS:
             continue
-        param = _TRADING_PARAMS[key]
-        if param["type"] in ("int", "float"):
-            new_val = float(new_val)
-            if param["min"] is not None and new_val < param["min"]:
-                new_val = param["min"]
-            if param["max"] is not None and new_val > param["max"]:
-                new_val = param["max"]
-            if param["type"] == "int":
-                new_val = int(round(new_val))
-        elif param["type"] == "bool":
-            new_val = bool(new_val)
-        _TRADING_PARAMS[key]["value"] = new_val
-        updated[key] = new_val
-        if _USE_SETTINGS_SERVICE:
-            _ss_save(key, str(new_val))
+        try:
+            normalized = _normalize_dashboard_value(key, new_val)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        _update_cached_trading_param(key, normalized)
+        updated[key] = normalized
         if _smart_bot_instance is not None and hasattr(_smart_bot_instance, key):
-            setattr(_smart_bot_instance, key, new_val)
+            setattr(_smart_bot_instance, key, normalized)
     return {"updated": updated, "status": "ok"}
 
 

@@ -729,8 +729,8 @@ Acceptance criteria:
 
 ### CONFIG-001 — Authoritative strategy configuration
 
-Status: TODO  
-Owner: trading-exec  
+Status: DONE
+Owner: trading-exec
 Priority: P1
 
 Acceptance criteria:
@@ -738,6 +738,20 @@ Acceptance criteria:
 - One schema defines effective strategy settings.
 - The bot, tests, logs, and dashboard use the same schema.
 - Effective values are logged at startup.
+
+Completion evidence (2026-08-04):
+
+- `src/core/settings_service.py` now owns `STRATEGY_SETTINGS_SCHEMA`, typed
+  validation, effective loading, dashboard metadata derivation, and bounded
+  startup-log formatting.
+- `src/core/smart_bot.py` loads schema-defined effective settings during
+  initialization and logs the non-secret effective values.
+- `dashboard.py` derives displayed settings and persisted updates from the
+  shared schema.
+- Validation passed: `git diff --check`; `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  (`22 passed, 1 warning`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  (`7 passed, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  (`327 passed, 82 warnings`).
 
 Allowed areas:
 

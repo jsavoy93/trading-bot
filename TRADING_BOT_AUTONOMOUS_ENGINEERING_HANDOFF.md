@@ -457,7 +457,8 @@ Telegram adapter and read-only engineering dashboard. Missing goal or PR data
 is explicit. The control table's pause flag gates only deterministic manager
 dispatch; it does not operate the paper bot, processes, Codex wrapper, or TUI.
 Telegram transport, dashboard routes, and approval actions are not part of
-OPS-014 and require later separately approved tasks. CONFIG-001 remains paused.
+OPS-014 and require later separately approved tasks. CONFIG-001 was completed
+later and established the strategy settings contract below.
 
 ──────── Telegram Engineering Adapter (OPS-015)
 
@@ -517,3 +518,25 @@ unauthorized second Telegram account, which was unavailable. OPS-017 is
 therefore backlog status `REVIEW` with review classification `Manual
 Operational Verification Pending`, not failed or rework. Josh may accept that
 residual risk before merge or defer the check.
+
+──────── Authoritative Strategy Settings (CONFIG-001)
+
+CONFIG-001 centralizes strategy setting definitions in
+`src/core/settings_service.py` as `STRATEGY_SETTINGS_SCHEMA`. The schema defines
+all strategy keys, defaults, types, numeric bounds, dashboard step sizes,
+descriptions, and categories. Effective settings are schema defaults overlaid
+with typed SQLite `settings` overrides; invalid new overrides raise
+`ValueError` through the shared validation path rather than being silently
+clamped.
+
+`dashboard.py` now derives `/api/settings` metadata from the schema and saves
+updates through `save_typed()`. `src/core/smart_bot.py` loads
+`load_effective_strategy_settings()` during initialization, applies matching
+schema-backed attributes, and logs a bounded non-secret deterministic effective
+settings line at startup. The shared `min_score_buy` default is `50`, matching
+the bot's existing BUY threshold and replacing the previous duplicated
+dashboard-only default of `65`.
+
+CONFIG-001 verification passed `git diff --check`, 22 focused settings tests, 7
+smart-bot decision-path tests, and the full safe suite of 327 tests with live
+brokerage blocked.

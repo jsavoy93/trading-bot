@@ -675,8 +675,31 @@ return the caller-supplied default. Dashboard-format persisted strings load as
 `int`, `float`, `bool`, or `str`, including the documented true/false spellings.
 Malformed numeric values raise `ValueError`, and a failed typed numeric save
 does not persist a row. TEST-004 passed 12 focused tests and the full safe suite
-passed 241 tests. This test-only item does not establish an authoritative
-cross-process settings schema; that broader reconciliation remains CONFIG-001.
+passed 241 tests. CONFIG-001 later established the authoritative cross-process
+strategy settings schema described below.
+
+## CONFIG-001 authoritative strategy settings contract
+
+`src/core/settings_service.py` is the single source of truth for strategy
+settings through `STRATEGY_SETTINGS_SCHEMA`. Each schema entry defines the key,
+default, type, bounds, step, dashboard description, and dashboard category.
+Effective configuration precedence is schema defaults first, then persisted
+SQLite overrides from `settings`; invalid new overrides are rejected by
+`save_typed()`/`validate_typed()` rather than silently clamped.
+
+`dashboard.py` must derive `/api/settings` metadata and persisted updates from
+`dashboard_parameters()` and `save_typed()`, not from a duplicated local
+parameter dictionary. `src/core/smart_bot.py` must load
+`load_effective_strategy_settings()` during initialization after constructor
+default attributes exist, apply schema-backed values to matching bot attributes,
+and log a bounded non-secret deterministic line using
+`format_effective_strategy_settings_for_log()`.
+
+The schema default for `min_score_buy` is `50`, matching the existing bot BUY
+threshold behavior. Dashboard metadata now uses that same default instead of the
+old duplicated dashboard-only `65` value. CONFIG-001 focused tests passed 22
+settings tests and 7 smart-bot decision-path tests; the full safe suite passed
+327 tests.
 
 ## Engineering events and outbox (OPS-014)
 

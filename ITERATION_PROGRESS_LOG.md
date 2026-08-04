@@ -1095,3 +1095,34 @@ explicitly.
 - Next action: Josh reviews and approves starting CONFIG-001 implementation on
   this branch, or requests a narrower allowed-area adjustment. Agents must not
   merge into `main`.
+
+## 2026-08-04 16:16:18–21:23:23 UTC — CONFIG-001 implementation
+
+- Backlog item/objective: `CONFIG-001` — implement one authoritative typed
+  strategy settings schema used by the bot, dashboard, tests, and startup logs.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`.
+- Commit: pending at log-write time; implementation follows governance commit
+  `0ef60a1`.
+- Status: `DONE` implementation, pending commit/push/PR review.
+- Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
+  `dashboard.py`, `tests/test_settings_service.py`, `AGENT_BACKLOG.md`,
+  `MENTOR.md`, `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `ITERATION_PROGRESS_LOG.md`, plus required report artifacts.
+- Tests/evidence: `git diff --check` passed with no output;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  passed `22 passed, 1 warning in 0.33s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  passed `7 passed, 2 warnings in 2.78s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q` passed
+  `327 passed, 82 warnings in 39.15s`.
+- Important decisions/discoveries: `STRATEGY_SETTINGS_SCHEMA` in
+  `settings_service.py` is now the source of truth for defaults, overrides,
+  validation, dashboard metadata, and effective settings logging. The shared
+  `min_score_buy` default is `50`, matching the existing bot behavior and
+  replacing the old duplicated dashboard-only default of `65`.
+- Remaining risks: persisted invalid legacy DB values can still make effective
+  loading fail closed to constructor defaults and log a warning; no migration or
+  DB cleanup was authorized or performed.
+- Next action: commit, push the branch, create or update the PR to `main`, then
+  stop for Josh's human review. Additional approval is required before merge or
+  any work outside the approved CONFIG-001 allowed areas.

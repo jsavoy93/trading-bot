@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from database.simple_rest import simple_rest
 from analysis.ai_agent import ai_agent
+from core import settings_service
 
 # Load environment variables
 load_dotenv()
@@ -114,6 +115,7 @@ class SmartTradingBot:
         self.rsi_period = 14
         self.rsi_buy_threshold = 30
         self.rsi_sell_threshold = 70
+        self.min_score_buy = 50
 
         # Database integration
         self.db = simple_rest
@@ -177,9 +179,6 @@ class SmartTradingBot:
         self.enable_vol_downgrade_filter = True  # Block if volume is below average (vol downgrade)
         self.enable_ai_conflict_filter = True    # Block if AI recommendation conflicts with technical signal
 
-        # Load filter toggles from DB (persisted via dashboard settings API)
-        self._load_filter_toggles_from_db()
-
         # Earnings Filter (enabled by default - skip trades N days before earnings)
         self.earnings_days_skip = 3  # Skip trades within this many days before earnings
         self.earnings_cache = {}  # Cache earnings dates to avoid repeated API calls
@@ -221,10 +220,16 @@ class SmartTradingBot:
         # Position Rotation (enabled by default)
         self.enable_rotation = True  # Sell weak positions to buy stronger ones
         self.rotation_threshold = 20  # New opportunity must be X points better than worst position
+        self.loop_delay_seconds = 300
         self.trend_threshold = 25.0  # ADX > this = trending
         self.range_threshold = 20.0  # ADX < this = ranging
         self._regime_classifier = None  # Will be initialized lazily
         self._forced_regime = None  # For testing
+
+        # Load effective strategy settings from DB overrides plus schema defaults
+        # (persisted via dashboard settings API) after all schema-backed defaults
+        # exist as attributes.
+        self._load_effective_strategy_settings()
 
         # Simple sector mapping for common stocks (expand as needed)
         self.stock_sector_map = {
@@ -469,32 +474,25 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
         logging.info(f"🏁 Session ended: {self.symbols_processed} symbols, {self.trades_executed} trades")
 
-    def _load_filter_toggles_from_db(self):
+    def _load_effective_strategy_settings(self):
         """
-        Load the three filter-toggle settings from the settings DB.
-        These are persisted by the dashboard's /api/settings endpoint so they
-        survive bot restarts. Silently ignores errors (defaults remain True).
+        Load schema-defined strategy settings from DB overrides.
+
+        Invalid persisted values are logged and ignored by keeping constructor
+        defaults. The startup log is deterministic, bounded, and contains only
+        non-secret strategy setting keys from the authoritative schema.
         """
         try:
-            import sqlite3
-            db_path = Path(__file__).parent.parent.parent / "trading_bot.db"
-            conn = sqlite3.connect(str(db_path), timeout=10)
-            cur = conn.execute(
-                "SELECT key, value FROM settings WHERE key IN "
-                "('enable_mtf_conflict_filter', 'enable_vol_downgrade_filter', 'enable_ai_conflict_filter')"
+            effective_settings = settings_service.load_effective_strategy_settings()
+            for key, value in effective_settings.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+            logging.info(
+                "Effective strategy settings: %s",
+                settings_service.format_effective_strategy_settings_for_log(effective_settings),
             )
-            for row in cur.fetchall():
-                key, raw = row[0], row[1]
-                val = raw.lower() in ("true", "1", "yes")
-                if key == "enable_mtf_conflict_filter":
-                    self.enable_mtf_conflict_filter = val
-                elif key == "enable_vol_downgrade_filter":
-                    self.enable_vol_downgrade_filter = val
-                elif key == "enable_ai_conflict_filter":
-                    self.enable_ai_conflict_filter = val
-            conn.close()
         except Exception as e:
-            logging.debug(f"Could not load filter toggles from DB: {e}")
+            logging.warning(f"Could not load effective strategy settings from DB: {e}")
 
     def _detect_rate_limit_error(self, error_message):
         """Detect if error is a rate limit error"""
@@ -1946,9 +1944,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             else:
                 total_score = daily_score
 
-            # Determine signal based on score
-            # BUY threshold: 65+, SELL threshold: 35-
-            if total_score >= 50:
+            # Determine signal based on schema-backed score threshold.
+            if total_score >= self.min_score_buy:
                 signal = "BUY"
                 if total_score >= 65:
                     signal_strength = "STRONG"
