@@ -864,11 +864,11 @@ explicitly.
 - Next action: Stop for Josh's review before merge. Do not push main, merge, or
   begin TEST-004 or another backlog item.
 
-## 2026-08-04 00:37:06–00:42:53 UTC — TEST-004 settings loading tests
+## 2026-08-04 00:37:06–00:46:53 UTC — TEST-004 settings loading tests
 
 - Task start time: `2026-08-04 00:37:06 UTC`
-- Task end time: `2026-08-04 00:42:53 UTC`
-- Elapsed time: 5 minutes 47 seconds
+- Task end time: `2026-08-04 00:46:53 UTC`
+- Elapsed time: 9 minutes 47 seconds
 - Continuity: Continuous; work began after Josh confirmed the TEST-003 merge,
   remote ancestry was verified, local main was fast-forwarded, and the clean
   tree/no-active-workflow gates passed.
