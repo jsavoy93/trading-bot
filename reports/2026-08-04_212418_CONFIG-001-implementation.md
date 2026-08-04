@@ -15,7 +15,8 @@ CONFIG-001 — Authoritative strategy configuration
 - Branch: `agent/trading-config-001-authoritative-strategy-config`
 - Base/governance commit before implementation: `0ef60a1` (`Define CONFIG-001 allowed areas`)
 - Implementation commit: `eca9dc5` (`Implement authoritative strategy settings schema`)
-- Report artifact commit: pending at archive-write time
+- Report artifact commit: `c4ae1e3` before PR URL update; final branch tip recorded in terminal summary
+- Pull request: https://github.com/jsavoy93/trading-bot/pull/9
 
 ## Scope controls
 Approved allowed areas were respected. No secrets, `.env` files, live-trading settings, brokerage integrations, database files, generated trading results, dependencies, OpenClaw config, deployment/service files, broad refactors, unrelated governance files, or merges into `main` were modified.
@@ -137,5 +138,8 @@ Ready for Josh review. Do not merge into `main` without explicit approval.
 4. Try saving an out-of-range setting and confirm the dashboard/API rejects it.
 5. Confirm startup logs show the bounded effective strategy settings line.
 
+## Pull request
+https://github.com/jsavoy93/trading-bot/pull/9
+
 ## Next action
-Push branch, create or update PR targeting `main`, then stop for human review.
+Stop for Josh's human review. Do not merge without explicit approval.
