@@ -14,6 +14,66 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-015 — Add allowlisted Telegram engineering adapter
+
+Status: TODO
+Owner: trading-manager
+Priority: P1
+
+Depends on: OPS-014
+
+Acceptance criteria:
+
+- A standalone adapter uses Telegram Bot API long polling with finite
+  connect/read timeouts, finite exponential backoff, persisted update offset,
+  graceful shutdown, and a one-process consumer lease.
+- Only the configured Josh chat ID and matching private-chat sender ID are
+  accepted; every other chat, sender, forwarded message, channel post, and
+  group message is denied and security-audited without echoing its content.
+- Task completion, failure, blocked, stale, PR-ready, and approval-required
+  events are delivered from the OPS-014 outbox with idempotent delivery
+  records, bounded retries, and dead-letter behavior.
+- `/status`, `/current`, `/next`, and `/report` read only from
+  `EngineeringQueryService` and return deterministic, bounded, sanitized
+  responses.
+- `/pause` and `/resume` modify only the revisioned deterministic engineering
+  manager pause flag through a narrow control service, are idempotent, emit
+  audited events, and never signal processes or affect the trading bot.
+- Unknown, malformed, or oversized commands return bounded help or rejection;
+  command length, arguments, update batches, response size, retries, polling
+  duration, and rate are strictly bounded.
+- The Telegram bot token and allowlisted identity come from environment or an
+  injected runtime provider and are never persisted in events, logs, reports,
+  exceptions, test snapshots, or Telegram responses.
+- The adapter never imports or invokes interactive Codex, launches agents,
+  reads raw stdout/stderr artifacts, executes shell or Git commands, merges,
+  pushes, deploys, or changes trading settings.
+- All tests use fake Telegram transport, query service, control service,
+  clocks, and sleepers; tests make no network call and require no real token.
+- Focused Telegram/control/event tests pass, followed by the complete safe
+  suite with the existing live-brokerage test gate intact.
+
+Allowed areas:
+
+- engineering/telegram_adapter.py
+- engineering/telegram_transport.py
+- engineering/engineering_control.py
+- engineering/engineering_events.py
+- engineering/event_store.py
+- engineering/query_service.py
+- engineering/manager_driver.py
+- tests/test_engineering_telegram_adapter.py
+- tests/test_engineering_telegram_transport.py
+- tests/test_engineering_control.py
+- tests/test_engineering_events.py
+- tests/test_engineering_event_store.py
+- tests/test_engineering_query_service.py
+- tests/test_engineering_manager_driver.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-014 — Add durable engineering events and transactional outbox
 
 Status: DONE
