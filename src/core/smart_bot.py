@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from database.simple_rest import simple_rest
 from analysis.ai_agent import ai_agent
+from core import settings_service
 
 # Load environment variables
 load_dotenv()
@@ -114,6 +115,7 @@ class SmartTradingBot:
         self.rsi_period = 14
         self.rsi_buy_threshold = 30
         self.rsi_sell_threshold = 70
+        self.min_score_buy = 50
 
         # Database integration
         self.db = simple_rest
@@ -142,7 +144,8 @@ class SmartTradingBot:
 
         # ATR-based Position Sizing Configuration
         self.enable_atr_sizing = True  # Use ATR for position sizing
-        self.risk_per_trade = 0.02  # Risk 2% of portfolio per trade (default)
+        self.atr_position_size_pct = 2.0  # Risk 2% of portfolio per trade (default)
+        self.risk_per_trade = self.atr_position_size_pct / 100  # Decimal used by sizing math
         self.max_position_pct = 0.05  # Max 5% of portfolio in single position
 
         # Max Drawdown Protection
@@ -176,9 +179,6 @@ class SmartTradingBot:
         self.enable_mtf_conflict_filter = True   # Block if daily/hourly timeframe signals conflict
         self.enable_vol_downgrade_filter = True  # Block if volume is below average (vol downgrade)
         self.enable_ai_conflict_filter = True    # Block if AI recommendation conflicts with technical signal
-
-        # Load filter toggles from DB (persisted via dashboard settings API)
-        self._load_filter_toggles_from_db()
 
         # Earnings Filter (enabled by default - skip trades N days before earnings)
         self.earnings_days_skip = 3  # Skip trades within this many days before earnings
@@ -221,10 +221,16 @@ class SmartTradingBot:
         # Position Rotation (enabled by default)
         self.enable_rotation = True  # Sell weak positions to buy stronger ones
         self.rotation_threshold = 20  # New opportunity must be X points better than worst position
+        self.loop_delay_seconds = 300
         self.trend_threshold = 25.0  # ADX > this = trending
         self.range_threshold = 20.0  # ADX < this = ranging
         self._regime_classifier = None  # Will be initialized lazily
         self._forced_regime = None  # For testing
+
+        # Load effective strategy settings from DB overrides plus schema defaults
+        # (persisted via dashboard settings API) after all schema-backed defaults
+        # exist as attributes.
+        self._load_effective_strategy_settings()
 
         # Simple sector mapping for common stocks (expand as needed)
         self.stock_sector_map = {
@@ -469,32 +475,27 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
         logging.info(f"🏁 Session ended: {self.symbols_processed} symbols, {self.trades_executed} trades")
 
-    def _load_filter_toggles_from_db(self):
+    def _load_effective_strategy_settings(self):
         """
-        Load the three filter-toggle settings from the settings DB.
-        These are persisted by the dashboard's /api/settings endpoint so they
-        survive bot restarts. Silently ignores errors (defaults remain True).
+        Load schema-defined strategy settings from DB overrides.
+
+        Invalid persisted values are logged and ignored by keeping constructor
+        defaults. The startup log is deterministic, bounded, and contains only
+        non-secret strategy setting keys from the authoritative schema.
         """
         try:
-            import sqlite3
-            db_path = Path(__file__).parent.parent.parent / "trading_bot.db"
-            conn = sqlite3.connect(str(db_path), timeout=10)
-            cur = conn.execute(
-                "SELECT key, value FROM settings WHERE key IN "
-                "('enable_mtf_conflict_filter', 'enable_vol_downgrade_filter', 'enable_ai_conflict_filter')"
+            effective_settings = settings_service.load_effective_strategy_settings()
+            for key, value in effective_settings.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+            if "atr_position_size_pct" in effective_settings:
+                self.risk_per_trade = self.atr_position_size_pct / 100
+            logging.info(
+                "Effective strategy settings: %s",
+                settings_service.format_effective_strategy_settings_for_log(effective_settings),
             )
-            for row in cur.fetchall():
-                key, raw = row[0], row[1]
-                val = raw.lower() in ("true", "1", "yes")
-                if key == "enable_mtf_conflict_filter":
-                    self.enable_mtf_conflict_filter = val
-                elif key == "enable_vol_downgrade_filter":
-                    self.enable_vol_downgrade_filter = val
-                elif key == "enable_ai_conflict_filter":
-                    self.enable_ai_conflict_filter = val
-            conn.close()
         except Exception as e:
-            logging.debug(f"Could not load filter toggles from DB: {e}")
+            logging.warning(f"Could not load effective strategy settings from DB: {e}")
 
     def _detect_rate_limit_error(self, error_message):
         """Detect if error is a rate limit error"""
@@ -1946,9 +1947,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             else:
                 total_score = daily_score
 
-            # Determine signal based on score
-            # BUY threshold: 65+, SELL threshold: 35-
-            if total_score >= 50:
+            # Determine signal based on schema-backed score threshold.
+            if total_score >= self.min_score_buy:
                 signal = "BUY"
                 if total_score >= 65:
                     signal_strength = "STRONG"
@@ -4968,8 +4968,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.error(f"❌ Portfolio order failed for {symbol}: {e}")
             return False
 
-    def run_continuous_loop(self, max_symbols: int = 30, max_trades: int = 2, loop_delay: int = 300, summary_interval: int = 30, use_ai: bool = None):
+    def _resolve_loop_delay(self, explicit_loop_delay: Optional[int] = None) -> int:
+        """
+        Resolve continuous-loop delay.
+
+        `None` uses the effective schema-backed `loop_delay_seconds` value.
+        Explicit non-negative numeric values take precedence; zero means no
+        delay. Negative or non-numeric explicit values are rejected before the
+        continuous loop starts.
+        """
+        if explicit_loop_delay is None:
+            return int(self.loop_delay_seconds)
+        if isinstance(explicit_loop_delay, bool) or not isinstance(explicit_loop_delay, (int, float)):
+            raise ValueError("loop_delay must be a non-negative number or None")
+        if explicit_loop_delay < 0:
+            raise ValueError("loop_delay must be >= 0")
+        if float(explicit_loop_delay).is_integer():
+            return int(explicit_loop_delay)
+        return explicit_loop_delay
+
+    def run_continuous_loop(self, max_symbols: int = 30, max_trades: int = 2, loop_delay: Optional[int] = None, summary_interval: int = 30, use_ai: bool = None):
         """Run trading bot in continuous loop with periodic summaries"""
+        loop_delay = self._resolve_loop_delay(loop_delay)
         loop_count = 0
         total_trades = 0
         total_opportunities = 0
@@ -5370,8 +5390,8 @@ def main():
         parser = argparse.ArgumentParser(description='Enhanced Trading Bot with AI')
         parser.add_argument('--continuous', '-c', action='store_true',
                           help='Run in continuous mode (default: single session)')
-        parser.add_argument('--delay', '-d', type=int, default=10,
-                          help='Seconds between loops in continuous mode (default: 10)')
+        parser.add_argument('--delay', '-d', type=int, default=None,
+                          help='Seconds between loops in continuous mode (default: configured loop_delay_seconds)')
         parser.add_argument('--max-symbols', type=int, default=30,
                           help='Maximum symbols to analyze per loop (default: 30)')
         parser.add_argument('--max-trades', type=int, default=2,
@@ -5726,7 +5746,8 @@ def main():
 
         # Configure ATR-based Position Sizing
         if hasattr(args, 'risk_per_trade'):
-            bot.risk_per_trade = args.risk_per_trade / 100  # Convert to decimal
+            bot.atr_position_size_pct = args.risk_per_trade
+            bot.risk_per_trade = bot.atr_position_size_pct / 100  # Convert to decimal
             bot.max_position_pct = args.max_position / 100  # Convert to decimal
             bot.enable_atr_sizing = not args.no_atr_sizing if hasattr(args, 'no_atr_sizing') else True
             print(f"📊 ATR Position Sizing: {'Enabled' if bot.enable_atr_sizing else 'Disabled'}")
@@ -5834,7 +5855,8 @@ def main():
 
         if args.continuous:
             print("🔄 Starting in CONTINUOUS mode...")
-            print(f"⏱️  Loop delay: {args.delay} seconds ({args.delay/60:.1f} minutes)")
+            resolved_delay = bot._resolve_loop_delay(args.delay)
+            print(f"⏱️  Loop delay: {resolved_delay} seconds ({resolved_delay/60:.1f} minutes)")
             bot.run_continuous_loop(
                 max_symbols=args.max_symbols,
                 max_trades=args.max_trades,

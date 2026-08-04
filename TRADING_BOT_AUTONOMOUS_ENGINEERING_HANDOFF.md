@@ -457,7 +457,8 @@ Telegram adapter and read-only engineering dashboard. Missing goal or PR data
 is explicit. The control table's pause flag gates only deterministic manager
 dispatch; it does not operate the paper bot, processes, Codex wrapper, or TUI.
 Telegram transport, dashboard routes, and approval actions are not part of
-OPS-014 and require later separately approved tasks. CONFIG-001 remains paused.
+OPS-014 and require later separately approved tasks. CONFIG-001 was completed
+later and established the strategy settings contract below.
 
 ──────── Telegram Engineering Adapter (OPS-015)
 
@@ -517,3 +518,50 @@ unauthorized second Telegram account, which was unavailable. OPS-017 is
 therefore backlog status `REVIEW` with review classification `Manual
 Operational Verification Pending`, not failed or rework. Josh may accept that
 residual risk before merge or defer the check.
+
+──────── Authoritative Strategy Settings (CONFIG-001)
+
+CONFIG-001 centralizes strategy setting definitions in
+`src/core/settings_service.py` as `STRATEGY_SETTINGS_SCHEMA`. The schema defines
+all strategy keys, defaults, types, numeric bounds, dashboard step sizes,
+descriptions, and categories. Effective settings are schema defaults overlaid
+with typed SQLite `settings` overrides; invalid new overrides raise
+`ValueError` through the shared validation path rather than being silently
+clamped.
+
+`dashboard.py` now derives `/api/settings` metadata from the schema and saves
+updates through `save_typed()`. Dashboard POST updates are validate-then-write:
+the complete submitted batch is normalized and validated first, and no setting
+is persisted if any known submitted value is invalid. Invalid schema input
+returns HTTP 400.
+
+`src/core/smart_bot.py` loads `load_effective_strategy_settings()` during
+initialization, applies matching schema-backed attributes, and logs a bounded
+non-secret deterministic effective settings line at startup. The shared
+`min_score_buy` default is `50`, matching the bot's existing BUY threshold and
+replacing the previous duplicated dashboard-only default of `65`.
+
+Legacy invalid persisted values fall back per key to schema defaults with a
+bounded warning, so bot startup and dashboard rendering continue safely while
+new writes remain strict. The warning format is
+`Invalid persisted strategy setting key=<key> value_type=<type> reason=<bounded reason>; using default=<default>`
+and must not include the raw persisted value. Validation errors are normalized
+so Python conversion exceptions cannot echo sensitive or long DB-controlled
+input. `atr_position_size_pct` is consumed as the percent value that derives
+internal decimal `risk_per_trade`. `loop_delay_seconds` controls normal
+continuous-loop delay only when no explicit method/CLI delay is supplied;
+explicit caller values take precedence. For direct method calls, `None` means
+configured delay, positive numeric values override config, `0` means no delay,
+and negative, boolean, or non-numeric values raise `ValueError` before loop
+entry. Invalid CLI values fail through argparse type parsing.
+
+CONFIG-001 initial verification passed `git diff --check`, 22 focused settings
+tests, 7 smart-bot decision-path tests, and the full safe suite of 327 tests
+with live brokerage blocked. PR #9 review-fix verification passed
+`git diff --check`, 32 focused settings/dashboard/bot-consumption tests, 10
+focused dashboard-route subset tests, 7 smart-bot decision-path tests, and the
+full safe suite of 337 tests with live brokerage blocked. Final PR #9
+review-fix verification passed `git diff --check`, 38 focused
+settings/dashboard/bot tests, 10 focused dashboard-route subset tests, 7
+smart-bot decision-path tests, and the full safe suite of 343 tests with live
+brokerage blocked.

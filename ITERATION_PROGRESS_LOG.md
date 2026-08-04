@@ -1057,3 +1057,139 @@ explicitly.
   later without reopening implementation.
 - Next action: Commit and push this feature branch, create or update the
   OPS-017 PR targeting `main`, then stop for human review. Agents must not merge.
+
+## 2026-08-04 16:05:54–16:07:27 UTC — CONFIG-001 governance remediation
+
+- Task start time: `2026-08-04 16:05:54 UTC`
+- Task end time: `2026-08-04 16:07:27 UTC`
+- Elapsed time: 1 minute 33 seconds
+- Continuity: Continuous after Josh approved only governance remediation for
+  CONFIG-001 and explicitly prohibited implementation until later approval.
+- Stale/blocked status: Not stale. Implementation intentionally not started;
+  approval is required before CONFIG-001 code changes.
+- Backlog item/objective: `CONFIG-001` — add explicit minimal allowed areas so
+  the authoritative strategy configuration task is executable under governance.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`; starting
+  commit: `4077b06`; completion commit: the later governance remediation commit
+  on this branch.
+- Status: `DONE` for governance remediation only. CONFIG-001 remains `TODO` for
+  implementation.
+- Files changed: `AGENT_BACKLOG.md`, this continuity log, ignored `REPORT.md`,
+  and the timestamped report archive. No implementation code, tests, secrets,
+  `.env`, databases, generated results, OpenClaw config, or live-trading
+  settings changed.
+- Tests/evidence: `git diff --check` passed with no output; CONFIG-001 parse
+  validation confirmed status `TODO`, owner `trading-exec`, priority `P1`, and
+  10 explicit allowed-area entries; focused governance tests passed with
+  `28 passed, 1 warning in 0.24s`.
+- Acceptance result: PASS. CONFIG-001 now has an explicit minimal allowed-area
+  list with rationale for the shared settings boundary, bot consumer, dashboard
+  consumer, focused tests, and required governance/report artifacts.
+- Known risks: The allowed areas intentionally do not include broad `src/`,
+  `templates/`, migrations, secrets, `.env`, database files, generated results,
+  deployment/service files, or OpenClaw config. If implementation discovers a
+  necessary file outside this list, it must stop for approval instead of
+  expanding scope.
+- Manager review decision: `ACCEPT` governance remediation; do not begin
+  CONFIG-001 implementation yet.
+- Next action: Josh reviews and approves starting CONFIG-001 implementation on
+  this branch, or requests a narrower allowed-area adjustment. Agents must not
+  merge into `main`.
+
+## 2026-08-04 16:16:18–21:23:23 UTC — CONFIG-001 implementation
+
+- Backlog item/objective: `CONFIG-001` — implement one authoritative typed
+  strategy settings schema used by the bot, dashboard, tests, and startup logs.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`.
+- Commit: pending at log-write time; implementation follows governance commit
+  `0ef60a1`.
+- Status: `DONE` implementation, pending commit/push/PR review.
+- Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
+  `dashboard.py`, `tests/test_settings_service.py`, `AGENT_BACKLOG.md`,
+  `MENTOR.md`, `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `ITERATION_PROGRESS_LOG.md`, plus required report artifacts.
+- Tests/evidence: `git diff --check` passed with no output;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  passed `22 passed, 1 warning in 0.33s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  passed `7 passed, 2 warnings in 2.78s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q` passed
+  `327 passed, 82 warnings in 39.15s`.
+- Important decisions/discoveries: `STRATEGY_SETTINGS_SCHEMA` in
+  `settings_service.py` is now the source of truth for defaults, overrides,
+  validation, dashboard metadata, and effective settings logging. The shared
+  `min_score_buy` default is `50`, matching the existing bot behavior and
+  replacing the old duplicated dashboard-only default of `65`.
+- Remaining risks: persisted invalid legacy DB values can still make effective
+  loading fail closed to constructor defaults and log a warning; no migration or
+  DB cleanup was authorized or performed.
+- Next action: commit, push the branch, create or update the PR to `main`, then
+  stop for Josh's human review. Additional approval is required before merge or
+  any work outside the approved CONFIG-001 allowed areas.
+
+## 2026-08-04 21:31:32–21:36:24 UTC — CONFIG-001 PR #9 review fixes
+
+- Backlog item/objective: `CONFIG-001` — address blocking read-only review
+  findings on PR #9 without broadening approved scope.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`.
+- Commit: pending at log-write time; previous branch tip was `75cbec9`.
+- Status: `DONE` implementation fixes, pending commit/push and human rereview.
+- Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
+  `dashboard.py`, `tests/test_settings_service.py`, `AGENT_BACKLOG.md`,
+  `MENTOR.md`, `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `ITERATION_PROGRESS_LOG.md`, plus required report artifacts.
+- Tests/evidence: `git diff --check` passed with no output;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  passed `32 passed, 2 warnings in 3.52s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -k dashboard -q`
+  passed `10 passed, 22 deselected, 2 warnings in 3.36s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  passed `7 passed, 2 warnings in 2.44s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q` passed
+  `337 passed, 82 warnings in 41.89s`.
+- Important fixes: dashboard update batches now validate all known submitted
+  settings before any persistence; invalid legacy persisted settings fall back
+  per key to schema defaults with warnings; `atr_position_size_pct` now derives
+  runtime `risk_per_trade`; `loop_delay_seconds` controls normal continuous-loop
+  delay when no explicit caller/CLI delay is supplied, while explicit values
+  take precedence.
+- Remaining risks: dashboard invalid-input rejection remains a compatibility
+  change from prior clamping; CLI continuous mode without `--delay` now uses the
+  configured `loop_delay_seconds` value rather than the old parser default of 10
+  seconds.
+- Next action: commit and push fixes to PR #9, then stop for another read-only
+  human review. No merge approval is implied.
+
+## 2026-08-04 21:48:39–21:51:34 UTC — CONFIG-001 PR #9 final review fixes
+
+- Backlog item/objective: `CONFIG-001` — address the remaining PR #9 review
+  finding on invalid legacy-value warning sanitization and define explicit
+  loop-delay input behavior.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`.
+- Commit: pending at log-write time; previous branch tip was `0d9e105`.
+- Status: `DONE` implementation fixes, pending commit/push and human rereview.
+- Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
+  `tests/test_settings_service.py`, `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `ITERATION_PROGRESS_LOG.md`,
+  plus required report artifacts.
+- Tests/evidence: `git diff --check` passed with no output;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  passed `38 passed, 2 warnings in 3.26s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -k dashboard -q`
+  passed `10 passed, 28 deselected, 2 warnings in 3.35s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  passed `7 passed, 2 warnings in 2.58s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q` passed
+  `343 passed, 80 warnings in 35.85s`.
+- Important fixes: invalid legacy-value warnings now log only schema key,
+  invalid value type, bounded sanitized validation reason, and fallback default;
+  raw persisted values are not logged and are not written back. Loop-delay
+  direct-call contract is explicit: `None` uses config, positive numeric values
+  override config, `0` means no delay, and negative, boolean, or non-numeric
+  values raise `ValueError` before loop entry.
+- Remaining risks: no DB migration/cleanup is performed, so invalid legacy
+  values remain in storage until explicitly corrected; dashboard invalid-input
+  HTTP 400 behavior and config-backed no-`--delay` CLI behavior remain the
+  documented compatibility changes.
+- Next action: commit and push fixes to PR #9, then stop for another read-only
+  human review. No merge approval is implied.

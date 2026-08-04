@@ -675,8 +675,59 @@ return the caller-supplied default. Dashboard-format persisted strings load as
 `int`, `float`, `bool`, or `str`, including the documented true/false spellings.
 Malformed numeric values raise `ValueError`, and a failed typed numeric save
 does not persist a row. TEST-004 passed 12 focused tests and the full safe suite
-passed 241 tests. This test-only item does not establish an authoritative
-cross-process settings schema; that broader reconciliation remains CONFIG-001.
+passed 241 tests. CONFIG-001 later established the authoritative cross-process
+strategy settings schema described below.
+
+## CONFIG-001 authoritative strategy settings contract
+
+`src/core/settings_service.py` is the single source of truth for strategy
+settings through `STRATEGY_SETTINGS_SCHEMA`. Each schema entry defines the key,
+default, type, bounds, step, dashboard description, and dashboard category.
+Effective configuration precedence is schema defaults first, then persisted
+SQLite overrides from `settings`; invalid new overrides are rejected by
+`save_typed()`/`validate_typed()` rather than silently clamped.
+
+`dashboard.py` must derive `/api/settings` metadata and persisted updates from
+`dashboard_parameters()` and `save_typed()`, not from a duplicated local
+parameter dictionary. `src/core/smart_bot.py` must load
+`load_effective_strategy_settings()` during initialization after constructor
+default attributes exist, apply schema-backed values to matching bot attributes,
+and log a bounded non-secret deterministic line using
+`format_effective_strategy_settings_for_log()`.
+
+The schema default for `min_score_buy` is `50`, matching the existing bot BUY
+threshold behavior. Dashboard metadata now uses that same default instead of the
+old duplicated dashboard-only `65` value.
+
+Dashboard setting updates must validate the full submitted batch before any
+write. If any known submitted value is invalid, the API returns HTTP 400 and no
+submitted values are persisted. Valid batches persist normalized typed values
+through `save_typed()`.
+
+Legacy persisted values can predate schema validation. Effective loading now
+falls back per invalid key to the schema default and logs one bounded warning,
+allowing bot startup and dashboard metadata rendering to continue safely while
+strict validation remains enforced for new writes. The warning format is:
+`Invalid persisted strategy setting key=<key> value_type=<type> reason=<bounded reason>; using default=<default>`.
+It must not include the raw persisted value; validation errors are normalized so
+Python conversion exceptions cannot echo sensitive or long DB-controlled input.
+
+`atr_position_size_pct` is the dashboard/schema percent value for ATR sizing;
+`SmartTradingBot.risk_per_trade` is the internal decimal derived from it.
+`loop_delay_seconds` controls normal continuous-loop delay when no explicit
+caller/CLI delay is supplied. Explicit `run_continuous_loop(..., loop_delay=...)`
+or `--delay` values take precedence over configuration. `None` means use config;
+positive numeric values override config; `0` is a valid explicit no-delay value;
+negative, boolean, or non-numeric direct method values raise `ValueError` before
+the continuous loop starts. Invalid CLI values fail through argparse type
+parsing.
+
+CONFIG-001 initial focused tests passed 22 settings tests and 7 smart-bot
+decision-path tests; the full safe suite passed 327 tests. PR #9 review fixes
+expanded coverage to 32 settings/dashboard/bot-consumption tests and the full
+safe suite passed 337 tests. The final PR #9 review fixes expanded focused
+settings/dashboard/bot coverage to 38 tests and the full safe suite passed 343
+tests.
 
 ## Engineering events and outbox (OPS-014)
 

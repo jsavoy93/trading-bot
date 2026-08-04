@@ -729,8 +729,8 @@ Acceptance criteria:
 
 ### CONFIG-001 — Authoritative strategy configuration
 
-Status: TODO  
-Owner: trading-exec  
+Status: DONE
+Owner: trading-exec
 Priority: P1
 
 Acceptance criteria:
@@ -738,6 +738,58 @@ Acceptance criteria:
 - One schema defines effective strategy settings.
 - The bot, tests, logs, and dashboard use the same schema.
 - Effective values are logged at startup.
+
+Completion evidence (2026-08-04):
+
+- `src/core/settings_service.py` now owns `STRATEGY_SETTINGS_SCHEMA`, typed
+  validation, effective loading, dashboard metadata derivation, and bounded
+  startup-log formatting.
+- `src/core/smart_bot.py` loads schema-defined effective settings during
+  initialization and logs the non-secret effective values.
+- `dashboard.py` derives displayed settings and persisted updates from the
+  shared schema.
+- Validation passed after initial implementation: `git diff --check`; `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  (`22 passed, 1 warning`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  (`7 passed, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  (`327 passed, 82 warnings`).
+- Review-fix validation passed after addressing PR #9 blocking findings:
+  `git diff --check`; `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  (`32 passed, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -k dashboard -q`
+  (`10 passed, 22 deselected, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  (`7 passed, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  (`337 passed, 82 warnings`).
+- Final PR #9 review-fix validation passed after sanitizing invalid legacy
+  warnings and tightening loop-delay input behavior: `git diff --check`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  (`38 passed, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -k dashboard -q`
+  (`10 passed, 28 deselected, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  (`7 passed, 2 warnings`); `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  (`343 passed, 80 warnings`).
+
+Allowed areas:
+
+- `src/core/settings_service.py` — define and validate the authoritative
+  strategy settings schema, typed effective-value loading, defaults, and
+  dashboard metadata at the shared settings boundary.
+- `src/core/smart_bot.py` — consume the shared effective strategy settings and
+  emit bounded startup logging of non-secret effective values.
+- `dashboard.py` — replace duplicated dashboard strategy-setting metadata with
+  the shared schema so displayed and saved settings map to engine settings.
+- `tests/test_settings_service.py` — prove schema defaults, typed overrides,
+  validation, dashboard metadata, and effective-value behavior.
+- `tests/test_smart_bot_decision_paths.py` — adjust or extend focused bot-path
+  coverage only if consuming the shared schema changes initialization or
+  decision-threshold expectations.
+- `AGENT_BACKLOG.md` — record the explicit CONFIG-001 allowed areas and status
+  evidence for this task.
+- `MENTOR.md` — document the authoritative strategy settings contract if
+  CONFIG-001 implementation changes settings architecture.
+- `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` — update handoff notes if
+  CONFIG-001 changes the engineering roadmap or settings architecture.
+- `ITERATION_PROGRESS_LOG.md` — record bounded iteration continuity and final
+  evidence as required by governance.
+- `REPORT.md` and `reports/` — write the required implementation report and
+  timestamped archive when CONFIG-001 implementation completes or stops.
 
 ### CONFIG-002 — Dashboard-to-engine synchronization
 
