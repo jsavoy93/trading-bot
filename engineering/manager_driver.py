@@ -92,6 +92,17 @@ def drive_workflow(
     started_monotonic = monotonic()
     now = _utc(utc_clock)
     workflow = store.load()
+    pause = store.pause_state()
+    if pause and pause["paused"]:
+        return DriverResult(
+            workflow,
+            0,
+            0,
+            0.0,
+            "Engineering manager is paused; explicit resume required.",
+            True,
+            False,
+        )
     stale = _is_stale(workflow, now)
     previous = workflow.driver
     driver = DriverRecord(
@@ -138,6 +149,12 @@ def drive_workflow(
 
     while True:
         workflow = store.load()
+        pause = store.pause_state()
+        if pause and pause["paused"]:
+            return finish(
+                "Engineering manager is paused; explicit resume required.",
+                blocked=True,
+            )
         stopped = _pre_dispatch_stop(workflow)
         if stopped is not None:
             return finish(stopped[0], blocked=stopped[1])

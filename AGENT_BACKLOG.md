@@ -14,6 +14,59 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ## Phase O — Governance
 
+### OPS-014 — Add durable engineering events and transactional outbox
+
+Status: DONE
+Owner: trading-manager
+Priority: P0
+
+Acceptance criteria:
+
+- A versioned immutable event schema represents workflow transitions,
+  completion, failure, blocked, stale, PR-ready, approval-required,
+  delegation, QA, report, pause, and resume facts with UTC times and stable
+  identities.
+- An isolated SQLite event/outbox store uses an injected path, bounded
+  transactions, schema versioning, and ignored `.agent-state` production
+  storage; it never uses `trading_bot.db`.
+- Event append and destination outbox creation are atomic and idempotent;
+  deterministic event IDs and `(event_id, destination)` uniqueness prevent
+  duplicates across retries and restarts.
+- Claim, lease, recovery, send, retry, and dead-letter transitions are finite,
+  validated, crash recoverable, and preserve bounded diagnostics.
+- Persisted workflow evidence reconciles into deterministic events after
+  saves and completion archival; replay is harmless and event failures are
+  reported without losing the durable workflow record.
+- A shared bounded query/projection service exposes current task, timeline,
+  delegation, backlog, criteria, QA, report, PR, goal/gap, next-step, and pause
+  views without raw artifacts or secrets.
+- Legacy workflow records remain compatible; no destructive migration,
+  trading-data change, network action, subprocess, or Codex launch occurs in
+  the event/query layer.
+- Focused event/store/projection/query/manager tests and the full safe suite
+  pass using temporary databases, fake clocks, and no external services.
+
+Allowed areas:
+
+- engineering/engineering_events.py
+- engineering/event_store.py
+- engineering/event_projection.py
+- engineering/query_service.py
+- engineering/workflow_store.py
+- engineering/manager.py
+- engineering/manager_driver.py
+- tests/test_engineering_events.py
+- tests/test_engineering_event_store.py
+- tests/test_engineering_event_projection.py
+- tests/test_engineering_query_service.py
+- tests/test_engineering_workflow_store.py
+- tests/test_engineering_manager.py
+- tests/test_engineering_manager_driver.py
+- AGENT_BACKLOG.md
+- MENTOR.md
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md
+- ITERATION_PROGRESS_LOG.md
+
 ### OPS-013 — Add a bounded restart-safe manager driver
 
 Status: DONE

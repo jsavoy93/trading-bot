@@ -5,6 +5,7 @@ from pathlib import Path
 
 from engineering.backlog import load_backlog
 from engineering.config import missing_required_paths
+from engineering.event_store import EngineeringEventStore
 from engineering.git_service import GitService
 from engineering.manager_driver import DriverBounds, drive_workflow
 from engineering.models import WorkflowState
@@ -92,8 +93,12 @@ def main(argv: list[str] | None = None) -> int:
 
     git = GitService(repo_root)
     state = git.repository_state()
+    event_store = EngineeringEventStore(
+        repo_root / ".agent-state" / "engineering-events.sqlite3"
+    )
     workflow_store = WorkflowStore(
-        repo_root / ".git" / "engineering-workflow.json"
+        repo_root / ".git" / "engineering-workflow.json",
+        event_store=event_store,
     )
 
     tasks = load_backlog(repo_root / "AGENT_BACKLOG.md")

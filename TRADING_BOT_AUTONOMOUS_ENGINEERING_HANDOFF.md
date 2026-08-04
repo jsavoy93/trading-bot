@@ -437,3 +437,24 @@ bounded delegation, • persisted state, • automated
 QA, • criterion-level review, • clear report, • no 
 live brokerage risk,
 • no manual copy/paste required for routine operation.
+
+──────── Durable Engineering Events and Outbox (OPS-014)
+
+The manager now creates an isolated versioned SQLite event store under
+`.agent-state/engineering-events.sqlite3` and injects it into WorkflowStore.
+Workflow JSON remains authoritative. Every persisted workflow snapshot is
+reconciled into deterministic sanitized events, so retries and restarts do not
+duplicate event or notification intent. Notification outbox rows are inserted
+in the same transaction as their event and use finite claim leases, retries,
+and dead-letter state.
+
+The event store must never point at `trading_bot.db`. Tests inject temporary
+paths. Payloads are allowlisted and bounded; raw agent stdout/stderr, prompts,
+environment values, secrets, and arbitrary paths are excluded.
+
+`EngineeringQueryService` provides the common read projection for the planned
+Telegram adapter and read-only engineering dashboard. Missing goal or PR data
+is explicit. The control table's pause flag gates only deterministic manager
+dispatch; it does not operate the paper bot, processes, Codex wrapper, or TUI.
+Telegram transport, dashboard routes, and approval actions are not part of
+OPS-014 and require later separately approved tasks. CONFIG-001 remains paused.

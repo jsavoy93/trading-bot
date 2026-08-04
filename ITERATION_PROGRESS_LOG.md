@@ -899,3 +899,48 @@ explicitly.
 - Manager review decision: `ACCEPT`; TEST-004 is ready for Josh's review.
 - Next action: Stop for Josh's review before merge. Do not push main, merge, or
   begin CONFIG-001 or another task.
+
+## 2026-08-04 01:17:00–01:32:39 UTC — OPS-014 durable events and outbox
+
+- Task start time: `2026-08-04 01:17:00 UTC`
+- Task end time: `2026-08-04 01:32:39 UTC`
+- Elapsed time: 15 minutes 39 seconds
+- Continuity: Continuous; Josh approved continuing with the first audited
+  control-surface item after CONFIG-001 was explicitly paused.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `OPS-014` — add versioned sanitized engineering
+  events, a transactional idempotent notification outbox, bounded shared read
+  projections, deterministic workflow reconciliation, and a manager pause gate.
+- Branch: `agent/ops-014-engineering-events-outbox`
+- Starting commit: `1a45b81`; completion commit: the OPS-014 commits containing
+  this entry.
+- Status: `DONE`
+- Files changed: four new engineering event/store/projection/query modules;
+  `engineering/manager.py`, `engineering/manager_driver.py`, and
+  `engineering/workflow_store.py`; four new focused test modules and two updated
+  manager/store tests; backlog, mentor, handoff, this log, ignored `REPORT.md`,
+  and the timestamped report archive.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_engineering_events.py tests/test_engineering_event_store.py
+  tests/test_engineering_event_projection.py tests/test_engineering_query_service.py
+  tests/test_engineering_workflow_store.py tests/test_engineering_manager.py
+  tests/test_engineering_manager_driver.py -q` passed `57 passed, 1 warning in
+  0.75s` after final code review.
+- Final documentation/backlog parser gate added planner, DISCOVER, and PLAN
+  coverage and passed `71 passed, 1 warning in 0.65s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `257 passed, 2 warnings in 17.76s`; paper defaults were active and live
+  brokerage calls were blocked. No backtest applies.
+- Acceptance result: All eight OPS-014 criteria passed. Event/outbox writes are
+  transactional and replay-safe; leases/retries/dead-lettering are bounded;
+  workflow JSON remains durable and reconcilable; projections are bounded and
+  sanitized; legacy workflows remain compatible; all external boundaries were
+  excluded from focused tests.
+- Known risks: Workflow JSON and SQLite cannot share one atomic transaction, so
+  reconciliation is required after the JSON-first crash window. SQLite remains
+  a single-host control-plane store. PR and goal producers do not yet exist and
+  are shown as explicit gaps. Pause/resume event emission belongs to OPS-015's
+  control service; OPS-014 supplies the durable flag and event types.
+- Manager review decision: `ACCEPT`; OPS-014 is ready for Josh's review.
+- Next action: Stop for Josh's review before merge. Do not begin OPS-015,
+  Telegram, dashboard, approval actions, or resume CONFIG-001 without approval.
