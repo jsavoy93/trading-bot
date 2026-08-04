@@ -863,3 +863,39 @@ explicitly.
 - Manager review decision: `ACCEPT`; TEST-003 is ready for Josh's review.
 - Next action: Stop for Josh's review before merge. Do not push main, merge, or
   begin TEST-004 or another backlog item.
+
+## 2026-08-04 00:37:06–00:46:53 UTC — TEST-004 settings loading tests
+
+- Task start time: `2026-08-04 00:37:06 UTC`
+- Task end time: `2026-08-04 00:46:53 UTC`
+- Elapsed time: 9 minutes 47 seconds
+- Continuity: Continuous; work began after Josh confirmed the TEST-003 merge,
+  remote ancestry was verified, local main was fast-forwarded, and the clean
+  tree/no-active-workflow gates passed.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `TEST-004` — deterministically verify shared settings
+  defaults, persisted dashboard-format overrides, typed deserialization, and
+  malformed numeric rejection without touching the production database.
+- Branch: `agent/trading-test-004-settings-loading-tests`
+- Starting commit: `c62f820`; completion commit: the TEST-004 commit containing
+  this entry.
+- Status: `DONE`
+- Files changed: `tests/test_settings_service.py`, `AGENT_BACKLOG.md`,
+  `MENTOR.md`, this log, ignored `REPORT.md`, and the timestamped report archive.
+  No production code, dashboard code, database, secret, or configuration changed.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_settings_service.py -q` passed `12 passed, 1 warning in 0.21s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `241 passed, 2 warnings in 18.29s`; paper defaults were active and live
+  brokerage calls were blocked. No backtest applies.
+- Acceptance result: All three TEST-004 criteria passed. Four absent typed
+  settings returned exact defaults; five SQLite overrides written in the same
+  string form as the dashboard loaded as int/float/bool/string; two malformed
+  stored numerics and one malformed typed save raised `ValueError`, with the
+  failed save leaving no row.
+- Known risks: Boolean parsing remains permissive for unrecognized strings, and
+  dashboard range clamping/API validation is outside this test-only scope.
+  Authoritative dashboard-to-engine schema reconciliation remains CONFIG-001.
+- Manager review decision: `ACCEPT`; TEST-004 is ready for Josh's review.
+- Next action: Stop for Josh's review before merge. Do not push main, merge, or
+  begin CONFIG-001 or another task.
