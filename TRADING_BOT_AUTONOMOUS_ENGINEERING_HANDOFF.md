@@ -530,13 +530,27 @@ with typed SQLite `settings` overrides; invalid new overrides raise
 clamped.
 
 `dashboard.py` now derives `/api/settings` metadata from the schema and saves
-updates through `save_typed()`. `src/core/smart_bot.py` loads
-`load_effective_strategy_settings()` during initialization, applies matching
-schema-backed attributes, and logs a bounded non-secret deterministic effective
-settings line at startup. The shared `min_score_buy` default is `50`, matching
-the bot's existing BUY threshold and replacing the previous duplicated
-dashboard-only default of `65`.
+updates through `save_typed()`. Dashboard POST updates are validate-then-write:
+the complete submitted batch is normalized and validated first, and no setting
+is persisted if any known submitted value is invalid. Invalid schema input
+returns HTTP 400.
 
-CONFIG-001 verification passed `git diff --check`, 22 focused settings tests, 7
-smart-bot decision-path tests, and the full safe suite of 327 tests with live
-brokerage blocked.
+`src/core/smart_bot.py` loads `load_effective_strategy_settings()` during
+initialization, applies matching schema-backed attributes, and logs a bounded
+non-secret deterministic effective settings line at startup. The shared
+`min_score_buy` default is `50`, matching the bot's existing BUY threshold and
+replacing the previous duplicated dashboard-only default of `65`.
+
+Legacy invalid persisted values fall back per key to schema defaults with a
+warning, so bot startup and dashboard rendering continue safely while new writes
+remain strict. `atr_position_size_pct` is consumed as the percent value that
+derives internal decimal `risk_per_trade`. `loop_delay_seconds` controls normal
+continuous-loop delay only when no explicit method/CLI delay is supplied;
+explicit caller values take precedence.
+
+CONFIG-001 initial verification passed `git diff --check`, 22 focused settings
+tests, 7 smart-bot decision-path tests, and the full safe suite of 327 tests
+with live brokerage blocked. PR #9 review-fix verification passed
+`git diff --check`, 32 focused settings/dashboard/bot-consumption tests, 10
+focused dashboard-route subset tests, 7 smart-bot decision-path tests, and the
+full safe suite of 337 tests with live brokerage blocked.

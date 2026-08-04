@@ -697,9 +697,28 @@ and log a bounded non-secret deterministic line using
 
 The schema default for `min_score_buy` is `50`, matching the existing bot BUY
 threshold behavior. Dashboard metadata now uses that same default instead of the
-old duplicated dashboard-only `65` value. CONFIG-001 focused tests passed 22
-settings tests and 7 smart-bot decision-path tests; the full safe suite passed
-327 tests.
+old duplicated dashboard-only `65` value.
+
+Dashboard setting updates must validate the full submitted batch before any
+write. If any known submitted value is invalid, the API returns HTTP 400 and no
+submitted values are persisted. Valid batches persist normalized typed values
+through `save_typed()`.
+
+Legacy persisted values can predate schema validation. Effective loading now
+falls back per invalid key to the schema default and logs a warning, allowing bot
+startup and dashboard metadata rendering to continue safely while strict
+validation remains enforced for new writes.
+
+`atr_position_size_pct` is the dashboard/schema percent value for ATR sizing;
+`SmartTradingBot.risk_per_trade` is the internal decimal derived from it.
+`loop_delay_seconds` controls normal continuous-loop delay when no explicit
+caller/CLI delay is supplied. Explicit `run_continuous_loop(..., loop_delay=...)`
+or `--delay` values take precedence over configuration.
+
+CONFIG-001 initial focused tests passed 22 settings tests and 7 smart-bot
+decision-path tests; the full safe suite passed 327 tests. PR #9 review fixes
+expanded coverage to 32 settings/dashboard/bot-consumption tests and the full
+safe suite passed 337 tests.
 
 ## Engineering events and outbox (OPS-014)
 

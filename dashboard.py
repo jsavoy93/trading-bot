@@ -65,6 +65,7 @@ try:
         STRATEGY_SETTINGS_SCHEMA,
         dashboard_parameters,
         save_typed as _ss_save_typed,
+        validate_typed as _ss_validate_typed,
     )
     _USE_SETTINGS_SERVICE = True
 except Exception:
@@ -72,6 +73,7 @@ except Exception:
     dashboard_parameters = lambda: {}
     _USE_SETTINGS_SERVICE = False
     _ss_save_typed = lambda k, v: None
+    _ss_validate_typed = lambda k, v: v
 
 # Alpaca client
 api_key = os.getenv("ALPACA_API_KEY")
@@ -109,11 +111,10 @@ def _coerce_dashboard_bool(value):
 
 
 def _normalize_dashboard_value(key: str, value):
+    """Normalize one dashboard setting without persisting it."""
     definition = STRATEGY_SETTINGS_SCHEMA[key]
     if _USE_SETTINGS_SERVICE:
-        _ss_save_typed(key, value)
-        _refresh_trading_params()
-        return _TRADING_PARAMS[key]["value"]
+        return _ss_validate_typed(key, value)
     if definition.param_type == "bool":
         return _coerce_dashboard_bool(value)
     if definition.param_type == "int":
@@ -121,6 +122,26 @@ def _normalize_dashboard_value(key: str, value):
     if definition.param_type == "float":
         return float(value)
     return str(value)
+
+
+def _validate_dashboard_settings_batch(updates: Dict):
+    """Validate all known submitted settings before any setting is persisted."""
+    normalized = {}
+    for key, value in updates.items():
+        if key not in _TRADING_PARAMS:
+            continue
+        normalized[key] = _normalize_dashboard_value(key, value)
+    return normalized
+
+
+def _persist_dashboard_settings_batch(normalized: Dict):
+    """Persist a fully validated batch and refresh local dashboard metadata."""
+    if _USE_SETTINGS_SERVICE:
+        for key, value in normalized.items():
+            _ss_save_typed(key, value)
+        _refresh_trading_params()
+    for key, value in normalized.items():
+        _update_cached_trading_param(key, value)
 
 def get_smart_bot():
     """Get or create cached SmartTradingBot instance"""
@@ -1397,17 +1418,14 @@ def api_get_settings():
 def api_update_settings(updates: Dict):
     """Update one or more trading parameters. Returns updated values."""
     global _smart_bot_instance
-    updated = {}
     _refresh_trading_params()
-    for key, new_val in updates.items():
-        if key not in _TRADING_PARAMS:
-            continue
-        try:
-            normalized = _normalize_dashboard_value(key, new_val)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        _update_cached_trading_param(key, normalized)
-        updated[key] = normalized
+    try:
+        updated = _validate_dashboard_settings_batch(updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    _persist_dashboard_settings_batch(updated)
+    for key, normalized in updated.items():
         if _smart_bot_instance is not None and hasattr(_smart_bot_instance, key):
             setattr(_smart_bot_instance, key, normalized)
     return {"updated": updated, "status": "ok"}

@@ -1126,3 +1126,36 @@ explicitly.
 - Next action: commit, push the branch, create or update the PR to `main`, then
   stop for Josh's human review. Additional approval is required before merge or
   any work outside the approved CONFIG-001 allowed areas.
+
+## 2026-08-04 21:31:32–21:36:24 UTC — CONFIG-001 PR #9 review fixes
+
+- Backlog item/objective: `CONFIG-001` — address blocking read-only review
+  findings on PR #9 without broadening approved scope.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`.
+- Commit: pending at log-write time; previous branch tip was `75cbec9`.
+- Status: `DONE` implementation fixes, pending commit/push and human rereview.
+- Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
+  `dashboard.py`, `tests/test_settings_service.py`, `AGENT_BACKLOG.md`,
+  `MENTOR.md`, `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `ITERATION_PROGRESS_LOG.md`, plus required report artifacts.
+- Tests/evidence: `git diff --check` passed with no output;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  passed `32 passed, 2 warnings in 3.52s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -k dashboard -q`
+  passed `10 passed, 22 deselected, 2 warnings in 3.36s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  passed `7 passed, 2 warnings in 2.44s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q` passed
+  `337 passed, 82 warnings in 41.89s`.
+- Important fixes: dashboard update batches now validate all known submitted
+  settings before any persistence; invalid legacy persisted settings fall back
+  per key to schema defaults with warnings; `atr_position_size_pct` now derives
+  runtime `risk_per_trade`; `loop_delay_seconds` controls normal continuous-loop
+  delay when no explicit caller/CLI delay is supplied, while explicit values
+  take precedence.
+- Remaining risks: dashboard invalid-input rejection remains a compatibility
+  change from prior clamping; CLI continuous mode without `--delay` now uses the
+  configured `loop_delay_seconds` value rather than the old parser default of 10
+  seconds.
+- Next action: commit and push fixes to PR #9, then stop for another read-only
+  human review. No merge approval is implied.

@@ -295,10 +295,27 @@ def load_typed(key: str, default: Any, param_type: str) -> Any:
 
 
 def load_effective_strategy_settings() -> Dict[str, Any]:
-    """Return effective strategy settings from DB overrides plus schema defaults."""
+    """
+    Return effective strategy settings from DB overrides plus schema defaults.
+
+    Legacy persisted values may predate schema validation. If one persisted
+    value is invalid, fail safely for that key by using the schema default and
+    logging a warning instead of preventing bot startup or dashboard rendering.
+    New writes still validate strictly through save_typed().
+    """
     effective: Dict[str, Any] = {}
     for key, definition in STRATEGY_SETTINGS_SCHEMA.items():
-        effective[key] = load_typed(key, definition.default, definition.param_type)
+        try:
+            effective[key] = load_typed(key, definition.default, definition.param_type)
+        except ValueError as exc:
+            log.warning(
+                "Invalid persisted strategy setting %s=%r; using default %r: %s",
+                key,
+                get(key),
+                definition.default,
+                exc,
+            )
+            effective[key] = definition.default
     return effective
 
 

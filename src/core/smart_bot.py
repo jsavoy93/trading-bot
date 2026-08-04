@@ -144,7 +144,8 @@ class SmartTradingBot:
 
         # ATR-based Position Sizing Configuration
         self.enable_atr_sizing = True  # Use ATR for position sizing
-        self.risk_per_trade = 0.02  # Risk 2% of portfolio per trade (default)
+        self.atr_position_size_pct = 2.0  # Risk 2% of portfolio per trade (default)
+        self.risk_per_trade = self.atr_position_size_pct / 100  # Decimal used by sizing math
         self.max_position_pct = 0.05  # Max 5% of portfolio in single position
 
         # Max Drawdown Protection
@@ -487,6 +488,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             for key, value in effective_settings.items():
                 if hasattr(self, key):
                     setattr(self, key, value)
+            if "atr_position_size_pct" in effective_settings:
+                self.risk_per_trade = self.atr_position_size_pct / 100
             logging.info(
                 "Effective strategy settings: %s",
                 settings_service.format_effective_strategy_settings_for_log(effective_settings),
@@ -4965,8 +4968,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.error(f"❌ Portfolio order failed for {symbol}: {e}")
             return False
 
-    def run_continuous_loop(self, max_symbols: int = 30, max_trades: int = 2, loop_delay: int = 300, summary_interval: int = 30, use_ai: bool = None):
+    def _resolve_loop_delay(self, explicit_loop_delay: Optional[int] = None) -> int:
+        """
+        Resolve continuous-loop delay.
+
+        Explicit caller-supplied values take precedence. If no explicit delay is
+        supplied, use the effective schema-backed `loop_delay_seconds` value.
+        """
+        if explicit_loop_delay is not None:
+            return explicit_loop_delay
+        return self.loop_delay_seconds
+
+    def run_continuous_loop(self, max_symbols: int = 30, max_trades: int = 2, loop_delay: Optional[int] = None, summary_interval: int = 30, use_ai: bool = None):
         """Run trading bot in continuous loop with periodic summaries"""
+        loop_delay = self._resolve_loop_delay(loop_delay)
         loop_count = 0
         total_trades = 0
         total_opportunities = 0
@@ -5367,8 +5382,8 @@ def main():
         parser = argparse.ArgumentParser(description='Enhanced Trading Bot with AI')
         parser.add_argument('--continuous', '-c', action='store_true',
                           help='Run in continuous mode (default: single session)')
-        parser.add_argument('--delay', '-d', type=int, default=10,
-                          help='Seconds between loops in continuous mode (default: 10)')
+        parser.add_argument('--delay', '-d', type=int, default=None,
+                          help='Seconds between loops in continuous mode (default: configured loop_delay_seconds)')
         parser.add_argument('--max-symbols', type=int, default=30,
                           help='Maximum symbols to analyze per loop (default: 30)')
         parser.add_argument('--max-trades', type=int, default=2,
@@ -5723,7 +5738,8 @@ def main():
 
         # Configure ATR-based Position Sizing
         if hasattr(args, 'risk_per_trade'):
-            bot.risk_per_trade = args.risk_per_trade / 100  # Convert to decimal
+            bot.atr_position_size_pct = args.risk_per_trade
+            bot.risk_per_trade = bot.atr_position_size_pct / 100  # Convert to decimal
             bot.max_position_pct = args.max_position / 100  # Convert to decimal
             bot.enable_atr_sizing = not args.no_atr_sizing if hasattr(args, 'no_atr_sizing') else True
             print(f"📊 ATR Position Sizing: {'Enabled' if bot.enable_atr_sizing else 'Disabled'}")
@@ -5831,7 +5847,8 @@ def main():
 
         if args.continuous:
             print("🔄 Starting in CONTINUOUS mode...")
-            print(f"⏱️  Loop delay: {args.delay} seconds ({args.delay/60:.1f} minutes)")
+            resolved_delay = bot._resolve_loop_delay(args.delay)
+            print(f"⏱️  Loop delay: {resolved_delay} seconds ({resolved_delay/60:.1f} minutes)")
             bot.run_continuous_loop(
                 max_symbols=args.max_symbols,
                 max_trades=args.max_trades,
