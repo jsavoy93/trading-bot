@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from engineering.manager_driver import DriverBounds, drive_workflow
+from engineering.event_store import EngineeringEventStore
 from engineering.models import DelegationStatus, ReviewRecommendation, WorkflowState
 from engineering.reviewer import CriterionEvidence
 from engineering.models import CriterionStatus
@@ -192,3 +193,16 @@ def test_no_external_service_boundaries_are_needed(tmp_path: Path, monkeypatch: 
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.PLAN))
     result, _ = run_fake(store, lambda workflow: replace(workflow, state=WorkflowState.PREPARE_BRANCH), DriverBounds(max_steps=1))
     assert result.steps == 1
+
+
+def test_paused_manager_stops_before_dispatch(tmp_path: Path) -> None:
+    events = EngineeringEventStore(tmp_path / "events.sqlite3")
+    events.set_paused(True, actor="josh", reason="review")
+    store = WorkflowStore(tmp_path / "workflow.json", event_store=events)
+    store.save(StoredWorkflow("OPS-014", "agent/ops-014", WorkflowState.PLAN))
+
+    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"))
+
+    assert result.steps == 0
+    assert result.blocked is True
+    assert result.stop_reason == "Engineering manager is paused; explicit resume required."

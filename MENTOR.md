@@ -665,3 +665,28 @@ Malformed numeric values raise `ValueError`, and a failed typed numeric save
 does not persist a row. TEST-004 passed 12 focused tests and the full safe suite
 passed 241 tests. This test-only item does not establish an authoritative
 cross-process settings schema; that broader reconciliation remains CONFIG-001.
+
+## Engineering events and outbox (OPS-014)
+
+The deterministic manager still uses `.git/engineering-workflow.json` as the
+workflow authority. `engineering/event_store.py` adds a separate versioned
+SQLite event/outbox store at ignored `.agent-state/engineering-events.sqlite3`.
+It must never use or modify `trading_bot.db`.
+
+Workflow saves reconcile immutable evidence into deterministic, sanitized
+events. Event append and per-destination outbox creation share one transaction;
+stable event IDs and `(event_id, destination)` uniqueness make replay safe.
+Outbox delivery uses bounded claims, leases, retries, and dead-letter state.
+The unavoidable JSON/SQLite crash window is closed by reconciliation on later
+saves or completion archival; a reconciliation error is surfaced after the
+workflow JSON is already durable.
+
+`EngineeringQueryService` is the shared bounded read model intended for future
+Telegram and engineering-dashboard consumers. It exposes no raw agent output,
+prompts, environment, secrets, or arbitrary paths. Missing PR and goal records
+are reported explicitly rather than inferred. The revisioned pause flag stops
+only the bounded engineering driver before dispatch; it does not signal Codex,
+control the interactive TUI, or affect the trading bot.
+
+OPS-014 focused tests passed 57 tests and the full safe suite passed 257 tests.
+CONFIG-001 remains paused.

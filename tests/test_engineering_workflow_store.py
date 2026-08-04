@@ -60,6 +60,23 @@ def test_save_replaces_existing_workflow(tmp_path: Path) -> None:
     assert store.load() == updated
 
 
+def test_event_reconciliation_failure_is_reported_after_workflow_is_durable(
+    tmp_path: Path,
+) -> None:
+    class BrokenEventStore:
+        def append(self, event, destinations=()):
+            raise RuntimeError("event store unavailable")
+
+    state_path = tmp_path / "workflow.json"
+    store = WorkflowStore(state_path, event_store=BrokenEventStore())
+    workflow = StoredWorkflow("OPS-014", "agent/ops-014", WorkflowState.PLAN)
+
+    with pytest.raises(RuntimeError, match="event store unavailable"):
+        store.save(workflow)
+
+    assert WorkflowStore(state_path).load() == workflow
+
+
 def test_clear_removes_workflow_state(tmp_path: Path) -> None:
     state_path = tmp_path / "workflow.json"
     store = WorkflowStore(state_path)

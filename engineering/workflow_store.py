@@ -99,8 +99,16 @@ class StoredWorkflow:
 
 
 class WorkflowStore:
-    def __init__(self, state_path: Path):
+    def __init__(
+        self,
+        state_path: Path,
+        *,
+        event_store: object | None = None,
+        notification_destinations: tuple[str, ...] = ("telegram",),
+    ):
         self.state_path = state_path
+        self.event_store = event_store
+        self.notification_destinations = notification_destinations
 
     def exists(self) -> bool:
         return self.state_path.is_file()
@@ -464,6 +472,23 @@ class WorkflowStore:
         except Exception:
             temporary_path.unlink(missing_ok=True)
             raise
+        self.reconcile(workflow)
+
+    def reconcile(self, workflow: StoredWorkflow) -> int:
+        if self.event_store is None:
+            return 0
+        from engineering.event_projection import reconcile_workflow
+
+        return reconcile_workflow(
+            workflow,
+            self.event_store,  # type: ignore[arg-type]
+            notification_destinations=self.notification_destinations,
+        )
+
+    def pause_state(self) -> dict[str, object] | None:
+        if self.event_store is None:
+            return None
+        return self.event_store.pause_state()  # type: ignore[attr-defined,no-any-return]
 
     def clear(self) -> None:
         self.state_path.unlink(missing_ok=True)
@@ -482,6 +507,7 @@ class WorkflowStore:
             / "engineering-reports"
             / f"{workflow.task_id.lower()}-{fingerprint}.json"
         )
+        self.reconcile(workflow)
         archive_store = WorkflowStore(archive_path)
         if archive_store.exists():
             if archive_store.load() != workflow:
