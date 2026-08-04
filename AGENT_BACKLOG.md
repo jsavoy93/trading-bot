@@ -995,6 +995,90 @@ Completed evidence:
 - Relevant focused/regression tests after final route-surface fix: `33 passed, 33 deselected, 2 warnings`.
 - Full safe suite: `366 passed, 82 warnings`.
 
+### ENGDASH-003 — EngineeringQueryService-backed dashboard provider
+
+Status: DONE
+Owner: dashboard-agent
+Priority: P1
+
+Depends on: ENGDASH-002
+
+Approved scope:
+
+- Start from latest merged `main` after PR #11 merge.
+- Use branch `agent/engdash-003-query-service-provider`.
+- Wire the separate read-only engineering dashboard app to a real
+  `EngineeringQueryService`-backed provider.
+- Preserve the exact approved HTTP surface: `GET /api/engineering/snapshot`
+  and `GET /engineering` only.
+- Keep FastAPI automatic `/openapi.json`, `/docs`, and `/redoc` routes
+  disabled.
+- Keep PR metadata injected-only; do not add a live GitHub adapter.
+
+Allowed areas:
+
+- `AGENT_BACKLOG.md`
+- `dashboard_api/**`
+- `engineering/**`
+- `tests/**`
+- `docs/**`
+- `reports/**` only for task reports
+
+Explicit exclusions:
+
+- `dashboard.py`
+- trading strategy code
+- brokerage integrations
+- live trading execution
+- `.env` files, credentials, secrets, repository settings, CI/CD secrets, and
+  branch protection
+
+Acceptance criteria:
+
+- The default engineering dashboard app uses a real
+  `EngineeringQueryService`-backed provider.
+- The default app no longer shows degraded mode solely because no provider was
+  wired.
+- Missing optional sources still degrade safely to bounded warnings.
+- The API and UI consume the same typed snapshot.
+- The exact two-route HTTP surface is preserved.
+- No controls or write operations exist.
+- No trading, brokerage, Alpaca, or trading database imports exist.
+- Focused provider/API/read-model tests, relevant engineering regressions, and
+  the full safe suite pass.
+- Repository is clean at completion.
+- PR is open against `main` and ready for Josh's review.
+
+Required tests:
+
+- Real `EngineeringQueryService`-backed provider construction.
+- Provider-to-snapshot mapping.
+- Healthy real-provider snapshot.
+- Partial/missing source degradation.
+- Source exceptions converted to bounded warnings.
+- Deterministic ordering.
+- Bounded backlog, reports, events, and workflow lists.
+- Missing PR metadata.
+- No raw exception, secret, environment, or sensitive filesystem leakage in
+  public JSON/HTML output.
+- App factory injection and default app startup.
+- JSON endpoint and HTML page use the real provider snapshot.
+- Exact two-route HTTP surface.
+- `/openapi.json`, `/docs`, and `/redoc` return 404.
+- No mutation HTTP methods/routes.
+- No trading, brokerage, Alpaca, trading database, or `dashboard.py` imports.
+- Existing ENGDASH-001 and ENGDASH-002 behavior.
+- Relevant engineering regression tests and full safe suite.
+
+Completed evidence:
+
+- Branch: `agent/engdash-003-query-service-provider`.
+- Focused provider/API/read-model tests: `30 passed, 2 warnings`.
+- Relevant engineering regression tests: `40 passed, 61 deselected, 2 warnings`.
+- Full safe suite: `373 passed, 83 warnings`.
+- Route inventory: `/api/engineering/snapshot` GET only; `/engineering` GET only;
+  `/openapi.json`, `/docs`, and `/redoc` return 404.
+
 ---
 
 ## Phase F — Dashboard
