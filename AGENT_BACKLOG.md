@@ -662,7 +662,7 @@ Allowed areas:
 ### TEST-001 — Prevent live brokerage calls from tests
 
 Status: DONE
-Owner: trading-exec  
+Owner: trading-exec
 Priority: P0
 
 Acceptance criteria:
@@ -701,8 +701,8 @@ Approved volume semantics:
 
 ### TEST-003 — Decision-path tests
 
-Status: DONE  
-Owner: trading-exec  
+Status: DONE
+Owner: trading-exec
 Priority: P0
 
 Acceptance criteria:
@@ -714,7 +714,7 @@ Acceptance criteria:
 ### TEST-004 — Settings loading tests
 
 Status: DONE
-Owner: trading-exec  
+Owner: trading-exec
 Priority: P0
 
 Acceptance criteria:
@@ -793,8 +793,8 @@ Allowed areas:
 
 ### CONFIG-002 — Dashboard-to-engine synchronization
 
-Status: TODO  
-Owner: dashboard-agent  
+Status: TODO
+Owner: dashboard-agent
 Priority: P1
 
 Acceptance criteria:
@@ -809,8 +809,8 @@ Acceptance criteria:
 
 ### SCORE-001 — Normalize indicator scores
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P2
 
 Acceptance criteria:
@@ -822,8 +822,8 @@ Acceptance criteria:
 
 ### SCORE-002 — Separate eligibility from ranking
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P2
 
 Acceptance criteria:
@@ -838,26 +838,26 @@ Acceptance criteria:
 
 ### EXEC-001 — Repair daily-only analysis
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P2
 
 ### EXEC-002 — Verify multi-timeframe analysis
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P2
 
 ### EXEC-003 — Verify BUY and SELL order paths
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P2
 
 ### EXEC-004 — Verify restart and recovery behavior
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P2
 
 ---
@@ -866,8 +866,8 @@ Priority: P2
 
 ### UNIVERSE-001 — Common-stock filtering
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P3
 
 Acceptance criteria:
@@ -877,9 +877,123 @@ Acceptance criteria:
 
 ### UNIVERSE-002 — Liquidity and history filters
 
-Status: TODO  
-Owner: trading-exec  
+Status: TODO
+Owner: trading-exec
 Priority: P3
+
+---
+
+## Phase ED — Engineering Dashboard
+
+### ENGDASH-001 — Engineering dashboard read model
+
+Status: DONE
+Owner: dashboard-agent
+Priority: P1
+
+Acceptance criteria:
+
+- A reusable, read-only dashboard snapshot model represents project identity,
+  repository state, backlog summary, workflow state, blockers, approvals,
+  latest execution/test results, latest commit, optional PR metadata, recent
+  events, recent reports, health warnings, and freshness timestamp.
+- The read model does not import trading, brokerage, Alpaca, trading database,
+  or legacy trading dashboard modules.
+- The read model is dependency-injected, bounded, deterministic, and converts
+  unavailable sources into health warnings.
+- Focused read-model tests and relevant engineering/dashboard regressions pass.
+
+Completed evidence:
+
+- Branch `agent/engdash-001-dashboard-read-model` merged via PR #10.
+- Merge commit on `main`: `d88331d`.
+
+### ENGDASH-002 — Read-only engineering dashboard API/UI
+
+Status: DONE
+Owner: dashboard-agent
+Priority: P1
+
+Depends on: ENGDASH-001
+
+Approved decisions:
+
+- Start from latest remote `main` after PR #10 merge.
+- Use branch `agent/engdash-002-read-only-api-ui`.
+- Deliberately migrate `dashboard-api/` to importable package
+  `dashboard_api/`; do not retain both paths.
+- Build a separate read-only engineering dashboard app/router with an
+  independently runnable entry point.
+- Do not mount into or modify legacy trading `dashboard.py`.
+- Use ENGDASH-001 `DashboardSnapshot` as the sole engineering data source.
+- Use the injected read-only PR summary interface; do not add a live GitHub
+  adapter in this task.
+
+Allowed areas:
+
+- `AGENT_BACKLOG.md`
+- `dashboard_api/**`
+- `tests/**`
+- `docs/**`
+- `engineering/**` only if a small shared read-only boundary is genuinely
+  required
+
+Explicit exclusions:
+
+- `dashboard.py`
+- trading strategy logic
+- brokerage integrations
+- live trading code
+- `.env` files, credentials, secrets, repository settings, CI/CD secrets, and
+  branch protection
+
+Acceptance criteria:
+
+- One importable `dashboard_api` package exists and old `dashboard-api/` no
+  longer exists.
+- A separate engineering dashboard app can start without importing
+  `dashboard.py`.
+- `GET /api/engineering/snapshot` returns a stable bounded read-only JSON
+  payload from `DashboardSnapshot.to_dict()`.
+- `GET /engineering` renders the same snapshot data in a separate engineering
+  dashboard page.
+- The page renders health, repository state, backlog summary, current
+  workflows/tasks, blockers, approvals, recent reports, recent events/timeline,
+  PR metadata when supplied, and degradation warnings.
+- Missing sources produce bounded warnings rather than server failures.
+- No mutation routes, controls, approval actions, retries, pause/resume,
+  execution, merge, or write APIs exist.
+- No trading, brokerage, Alpaca, trading database, or legacy `dashboard.py`
+  imports are introduced.
+- Rendered values are escaped/sanitized and do not expose secrets, environment
+  variables, raw exception traces, unbounded filesystem contents, or sensitive
+  data beyond approved report metadata.
+- Focused API/UI tests, ENGDASH-001 read-model tests, relevant engineering and
+  legacy dashboard regression tests, and the full safe suite pass.
+
+Required tests:
+
+- `dashboard_api` package imports normally.
+- Old `dashboard-api/` path no longer exists.
+- Stable JSON response shape and typed serialization.
+- Healthy and degraded snapshot responses.
+- Missing PR metadata and reader/source failures.
+- Bounded backlog, report, and event lists with deterministic ordering.
+- HTML rendering with empty and populated snapshots.
+- Warnings render safely without raw traces/secrets.
+- No mutation HTTP methods/routes.
+- No trading or brokerage imports.
+- No import, filename, or route collision with `dashboard.py`.
+- Independent app creation/startup.
+- Existing ENGDASH-001 read-model behavior.
+- Relevant engineering regression tests and full safe suite.
+
+Completed evidence:
+
+- Branch: `agent/engdash-002-read-only-api-ui`.
+- Focused API/read-model tests: `23 passed, 3 warnings`.
+- Relevant focused/regression tests: `33 passed, 33 deselected, 2 warnings`.
+- Full safe suite: `366 passed, 82 warnings`.
 
 ---
 
@@ -887,38 +1001,38 @@ Priority: P3
 
 ### DASH-001 — Existing settings inventory
 
-Status: TODO  
-Owner: dashboard-agent  
+Status: TODO
+Owner: dashboard-agent
 Priority: P1
 
 ### DASH-002 — Read-only bot status page
 
-Status: TODO  
-Owner: dashboard-agent  
+Status: TODO
+Owner: dashboard-agent
 Priority: P1
 
 ### DASH-003 — Decision funnel
 
-Status: TODO  
-Owner: dashboard-agent  
+Status: TODO
+Owner: dashboard-agent
 Priority: P2
 
 ### DASH-004 — Per-symbol explanation
 
-Status: TODO  
-Owner: dashboard-agent  
+Status: TODO
+Owner: dashboard-agent
 Priority: P2
 
 ### DASH-005 — Versioned settings and rollback
 
-Status: TODO  
-Owner: dashboard-agent  
+Status: TODO
+Owner: dashboard-agent
 Priority: P3
 
 ### DASH-006 — Restricted paper-bot controls
 
-Status: BLOCKED  
-Owner: dashboard-agent  
+Status: BLOCKED
+Owner: dashboard-agent
 Priority: P4
 
 Blocked until:

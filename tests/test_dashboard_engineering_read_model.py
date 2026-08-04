@@ -3,11 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-import sys
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "dashboard-api" / "engineering_read_model.py"
-sys.path.insert(0, str(_MODULE_PATH.parent))
-from engineering_read_model import (  # noqa: E402
+from dashboard_api.engineering_read_model import (
     DashboardSnapshot,
     EmptyPullRequestMetadataReader,
     EngineeringDashboardReadModel,
@@ -263,10 +260,17 @@ def test_partial_source_failure_converts_to_warning():
 
 
 def test_no_trading_imports_in_read_model_source():
-    source = Path("dashboard-api/engineering_read_model.py").read_text(encoding="utf-8")
+    source = Path("dashboard_api/engineering_read_model.py").read_text(encoding="utf-8")
 
     forbidden = ("alpaca", "brokerage", "trading_bot.db", "from src", "import src", "import dashboard.py")
     assert all(token not in source for token in forbidden)
+
+
+def test_dashboard_api_package_imports_normally_and_old_path_is_removed():
+    import dashboard_api
+
+    assert dashboard_api.DashboardSnapshot is DashboardSnapshot
+    assert not Path("dashboard-api").exists()
 
 
 def test_deterministic_typed_output():
