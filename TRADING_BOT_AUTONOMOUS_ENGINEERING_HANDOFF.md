@@ -458,3 +458,29 @@ is explicit. The control table's pause flag gates only deterministic manager
 dispatch; it does not operate the paper bot, processes, Codex wrapper, or TUI.
 Telegram transport, dashboard routes, and approval actions are not part of
 OPS-014 and require later separately approved tasks. CONFIG-001 remains paused.
+
+──────── Telegram Engineering Adapter (OPS-015)
+
+OPS-015 adds an independent Telegram long-poll adapter over the OPS-014 event,
+outbox, query, and pause contracts. Runtime credentials are read only from
+`ENGINEERING_TELEGRAM_BOT_TOKEN` and
+`ENGINEERING_TELEGRAM_JOSH_CHAT_ID`; neither is committed or persisted.
+Only a private message where chat and sender IDs both match Josh is accepted.
+
+The command set is closed: `/status`, `/current`, `/next`, `/report`, `/pause`,
+and `/resume`. Read commands consume the bounded `EngineeringQueryService`
+snapshot. Pause/resume go through `EngineeringControlService`, use revisioned
+compare-and-set storage, and atomically append audit events. The control flag
+gates deterministic manager dispatch only.
+
+Telegram update offsets, the one-consumer lease, outbox delivery leases,
+receipts, retries, and dead letters live in the isolated engineering event
+database. Only completion, failure, blocked, stale, PR-ready, and
+approval-required events produce Telegram notifications. The adapter has no
+shell, Git, brokerage, trading, Codex/TUI, raw artifact, deployment, or service
+management capability.
+
+The focused OPS-015 suite passed 61 tests and the full safe suite passed 291
+tests with live brokerage blocked. No real Telegram request was made and no
+service was installed or started. Operational credential provisioning and
+service deployment remain explicitly outside OPS-015.

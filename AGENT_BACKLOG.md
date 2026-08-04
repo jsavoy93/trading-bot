@@ -16,7 +16,7 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ### OPS-015 — Add allowlisted Telegram engineering adapter
 
-Status: TODO
+Status: REVIEW
 Owner: trading-manager
 Priority: P1
 
