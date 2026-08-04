@@ -944,3 +944,42 @@ explicitly.
 - Manager review decision: `ACCEPT`; OPS-014 is ready for Josh's review.
 - Next action: Stop for Josh's review before merge. Do not begin OPS-015,
   Telegram, dashboard, approval actions, or resume CONFIG-001 without approval.
+
+## 2026-08-04 02:20:00–02:41:09 UTC — OPS-015 Telegram engineering adapter
+
+- Task start time: `2026-08-04 02:20:00 UTC`
+- Task end time: `2026-08-04 02:41:09 UTC`
+- Elapsed time: 21 minutes 9 seconds
+- Continuity: Continuous after Josh's final implementation approval; the prior
+  setup turn added the approved backlog entry and created the clean branch.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `OPS-015` — add an allowlisted, bounded Telegram
+  long-poll adapter over the OPS-014 outbox/query/control contracts.
+- Branch: `agent/ops-015-telegram-adapter`
+- Starting implementation commit: `918f82b`; implementation commits:
+  `404cd99`, `ba89744`, and `2ac94cf`; completion documentation commit is the
+  commit containing this entry.
+- Status: `DONE`
+- Files changed: the three approved engineering modules for transport, adapter,
+  and control; approved event/store extensions; three new focused test files;
+  backlog, mentor, handoff, this log, ignored `REPORT.md`, and the OPS-015 report
+  archive. No trading, dashboard, secret, deployment, OpenClaw, or database file
+  changed.
+- Focused tests: the approved OPS-015 command passed `61 passed, 1 warning in
+  1.10s`; all Telegram I/O used fakes or a replaced HTTP boundary.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `291 passed, 2 warnings in 20.60s`; paper defaults were active and live
+  brokerage calls were blocked. No backtest applies.
+- Acceptance result: All ten OPS-015 criteria passed with direct evidence.
+  Long polling, private-chat identity checks, persisted offsets/leases,
+  idempotent notifications, safe read commands, atomic audited pause/resume,
+  strict bounds, environment-only credential loading, and fake external
+  boundaries are covered.
+- Known risks: Telegram account possession remains the identity boundary;
+  SQLite is single-host; network outages can dead-letter notifications; runtime
+  credential provisioning and service installation were deliberately not done.
+- Manager review decision: `ACCEPT`; OPS-015 is ready for Josh's PR review.
+- Pull request: https://github.com/jsavoy93/trading-bot/pull/7 — OPEN,
+  targeting `main`, verified clean, and not merged.
+- Next action: Stop for Josh's review of PR #7. Do not begin DASH-007, OPS-016,
+  CONFIG-001, or another task.

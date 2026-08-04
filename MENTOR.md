@@ -690,3 +690,36 @@ control the interactive TUI, or affect the trading bot.
 
 OPS-014 focused tests passed 57 tests and the full safe suite passed 257 tests.
 CONFIG-001 remains paused.
+
+## Allowlisted Telegram engineering adapter (OPS-015)
+
+`engineering/telegram_transport.py` is the only real Telegram HTTP boundary.
+It uses the fixed `https://api.telegram.org` origin, finite HTTPS and long-poll
+timeouts, bounded update batches and messages, and environment-only
+`ENGINEERING_TELEGRAM_BOT_TOKEN` and `ENGINEERING_TELEGRAM_JOSH_CHAT_ID`
+credentials. Tests always inject a fake transport or replace the HTTP call;
+they never use a real token or network request.
+
+`engineering/telegram_adapter.py` accepts only a private message whose chat ID
+and sender ID both equal Josh's configured numeric ID. Groups, channels,
+forwards, mismatched senders, malformed commands, and oversized commands fail
+closed. The only commands are `/status`, `/current`, `/next`, `/report`,
+`/pause`, and `/resume`. Read commands use only `EngineeringQueryService` and
+return bounded sanitized summaries; they never read raw reports, agent output,
+prompts, files, environment, or logs.
+
+The adapter persists its update offset and a single-consumer lease in the
+isolated engineering event database. It delivers only the six approved
+notification event types from the OPS-014 outbox. Delivery receipts,
+retry/backoff, lease recovery, and dead-letter behavior are idempotent and
+bounded. Unauthorized access audits contain no inbound content or chat ID.
+
+`engineering/engineering_control.py` is the sole Telegram control layer.
+Pause/resume use revision compare-and-set and atomically append audited
+manager-paused/resumed events. The existing bounded manager driver reads that
+flag before dispatch. It does not signal a process, control Codex/TUI, invoke
+Git, affect the trading bot, or represent approval.
+
+OPS-015 focused tests passed 61 tests and the full safe suite passed 291 tests.
+No adapter service was installed, enabled, or started. DASH-007, OPS-016, and
+CONFIG-001 remain unstarted.
