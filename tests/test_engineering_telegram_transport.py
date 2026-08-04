@@ -72,14 +72,20 @@ def test_long_poll_uses_fixed_origin_bounds_and_parses_private_message(monkeypat
     assert updates[0].text == "/status" and updates[0].chat_type == "private"
 
 
-def test_update_parser_marks_forwarded_and_discards_unsupported_updates(monkeypatch) -> None:
+def test_update_parser_marks_forwarded_and_exposes_channel_for_denial(monkeypatch) -> None:
     monkeypatch.setattr(
         "engineering.telegram_transport.request.urlopen",
         lambda *args, **kwargs: Response(
             {
                 "ok": True,
                 "result": [
-                    {"update_id": 1, "channel_post": {"text": "/status"}},
+                    {
+                        "update_id": 1,
+                        "channel_post": {
+                            "chat": {"id": -100, "type": "channel"},
+                            "text": "/status",
+                        },
+                    },
                     {
                         "update_id": 2,
                         "message": {
@@ -96,7 +102,9 @@ def test_update_parser_marks_forwarded_and_discards_unsupported_updates(monkeypa
     updates = TelegramHTTPTransport("token").get_updates(
         offset=0, timeout_seconds=2, limit=5
     )
-    assert len(updates) == 1 and updates[0].forwarded is True
+    assert len(updates) == 2
+    assert updates[0].chat_type == "channel" and updates[0].sender_id == 0
+    assert updates[1].forwarded is True
 
 
 def test_send_is_bounded_and_returns_receipt(monkeypatch) -> None:

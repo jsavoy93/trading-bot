@@ -131,7 +131,7 @@ class TelegramHTTPTransport:
                 "offset": offset,
                 "timeout": timeout_seconds,
                 "limit": limit,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "channel_post"],
             },
         )
         if not isinstance(result, list) or len(result) > limit:
@@ -148,16 +148,20 @@ class TelegramHTTPTransport:
         if not isinstance(item, dict) or not isinstance(item.get("update_id"), int):
             return None
         message = item.get("message")
+        source_is_channel = False
+        if not isinstance(message, dict):
+            message = item.get("channel_post")
+            source_is_channel = isinstance(message, dict)
         if not isinstance(message, dict):
             return None
         chat = message.get("chat")
         sender = message.get("from")
-        if not isinstance(chat, dict) or not isinstance(sender, dict):
+        if not isinstance(chat, dict):
             return None
         chat_id = chat.get("id")
-        sender_id = sender.get("id")
+        sender_id = sender.get("id") if isinstance(sender, dict) else 0
         chat_type = chat.get("type")
-        text = message.get("text")
+        text = message.get("text", "")
         if not isinstance(chat_id, int) or not isinstance(sender_id, int):
             return None
         if not isinstance(chat_type, str) or not isinstance(text, str):
@@ -170,7 +174,7 @@ class TelegramHTTPTransport:
             update_id=item["update_id"],
             chat_id=chat_id,
             sender_id=sender_id,
-            chat_type=chat_type[:20],
+            chat_type="channel" if source_is_channel else chat_type[:20],
             text=text,
             forwarded=forwarded,
         )
