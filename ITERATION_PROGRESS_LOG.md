@@ -1057,3 +1057,41 @@ explicitly.
   later without reopening implementation.
 - Next action: Commit and push this feature branch, create or update the
   OPS-017 PR targeting `main`, then stop for human review. Agents must not merge.
+
+## 2026-08-04 16:05:54–16:07:27 UTC — CONFIG-001 governance remediation
+
+- Task start time: `2026-08-04 16:05:54 UTC`
+- Task end time: `2026-08-04 16:07:27 UTC`
+- Elapsed time: 1 minute 33 seconds
+- Continuity: Continuous after Josh approved only governance remediation for
+  CONFIG-001 and explicitly prohibited implementation until later approval.
+- Stale/blocked status: Not stale. Implementation intentionally not started;
+  approval is required before CONFIG-001 code changes.
+- Backlog item/objective: `CONFIG-001` — add explicit minimal allowed areas so
+  the authoritative strategy configuration task is executable under governance.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`; starting
+  commit: `4077b06`; completion commit: the later governance remediation commit
+  on this branch.
+- Status: `DONE` for governance remediation only. CONFIG-001 remains `TODO` for
+  implementation.
+- Files changed: `AGENT_BACKLOG.md`, this continuity log, ignored `REPORT.md`,
+  and the timestamped report archive. No implementation code, tests, secrets,
+  `.env`, databases, generated results, OpenClaw config, or live-trading
+  settings changed.
+- Tests/evidence: `git diff --check` passed with no output; CONFIG-001 parse
+  validation confirmed status `TODO`, owner `trading-exec`, priority `P1`, and
+  10 explicit allowed-area entries; focused governance tests passed with
+  `28 passed, 1 warning in 0.24s`.
+- Acceptance result: PASS. CONFIG-001 now has an explicit minimal allowed-area
+  list with rationale for the shared settings boundary, bot consumer, dashboard
+  consumer, focused tests, and required governance/report artifacts.
+- Known risks: The allowed areas intentionally do not include broad `src/`,
+  `templates/`, migrations, secrets, `.env`, database files, generated results,
+  deployment/service files, or OpenClaw config. If implementation discovers a
+  necessary file outside this list, it must stop for approval instead of
+  expanding scope.
+- Manager review decision: `ACCEPT` governance remediation; do not begin
+  CONFIG-001 implementation yet.
+- Next action: Josh reviews and approves starting CONFIG-001 implementation on
+  this branch, or requests a narrower allowed-area adjustment. Agents must not
+  merge into `main`.

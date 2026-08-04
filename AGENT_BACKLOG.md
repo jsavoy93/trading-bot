@@ -739,6 +739,31 @@ Acceptance criteria:
 - The bot, tests, logs, and dashboard use the same schema.
 - Effective values are logged at startup.
 
+Allowed areas:
+
+- `src/core/settings_service.py` — define and validate the authoritative
+  strategy settings schema, typed effective-value loading, defaults, and
+  dashboard metadata at the shared settings boundary.
+- `src/core/smart_bot.py` — consume the shared effective strategy settings and
+  emit bounded startup logging of non-secret effective values.
+- `dashboard.py` — replace duplicated dashboard strategy-setting metadata with
+  the shared schema so displayed and saved settings map to engine settings.
+- `tests/test_settings_service.py` — prove schema defaults, typed overrides,
+  validation, dashboard metadata, and effective-value behavior.
+- `tests/test_smart_bot_decision_paths.py` — adjust or extend focused bot-path
+  coverage only if consuming the shared schema changes initialization or
+  decision-threshold expectations.
+- `AGENT_BACKLOG.md` — record the explicit CONFIG-001 allowed areas and status
+  evidence for this task.
+- `MENTOR.md` — document the authoritative strategy settings contract if
+  CONFIG-001 implementation changes settings architecture.
+- `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` — update handoff notes if
+  CONFIG-001 changes the engineering roadmap or settings architecture.
+- `ITERATION_PROGRESS_LOG.md` — record bounded iteration continuity and final
+  evidence as required by governance.
+- `REPORT.md` and `reports/` — write the required implementation report and
+  timestamped archive when CONFIG-001 implementation completes or stops.
+
 ### CONFIG-002 — Dashboard-to-engine synchronization
 
 Status: TODO  
