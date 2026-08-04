@@ -644,3 +644,13 @@ focused integration suite passed `84 tests` and the full safe suite reached:
 ```
 
 The test safety guard confirms that live brokerage calls remain blocked during tests.
+
+## TEST-003 decision-path safety contract
+
+`SmartTradingBot.execute_trade()` fails closed unless the signal is exactly
+`BUY` or `SELL`. `HOLD`, falsey values, and unknown signals return before any
+account, position, pending-order, or submission call. Do not restore the old
+truthiness check or infer SELL from “not BUY.” Deterministic mocked tests cover
+exact BUY/SELL sides, HOLD and unknown rejection, owned and unowned SELLs, and
+pending-order duplicate prevention. TEST-003 passed 7 focused tests and the
+full safe suite passed 229 tests.

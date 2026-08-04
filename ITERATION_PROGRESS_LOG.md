@@ -794,3 +794,72 @@ explicitly.
 - Manager review decision: `ACCEPT`; TEST-002 is ready for Josh's review.
 - Next action: Stop for Josh's review and approval before merge. Retain this
   branch, do not push main, and do not begin TEST-003 or another task.
+
+## 2026-08-03 23:18:00–23:19:35 UTC — TEST-003 focused suite stopped
+
+- Task start time: `2026-08-03 23:18:00 UTC`
+- Task end time: `2026-08-03 23:19:35 UTC`
+- Elapsed time: 1 minute 35 seconds
+- Continuity: Continuous; this was the first bounded TEST-003 iteration after
+  TEST-002 was merged to main and Josh requested continuation.
+- Stale/blocked status: `BLOCKED`; not stale. The required focused suite failed,
+  so repository rules required an immediate stop before correction or retry.
+- Backlog item/objective: `TEST-003` — separately cover BUY, SELL, and HOLD,
+  owned and unowned position behavior, and duplicate-order prevention with
+  mocked, network-free dependencies.
+- Branch: `agent/trading-test-003-decision-path-tests`
+- Starting commit: `6d299ff`; task commit: none
+- Status: `REWORK`
+- Files changed: new untracked `tests/test_smart_bot_decision_paths.py`,
+  `MENTOR.md`, this log, `REPORT.md`, and the timestamped report archive.
+- Focused test: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_smart_bot_decision_paths.py -q` failed `1 failed, 5 passed, 2
+  warnings in 2.75s`; paper defaults were active and live brokerage calls were
+  blocked.
+- Exact failure: `execute_trade()` accepted `signal='HOLD'`, selected the
+  non-BUY path and `OrderSide.SELL`, submitted a mocked order, and returned
+  `True`. BUY, owned SELL, unowned SELL rejection, and both pending-order cases
+  passed.
+- Full safe suite/backtest: not run because the focused gate failed; no
+  backtest applies.
+- Manager review decision: `REWORK`; all TEST-003 acceptance criteria are not
+  yet proven.
+- Next action: Josh's approval is required to resume. On approval, add a narrow
+  fail-closed `BUY`/`SELL` signal guard in `execute_trade()`, rerun the focused
+  suite once, and run the full safe suite only if focused tests pass.
+
+## 2026-08-03 23:27:00–23:34:06 UTC — TEST-003 safety correction completed
+
+- Task start time: `2026-08-03 23:27:00 UTC`
+- Task end time: `2026-08-03 23:34:06 UTC`
+- Elapsed time: 7 minutes 6 seconds
+- Continuity: Resumed. The prior iteration stopped because the new HOLD
+  regression test proved that `execute_trade()` inferred SELL from “not BUY.”
+  Josh explicitly approved one narrow fail-closed correction and verification.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `TEST-003` — allow only exact BUY or SELL signals at
+  the execution boundary and prove all requested decision paths offline.
+- Branch: `agent/trading-test-003-decision-path-tests`
+- Starting commit: `6d299ff`; completion commit: the TEST-003 commit containing
+  this entry.
+- Status: `DONE`
+- Files changed: `src/core/smart_bot.py`,
+  `tests/test_smart_bot_decision_paths.py`, `AGENT_BACKLOG.md`, `MENTOR.md`,
+  this log, `REPORT.md`, and the stopped and completion report archives.
+- Correction: `execute_trade()` now returns false unless `signal` is exactly
+  `BUY` or `SELL`; unsupported signals are logged and return before brokerage
+  checks or order submission. No thresholds, sizing, brokerage configuration,
+  or unrelated behavior changed.
+- Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
+  tests/test_smart_bot_decision_paths.py -q` passed `7 passed, 2 warnings in
+  2.54s`.
+- Full safe tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q`
+  passed `229 passed, 2 warnings in 17.51s`; paper defaults were active and
+  live brokerage calls were blocked. No backtest applies.
+- Acceptance result: All three backlog criteria and all six explicitly
+  approved regression behaviors passed with direct mocked evidence.
+- Known risks: The guard is intentionally case-sensitive and fail-closed;
+  lowercase or whitespace-padded signals are unsupported rather than inferred.
+- Manager review decision: `ACCEPT`; TEST-003 is ready for Josh's review.
+- Next action: Stop for Josh's review before merge. Do not push main, merge, or
+  begin TEST-004 or another backlog item.
