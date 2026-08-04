@@ -175,14 +175,20 @@ def test_effective_strategy_settings_use_typed_database_overrides(
 def test_invalid_legacy_values_fall_back_to_schema_defaults(
     isolated_settings_db, caplog
 ):
-    settings_service.save("sma_fast", "bad-legacy-value")
+    raw_invalid = "SECRET_TOKEN=" + ("x" * 500)
+    settings_service.save("sma_fast", raw_invalid)
     settings_service.save_typed("hourly_weight", "0.45")
 
     effective = settings_service.load_effective_strategy_settings()
 
     assert effective["sma_fast"] == 10
     assert effective["hourly_weight"] == 0.45
-    assert "Invalid persisted strategy setting sma_fast" in caplog.text
+    assert "Invalid persisted strategy setting key=sma_fast" in caplog.text
+    assert "value_type=str" in caplog.text
+    assert "using default=10" in caplog.text
+    assert raw_invalid not in caplog.text
+    assert "SECRET_TOKEN" not in caplog.text
+    assert max(len(record.getMessage()) for record in caplog.records) < 240
 
 
 def test_dashboard_metadata_is_derived_from_schema_and_effective_values(
@@ -294,14 +300,30 @@ def test_bot_loop_delay_uses_configured_value_when_no_explicit_argument(
     assert SmartTradingBot._resolve_loop_delay(bot) == 120
 
 
+@pytest.mark.parametrize(
+    ("explicit_delay", "expected"),
+    [(5, 5), (0, 0), (2.5, 2.5)],
+)
 def test_bot_loop_delay_explicit_argument_overrides_configured_value(
-    isolated_settings_db,
+    isolated_settings_db, explicit_delay, expected
 ):
     settings_service.save_typed("loop_delay_seconds", 120)
     bot = _strategy_bot_stub()
     SmartTradingBot._load_effective_strategy_settings(bot)
 
-    assert SmartTradingBot._resolve_loop_delay(bot, 5) == 5
+    assert SmartTradingBot._resolve_loop_delay(bot, explicit_delay) == expected
+
+
+@pytest.mark.parametrize("bad_delay", [-1, "5", object(), True])
+def test_bot_loop_delay_rejects_negative_or_non_numeric_explicit_values(
+    isolated_settings_db, bad_delay
+):
+    settings_service.save_typed("loop_delay_seconds", 120)
+    bot = _strategy_bot_stub()
+    SmartTradingBot._load_effective_strategy_settings(bot)
+
+    with pytest.raises(ValueError):
+        SmartTradingBot._resolve_loop_delay(bot, bad_delay)
 
 
 def test_bot_startup_with_invalid_legacy_setting_uses_default_safely(
@@ -313,7 +335,7 @@ def test_bot_startup_with_invalid_legacy_setting_uses_default_safely(
     SmartTradingBot._load_effective_strategy_settings(bot)
 
     assert bot.min_score_buy == 50
-    assert "Invalid persisted strategy setting min_score_buy" in caplog.text
+    assert "Invalid persisted strategy setting key=min_score_buy" in caplog.text
 
 
 def test_effective_settings_log_format_is_deterministic_and_bounded(

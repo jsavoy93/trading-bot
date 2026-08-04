@@ -542,15 +542,26 @@ non-secret deterministic effective settings line at startup. The shared
 replacing the previous duplicated dashboard-only default of `65`.
 
 Legacy invalid persisted values fall back per key to schema defaults with a
-warning, so bot startup and dashboard rendering continue safely while new writes
-remain strict. `atr_position_size_pct` is consumed as the percent value that
-derives internal decimal `risk_per_trade`. `loop_delay_seconds` controls normal
+bounded warning, so bot startup and dashboard rendering continue safely while
+new writes remain strict. The warning format is
+`Invalid persisted strategy setting key=<key> value_type=<type> reason=<bounded reason>; using default=<default>`
+and must not include the raw persisted value. Validation errors are normalized
+so Python conversion exceptions cannot echo sensitive or long DB-controlled
+input. `atr_position_size_pct` is consumed as the percent value that derives
+internal decimal `risk_per_trade`. `loop_delay_seconds` controls normal
 continuous-loop delay only when no explicit method/CLI delay is supplied;
-explicit caller values take precedence.
+explicit caller values take precedence. For direct method calls, `None` means
+configured delay, positive numeric values override config, `0` means no delay,
+and negative, boolean, or non-numeric values raise `ValueError` before loop
+entry. Invalid CLI values fail through argparse type parsing.
 
 CONFIG-001 initial verification passed `git diff --check`, 22 focused settings
 tests, 7 smart-bot decision-path tests, and the full safe suite of 327 tests
 with live brokerage blocked. PR #9 review-fix verification passed
 `git diff --check`, 32 focused settings/dashboard/bot-consumption tests, 10
 focused dashboard-route subset tests, 7 smart-bot decision-path tests, and the
-full safe suite of 337 tests with live brokerage blocked.
+full safe suite of 337 tests with live brokerage blocked. Final PR #9
+review-fix verification passed `git diff --check`, 38 focused
+settings/dashboard/bot tests, 10 focused dashboard-route subset tests, 7
+smart-bot decision-path tests, and the full safe suite of 343 tests with live
+brokerage blocked.

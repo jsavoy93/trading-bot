@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Dict, Mapping, Optional
 
@@ -15,6 +16,7 @@ log = logging.getLogger(__name__)
 
 # Path to the shared trading bot DB
 _DB_PATH = Path(__file__).parent.parent.parent / "trading_bot.db"
+_MAX_WARNING_REASON_CHARS = 120
 
 
 @dataclass(frozen=True)
@@ -225,17 +227,24 @@ def _coerce_bool(value: Any) -> bool:
             return True
         if normalized in ("false", "0", "no", "off"):
             return False
-    raise ValueError(f"invalid boolean setting value: {value!r}")
+    raise ValueError("invalid boolean setting value")
 
 
 def _coerce_value(value: Any, param_type: str) -> Any:
     if param_type == "int":
-        coerced = int(float(value))
-        if float(value) != float(coerced):
-            raise ValueError(f"invalid integer setting value: {value!r}")
+        try:
+            numeric = float(value)
+            coerced = int(numeric)
+        except (TypeError, ValueError):
+            raise ValueError("invalid integer setting value") from None
+        if numeric != float(coerced):
+            raise ValueError("invalid integer setting value")
         return coerced
     if param_type == "float":
-        return float(value)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise ValueError("invalid float setting value") from None
     if param_type == "bool":
         return _coerce_bool(value)
     if param_type == "str":
@@ -294,6 +303,14 @@ def load_typed(key: str, default: Any, param_type: str) -> Any:
     return validate_typed(key, raw, param_type)
 
 
+def _bounded_validation_reason(error: Exception) -> str:
+    """Return a deterministic bounded validation reason without raw values."""
+    reason = re.sub(r"\s+", " ", str(error)).strip()
+    if len(reason) > _MAX_WARNING_REASON_CHARS:
+        reason = reason[: _MAX_WARNING_REASON_CHARS - 1] + "…"
+    return reason or error.__class__.__name__
+
+
 def load_effective_strategy_settings() -> Dict[str, Any]:
     """
     Return effective strategy settings from DB overrides plus schema defaults.
@@ -308,12 +325,13 @@ def load_effective_strategy_settings() -> Dict[str, Any]:
         try:
             effective[key] = load_typed(key, definition.default, definition.param_type)
         except ValueError as exc:
+            raw = get(key)
             log.warning(
-                "Invalid persisted strategy setting %s=%r; using default %r: %s",
+                "Invalid persisted strategy setting key=%s value_type=%s reason=%s; using default=%r",
                 key,
-                get(key),
+                type(raw).__name__,
+                _bounded_validation_reason(exc),
                 definition.default,
-                exc,
             )
             effective[key] = definition.default
     return effective

@@ -705,20 +705,29 @@ submitted values are persisted. Valid batches persist normalized typed values
 through `save_typed()`.
 
 Legacy persisted values can predate schema validation. Effective loading now
-falls back per invalid key to the schema default and logs a warning, allowing bot
-startup and dashboard metadata rendering to continue safely while strict
-validation remains enforced for new writes.
+falls back per invalid key to the schema default and logs one bounded warning,
+allowing bot startup and dashboard metadata rendering to continue safely while
+strict validation remains enforced for new writes. The warning format is:
+`Invalid persisted strategy setting key=<key> value_type=<type> reason=<bounded reason>; using default=<default>`.
+It must not include the raw persisted value; validation errors are normalized so
+Python conversion exceptions cannot echo sensitive or long DB-controlled input.
 
 `atr_position_size_pct` is the dashboard/schema percent value for ATR sizing;
 `SmartTradingBot.risk_per_trade` is the internal decimal derived from it.
 `loop_delay_seconds` controls normal continuous-loop delay when no explicit
 caller/CLI delay is supplied. Explicit `run_continuous_loop(..., loop_delay=...)`
-or `--delay` values take precedence over configuration.
+or `--delay` values take precedence over configuration. `None` means use config;
+positive numeric values override config; `0` is a valid explicit no-delay value;
+negative, boolean, or non-numeric direct method values raise `ValueError` before
+the continuous loop starts. Invalid CLI values fail through argparse type
+parsing.
 
 CONFIG-001 initial focused tests passed 22 settings tests and 7 smart-bot
 decision-path tests; the full safe suite passed 327 tests. PR #9 review fixes
 expanded coverage to 32 settings/dashboard/bot-consumption tests and the full
-safe suite passed 337 tests.
+safe suite passed 337 tests. The final PR #9 review fixes expanded focused
+settings/dashboard/bot coverage to 38 tests and the full safe suite passed 343
+tests.
 
 ## Engineering events and outbox (OPS-014)
 

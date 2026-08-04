@@ -4972,12 +4972,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """
         Resolve continuous-loop delay.
 
-        Explicit caller-supplied values take precedence. If no explicit delay is
-        supplied, use the effective schema-backed `loop_delay_seconds` value.
+        `None` uses the effective schema-backed `loop_delay_seconds` value.
+        Explicit non-negative numeric values take precedence; zero means no
+        delay. Negative or non-numeric explicit values are rejected before the
+        continuous loop starts.
         """
-        if explicit_loop_delay is not None:
-            return explicit_loop_delay
-        return self.loop_delay_seconds
+        if explicit_loop_delay is None:
+            return int(self.loop_delay_seconds)
+        if isinstance(explicit_loop_delay, bool) or not isinstance(explicit_loop_delay, (int, float)):
+            raise ValueError("loop_delay must be a non-negative number or None")
+        if explicit_loop_delay < 0:
+            raise ValueError("loop_delay must be >= 0")
+        if float(explicit_loop_delay).is_integer():
+            return int(explicit_loop_delay)
+        return explicit_loop_delay
 
     def run_continuous_loop(self, max_symbols: int = 30, max_trades: int = 2, loop_delay: Optional[int] = None, summary_interval: int = 30, use_ai: bool = None):
         """Run trading bot in continuous loop with periodic summaries"""

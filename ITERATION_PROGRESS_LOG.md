@@ -1159,3 +1159,37 @@ explicitly.
   seconds.
 - Next action: commit and push fixes to PR #9, then stop for another read-only
   human review. No merge approval is implied.
+
+## 2026-08-04 21:48:39–21:51:34 UTC — CONFIG-001 PR #9 final review fixes
+
+- Backlog item/objective: `CONFIG-001` — address the remaining PR #9 review
+  finding on invalid legacy-value warning sanitization and define explicit
+  loop-delay input behavior.
+- Branch: `agent/trading-config-001-authoritative-strategy-config`.
+- Commit: pending at log-write time; previous branch tip was `0d9e105`.
+- Status: `DONE` implementation fixes, pending commit/push and human rereview.
+- Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
+  `tests/test_settings_service.py`, `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `ITERATION_PROGRESS_LOG.md`,
+  plus required report artifacts.
+- Tests/evidence: `git diff --check` passed with no output;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -q`
+  passed `38 passed, 2 warnings in 3.26s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_settings_service.py -k dashboard -q`
+  passed `10 passed, 28 deselected, 2 warnings in 3.35s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_smart_bot_decision_paths.py -q`
+  passed `7 passed, 2 warnings in 2.58s`;
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q` passed
+  `343 passed, 80 warnings in 35.85s`.
+- Important fixes: invalid legacy-value warnings now log only schema key,
+  invalid value type, bounded sanitized validation reason, and fallback default;
+  raw persisted values are not logged and are not written back. Loop-delay
+  direct-call contract is explicit: `None` uses config, positive numeric values
+  override config, `0` means no delay, and negative, boolean, or non-numeric
+  values raise `ValueError` before loop entry.
+- Remaining risks: no DB migration/cleanup is performed, so invalid legacy
+  values remain in storage until explicitly corrected; dashboard invalid-input
+  HTTP 400 behavior and config-backed no-`--delay` CLI behavior remain the
+  documented compatibility changes.
+- Next action: commit and push fixes to PR #9, then stop for another read-only
+  human review. No merge approval is implied.
