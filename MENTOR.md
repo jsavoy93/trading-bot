@@ -59,6 +59,18 @@ tree use read-only reporting mode. Read-only mode writes only to
 repository. Uncertain classification fails safe to read-only mode, so clean
 tree checks cannot be invalidated by mandatory reporting.
 
+### Infrastructure-dependent acceptance
+
+Track implementation, automated verification, and manual operational
+verification as separate states. If implementation is complete and safe tests
+pass, but an external prerequisite (for example a second account, DNS,
+certificate, email delivery, Telegram, or Slack) is unavailable, keep the
+machine-parseable backlog status as `REVIEW` and record `Manual Operational
+Verification Pending` as review classification/detail; do not classify the task
+as failed or reopen implementation unless evidence reveals a software defect.
+Merge requires Josh's explicit acceptance of the documented residual operational
+risk, or the pending check may wait until its prerequisite is available.
+
 ---
 
 ## Architecture Overview

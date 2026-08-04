@@ -16,11 +16,20 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ### OPS-017 — Add bounded OPS-015 launcher and manual smoke setup
 
-Status: BLOCKED
+Status: REVIEW
+Review classification: Manual Operational Verification Pending
 Owner: trading-manager
 Priority: P1
 
 Depends on: OPS-014, OPS-015
+
+Verification state:
+
+- IMPLEMENTATION COMPLETE
+- AUTOMATED VERIFICATION PASSED
+- MANUAL OPERATIONAL VERIFICATION PENDING — one denial check from an
+  unauthorized second Telegram account remains unavailable. No software defect
+  is known; do not reopen implementation or create rework for this prerequisite.
 
 Acceptance criteria:
 

@@ -508,6 +508,12 @@ explicit safe field set. Deterministic exit codes distinguish configuration,
 competing poller, permanent Telegram, runtime/cleanup, and signal outcomes.
 
 Automated tests use fake Telegram boundaries. Focused OPS-017 tests passed 67
-tests and the full safe suite passed 317 tests with live brokerage blocked.
-The real secret file and real Telegram smoke test have not been authorized or
-performed, so OPS-017 remains blocked before push and PR creation.
+tests and the full safe suite passed 317 tests with live brokerage blocked. The
+authorized real Telegram smoke then passed `/status`, `/current`, `/report`,
+`/pause`, repeated `/pause`, and `/resume`; cleanup released the lease and
+restored pause state. Implementation is complete and automated verification
+passed. The only remaining evidence is a one-time denial check from an
+unauthorized second Telegram account, which was unavailable. OPS-017 is
+therefore backlog status `REVIEW` with review classification `Manual
+Operational Verification Pending`, not failed or rework. Josh may accept that
+residual risk before merge or defer the check.
