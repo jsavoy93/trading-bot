@@ -345,7 +345,11 @@ def _approval_summary(
             next_action=_text(report.get("next_action")),
         )
     approval_event = next(
-        (event for event in reversed(events) if _text(event.get("event_type")) == "approval.required"),
+        (
+            event
+            for event in reversed(events)
+            if (_text(event.get("event_type")) or _text(event.get("type"))) == "approval.required"
+        ),
         None,
     )
     if approval_event is not None:

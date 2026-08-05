@@ -233,13 +233,15 @@ def test_bounded_lists_and_deterministic_ordering_in_response():
     assert [report["path"] for report in first["recent_reports"]] == [str(index) for index in range(5)]
 
 
-def test_independent_default_app_startup_is_read_only_and_degraded():
-    response = TestClient(create_app()).get(SNAPSHOT_ROUTE)
+def test_independent_default_app_startup_uses_real_read_only_provider():
+    client = TestClient(create_app())
+    response = client.get(SNAPSHOT_ROUTE)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["repository"]["root"] == "unavailable"
-    assert body["workflow"]["active"] is False
+    assert body["repository"]["root"] != "unavailable"
+    assert "No engineering query source is configured." not in response.text
+    assert client.get("/openapi.json").status_code == 404
 
 
 def test_no_trading_or_brokerage_imports_in_dashboard_api_sources():

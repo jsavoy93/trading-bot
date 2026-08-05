@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from html import escape
-from typing import Callable, Mapping, Protocol
+from typing import Mapping, Protocol
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -12,13 +10,12 @@ from dashboard_api.engineering_read_model import (
     ApprovalSummary,
     BacklogSummary,
     DashboardSnapshot,
-    EngineeringDashboardReadModel,
     HealthWarning,
     PullRequestSummary,
     RepositorySummary,
-    StaticRepositorySummaryReader,
     WorkflowSummary,
 )
+from dashboard_api.providers import create_engineering_dashboard_provider
 
 
 SNAPSHOT_ROUTE = "/api/engineering/snapshot"
@@ -30,43 +27,10 @@ class SnapshotProvider(Protocol):
     def snapshot(self) -> DashboardSnapshot: ...
 
 
-@dataclass(frozen=True)
-class EmptyQuerySnapshotReader:
-    """Read-only empty query source for standalone degraded startup."""
+def create_default_read_model() -> SnapshotProvider:
+    """Create the default read-only EngineeringQueryService-backed provider."""
 
-    def snapshot(self, *, timeline_limit: int = 100) -> Mapping[str, object]:
-        return {
-            "current_task": None,
-            "timeline": [],
-            "agent_run": None,
-            "backlog": [],
-            "tests": None,
-            "report": None,
-            "pr_links": [],
-            "remaining_gaps": ["No engineering query source is configured."],
-            "recommended_next_step": "Configure an EngineeringDashboardReadModel provider.",
-        }
-
-
-def create_default_read_model() -> EngineeringDashboardReadModel:
-    """Create a safe read-only degraded model for independent local startup.
-
-    Production integrations should inject a fully wired EngineeringDashboardReadModel.
-    This default never imports trading code, executes shell commands, or reads secrets.
-    """
-
-    return EngineeringDashboardReadModel(
-        query_service=EmptyQuerySnapshotReader(),
-        repository_reader=StaticRepositorySummaryReader(
-            RepositorySummary(
-                root="unavailable",
-                branch=None,
-                is_clean=None,
-                sync_state="unavailable",
-            )
-        ),
-        project_identity="trading-bot",
-    )
+    return create_engineering_dashboard_provider()
 
 
 def create_app(snapshot_provider: SnapshotProvider | None = None) -> FastAPI:

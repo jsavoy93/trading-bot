@@ -6,5 +6,14 @@ brokerage, Alpaca, or trading database modules.
 """
 
 from dashboard_api.engineering_read_model import DashboardSnapshot, EngineeringDashboardReadModel
+from dashboard_api.providers import (
+    EngineeringDashboardProviderConfig,
+    create_engineering_dashboard_provider,
+)
 
-__all__ = ["DashboardSnapshot", "EngineeringDashboardReadModel"]
+__all__ = [
+    "DashboardSnapshot",
+    "EngineeringDashboardProviderConfig",
+    "EngineeringDashboardReadModel",
+    "create_engineering_dashboard_provider",
+]

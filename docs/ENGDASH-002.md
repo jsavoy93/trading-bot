@@ -14,8 +14,10 @@ trading database, or trading dashboard code.
 The only engineering data source is an injected ENGDASH-001
 `EngineeringDashboardReadModel` provider. The app serializes
 `DashboardSnapshot.to_dict()` for JSON and renders the same snapshot into HTML.
-A safe degraded default provider exists only so the app factory can start
-without secrets, shell commands, database access, or trading imports.
+ENGDASH-002 originally used a safe degraded default provider so the app factory
+could start without secrets, shell commands, database access, or trading imports;
+ENGDASH-003 supersedes that default with a real `EngineeringQueryService`-backed
+provider while preserving injection for tests.
 
 ## Routes
 
@@ -64,5 +66,5 @@ modify the trading dashboard.
 - Live GitHub PR metadata is not fetched in ENGDASH-002; use the injected
   ENGDASH-001 `PullRequestSummary` interface.
 - Repository metadata collection remains external to the read model/app.
-- The standalone default app is intentionally degraded until wired to a real
-  read-model provider.
+- Superseded by ENGDASH-003: the standalone default app is now wired to a real
+  read-model provider, but runtime deployment/service integration remains separate.
