@@ -576,23 +576,25 @@ approved controls.
 
 Priority order:
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
-2. `ENGPLAT-002` — Repository and Project Adapter Boundaries
-3. `ENGDASH-005` — Engineering Timeline and Historical Activity
+2. `ENGDASH-005` — Engineering Timeline and Historical Activity
+3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
 4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
 5. `ENGCTRL-001` — Safe Engineering Control Panel
 6. `CONFIG-002` — Dashboard-to-engine synchronization
+7. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
 
 Dependency notes:
 - `ENGPLAT-002` depends on `ENGPLAT-001`.
-- `ENGDASH-005` depends on `ENGDASH-004` and should consume the project boundary
-  from `ENGPLAT-001` where practical.
+- `ENGDASH-005` depends on `ENGPLAT-001` and `ENGDASH-004`; should consume the
+  project boundary from `ENGPLAT-001` where practical.
 - `ENGDASH-006` depends on `ENGDASH-004` and must avoid a competing
   workflow-state model.
 - `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`
   and `ENGDASH-006`, and requires separate Josh approval after read-only design
   review.
-- `ENGPLAT-003` repository extraction remains deferred and non-executable until
-  `ENGPLAT-001` and `ENGPLAT-002` are proven through normal use.
+- `ENGPLAT-003` repository extraction is explicitly deferred until
+  `ENGPLAT-001` and `ENGPLAT-002` are proven through normal use and Josh
+  separately approves cross-repository planning.
 - `CONFIG-002` remains queued behind the platform priorities unless Josh later
   changes the priority.
 

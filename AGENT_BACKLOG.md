@@ -20,11 +20,12 @@ via PR #13 at merge commit `31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`.
 Priority order:
 
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
-2. `ENGPLAT-002` — Repository and Project Adapter Boundaries
-3. `ENGDASH-005` — Engineering Timeline and Historical Activity
+2. `ENGDASH-005` — Engineering Timeline and Historical Activity
+3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
 4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
 5. `ENGCTRL-001` — Safe Engineering Control Panel
 6. `CONFIG-002` — Dashboard-to-engine synchronization
+7. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
 
 Roadmap constraints:
 
@@ -859,7 +860,7 @@ Acceptance criteria:
 
 ### ENGPLAT-003 — Extract Reusable Engineering Platform Repository
 
-Status: BLOCKED
+Status: TODO
 Owner: trading-manager
 Priority: P3
 
@@ -873,9 +874,10 @@ through normal use.
 
 Execution gate:
 
-- Deferred and non-executable.
+- Explicitly deferred. Non-executable.
 - Extraction must not start until `ENGPLAT-001` and `ENGPLAT-002` are stable
-  through normal project use.
+  through normal project use and Josh separately approves cross-repository
+  planning.
 - Project-local governance remains in each managed repository.
 - Cross-repository versioning, deployment, authentication, and migration require
   separate planning and human approval.

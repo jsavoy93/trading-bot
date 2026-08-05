@@ -1262,3 +1262,26 @@ explicitly.
 - Next action: commit and push the governance-only branch, open a PR against
   `main`, and stop for Josh's read-only review. Recommended next governance
   remediation is to define narrow allowed areas for `ENGPLAT-001` only.
+
+## 2026-08-05 11:38 UTC — Engineering platform roadmap reprioritization
+
+- Backlog item/objective: Update the approved roadmap priority order, explicitly
+  defer ENGPLAT-003, and create the Engineering Platform Vision document.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending (governance-only update)
+- Status: `DONE` governance-only changes; pending validation, commit, push, PR.
+- Files changed: `AGENT_BACKLOG.md`, `AGENT_OPERATING_PLAN.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `ENGINEERING_PLATFORM_VISION.md`
+  (new), plus this progress log.
+- Tests/backtests run: `git diff --check` pass; governance/backlog/operating
+  focused tests `2 passed, 373 deselected`; full safe suite `375 passed,
+  86 warnings` (no regressions).
+- Important decisions/discoveries: Updated Phase EP priority order to
+  ENGPLAT-001 → ENGDASH-005 → ENGPLAT-002 → ENGDASH-006 → ENGCTRL-001 →
+  CONFIG-002 → ENGPLAT-003 (explicitly deferred). Changed ENGPLAT-003 status
+  from BLOCKED to TODO (deferred). Added `ENGINEERING_PLATFORM_VISION.md`
+  describing mission, vision, core principles, architecture, managed project
+  model, future capabilities, and platform non-specificity. No runtime code,
+  dashboard, trading, secrets, or deployment changes.
+- Next action: commit and push the updated governance-only branch, open a PR
+  against `main`, and stop for Josh's read-only review.

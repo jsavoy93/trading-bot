@@ -822,11 +822,12 @@ ENGDASH-004 is merged through PR #13 at merge commit
 engineering-platform priority order is:
 
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
-2. `ENGPLAT-002` — Repository and Project Adapter Boundaries
-3. `ENGDASH-005` — Engineering Timeline and Historical Activity
+2. `ENGDASH-005` — Engineering Timeline and Historical Activity
+3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
 4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
 5. `ENGCTRL-001` — Safe Engineering Control Panel
 6. `CONFIG-002` — Dashboard-to-engine synchronization
+7. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
 
 Important constraints:
 
