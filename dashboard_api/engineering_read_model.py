@@ -58,6 +58,20 @@ class WorkflowSummary:
 
 
 @dataclass(frozen=True)
+class TaskStatusSummary:
+    task_id: str | None
+    title: str | None
+    status: str | None
+    assigned_agent: str | None
+    current_phase: str | None
+    priority: str | None
+    started_at: str | None
+    last_updated: str | None
+    blocking_reason: str | None
+    completion_percent: int
+
+
+@dataclass(frozen=True)
 class ApprovalSummary:
     pending: bool
     reason: str | None
@@ -70,6 +84,7 @@ class ApprovalSummary:
 class TestSummary:
     command: tuple[str, ...] = ()
     exit_code: int | None = None
+    duration_seconds: float | None = None
     passed_count: int | None = None
     failed_count: int | None = None
     timed_out: bool | None = None
@@ -95,6 +110,27 @@ class ReportSummary:
     task_id: str | None
     generated_at: str | None
     title: str | None
+    outcome: str | None = None
+
+
+@dataclass(frozen=True)
+class EngineeringHealthSummary:
+    overall_status: str
+    repository_safe: bool | None
+    current_branch: str | None
+    current_commit: str | None
+    last_successful_regression_run: str | None
+    degraded_sources: tuple[str, ...]
+    warning_count: int
+
+
+@dataclass(frozen=True)
+class TestingSummary:
+    focused: TestSummary | None
+    regression: TestSummary | None
+    full_suite: TestSummary | None
+    latest_status: str | None
+    warning_count: int | None
 
 
 @dataclass(frozen=True)
@@ -112,6 +148,10 @@ class DashboardSnapshot:
     recent_reports: tuple[ReportSummary, ...]
     health_warnings: tuple[HealthWarning, ...]
     data_freshness_timestamp: str
+    engineering_health: EngineeringHealthSummary | None = None
+    current_tasks: tuple[TaskStatusSummary, ...] = ()
+    blockers: tuple[str, ...] = ()
+    testing: TestingSummary | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _to_plain(self)
@@ -162,8 +202,9 @@ class ReportIndex:
             return
         stat = path.stat()
         task_id, title = _parse_report_heading(path)
+        outcome = _parse_report_outcome(path)
         generated_at = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
-        candidates.append((stat.st_mtime, ReportSummary(str(path), kind, task_id, generated_at, title)))
+        candidates.append((stat.st_mtime, ReportSummary(str(path), kind, task_id, generated_at, title, outcome)))
 
 
 @dataclass(frozen=True)
@@ -235,6 +276,10 @@ class EngineeringDashboardReadModel:
                     detail=None,
                 )
             )
+        blockers = _blockers(query_data, workflow, approval, warnings)
+        current_tasks = _current_tasks(query_data, backlog, workflow, blockers)
+        testing = _testing_summary(latest_test, recent_reports)
+        engineering_health = _engineering_health(repository, latest_test, warnings, blockers)
 
         return DashboardSnapshot(
             project_identity=self.project_identity,
@@ -249,6 +294,10 @@ class EngineeringDashboardReadModel:
             recent_events=recent_events,
             recent_reports=recent_reports,
             health_warnings=tuple(warnings),
+            engineering_health=engineering_health,
+            current_tasks=current_tasks,
+            blockers=blockers,
+            testing=testing,
             data_freshness_timestamp=freshness,
         )
 
@@ -372,6 +421,7 @@ def _test_summary(raw: object) -> TestSummary | None:
     return TestSummary(
         command=command_tuple,
         exit_code=_int_or_none(raw.get("exit_code")),
+        duration_seconds=_float_or_none(raw.get("duration_seconds")),
         passed_count=_int_or_none(raw.get("passed_count")),
         failed_count=_int_or_none(raw.get("failed_count")),
         timed_out=raw.get("timed_out") if isinstance(raw.get("timed_out"), bool) else None,
@@ -391,6 +441,90 @@ def _latest_execution_result(
     if latest_test is not None and latest_test.exit_code is not None:
         return f"tests exit={latest_test.exit_code}"
     return workflow.execution_status
+
+
+def _current_tasks(
+    query_data: Mapping[str, Any],
+    backlog: BacklogSummary,
+    workflow: WorkflowSummary,
+    blockers: tuple[str, ...],
+) -> tuple[TaskStatusSummary, ...]:
+    task = query_data.get("current_task")
+    agent = query_data.get("agent_run")
+    if not isinstance(task, Mapping):
+        return ()
+    return (
+        TaskStatusSummary(
+            task_id=_text(task.get("id")) or backlog.active_task_id,
+            title=_text(task.get("title")) or backlog.active_task_title,
+            status=backlog.status or _text(task.get("status")),
+            assigned_agent=(
+                _text(agent.get("agent_name")) if isinstance(agent, Mapping) else workflow.owner_agent or backlog.owner
+            ),
+            current_phase=workflow.stage or _text(task.get("state")),
+            priority=_text(task.get("priority")) or backlog.priority,
+            started_at=_text(agent.get("started_at")) if isinstance(agent, Mapping) else None,
+            last_updated=workflow.updated_at,
+            blocking_reason=blockers[0] if blockers else None,
+            completion_percent=_completion_percent(workflow.stage),
+        ),
+    )
+
+
+def _blockers(
+    query_data: Mapping[str, Any],
+    workflow: WorkflowSummary,
+    approval: ApprovalSummary,
+    warnings: list[HealthWarning],
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if workflow.blocker:
+        blockers.append(workflow.blocker)
+    for gap in _as_sequence(query_data.get("remaining_gaps")):
+        text = _text(gap)
+        if text and ("blocked" in text.lower() or "gap" in text.lower() or "missing" in text.lower()):
+            blockers.append(text)
+    if approval.pending:
+        blockers.append(approval.next_action or approval.reason or "Approval pending.")
+    blockers.extend(f"{warning.source}: {warning.message}" for warning in warnings if warning.severity == "WARNING")
+    return tuple(dict.fromkeys(blockers))
+
+
+def _testing_summary(latest_test: TestSummary | None, reports: tuple[ReportSummary, ...]) -> TestingSummary:
+    warning_count = _warning_count(latest_test.summary) if latest_test else None
+    full_suite = latest_test if latest_test and _looks_like_full_suite(latest_test) else None
+    regression = latest_test if latest_test and not full_suite else None
+    return TestingSummary(
+        focused=None,
+        regression=regression,
+        full_suite=full_suite,
+        latest_status=_test_status(latest_test),
+        warning_count=warning_count,
+    )
+
+
+def _engineering_health(
+    repository: RepositorySummary,
+    latest_test: TestSummary | None,
+    warnings: list[HealthWarning],
+    blockers: tuple[str, ...],
+) -> EngineeringHealthSummary:
+    degraded_sources = tuple(sorted({warning.source for warning in warnings}))
+    if any(warning.severity == "ERROR" for warning in warnings):
+        status = "ERROR"
+    elif blockers or warnings or repository.is_clean is False or (latest_test and latest_test.exit_code not in (None, 0)):
+        status = "DEGRADED"
+    else:
+        status = "HEALTHY"
+    return EngineeringHealthSummary(
+        overall_status=status,
+        repository_safe=repository.is_clean,
+        current_branch=repository.branch,
+        current_commit=repository.latest_commit,
+        last_successful_regression_run=(latest_test.completed_at if latest_test and latest_test.exit_code == 0 else None),
+        degraded_sources=degraded_sources,
+        warning_count=len(warnings),
+    )
 
 
 def _bounded_events(raw: object, limit: int) -> tuple[Mapping[str, Any], ...]:
@@ -429,6 +563,23 @@ def _parse_report_heading(path: Path) -> tuple[str | None, str | None]:
     return task_id, title
 
 
+def _parse_report_outcome(path: Path) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:4_000]
+    except OSError:
+        return None
+    for marker in ("Overall acceptance result", "Decision:", "Result:", "Status:"):
+        index = text.find(marker)
+        if index >= 0:
+            line = text[index:].splitlines()[0]
+            return line.strip("# :-")[:100] or None
+    if " PASS" in text or "PASS" in text:
+        return "PASS"
+    if " FAIL" in text or "FAIL" in text:
+        return "FAIL"
+    return None
+
+
 def _warning(source: str, message: str, exc: Exception) -> HealthWarning:
     return HealthWarning(source, "WARNING", message, f"{type(exc).__name__}: {exc}"[:MAX_WARNING_DETAIL_CHARS])
 
@@ -457,6 +608,57 @@ def _text(value: object) -> str | None:
 
 def _int_or_none(value: object) -> int | None:
     return value if isinstance(value, int) else None
+
+
+def _float_or_none(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _completion_percent(stage: str | None) -> int:
+    order = {
+        None: 0,
+        "DISCOVER": 5,
+        "PLAN": 15,
+        "PREPARE_BRANCH": 25,
+        "DELEGATE": 35,
+        "WAIT_FOR_AGENT": 50,
+        "QA": 70,
+        "REVIEW": 82,
+        "REPORT": 92,
+        "COMPLETE": 100,
+    }
+    return order.get(stage, 50)
+
+
+def _test_status(test: TestSummary | None) -> str | None:
+    if test is None:
+        return None
+    if test.timed_out:
+        return "TIMED_OUT"
+    if test.exit_code == 0:
+        return "PASS"
+    if test.exit_code is not None:
+        return "FAIL"
+    return None
+
+
+def _warning_count(summary: str | None) -> int | None:
+    if not summary:
+        return None
+    lower = summary.lower()
+    marker = " warning"
+    index = lower.find(marker)
+    if index <= 0:
+        return None
+    prefix = lower[:index].split()[-1]
+    try:
+        return int(prefix)
+    except ValueError:
+        return None
+
+
+def _looks_like_full_suite(test: TestSummary) -> bool:
+    return test.command == ("pytest", "tests") or test.command == (".venv/bin/python", "-m", "pytest", "tests")
 
 
 def _to_plain(value: Any) -> Any:

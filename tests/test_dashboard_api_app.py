@@ -11,10 +11,13 @@ from dashboard_api.engineering_read_model import (
     ApprovalSummary,
     BacklogSummary,
     DashboardSnapshot,
+    EngineeringHealthSummary,
     HealthWarning,
     PullRequestSummary,
     ReportSummary,
     RepositorySummary,
+    TaskStatusSummary,
+    TestingSummary as DashboardTestingSummary,
     TestSummary as DashboardTestSummary,
     WorkflowSummary,
 )
@@ -106,6 +109,45 @@ def populated_snapshot(**overrides) -> DashboardSnapshot:
         ),
         health_warnings=(),
         data_freshness_timestamp="2026-08-04T23:22:00+00:00",
+        engineering_health=EngineeringHealthSummary(
+            overall_status="HEALTHY",
+            repository_safe=True,
+            current_branch="agent/engdash-002-read-only-api-ui",
+            current_commit="abc123",
+            last_successful_regression_run="2026-08-04T23:21:00+00:00",
+            degraded_sources=(),
+            warning_count=0,
+        ),
+        current_tasks=(
+            TaskStatusSummary(
+                task_id="ENGDASH-002",
+                title="Read-only engineering dashboard API/UI",
+                status="IN_PROGRESS",
+                assigned_agent="dashboard-agent",
+                current_phase="QA",
+                priority="P1",
+                started_at="2026-08-04T23:00:00+00:00",
+                last_updated="2026-08-04T23:20:00+00:00",
+                blocking_reason=None,
+                completion_percent=70,
+            ),
+        ),
+        blockers=(),
+        testing=DashboardTestingSummary(
+            focused=None,
+            regression=DashboardTestSummary(
+                command=("pytest", "tests/test_dashboard_api_app.py"),
+                exit_code=0,
+                passed_count=20,
+                failed_count=0,
+                timed_out=False,
+                completed_at="2026-08-04T23:21:00+00:00",
+                summary="20 passed",
+            ),
+            full_suite=None,
+            latest_status="PASS",
+            warning_count=0,
+        ),
     )
     return DashboardSnapshot(**{**snapshot.__dict__, **overrides})
 
@@ -146,10 +188,17 @@ def test_snapshot_endpoint_returns_stable_typed_json_shape():
         "recent_reports",
         "health_warnings",
         "data_freshness_timestamp",
+        "engineering_health",
+        "current_tasks",
+        "blockers",
+        "testing",
     ]
     assert body["project_identity"] == "trading-bot"
     assert body["repository"]["branch"] == "agent/engdash-002-read-only-api-ui"
     assert body["latest_test_result"]["command"] == ["pytest", "tests/test_dashboard_api_app.py"]
+    assert body["engineering_health"]["overall_status"] == "HEALTHY"
+    assert body["current_tasks"][0]["assigned_agent"] == "dashboard-agent"
+    assert body["testing"]["latest_status"] == "PASS"
     assert provider.calls == 1
 
 
@@ -189,6 +238,10 @@ def test_html_rendering_with_populated_snapshot_escapes_values():
     html = render_dashboard(snapshot)
 
     assert "Engineering Dashboard" in html
+    assert "Engineering health" in html
+    assert "Current agent activity" in html
+    assert "Blockers and approvals needed" in html
+    assert "Testing status" in html
     assert "ENGDASH-002&lt;script&gt;" in html
     assert "Read-only &lt;dashboard&gt;" in html
     assert "<script>" not in html

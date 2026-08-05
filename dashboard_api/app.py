@@ -10,9 +10,12 @@ from dashboard_api.engineering_read_model import (
     ApprovalSummary,
     BacklogSummary,
     DashboardSnapshot,
+    EngineeringHealthSummary,
     HealthWarning,
     PullRequestSummary,
     RepositorySummary,
+    TaskStatusSummary,
+    TestingSummary,
     WorkflowSummary,
 )
 from dashboard_api.providers import create_engineering_dashboard_provider
@@ -59,8 +62,9 @@ def create_app(snapshot_provider: SnapshotProvider | None = None) -> FastAPI:
 def render_dashboard(snapshot: DashboardSnapshot) -> str:
     payload = snapshot.to_dict()
     warnings = tuple(snapshot.health_warnings)
-    health_class = "degraded" if warnings else "healthy"
-    health_text = "Degraded" if warnings else "Healthy"
+    health = snapshot.engineering_health
+    health_status = health.overall_status if health else ("DEGRADED" if warnings else "HEALTHY")
+    health_class = "healthy" if health_status == "HEALTHY" else "degraded"
     return "".join(
         [
             "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
@@ -75,7 +79,8 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             "dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0}code{color:#bae6fd}",
             "</style></head><body>",
             f"<h1>{_html(payload.get('project_identity'))} Engineering Dashboard</h1>",
-            f"<p>Status: <strong class='{health_class}'>{health_text}</strong> · Freshness: <code>{_html(payload.get('data_freshness_timestamp'))}</code></p>",
+            f"<p>Status: <strong class='{health_class}'>{_html(health_status.title())}</strong> · Freshness: <code>{_html(payload.get('data_freshness_timestamp'))}</code></p>",
+            _engineering_health_section(health, warnings),
             _warnings_section(warnings),
             "<div class='grid'>",
             _repository_section(snapshot.repository),
@@ -84,11 +89,33 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             _test_section(snapshot.latest_execution_result, snapshot.latest_test_result),
             _pull_request_section(snapshot.pull_request),
             "</div>",
+            _current_tasks_section(snapshot.current_tasks),
+            _blockers_section(snapshot.blockers),
+            _testing_section(snapshot.testing),
             _backlog_section(snapshot.backlog),
             _reports_section(snapshot.recent_reports),
             _events_section(snapshot.recent_events),
             "</body></html>",
         ]
+    )
+
+
+def _engineering_health_section(health: EngineeringHealthSummary | None, warnings: tuple[HealthWarning, ...]) -> str:
+    if health is None:
+        return _card("Engineering health", _definition_list({"Overall status": "Unavailable", "Warnings": len(warnings)}))
+    return _card(
+        "Engineering health",
+        _definition_list(
+            {
+                "Overall status": health.overall_status,
+                "Repository safe": health.repository_safe,
+                "Branch": health.current_branch,
+                "Commit": health.current_commit,
+                "Last successful regression": health.last_successful_regression_run,
+                "Degraded sources": ", ".join(health.degraded_sources),
+                "Warnings": health.warning_count,
+            }
+        ),
     )
 
 
@@ -162,6 +189,39 @@ def _test_section(latest_execution: str | None, latest_test: object | None) -> s
     )
 
 
+def _current_tasks_section(tasks: tuple[TaskStatusSummary, ...]) -> str:
+    items = []
+    for task in tasks:
+        items.append(
+            "<li>"
+            f"<strong>{_html(task.task_id)}</strong> {_html(task.title)} — {_html(task.status)} "
+            f"({_html(task.completion_percent)}%)<br>Agent: {_html(task.assigned_agent)} · Phase: {_html(task.current_phase)}"
+            "</li>"
+        )
+    return f"<section><h2>Current agent activity</h2><ul>{''.join(items) or '<li>No active engineering task.</li>'}</ul></section>"
+
+
+def _blockers_section(blockers: tuple[str, ...]) -> str:
+    items = "".join(f"<li>{_html(blocker)}</li>" for blocker in blockers)
+    return f"<section><h2>Blockers and approvals needed</h2><ul>{items or '<li>None currently recorded.</li>'}</ul></section>"
+
+
+def _testing_section(testing: TestingSummary | None) -> str:
+    if testing is None:
+        return _card("Testing status", _definition_list({"Latest status": "Unavailable"}))
+    return _card(
+        "Testing status",
+        _definition_list(
+            {
+                "Latest status": testing.latest_status,
+                "Warnings": testing.warning_count,
+                "Full suite completed": testing.full_suite.completed_at if testing.full_suite else None,
+                "Regression completed": testing.regression.completed_at if testing.regression else None,
+            }
+        ),
+    )
+
+
 def _pull_request_section(pr: PullRequestSummary | None) -> str:
     if pr is None:
         values = {"Available": False}
@@ -208,7 +268,7 @@ def _reports_section(reports: tuple[object, ...]) -> str:
             items.append(
                 "<li>"
                 f"<strong>{_html(data.get('kind'))}</strong>: {_html(data.get('title'))} "
-                f"<code>{_html(data.get('path'))}</code> {_html(data.get('generated_at'))}"
+                f"<code>{_html(data.get('path'))}</code> {_html(data.get('generated_at'))} {_html(data.get('outcome'))}"
                 "</li>"
             )
     return f"<section><h2>Recent reports</h2><ul>{''.join(items) or '<li>None</li>'}</ul></section>"

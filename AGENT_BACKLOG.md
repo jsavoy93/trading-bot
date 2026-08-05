@@ -1073,11 +1073,95 @@ Required tests:
 Completed evidence:
 
 - Branch: `agent/engdash-003-query-service-provider`.
+- PR #12 merged into `main` at merge commit `e285bc3`.
 - Focused provider/API/read-model tests: `30 passed, 2 warnings`.
 - Relevant engineering regression tests: `40 passed, 61 deselected, 2 warnings`.
 - Full safe suite: `373 passed, 83 warnings`.
 - Route inventory: `/api/engineering/snapshot` GET only; `/engineering` GET only;
   `/openapi.json`, `/docs`, and `/redoc` return 404.
+
+### ENGDASH-004 — Live engineering status and workflow aggregation
+
+Status: REVIEW
+Owner: dashboard-agent
+Priority: P1
+
+Depends on: ENGDASH-003
+
+Approved scope:
+
+- Start from latest merged `main` after PR #12 merge.
+- Use branch `agent/engdash-004-live-engineering-status`.
+- Extend the read-only engineering dashboard into an operational status view
+  that answers engineering health, agent activity, blockers, approval needs,
+  recent test outcomes, report output, repository safety, and degraded providers
+  without opening another page.
+- Preserve the exact approved HTTP surface: `GET /api/engineering/snapshot`
+  and `GET /engineering` only.
+- Keep FastAPI automatic `/openapi.json`, `/docs`, and `/redoc` disabled.
+- Keep all controls and writes out of the dashboard API/UI.
+
+Allowed areas:
+
+- `AGENT_BACKLOG.md`
+- `dashboard_api/**`
+- `engineering/**`
+- `tests/**`
+- `docs/**`
+- `reports/**` only for task reports
+
+Explicit exclusions:
+
+- `dashboard.py`
+- trading strategy code
+- brokerage integrations
+- live trading execution
+- `.env` files, credentials, secrets, repository settings, CI/CD secrets, and
+  branch protection
+
+Acceptance criteria:
+
+- The typed dashboard snapshot exposes explicit operational health, current
+  agent/task activity, blockers, approval needs, testing status, report output,
+  repository safety, and degraded provider state.
+- The JSON endpoint and HTML page render the same typed snapshot data.
+- Operational aggregates are deterministic, bounded, and tolerate missing
+  metadata or unavailable providers through health warnings.
+- The exact two-route HTTP surface is preserved.
+- `/openapi.json`, `/docs`, and `/redoc` return 404.
+- No mutation HTTP methods, control routes, approval actions, retries,
+  pause/resume, execution, merge, or write APIs exist.
+- No trading, brokerage, Alpaca, trading database, or `dashboard.py` imports
+  are introduced.
+- Focused dashboard/provider/read-model tests, relevant engineering regression
+  tests, and the full safe suite pass.
+- Repository is clean at completion.
+- PR is open against `main` and ready for Josh's review.
+
+Required tests:
+
+- Live status aggregation for healthy and degraded snapshots.
+- Current agent/task activity mapping from `EngineeringQueryService` data.
+- Blockers and approval needs from workflow/report/timeline/warnings.
+- Testing status, report summaries, and provider degradation metadata.
+- Bounded lists and deterministic ordering.
+- HTML and JSON rendering of the same operational snapshot.
+- Exact route inventory and disabled `/openapi.json`, `/docs`, `/redoc`.
+- Read-only verification: no mutation routes or controls.
+- No trading, brokerage, Alpaca, trading database, or `dashboard.py` imports.
+- Relevant engineering regression tests and full safe suite.
+
+Completed evidence:
+
+- Branch: `agent/engdash-004-live-engineering-status`.
+- Focused dashboard/provider/read-model tests: `32 passed, 2 warnings`.
+- Relevant engineering/dashboard regression tests: `69 passed, 2 warnings`.
+- Full safe suite: `375 passed, 82 warnings`.
+- Route inventory: `/api/engineering/snapshot` GET only; `/engineering` GET only;
+  `/openapi.json`, `/docs`, and `/redoc` return 404; mutation methods return 405.
+- PR #13: https://github.com/jsavoy93/trading-bot/pull/13 — OPEN, MERGEABLE, targeting `main`; not merged.
+- Implementation commit before evidence-only remediation: `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`.
+- Evidence-only remediation/final branch tip: this evidence-only correction commit on PR #13; exact hash verified after commit/push in the terminal report because a commit cannot record its own final object ID.
 
 ---
 
