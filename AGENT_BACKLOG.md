@@ -22,10 +22,11 @@ Priority order:
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
 2. `ENGDASH-005` — Engineering Timeline and Historical Activity
 3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
-4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-5. `ENGCTRL-001` — Safe Engineering Control Panel
-6. `CONFIG-002` — Dashboard-to-engine synchronization
-7. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+4. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+6. `ENGCTRL-001` — Safe Engineering Control Panel
+7. `CONFIG-002` — Dashboard-to-engine synchronization
+8. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
 
 Roadmap constraints:
 
@@ -928,7 +929,7 @@ Status: TODO
 Owner: dashboard-agent
 Priority: P1
 
-Depends on: ENGDASH-004
+Depends on: ENGPLAT-001, ENGDASH-004
 
 Purpose:
 
@@ -952,6 +953,563 @@ Acceptance criteria:
 - No unbounded Git, report, event, or filesystem scans.
 - The timeline supports project configuration rather than hard-coded paths.
 - No controls or mutation endpoints are added.
+
+### ENGSUP-001 — Automated Engineering Supervisor and Structured Handoff Protocol
+
+Status: TODO
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-001, ENGPLAT-002
+
+Purpose:
+
+Replace the manual copying of agent reports and next-step prompts between Josh and
+external advisors with a governed supervisor service that consumes structured
+completion evidence, verifies repository state independently, selects the next
+permitted workflow transition, and generates a bounded instruction for the
+appropriate agent — while always preserving explicit human approval gates.
+
+Execution gate:
+
+- Non-executable until Josh approves a narrow implementation plan with allowed
+  areas for this task.
+- This roadmap entry does not authorize automatic agent dispatch, dashboard
+  control surface additions, runtime workflow changes, secrets changes, or
+  live trading changes.
+
+---
+
+## Governance Remediation (this section)
+
+This block is the approved architectural design for ENGSUP-001. Josh approved
+this design on 2026-08-05.
+
+---
+
+### Context: The Manual Relay Loop
+
+Current process:
+
+1. Engineering agent completes a task and produces a report.
+2. Josh copies the report to an external advisor.
+3. The advisor evaluates and generates the next prompt.
+4. Josh copies the prompt back to the engineering agent.
+5. The cycle repeats until a human approval gate is reached.
+
+Problems with the manual loop:
+
+- Josh is a bottleneck for every signal and instruction.
+- Agent reports are prose; state must be re-verified by hand.
+- No structured record of decisions, evidence, or reasoning chains.
+- No bounded instruction generation — prompts can expand scope unintentionally.
+- No loop protection; cycles can continue indefinitely.
+- No systematic way to distinguish routine transitions from approval-gated ones.
+
+---
+
+### Supervisor Architecture
+
+The supervisor is a typed service layer between the workflow engine and agents.
+It does not replace the workflow engine. It replaces the manual relay loop.
+
+```
+Workflow Engine
+    │
+    │  emits structured completion packet
+    ▼
+Supervisor Service
+    │
+    ├── reads: completion packet + repository state + event store
+    ├── verifies: evidence independently (does not trust agent summaries alone)
+    ├── decides: typed outcome from SupervisorDecision contract
+    ├── gates: human approval required? → stop and dispatch to inbox
+    ├── generates: bounded next instruction (if not stopped)
+    └── routes: next instruction to appropriate agent role
+```
+
+Phase 1 of the supervisor is read-only evaluation and prompt generation.
+Josh manually approves dispatch. No agent is dispatched automatically.
+
+---
+
+### Structured Completion Packet
+
+The supervisor consumes a typed, versioned completion record. This is the minimum
+required schema. The version field allows future evolution without breaking
+existing consumers.
+
+```python
+@dataclass(frozen=True)
+class CompletionPacket:
+    version: str  # e.g. "1.0" — supervisor rejects unknown versions
+
+    # Identity
+    project_id: str
+    task_id: str
+    workflow_run_id: str
+    workflow_stage: str  # e.g. "REPORT", "QA", "REVIEW"
+
+    # Repository state at completion
+    branch: str
+    base_branch: str  # e.g. "main"
+    head_commit: str  # full commit hash
+    working_tree_status: str  # "clean" | "dirty" | "untracked"
+    files_changed: tuple[str, ...]  # list of file paths changed
+    lines_changed: tuple[tuple[str, int, int], ...]  # (path, additions, deletions)
+
+    # Evidence
+    test_results: TestResultSummary  # see below
+    report_path: str | None  # absolute path to the human-readable report
+    archive_path: str | None  # absolute path to the detailed archive
+    pr_url: str | None
+    pr_state: str  # "open" | "closed" | "merged"
+
+    # Decision-support
+    risks_identified: tuple[str, ...]
+    blockers: tuple[str, ...]
+    requested_human_action: str | None
+    prior_review_findings: tuple[str, ...]
+    iteration_number: int  # how many implementation-review cycles this task has had
+
+    # Timestamps
+    started_at: str  # ISO-8601
+    completed_at: str  # ISO-8601
+
+    # Chain of evidence (all supervisor-verifiable)
+    evidence_refs: tuple[EvidenceRef, ...]  # see below
+
+
+@dataclass(frozen=True)
+class TestResultSummary:
+    total: int
+    passed: int
+    failed: int
+    skipped: int
+    warnings: int
+    duration_seconds: float
+    command: str  # the exact pytest command run
+    output_path: str | None  # path to full output if captured
+
+
+@dataclass(frozen=True)
+class EvidenceRef:
+    kind: str  # "git_status" | "git_log" | "test_output" | "diff" | "pr_state" | "report"
+    path: str | None  # file path or URL if applicable
+    verified: bool  # supervisor has independently confirmed this evidence
+    hash: str | None  # content hash if applicable
+```
+
+**Design principles:**
+
+- The packet is a fact container, not a narrative. It contains what happened,
+  not what the agent interpreted.
+- `evidence_refs` lists every piece of evidence the supervisor may verify.
+  An agent cannot suppress evidence by omitting it from prose.
+- `verified: bool` on each ref tracks whether the supervisor independently
+  confirmed the evidence — not whether the agent claimed it was true.
+- `report_path` retains the human-readable Markdown report for human reviewers.
+  The supervisor does not infer state from prose.
+- `working_tree_status` is verified by the supervisor, not taken from the agent.
+
+---
+
+### Supervisor Decision Contract
+
+The supervisor produces a typed decision. Every decision includes reason codes,
+supporting evidence, next agent role, bounded instruction, and whether a human
+approval gate is required.
+
+```python
+class SupervisorDecisionKind(str, Enum):
+    # Human-gated (must stop for Josh before continuing)
+    WAIT_FOR_HUMAN_APPROVAL = "WAIT_FOR_HUMAN_APPROVAL"
+    READY_FOR_MERGE_APPROVAL = "READY_FOR_MERGE_APPROVAL"
+    BLOCKED = "BLOCKED"
+    ESCALATE_POLICY_CONFLICT = "ESCALATE_POLICY_CONFLICT"
+
+    # Routine — may be authorized for auto-dispatch in Phase 2
+    CONTINUE = "CONTINUE"
+    RUN_QA = "RUN_QA"
+    RUN_READ_ONLY_REVIEW = "RUN_READ_ONLY_REVIEW"
+    RETRY = "RETRY"
+    REQUEST_CHANGES = "REQUEST_CHANGES"
+
+    # Terminal
+    COMPLETE = "COMPLETE"
+
+
+@dataclass(frozen=True)
+class SupervisorDecision:
+    kind: SupervisorDecisionKind
+    reason_codes: tuple[str, ...]  # e.g. "TESTS_PASS", "NO_EVIDENCE_OF_FAILURE"
+    supporting_evidence: tuple[str, ...]  # human-readable evidence summary
+    next_agent_role: str | None  # e.g. "trading-manager", "dashboard-agent"
+    next_workflow_stage: str | None  # e.g. "QA", "DELEGATE"
+    generated_instruction: str | None  # bounded instruction for next agent
+    human_approval_required: bool  # True for WAIT_FOR_HUMAN_APPROVAL kinds
+    josh_approval_required: bool  # True for merge, scope expansion, safety changes
+    permitted_files: tuple[str, ...] | None  # explicit file list or None=all
+    prohibited_operations: tuple[str, ...] | None  # explicit prohibited list
+    expiration_seconds: int | None  # if decision expires; None=never
+    stale_conditions: tuple[str, ...] | None  # conditions that make this decision stale
+    alternative_decisions: tuple[SupervisorDecisionKind, ...] | None  # what else was considered
+    supervisor_note: str | None  # concise reasoning summary (not chain-of-thought)
+```
+
+**Decision kinds and when each applies:**
+
+| Decision | When it applies |
+|---|---|
+| `CONTINUE` | Task done, no blockers, next task is available and within current allowed areas |
+| `RUN_QA` | Implementation complete; QA not yet run; tests authorized |
+| `RUN_READ_ONLY_REVIEW` | QA passed; review is routine; reviewer role is authorized |
+| `RETRY` | QA failed; failure is bounded and fixable; retry authorized |
+| `REQUEST_CHANGES` | Review found issues; changes are bounded and specific |
+| `WAIT_FOR_HUMAN_APPROVAL` | Decision requires Josh to evaluate and approve dispatch |
+| `READY_FOR_MERGE_APPROVAL` | All criteria met; human must approve the merge itself |
+| `BLOCKED` | Task depends on incomplete predecessor; no workaround available |
+| `ESCALATE_POLICY_CONFLICT` | Agent requested something prohibited; cannot proceed |
+| `COMPLETE` | Task fully done; no further action needed |
+
+---
+
+### Evidence Verification
+
+The supervisor must independently verify evidence before trusting it. Agent
+summaries are never the sole source of truth.
+
+**Verifiable evidence and verification method:**
+
+| Evidence | Verification method |
+|---|---|
+| `working_tree_status` | Run `git status`; compare to agent's reported status |
+| `head_commit` | Run `git rev-parse HEAD`; compare to packet |
+| `branch` | Run `git branch --show-current`; compare to packet |
+| `files_changed` | Run `git diff --name-only` vs packet |
+| `lines_changed` | Run `git diff --stat` vs packet |
+| `test_results` | Parse actual pytest output; compare to packet summary |
+| `pr_state` | Query GitHub API or run `gh pr view`; compare to packet |
+| `report_path` exists | `pathlib.Path(report_path).exists()` |
+| `archive_path` exists | `pathlib.Path(archive_path).exists()` |
+
+**Verification rules:**
+
+- Every `EvidenceRef` with `verified=False` must be verified before the decision
+  is trusted.
+- If evidence cannot be verified (e.g., path does not exist), the supervisor
+  must note the discrepancy and treat the decision as unverified.
+- Mismatch between agent-reported evidence and independently verified evidence
+  → `ESCALATE_POLICY_CONFLICT` with reason code `EVIDENCE_MISMATCH`.
+- The supervisor never trusts an agent's summary of its own work.
+
+---
+
+### Human Approval Gate Matrix
+
+The supervisor must always stop and route to Josh before:
+
+| Situation | Why it stops | What Josh receives |
+|---|---|---|
+| Merge requested | No autonomous merges | Decision + evidence + bounded instruction |
+| New task scope authorization | Agents may not self-authorize | Task ID + proposed scope + allowed areas |
+| Allowed-area expansion | Expanding scope requires human judgment | Current scope + proposed expansion + risks |
+| Destructive Git operations | Safety-critical | Operation description + evidence + risks |
+| Deployment or infrastructure change | Safety-critical | Change description + evidence + risks |
+| Secret or credential modification | Safety-critical | Change description + evidence + risks |
+| Live trading or brokerage action | Safety-critical | Action description + evidence + risks |
+| Safety policy change | Platform-level governance | Proposed change + rationale + risks |
+| Repository extraction | Irreversible architectural change | Extraction plan + prerequisites + risks |
+| Unresolved policy conflict | Agent requested something prohibited | Conflict description + agent's request + supervisor's reasoning |
+| `READY_FOR_MERGE_APPROVAL` | Human must approve the merge itself | PR link + diff summary + test results + risks |
+| `ESCALATE_POLICY_CONFLICT` | Cannot proceed safely | Conflict description + evidence + supervisor note |
+| `BLOCKED` with no workaround | Cannot proceed safely | Blocker description + evidence |
+
+**Josh's approval inbox receives:** decision kind, supervisor recommendation,
+supporting evidence, generated bounded instruction, required action, and
+permitted/prohibited lists. Josh may then approve, reject, or edit the instruction.
+
+---
+
+### Automatic Transition Matrix
+
+Routine transitions identified as candidates for Phase 2 auto-dispatch.
+Automatic execution is **disabled by default** and requires separate Josh approval
+for each transition kind.
+
+| From stage | Trigger | To stage | Conditions for auto-dispatch |
+|---|---|---|---|
+| IMPLEMENTATION | Implementation complete | QA | Tests not yet run; working tree clean; no blockers |
+| QA | All tests pass | REVIEW | Reviewer role authorized; no failures in evidence |
+| QA | Non-critical failures | IMPLEMENTATION (fix) | Failures are bounded, non-safety, retry count < 3 |
+| REVIEW | Changes requested | IMPLEMENTATION (fix) | Findings are bounded, specific, not safety-related |
+| REVIEW | All criteria met | REPORT | Recommendation is ACCEPT; no open blockers |
+| REPORT | Report complete | WAIT_FOR_APPROVAL | Human gate for merge |
+| WAIT_FOR_APPROVAL | Josh approved | MERGE_PREPARATION | Josh explicitly approved |
+| TIMED_OUT | Agent timed out | IMPLEMENTATION (retry) | Timeout is retryable; retry count < max |
+| EVIDENCE_INCONSISTENT | Evidence mismatch detected | EVIDENCE_CORRECTION | Mismatch is correctable without new implementation |
+
+**Auto-dispatch conditions (all must be true):**
+
+1. Decision kind is in the auto-dispatch whitelist (approved per-transition by Josh).
+2. `josh_approval_required` is `False` on the decision.
+3. No `stale_conditions` are currently met.
+4. Supervisor has verified all evidence in the completion packet.
+5. Retry count for this task is below the loop-protection maximum.
+6. Working tree is clean (supervisor verifies independently).
+7. Head commit matches the completion packet's reported commit.
+
+---
+
+### Loop Protection Rules
+
+The supervisor must escalate rather than loop indefinitely.
+
+| Rule | Threshold | Action when exceeded |
+|---|---|---|
+| Implementation-review cycles | > 3 cycles on same task | Supervisor escalates to Josh with cycle summary |
+| Identical `REQUEST_CHANGES` findings | Same finding repeated 2+ times | Supervisor notes repetition; requires Josh approval to continue |
+| Identical QA failure | Same failure 2+ times | Supervisor escalates; no auto-retry |
+| Impossible requirement detected | Supervisor cannot satisfy a listed criterion | `ESCALATE_POLICY_CONFLICT` with reason `IMPOSSIBLE_REQUIREMENT` |
+| Stale decision | Expiration reached without action | Supervisor re-evaluates from current state |
+| Changed PR head | Commit changed since decision | Supervisor re-evaluates; invalidates prior decision |
+| Dirty working tree at dispatch | Tree is dirty when agent should start | Supervisor does not dispatch; escalates `DIRTY_TREE` |
+| Task scope drift | Files changed outside current allowed areas | Supervisor does not dispatch; escalates `SCOPE_DRIFT` |
+| Reviewer disagreement | Reviewer and supervisor disagree on outcome | Supervisor defers to human reviewer; notes discrepancy |
+
+**Escalation always routes to Josh.** The supervisor never consumes an escalation
+itself.
+
+---
+
+### Privacy and Security Constraints
+
+The supervisor is an engineering tool, not a surveillance tool. These constraints
+are non-negotiable.
+
+**The supervisor must NOT expose:**
+
+- Raw agent chain-of-thought or internal reasoning
+- Arbitrary command output beyond what is in the completion packet evidence
+- Credentials, secrets, API keys, or tokens of any kind
+- Internal error messages that reveal system architecture
+- More than 50 lines of any single diff in supervisor output
+- Agent memory state or session history
+- Any information about non-project communications
+
+**The supervisor MAY expose:**
+
+- Concise reasoning summaries (2–5 sentences maximum)
+- Evidence-to-reason codes (what fact led to what decision)
+- Diff paths and summary statistics (not full content)
+- Test result pass/fail with exact counts
+- Report excerpts (bounded to 200 lines)
+- Supervisor decision and recommendation
+- Bounded next instruction
+
+**Sanitization requirements:**
+
+- Every `generated_instruction` must be scanned for secret patterns before
+  inclusion in the approval inbox.
+- Any evidence blob exceeding 50 lines must be summarized, not raw-dumped.
+- Credentials in evidence refs must be redacted before the inbox display.
+
+---
+
+### Dashboard Integration Design (Non-executable)
+
+This section describes the future approval inbox design. No dashboard controls
+may be added during ENGSUP-001 implementation. This is an architectural
+reference for future work.
+
+**Approval inbox — minimum viable display:**
+
+```
+Pending Decision
+──────────────────────────────────────────
+Task: ENGDASH-005 Engineering Timeline
+Stage: REVIEW
+Branch: agent/engdash-005-timeline
+Commit: a3f7c1d
+──────────────────────────────────────────
+Supervisor recommendation: READY_FOR_MERGE_APPROVAL
+Reason codes: TESTS_PASS, REVIEW_ACCEPT, NO_BLOCKERS
+Evidence: tests (50 passed), git status (clean), PR (open)
+
+Generated instruction (Josh approval required for merge):
+  "Merge agent/engdash-005-timeline into main.
+   All acceptance criteria verified. No blockers."
+
+Permitted files: none (merge only)
+Prohibited: none
+──────────────────────────────────────────
+Actions:
+  [Approve Merge]  [Reject + Comment]  [Edit Instruction]
+```
+
+**Display requirements:**
+
+- One decision per task visible at a time.
+- Supervisor recommendation is prominent but clearly labeled as a recommendation.
+- Evidence is verifiable — clicking any evidence item triggers independent
+  supervisor verification (not agent's word).
+- Action buttons are explicit and audited.
+- Supervisor reasoning summary is visible but not expandable into raw chain-of-thought.
+
+---
+
+### Roadmap Placement and Priority Order
+
+ENGSUP-001 is inserted between ENGPLAT-002 and ENGDASH-006.
+
+**Updated priority order:**
+
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
+2. `ENGDASH-005` — Engineering Timeline and Historical Activity
+3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
+4. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol ← NEW
+5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+6. `ENGCTRL-001` — Safe Engineering Control Panel
+7. `CONFIG-002` — Dashboard-to-engine synchronization
+8. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+
+**Rationale for placement:**
+
+- Supervisor builds on project configuration (ENGPLAT-001) and adapters (ENGPLAT-002).
+- Supervisor does not require ENGDASH-005 timeline display (Phase 1 is prompt generation only).
+- Supervisor enables better governance for ENGDASH-006 and ENGCTRL-001 by automating routine handoffs.
+- CONFIG-002 synchronization remains last; it coordinates dashboard ↔ engine, which supervisor uses.
+
+---
+
+### Phased Implementation
+
+ENGSUP-001 is implemented in four phases. Each phase requires separate Josh
+approval before the next begins.
+
+#### Phase 1 — Supervisor Prompt Generation
+
+**Goal**: Replace the manual copying of reports and prompts with a supervised
+read-only evaluation loop.
+
+- Supervisor reads completion packets from the event store.
+- Supervisor independently verifies evidence.
+- Supervisor produces a typed decision with bounded instruction.
+- Josh receives the decision and instruction; Josh manually approves dispatch.
+- No agent is dispatched automatically.
+- Dashboard shows pending decision (read-only display; no controls).
+
+**Entry criteria**: ENGPLAT-001 and ENGPLAT-002 complete and stable.
+
+#### Phase 2 — Routine Auto-Dispatch
+
+**Goal**: Eliminate manual copying for routine, low-risk transitions.
+
+- Josh approves specific transition kinds for auto-dispatch (e.g., `QA_PASS → REVIEW`).
+- Supervisor dispatches approved transitions without Josh manually copying prompts.
+- All dispatch events are audited in the event store.
+- Supervisor re-verifies evidence before every dispatch.
+
+**Entry criteria**: Phase 1 stable; Josh has approved the auto-dispatch transition whitelist.
+
+#### Phase 3 — Dashboard Approval Inbox
+
+**Goal**: Provide a structured human-approval interface replacing informal copying.
+
+- Dashboard shows supervisor decisions with evidence, reasoning summary, and
+  bounded instruction.
+- Josh approves, rejects, or edits instructions from the dashboard.
+- All Josh decisions are audited.
+- Supervisor routes decisions to the appropriate agent only after Josh acts.
+
+**Entry criteria**: Phase 2 stable; dashboard has a read-only approval inbox display.
+
+#### Phase 4 — Multi-Project Supervisor
+
+**Goal**: Same supervisor service manages multiple managed projects.
+
+- Supervisor reads project configuration (ENGPLAT-001) for each registered project.
+- Supervisor dispatches to different agents for different projects.
+- Inter-project routing is governed by project registry.
+- Cross-project escalation routes to Josh.
+
+**Entry criteria**: Phase 3 stable; at least two projects registered with the platform.
+
+---
+
+### Acceptance Criteria
+
+The following criteria apply to ENGSUP-001 implementation as a whole (all phases).
+Individual phases have their own entry criteria.
+
+| # | Criterion | Proof Method |
+|---|---|---|
+| 1 | `CompletionPacket` dataclass exists in `engineering/models.py` with all required fields | Import check |
+| 2 | `SupervisorDecision` and `SupervisorDecisionKind` exist in `engineering/models.py` | Import check |
+| 3 | `SupervisorDecision` is frozen | `dataclasses.is_dataclass` check |
+| 4 | Supervisor can independently verify Git working-tree status | Unit test: mock `git status` output; verify supervisor detects clean vs dirty |
+| 5 | Supervisor detects evidence mismatch between agent packet and verified state | Unit test: packet claims clean; git shows dirty → decision is `ESCALATE_POLICY_CONFLICT` |
+| 6 | Supervisor decision includes correct `human_approval_required` flag for `WAIT_FOR_HUMAN_APPROVAL` | Unit test: assert `human_approval_required=True` for merge request |
+| 7 | Supervisor decision includes correct `human_approval_required` flag for `CONTINUE` | Unit test: assert `human_approval_required=False` for routine continue |
+| 8 | Supervisor does not include raw chain-of-thought in `supervisor_note` | Unit test: note is ≤ 5 sentences |
+| 9 | Loop protection: supervisor detects repeated identical QA failures | Unit test: 3rd identical failure → `ESCALATE_POLICY_CONFLICT` not `RETRY` |
+| 10 | Loop protection: supervisor detects scope drift | Unit test: files changed outside allowed areas → does not dispatch |
+| 11 | Privacy: supervisor sanitizes evidence blobs > 50 lines | Unit test: long diff → truncated with summary note |
+| 12 | `git diff --check` passes | `git diff --check` exits 0 |
+| 13 | Full safe test suite passes | `TESTING=1 UNIT_TESTING=1 pytest -q` → 375+ passed |
+| 14 | No runtime workflow engine changes | Workflow engine code unchanged (spot-check) |
+| 15 | No automatic agent dispatch in Phase 1 | Supervisor only generates instructions; dispatch requires Josh approval |
+
+---
+
+### Planned Tests
+
+`tests/test_engineering_supervisor.py`
+
+1. **CompletionPacket: valid construction** — all required fields present; version check
+2. **CompletionPacket: frozen** — mutation raises `FrozenInstanceError`
+3. **SupervisorDecision: WAIT_FOR_HUMAN_APPROVAL requires human approval** — flag is `True`
+4. **SupervisorDecision: CONTINUE does not require human approval** — flag is `False`
+5. **Evidence verification: clean tree** — git output shows clean → supervisor verifies as clean
+6. **Evidence verification: mismatch detected** — agent says clean, git shows dirty → `EVIDENCE_MISMATCH`
+7. **Evidence verification: commit matches** — `git rev-parse HEAD` matches packet head_commit
+8. **Evidence verification: commit mismatch** — commit differs → decision flags mismatch
+9. **Loop protection: 3rd identical QA failure** — repeated same failure → escalation not retry
+10. **Loop protection: scope drift detected** — files outside allowed areas → no dispatch
+11. **Privacy: supervisor_note length** — note is ≤ 5 sentences
+12. **Privacy: evidence truncation** — diff > 50 lines → truncated with "..." marker
+13. **Auto-dispatch: not authorized in Phase 1** — decision generated but dispatch flag is `False`
+14. **Auto-dispatch whitelist: only authorized kinds dispatch** — non-whitelisted kinds require approval
+
+---
+
+### Implementation Risks
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Supervisor becomes a new bottleneck if its decisions are wrong | Medium | Fail-closed: supervisor escalates rather than proceeding on ambiguity; every decision can be overridden by Josh |
+| Agent adversarial behavior: agent poisons completion packet | Medium | Independent evidence verification catches discrepancies; supervisor never trusts agent's word alone |
+| Scope drift during auto-dispatch (Phase 2) | Medium | Explicit allowed-area checking before every dispatch; loop protection thresholds; no dispatch if tree is dirty |
+| Supervisor reasoning is wrong for a complex case | Medium | Supervisor never proceeds on safety-critical decisions without Josh; complex cases always escalate |
+| Completion packets become stale / PR head changes between decision and dispatch | Low | Stale-conditions field on every decision; supervisor re-evaluates if head changes |
+| Privacy violation: supervisor exposes chain-of-thought | Low | `supervisor_note` is capped at 5 sentences; evidence blobs sanitized; automated linting on new supervisor output types |
+| Supervisor adds latency to the engineering loop | Low | Phase 1 is read-only; verification is bounded; no network calls in critical path |
+| Phase 2 auto-dispatch approved transitions prove too broad | Medium | Auto-dispatch whitelist is per-transition-kind; Josh approves each kind explicitly; whitelist is audited |
+
+---
+
+### Execution Gate (Repeat)
+
+ENGSUP-001 remains non-executable until:
+
+1. Josh approves this design and the roadmap placement.
+2. A feature branch is created for the implementation.
+3. The implementation plan includes exactly the files listed in the Allowed Areas for the current phase.
+4. Josh explicitly approves the Phase 1 implementation plan.
+5. Separate Josh approval is obtained before Phase 2 auto-dispatch begins.
+
+No automatic dispatch begins without explicit Phase 2 approval.
+
 
 ### ENGDASH-006 — Live Agent Activity and Execution Visibility
 

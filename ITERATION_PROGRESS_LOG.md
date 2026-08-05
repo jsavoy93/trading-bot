@@ -1307,3 +1307,14 @@ explicitly.
 - Tests/backtests run: to be run post-edit.
 - Important decisions/discoveries: ENGPLAT-001 scope is strictly the typed model + validation + trading-bot instance + governance docs. No adapters, no dashboard, no workflow changes, no persistence. 6 allowed files total. 14 acceptance criteria. 12 planned tests. 6 identified risks. No runtime code changes in this remediation.
 - Next action: validate, commit, push, PR update, stop for Josh read-only review.
+
+## 2026-08-05 12:05 UTC — ENGSUP-001 architectural design and roadmap insertion
+
+- Backlog item/objective: Design ENGSUP-001 (Automated Engineering Supervisor and Structured Handoff Protocol) as a governance-only backlog entry; insert into roadmap priority order; update all governance documents.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending
+- Status: `DONE` governance-only design; pending validation, commit, push, PR update.
+- Files changed: `AGENT_BACKLOG.md` (ENGSUP-001 backlog entry inserted ~25KB; priority order updated to 8 items), `MENTOR.md` (priority order + ENGSUP-001 section + supervisor maturity path), `AGENT_OPERATING_PLAN.md` (priority order + operational constraints), `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` (priority order + dependency notes + ENGSUP-001 section), `ENGINEERING_PLATFORM_VISION.md` (supervisor future capability + supervisor maturity path table), plus this progress log.
+- Tests/backtests run: to be run post-edit.
+- Important decisions/discoveries: ENGSUP-001 inserted as new P1 TODO between ENGPLAT-002 and ENGDASH-006. Full design includes: structured completion packet schema, supervisor decision contract, evidence verification requirements, human approval gate matrix, automatic transition matrix, loop protection rules, privacy/security constraints, dashboard integration design (non-executable), phased implementation (4 phases), 15 acceptance criteria, 14 planned tests, 7 risks. Updated priority: 1-ENGPLAT-001, 2-ENGDASH-005, 3-ENGPLAT-002, 4-ENGSUP-001, 5-ENGDASH-006, 6-ENGCTRL-001, 7-CONFIG-002, 8-ENGPLAT-003 deferred. No runtime code, trading, or deployment changes.
+- Next action: validate, commit, push, PR update, stop for Josh read-only review.

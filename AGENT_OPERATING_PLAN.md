@@ -152,16 +152,20 @@ platform priority order:
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
 2. `ENGDASH-005` — Engineering Timeline and Historical Activity
 3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
-4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-5. `ENGCTRL-001` — Safe Engineering Control Panel
-6. `CONFIG-002` — Dashboard-to-engine synchronization
-7. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+4. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+6. `ENGCTRL-001` — Safe Engineering Control Panel
+7. `CONFIG-002` — Dashboard-to-engine synchronization
+8. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
 
 Operational constraints for this roadmap:
 
 - `ENGPLAT-002` depends on `ENGPLAT-001`.
 - `ENGDASH-005` depends on `ENGPLAT-001` and `ENGDASH-004`; should consume the
   project boundary from `ENGPLAT-001` where practical.
+- `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002`; Phase 1 (prompt
+  generation) begins after adapters are proven; auto-dispatch requires separate
+  Phase 2 Josh approval.
 - `ENGDASH-006` depends on `ENGDASH-004` and must avoid a competing
   workflow-state model.
 - `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`

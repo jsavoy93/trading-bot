@@ -184,6 +184,11 @@ repository. No extraction has occurred.
 **Entry criteria**: Platform workflow runs end-to-end with human approval gates,
 event store, query service, and read-only dashboard.
 
+**Supervisor overlay (ENGSUP-001)**: Phase 1 of the supervisor runs in parallel
+with this phase — supervisor reads completion packets, verifies evidence, and
+generates bounded next-step instructions. Josh manually approves dispatch. No
+agent is dispatched automatically.
+
 ### Phase 2 — Reusable Engineering Platform
 
 Core platform components are structured as reusable, project-agnostic code.
@@ -231,6 +236,21 @@ project, not the platform itself.
 registers as a managed project; no managed project imports platform runtime code
 directly.
 
+### Supervisor Maturity Path (ENGSUP-001)
+
+The automated engineering supervisor runs as a cross-cutting overlay on top of
+the platform maturity phases. Its own implementation has four phases:
+
+| Supervisor Phase | Goal | Platform Maturity Prerequisite | Auto-dispatch |
+|---|---|---|---|
+| Supervisor Phase 1 | Read-only prompt generation | Phase 1 (single repo) | Disabled — Josh manually approves dispatch |
+| Supervisor Phase 2 | Routine transitions auto-dispatched | Phase 2 (reusable platform) | Per-transition Josh approval |
+| Supervisor Phase 3 | Dashboard approval inbox | Phase 3 (multi-repo) | Per-transition Josh approval |
+| Supervisor Phase 4 | Multi-project supervisor | Phase 4 (concurrent agents) | Per-transition Josh approval |
+
+Auto-dispatch is never enabled by default. Each transition kind requires explicit
+Josh approval before the supervisor may dispatch without stopping.
+
 ---
 
 ## Repository Extraction Strategy
@@ -263,7 +283,7 @@ Josh approval before work begins.
 | Distributed workers | Horizontal scaling is a deployment concern; governance semantics remain identical. |
 | Richer engineering analytics | Event store records structured facts about every workflow transition; these power cycle-time, review-turnaround, and test-reliability dashboards. |
 | Historical timeline | Complete history of engineering activities across all managed projects: task creation, agent delegations, test runs, reviews, approvals, commits, PR activity, failures, and merges. |
-| Approval workflows | Architecture review gates, security review gates, deployment gates, and rollback triggers — each requiring separate planning. |
+| Automated engineering supervisor | Structured completion packets, typed supervisor decisions, independent evidence verification, human approval gates, loop protection, and phased auto-dispatch. Implemented as ENGSUP-001. See `AGENT_BACKLOG.md` for the full design. |
 | Plugin/adaptor ecosystem | Future adapters for GitHub, GitLab, Bitbucket, Jira, Linear, Slack, PagerDuty, and other tools without changing core workflow engine. |
 | Project templates | Bootstrapping a new managed project with full governance structure, workflow engine, event store, and dashboard already configured. |
 | Reusable governance packs | Predefined backlog templates, safety constraint sets, allowed-area patterns, and review checklists applicable to new projects as configuration. |
