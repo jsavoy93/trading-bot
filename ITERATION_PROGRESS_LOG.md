@@ -1285,3 +1285,14 @@ explicitly.
   dashboard, trading, secrets, or deployment changes.
 - Next action: commit and push the updated governance-only branch, open a PR
   against `main`, and stop for Josh's read-only review.
+
+## 2026-08-05 11:50 UTC — Strengthen engineering platform vision + fix governance consistency
+
+- Backlog item/objective: Strengthen ENGINEERING_PLATFORM_VISION.md with new sections; fix MENTOR.md dependency inconsistency; perform read-only governance review.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending
+- Status: `DONE` governance-only changes; pending validation, commit, push, PR update.
+- Files changed: `MENTOR.md` (add missing dependency notes), `ENGINEERING_PLATFORM_VISION.md` (major revision: +10KB, new sections for Safety Philosophy, Dashboard Philosophy, Engineering Culture, Platform Architecture, Managed Project Contract, Project Lifecycle, Repository Extraction Strategy, non-executable Future Managed-Project Configuration note), plus this progress log.
+- Tests/backtests run: to be run post-edit.
+- Important decisions/discoveries: Consistency review found MENTOR.md missing dependency notes for ENGPLAT-002, ENGDASH-005, ENGDASH-006, ENGCTRL-001 that were present in AGENT_OPERATING_PLAN.md and TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md. Fixed. Vision doc revised to be a durable architectural reference with all requested sections. No runtime code, trading, or deployment changes.
+- Next action: validate, commit, push, PR update, stop for Josh read-only review.

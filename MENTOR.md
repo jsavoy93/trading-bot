@@ -831,11 +831,19 @@ engineering-platform priority order is:
 
 Important constraints:
 
-- `CONFIG-002` stays queued behind the platform work unless Josh changes the
-  priority.
+- `ENGPLAT-002` depends on `ENGPLAT-001`.
+- `ENGDASH-005` depends on `ENGPLAT-001` and `ENGDASH-004`; should consume the
+  project boundary from `ENGPLAT-001` where practical.
+- `ENGDASH-006` depends on `ENGDASH-004` and must avoid a competing
+  workflow-state model.
+- `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`
+  and `ENGDASH-006`, and requires separate Josh approval after read-only design
+  review.
 - `ENGPLAT-003` extraction is only a deferred placeholder; do not start
   extraction until configuration and adapter boundaries have been proven in
   normal use and Josh approves separate cross-repository planning.
+- `CONFIG-002` stays queued behind the platform work unless Josh changes the
+  priority.
 - New roadmap tasks are non-executable until each receives narrow allowed areas
   and explicit Josh approval. Do not use the roadmap as authorization for broad
   rewrites, runtime migration, API controls, deployment changes, secrets work,
