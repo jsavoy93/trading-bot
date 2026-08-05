@@ -1221,10 +1221,21 @@ explicitly.
 ## 2026-08-05 00:48 UTC — ENGDASH-004 Live Engineering Status & Workflow Aggregation
 
 - Backlog item/objective: ENGDASH-004 — extend the read-only engineering dashboard into an operational live engineering status and workflow aggregation view.
-- Branch and commit: `agent/engdash-004-live-engineering-status`; commit `e66726d`.
+- Branch and commit: `agent/engdash-004-live-engineering-status`; implementation commit `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`; evidence-only remediation in progress on PR #13.
 - Status: REVIEW.
 - Files changed: `AGENT_BACKLOG.md`, `dashboard_api/__init__.py`, `dashboard_api/app.py`, `dashboard_api/engineering_read_model.py`, `engineering/query_service.py`, `tests/test_dashboard_api_app.py`, `tests/test_dashboard_engineering_read_model.py`, `docs/ENGDASH-004.md`, `docs/2026-08-05_004808_ENGDASH-004-implementation-audit.md`, `REPORT.md`, `reports/2026-08-05_004855_ENGDASH-004-live-engineering-status.md`.
 - Tests run: focused dashboard/provider/read-model `32 passed, 2 warnings`; engineering/dashboard regression `69 passed, 2 warnings`; full suite `375 passed, 82 warnings`; route inventory verified only `/api/engineering/snapshot` and `/engineering` GET, docs/OpenAPI routes 404, mutation methods 405.
 - Decisions/discoveries: PR #12 was merged at `e285bc3` before work began; kept exact two-route read-only API surface; added typed operational summaries (`engineering_health`, `current_tasks`, `blockers`, `testing`) without adding control routes or trading imports; report outcome parsing is bounded/heuristic.
 - Remaining risks: activity view reflects existing persisted engineering workflow/delegation data, not a new process scanner; full-suite classification is best-effort from latest QA command.
 - Next action: commit, push, open ENGDASH-004 PR against `main`, then Josh review/merge decision required.
+
+
+## 2026-08-05 01:05 UTC — ENGDASH-004 evidence consistency remediation
+
+- Backlog item/objective: ENGDASH-004 — address only committed report/governance consistency blockers found during read-only review of PR #13.
+- Branch and commit: `agent/engdash-004-live-engineering-status`; implementation commit `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`; evidence-fix commit is this correction commit; exact hash verified after push in terminal report.
+- Status: `IN_PROGRESS` evidence-only correction; no implementation behavior, route, provider, dashboard logic, test, or architecture changes intended.
+- Files changed: `AGENT_BACKLOG.md`, `docs/2026-08-05_004808_ENGDASH-004-implementation-audit.md`, `reports/2026-08-05_004855_ENGDASH-004-live-engineering-status.md`, `REPORT.md` ignored locally, and this progress log.
+- Tests/backtests run: required `git diff --check`, focused dashboard tests, and route inventory run after file edits and recorded in terminal report.
+- Important decisions: PR #13 verified OPEN/MERGEABLE against `main`; stale committed references to pending PR creation and old commit hash are being corrected.
+- Next action: run required verification, commit/push evidence-only correction to PR #13, then stop for another read-only review. Josh approval required before any merge.

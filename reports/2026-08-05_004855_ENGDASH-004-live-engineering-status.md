@@ -17,9 +17,20 @@ ENGDASH-004 — Live Engineering Status & Workflow Aggregation
 
 `agent/engdash-004-live-engineering-status`
 
-## Commit
+## Pull request
 
-`e66726d`
+- PR: #13
+- URL: https://github.com/jsavoy93/trading-bot/pull/13
+- State verified before evidence correction: OPEN
+- Mergeability verified before evidence correction: MERGEABLE
+- Target branch: `main`
+- Merge state: not merged
+
+## Commit record
+
+- Implementation commit: `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`.
+- Evidence-only remediation commit: this evidence-only correction commit on PR #13; exact hash verified after commit/push in the terminal report because a commit cannot record its own final object ID.
+- Final branch tip: this evidence-only correction commit; verified after push to match PR #13 `headRefOid` in the terminal report.
 
 ## Base
 
@@ -177,8 +188,8 @@ Status: PASS
 | Focused tests pass. | Focused pytest command. | `32 passed, 2 warnings in 2.36s`. | PASS |
 | Relevant regression tests pass. | Engineering/dashboard regression pytest command. | `69 passed, 2 warnings in 2.46s`. | PASS |
 | Full suite passes. | Full pytest command. | `375 passed, 82 warnings in 35.61s`. | PASS |
-| Repository is clean. | Final post-commit `git status` check. | Pending final commit/push/status. | PENDING |
-| PR is open against `main`. | GitHub PR creation/check. | Pending push/PR creation. | PENDING |
+| Repository is clean. | `git status --short --branch` before evidence-only correction and final status after push. | Clean before correction on `agent/engdash-004-live-engineering-status`; final clean status is verified in the terminal report after the correction commit. | PASS |
+| PR is open against `main`. | `gh pr view 13 --json number,state,mergeable,url,headRefName,baseRefName,headRefOid,isDraft`. | PR #13 is OPEN, MERGEABLE, non-draft, head `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`, base `main`, URL `https://github.com/jsavoy93/trading-bot/pull/13` before evidence-only correction. Final PR head after push is verified in the terminal report. | PASS |
 
 ## Test commands and exact results
 

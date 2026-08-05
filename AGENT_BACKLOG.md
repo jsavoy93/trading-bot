@@ -1159,7 +1159,9 @@ Completed evidence:
 - Full safe suite: `375 passed, 82 warnings`.
 - Route inventory: `/api/engineering/snapshot` GET only; `/engineering` GET only;
   `/openapi.json`, `/docs`, and `/redoc` return 404; mutation methods return 405.
-- PR: pending creation after commit/push.
+- PR #13: https://github.com/jsavoy93/trading-bot/pull/13 — OPEN, MERGEABLE, targeting `main`; not merged.
+- Implementation commit before evidence-only remediation: `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`.
+- Evidence-only remediation/final branch tip: this evidence-only correction commit on PR #13; exact hash verified after commit/push in the terminal report because a commit cannot record its own final object ID.
 
 ---
 

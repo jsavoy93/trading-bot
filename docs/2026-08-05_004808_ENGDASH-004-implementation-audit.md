@@ -132,8 +132,8 @@ Status: PASS
 | Focused dashboard/provider/read-model tests pass. | `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py tests/test_dashboard_api_provider.py` | `32 passed, 2 warnings in 2.36s`. | PASS |
 | Relevant engineering regression tests pass. | `.venv/bin/python -m pytest tests/test_engineering_query_service.py tests/test_engineering_events.py tests/test_engineering_event_projection.py tests/test_engineering_event_store.py tests/test_engineering_workflow_store.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py tests/test_dashboard_api_provider.py` | `69 passed, 2 warnings in 2.46s`. | PASS |
 | Full suite passes. | `.venv/bin/python -m pytest tests` | `375 passed, 82 warnings in 35.61s`. | PASS |
-| Repository is clean at completion. | To be verified after commit/push/report generation. | Pending final status check. | PENDING |
-| PR is open against `main` and ready for Josh's review. | To be verified after push/PR creation. | Pending. | PENDING |
+| Repository is clean at completion. | `git status --short --branch` before evidence-only correction and final status after push. | Clean before correction on `agent/engdash-004-live-engineering-status`; final clean status is verified in the terminal report after the correction commit. | PASS |
+| PR is open against `main` and ready for Josh's review. | `gh pr view 13 --json number,state,mergeable,url,headRefName,baseRefName,headRefOid,isDraft`. | PR #13 is OPEN, MERGEABLE, non-draft, base `main`, head branch `agent/engdash-004-live-engineering-status`, pre-correction head `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`, URL `https://github.com/jsavoy93/trading-bot/pull/13`. Final pushed head is verified in the terminal report. | PASS |
 
 ## Test commands and results
 
@@ -176,3 +176,7 @@ Result: `375 passed, 82 warnings in 35.61s`.
 ## Manager decision
 
 Open a PR against `main` and stop for Josh's review. Do not merge.
+
+## Evidence-only remediation note
+
+A read-only review found stale committed governance/report statements after PR #13 was opened. This audit was corrected without changing implementation behavior, routes, providers, dashboard logic, tests, or architecture. The implementation commit before evidence-only remediation was `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`. PR #13 was verified OPEN and MERGEABLE against `main` before the correction. The evidence-fix commit and final PR head are verified in the terminal report after commit/push because a commit cannot reliably contain its own final object ID.
