@@ -146,6 +146,56 @@ def test_clean_repository_snapshot_contains_required_fields():
     assert snapshot.data_freshness_timestamp == "2026-08-04T23:00:00+00:00"
 
 
+def test_live_engineering_status_aggregates_current_activity_and_health():
+    snapshot = build_model(
+        base_payload(timeline=[{"event_type": "workflow.transition", "occurred_at": "2026-08-04T22:00:00+00:00", "task_id": "ENGDASH-001"}]),
+        pr_reader=StaticPrReader(),
+    ).snapshot()
+
+    assert snapshot.engineering_health is not None
+    assert snapshot.engineering_health.overall_status == "HEALTHY"
+    assert snapshot.engineering_health.repository_safe is True
+    assert snapshot.engineering_health.last_successful_regression_run == "2026-08-04T22:03:00+00:00"
+    assert snapshot.current_tasks[0].task_id == "ENGDASH-001"
+    assert snapshot.current_tasks[0].assigned_agent == "dashboard-agent"
+    assert snapshot.current_tasks[0].completion_percent == 70
+    assert snapshot.blockers == ()
+    assert snapshot.testing is not None
+    assert snapshot.testing.latest_status == "PASS"
+
+
+def test_live_engineering_status_exposes_blockers_and_degraded_sources():
+    snapshot = build_model(
+        base_payload(
+            agent_run={
+                "agent_name": "dashboard-agent",
+                "run_id": "run-1",
+                "status": "FAILED",
+                "updated_at": "2026-08-04T22:02:00+00:00",
+                "exit_code": 1,
+                "failure_reason": "required test failed",
+            },
+            tests={
+                "command": ["pytest", "tests"],
+                "exit_code": 1,
+                "passed_count": 9,
+                "failed_count": 1,
+                "timed_out": False,
+                "completed_at": "2026-08-04T22:03:00+00:00",
+                "output_summary": "9 passed, 1 failed, 3 warnings",
+            },
+        ),
+        repo=repository(False, ("changed.py",)),
+    ).snapshot()
+
+    assert snapshot.engineering_health.overall_status == "DEGRADED"
+    assert snapshot.testing.latest_status == "FAIL"
+    assert snapshot.testing.warning_count == 3
+    assert snapshot.testing.full_suite is not None
+    assert "required test failed" in snapshot.blockers
+    assert any(blocker.startswith("repository:") for blocker in snapshot.blockers)
+
+
 def test_dirty_repository_snapshot_adds_health_warning():
     snapshot = build_model(repo=repository(False, ("changed.py", "new.txt"))).snapshot()
 

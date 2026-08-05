@@ -66,8 +66,10 @@ class EngineeringQueryService:
                 {
                     "agent_name": delegation.agent_name,
                     "run_id": delegation.run_id,
+                    "started_at": delegation.started_at,
                     "status": delegation.status.value,
                     "updated_at": delegation.updated_at,
+                    "completed_at": delegation.completed_at,
                     "exit_code": delegation.exit_code,
                     "failure_reason": delegation.failure_reason[:2_000],
                 }
@@ -89,11 +91,14 @@ class EngineeringQueryService:
             else [],
             "tests": (
                 {
+                    "command": list(qa.command),
                     "exit_code": qa.exit_code,
+                    "duration_seconds": qa.duration_seconds,
                     "passed_count": qa.passed_count,
                     "failed_count": qa.failed_count,
                     "timed_out": qa.timed_out,
                     "completed_at": qa.completed_at,
+                    "output_summary": qa.output_summary[:2_000],
                 }
                 if qa
                 else None
