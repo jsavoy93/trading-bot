@@ -699,29 +699,198 @@ or ownership assumptions.
 
 Execution gate:
 
-- Non-executable until Josh approves a narrow implementation plan with allowed
-  areas for this task.
+- Non-executable until Josh approves this narrow implementation plan with allowed
+  areas.
 - This roadmap entry does not authorize runtime migration, repository
   extraction, deployment changes, secrets changes, or live trading changes.
 
-Acceptance criteria:
+---
 
-- A typed project configuration defines project ID and display name.
-- A typed project configuration defines repository root.
-- A typed project configuration defines authoritative base branch.
-- A typed project configuration defines governance file paths.
-- A typed project configuration defines backlog path.
-- A typed project configuration defines workflow and event-store paths.
-- A typed project configuration defines report locations.
-- A typed project configuration defines safe QA commands.
-- A typed project configuration defines owner/agent mappings.
-- A typed project configuration defines prohibited operations.
-- A typed project configuration defines whether agents may merge.
-- A typed project configuration defines project-specific safety constraints.
-- Configuration validation fails closed.
-- The trading-bot project can be represented using this configuration.
-- No runtime behavior is migrated in this task unless separately approved.
-- No secrets or live credentials are stored in project configuration.
+## Governance Remediation (this section)
+
+This block is the approved narrow implementation plan for ENGPLAT-001. It defines
+allowed areas, implementation boundaries, the project registration contract,
+acceptance criteria, test strategy, and risks. Josh approved this remediation
+on 2026-08-05.
+
+---
+
+### Allowed Areas
+
+The following files are approved for modification by ENGPLAT-001 implementation:
+
+1. `engineering/models.py` — add typed `ProjectConfig` dataclass and `validate_project_config()` validation function
+2. `tests/test_engineering_project_config.py` — add focused tests for project configuration model and validation
+3. `AGENT_BACKLOG.md` — update ENGPLAT-001 entry to reference the completed remediation (no structural change)
+4. `MENTOR.md` — add architecture note for project configuration contract (no structural change)
+5. `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` — add architecture note for project configuration contract (no structural change)
+6. `ITERATION_PROGRESS_LOG.md` — append continuity entry when implementation completes
+
+**Rationale for each allowed file:**
+
+- `engineering/models.py` — The typed model definition belongs alongside existing workflow models (`BacklogTask`, `StoredWorkflow`, enums). Adding it here keeps related types in one file and avoids creating a new module until the contract is proven.
+- `tests/test_engineering_project_config.py` — New test file for project configuration model. Tests belong next to the code they cover. No directory-wide permissions.
+- `AGENT_BACKLOG.md` — Governance document; requires update to record the completed remediation. No runtime code.
+- `MENTOR.md` — Code-map document; requires architecture note documenting the project configuration contract. No runtime code.
+- `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` — Handoff document; requires architecture note documenting the project configuration contract. No runtime code.
+- `ITERATION_PROGRESS_LOG.md` — Progress log; requires continuity entry per governance rules. No runtime code.
+
+**No other files are authorized.** Directory-wide permissions (e.g., `engineering/`, `src/`, `dashboard_api/`) are not granted. No files outside this list may change during ENGPLAT-001 implementation.
+
+---
+
+### Implementation Boundaries
+
+#### What ENGPLAT-001 WILL implement
+
+1. **Typed project configuration model** — A frozen dataclass `ProjectConfig` in `engineering/models.py` defining all required configuration fields. The model is immutable and suitable for use as a shared configuration contract.
+
+2. **Typed project registry model** — A frozen dataclass `ProjectRegistry` in `engineering/models.py` holding a mapping of registered projects. Supports at least one project (trading-bot).
+
+3. **Configuration validation** — A `validate_project_config()` function in `engineering/models.py` that returns a deterministic list of validation errors and fails closed on any ambiguous or missing input.
+
+4. **Trading-bot configuration instance** — A frozen `TRADING_BOT_PROJECT` constant in `engineering/models.py` demonstrating that the trading-bot can be represented using the contract, without modifying any runtime behavior.
+
+5. **Tests** — Focused tests in `tests/test_engineering_project_config.py` proving the contract behaves correctly.
+
+6. **Governance documentation updates** — Architecture notes in `MENTOR.md` and `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` documenting the project configuration contract.
+
+#### What ENGPLAT-001 WILL NOT implement
+
+The following are explicitly out of scope and must not be attempted during ENGPLAT-001:
+
+- Repository adapters (belongs to ENGPLAT-002)
+- Dashboard implementation or changes (belongs to ENGDASH-005/006)
+- Engineering control panel (belongs to ENGCTRL-001)
+- Workflow engine modifications
+- GitHub API integration
+- Runtime adapter implementations
+- CONFIG-002 dashboard-to-engine synchronization
+- Trading behavior changes
+- Secret or credential modifications
+- Deployment or infrastructure changes
+- Project extraction (deferred, Phase 6)
+- Persistence of project configuration to disk or database
+- Migration of existing hard-coded paths
+- Any change to files not listed in Allowed Areas above
+
+---
+
+### Project Registration Contract (Architectural Definition)
+
+This section defines the architectural contract — the information every managed
+project must eventually provide — without specifying a serialization format.
+ENGPLAT-001 implements the typed model; future tasks implement the registry
+and adapters.
+
+Every managed project must expose the following information through a typed
+`ProjectConfig`:
+
+| Contract Field | Type | Description |
+|---|---|---|
+| `project_id` | `str` | Unique project identifier (slug format) |
+| `display_name` | `str` | Human-readable project name |
+| `repository_root` | `str \| Path` | Absolute path to the managed repository |
+| `authoritative_base_branch` | `str` | Base branch for all feature work (e.g., `main`) |
+| `governance_files.backlog_path` | `str \| Path` | Path to the authoritative backlog |
+| `governance_files.operating_plan_path` | `str \| Path` | Path to the agent operating plan |
+| `governance_files.owners_path` | `str \| Path` | Path to the owners file |
+| `governance_files.handoff_path` | `str \| Path` | Path to the engineering handoff document |
+| `workflow_files.workflow_store_path` | `str \| Path` | Path to the workflow persistence file |
+| `workflow_files.event_store_path` | `str \| Path` | Path to the engineering event store |
+| `workflow_files.report_dir` | `str \| Path` | Directory for engineering reports |
+| `qa_commands` | `tuple[str, ...]` | Pre-configured safe pytest commands (exact strings) |
+| `qa_timeout_seconds` | `int` | Maximum allowed QA runtime in seconds |
+| `prohibited_operations` | `tuple[str, ...]` | Operations banned for this project (e.g., `no_live_trading`) |
+| `agents_may_merge` | `bool` | Whether agents may merge (always `False` initially) |
+| `owner_ids` | `tuple[str, ...]` | Human owner identifiers |
+| `agent_owners` | `tuple[str, ...]` | Authorized agent identities for this project |
+
+**Validation rules (fail-closed):**
+- Missing required fields → error returned
+- Invalid field types → error returned
+- Repository root does not exist → error returned
+- Empty project ID or display name → error returned
+- Conflicting settings (e.g., `agents_may_merge=True` with no approval policy) → error returned
+- Unknown/missing governance files → warning (governance files may not exist in early projects)
+
+**Format TBD**: The serialization format (JSON, YAML, TOML, Python module) is not
+defined by ENGPLAT-001. The typed model is the canonical contract.
+
+---
+
+### Acceptance Criteria
+
+The following criteria must all pass for ENGPLAT-001 implementation to be
+considered complete:
+
+| # | Criterion | Proof Method |
+|---|---|---|
+| 1 | `ProjectConfig` dataclass exists in `engineering/models.py` with all required fields | Import check: `from engineering.models import ProjectConfig` |
+| 2 | `ProjectConfig` is a frozen dataclass | `dataclasses.is_dataclass(config)` and `dataclasses.fields(config)` |
+| 3 | `validate_project_config()` exists in `engineering/models.py` | Import check: `from engineering.models import validate_project_config` |
+| 4 | `TRADING_BOT_PROJECT` constant exists and passes validation | `validate_project_config(TRADING_BOT_PROJECT)` returns empty error list |
+| 5 | Missing required field returns error | Test: omit `project_id`; assert error returned |
+| 6 | Invalid repository root returns error | Test: invalid root path; assert error returned |
+| 7 | Conflicting `agents_may_merge=True` with no approval policy returns error | Test: explicit conflict; assert error returned |
+| 8 | Valid configuration returns empty error list | Test: `TRADING_BOT_PROJECT`; assert no errors |
+| 9 | `ProjectRegistry` dataclass exists in `engineering/models.py` | Import check: `from engineering.models import ProjectRegistry` |
+| 10 | Registry roundtrip (dict → registry → dict) is lossless | JSON serialize/deserialize cycle; assert identity |
+| 11 | `git diff --check` passes | `git diff --check` exits 0 |
+| 12 | Full safe test suite passes | `TESTING=1 UNIT_TESTING=1 pytest -q` → 375+ passed |
+| 13 | No runtime behavior changes | Trading bot, dashboard, workflow engine unchanged (spot-check imports) |
+| 14 | Architecture notes added to `MENTOR.md` and `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` | Read sections; confirm contract documented |
+
+---
+
+### Test Strategy
+
+ENGPLAT-001 implementation produces one new test file:
+
+`tests/test_engineering_project_config.py`
+
+Tests required (minimum):
+
+1. **Model instantiation** — `ProjectConfig` can be constructed with valid trading-bot values
+2. **Model is frozen** — attempting to mutate a field raises `dataclasses.FrozenInstanceError`
+3. **Validation: valid config** — `validate_project_config(TRADING_BOT_PROJECT)` returns empty list
+4. **Validation: missing required field** — omit `project_id`; assert non-empty error list returned
+5. **Validation: missing `display_name`** — assert non-empty error list returned
+6. **Validation: invalid `repository_root`** — path does not exist; assert non-empty error list returned
+7. **Validation: empty `project_id`** — blank string; assert non-empty error list returned
+8. **Validation: invalid type** — wrong type for integer field; assert non-empty error list returned
+9. **Validation: `agents_may_merge=True` without approval policy** — conflict detected; assert error returned
+10. **Registry: single project** — `ProjectRegistry` with one trading-bot entry; roundtrip preserves identity
+11. **Registry: multiple projects** — `ProjectRegistry` with two entries; no conflict on distinct IDs
+12. **Registry: duplicate project_id** — second entry with same ID; assert error returned
+
+No tests for: adapters, dashboard, workflow transitions, brokerage, trading, or persistence.
+
+---
+
+### Implementation Risks
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Contract is incomplete for ENGPLAT-002 needs | Medium | ENGPLAT-001 only defines the model; ENGPLAT-002 adapter work will reveal gaps; gaps are addressed in ENGPLAT-002 without reworking the model contract |
+| Trading-bot `TRADING_BOT_PROJECT` instance has wrong values | Medium | Values are verified against actual repository paths; spot-check during implementation |
+| Forward-compatibility: future fields not allowed | Low | Model uses `**extra: dict` or equivalent pattern to allow unknown fields without silently ignoring them |
+| Backward compatibility: existing workflow JSON breaks | Low | ENGPLAT-001 adds new types; does not modify `StoredWorkflow`, `BacklogTask`, or existing workflow types |
+| Validation is non-deterministic | Low | Validation function is pure; no I/O, no time dependencies; same input always returns same output |
+| Contract is too rigid for future projects | Medium | Contract fields are intentionally general (string paths, tuple-of-strings for lists); specific formats are chosen at adapter time |
+
+---
+
+### Execution Gate (Repeat)
+
+ENGPLAT-001 remains non-executable until:
+
+1. This governance remediation plan is approved by Josh.
+2. A feature branch is created for the implementation.
+3. The implementation plan includes exactly the files listed in Allowed Areas above.
+4. Josh explicitly approves the implementation plan.
+
+No implementation may begin before these conditions are met.
 
 ### ENGPLAT-002 — Repository and Project Adapter Boundaries
 

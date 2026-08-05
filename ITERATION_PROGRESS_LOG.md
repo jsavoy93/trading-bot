@@ -1296,3 +1296,14 @@ explicitly.
 - Tests/backtests run: to be run post-edit.
 - Important decisions/discoveries: Consistency review found MENTOR.md missing dependency notes for ENGPLAT-002, ENGDASH-005, ENGDASH-006, ENGCTRL-001 that were present in AGENT_OPERATING_PLAN.md and TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md. Fixed. Vision doc revised to be a durable architectural reference with all requested sections. No runtime code, trading, or deployment changes.
 - Next action: validate, commit, push, PR update, stop for Josh read-only review.
+
+## 2026-08-05 11:57 UTC — ENGPLAT-001 governance remediation
+
+- Backlog item/objective: ENGPLAT-001 governance remediation — define narrow allowed areas, implementation boundaries, project registration contract, acceptance criteria, test strategy, and risks.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending
+- Status: `DONE` governance remediation; pending validation, commit, push, PR update.
+- Files changed: `AGENT_BACKLOG.md` (ENGPLAT-001 governance remediation block added), `MENTOR.md` (project configuration contract architecture note), `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` (same architecture note), plus this progress log.
+- Tests/backtests run: to be run post-edit.
+- Important decisions/discoveries: ENGPLAT-001 scope is strictly the typed model + validation + trading-bot instance + governance docs. No adapters, no dashboard, no workflow changes, no persistence. 6 allowed files total. 14 acceptance criteria. 12 planned tests. 6 identified risks. No runtime code changes in this remediation.
+- Next action: validate, commit, push, PR update, stop for Josh read-only review.

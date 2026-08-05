@@ -848,3 +848,19 @@ Important constraints:
   and explicit Josh approval. Do not use the roadmap as authorization for broad
   rewrites, runtime migration, API controls, deployment changes, secrets work,
   trading behavior changes, or repository extraction.
+
+### Project Configuration Contract (ENGPLAT-001)
+
+`engineering/models.py` will contain the typed `ProjectConfig` frozen dataclass
+and `validate_project_config()` function as part of ENGPLAT-001.
+
+The project configuration contract defines the information every managed project
+must provide to the platform. It is the architectural foundation for all future
+adapter and registry work (ENGPLAT-002). Format TBD; the typed model is the
+canonical contract.
+
+The trading-bot `TRADING_BOT_PROJECT` constant in `engineering/models.py` will
+demonstrate that the trading-bot can be represented using the contract.
+
+See `AGENT_BACKLOG.md` ENGPLAT-001 for the full contract table, validation
+rules, acceptance criteria, and implementation risks.
