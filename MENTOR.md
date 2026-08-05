@@ -814,3 +814,105 @@ OPS-017 automated focused tests passed 67 tests and the full safe suite passed
 push, or PR was created. OPS-017 remains BLOCKED pending Josh's separate
 approval for external secret provisioning and the real seven-interaction smoke
 sequence. DASH-007, OPS-016, and CONFIG-001 remain unstarted.
+
+## Engineering Platform Roadmap Approved 2026-08-05
+
+ENGDASH-004 is merged through PR #13 at merge commit
+`31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`. The next approved
+engineering-platform priority order is:
+
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
+2. `ENGDASH-005` — Engineering Timeline and Historical Activity
+3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
+4. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+6. `ENGCTRL-001` — Safe Engineering Control Panel
+7. `CONFIG-002` — Dashboard-to-engine synchronization
+8. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+
+Important constraints:
+
+- `ENGPLAT-002` depends on `ENGPLAT-001`.
+- `ENGDASH-005` depends on `ENGPLAT-001` and `ENGDASH-004`; should consume the
+  project boundary from `ENGPLAT-001` where practical.
+- `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002`; Phase 1 (prompt
+  generation) begins after adapters are proven; auto-dispatch requires separate
+  Phase 2 approval.
+- `ENGDASH-006` depends on `ENGDASH-004` and must avoid a competing
+  workflow-state model.
+- `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`
+  and `ENGDASH-006`, and requires separate Josh approval after read-only design
+  review.
+- `ENGPLAT-003` extraction is only a deferred placeholder; do not start
+  extraction until configuration and adapter boundaries have been proven in
+  normal use and Josh approves separate cross-repository planning.
+- `CONFIG-002` stays queued behind the platform work unless Josh changes the
+  priority.
+- New roadmap tasks are non-executable until each receives narrow allowed areas
+  and explicit Josh approval. Do not use the roadmap as authorization for broad
+  rewrites, runtime migration, API controls, deployment changes, secrets work,
+  trading behavior changes, or repository extraction.
+
+### Project Configuration Contract (ENGPLAT-001)
+
+`engineering/models.py` will contain the typed `ProjectConfig` frozen dataclass
+and `validate_project_config()` function as part of ENGPLAT-001.
+
+The project configuration contract defines the information every managed project
+must provide to the platform. It is the architectural foundation for all future
+adapter and registry work (ENGPLAT-002). Format TBD; the typed model is the
+canonical contract.
+
+The trading-bot `TRADING_BOT_PROJECT` constant in `engineering/models.py` will
+demonstrate that the trading-bot can be represented using the contract.
+
+See `AGENT_BACKLOG.md` ENGPLAT-001 for the full contract table, validation
+rules, acceptance criteria, and implementation risks.
+
+### Automated Engineering Supervisor (ENGSUP-001)
+
+ENGSUP-001 replaces the manual copying of agent reports and next-step prompts
+with a governed supervisor service. The supervisor consumes structured completion
+packets, independently verifies evidence, selects the next permitted workflow
+transition, and generates bounded instructions — while always preserving explicit
+human approval gates.
+
+Key design elements:
+
+- **Structured completion packet**: typed, versioned record containing project ID,
+  task ID, workflow/run ID, stage, branch/commit/status, files changed, test
+  results, report paths, PR metadata, risks, blockers, requested human action,
+  prior findings, and iteration count. Retains Markdown reports for humans;
+  supervisor does not infer state from prose.
+
+- **Supervisor decision contract**: typed outcomes (CONTINUE, RUN_QA,
+  RUN_READ_ONLY_REVIEW, RETRY, REQUEST_CHANGES, WAIT_FOR_HUMAN_APPROVAL,
+  READY_FOR_MERGE_APPROVAL, BLOCKED, ESCALATE_POLICY_CONFLICT, COMPLETE).
+  Each decision includes reason codes, supporting evidence, next agent role,
+  bounded instruction, and human-approval flag.
+
+- **Independent evidence verification**: supervisor verifies git status, commit,
+  branch, diff, test results, PR state independently — never trusts agent
+  summaries as sole source of truth.
+
+- **Human approval gates**: supervisor always stops for Josh before merge,
+  new task authorization, scope expansion, destructive Git, deployment, secret
+  changes, live trading, safety policy changes, and repository extraction.
+
+- **Automatic transitions**: routine transitions identified for Phase 2
+  auto-dispatch (e.g., QA_PASS → REVIEW). Auto-dispatch disabled by default;
+  requires per-transition Josh approval.
+
+- **Loop protection**: max 3 implementation-review cycles, identical finding
+  detection, scope-drift detection, stale decision expiry, dirty-tree prevention.
+  Supervisor escalates rather than looping indefinitely.
+
+- **Privacy**: supervisor does not expose chain-of-thought; note capped at
+  5 sentences; evidence blobs sanitized and truncated at 50 lines.
+
+- **Phased implementation**: Phase 1 (prompt generation, Josh manual dispatch),
+  Phase 2 (routine auto-dispatch), Phase 3 (dashboard approval inbox),
+  Phase 4 (multi-project supervisor).
+
+See `AGENT_BACKLOG.md` ENGSUP-001 for the full backlog entry including schemas,
+matrices, acceptance criteria, planned tests, and risks.

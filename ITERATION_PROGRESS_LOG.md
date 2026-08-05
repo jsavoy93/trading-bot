@@ -1239,3 +1239,82 @@ explicitly.
 - Tests/backtests run: required `git diff --check`, focused dashboard tests, and route inventory run after file edits and recorded in terminal report.
 - Important decisions: PR #13 verified OPEN/MERGEABLE against `main`; stale committed references to pending PR creation and old commit hash are being corrected.
 - Next action: run required verification, commit/push evidence-only correction to PR #13, then stop for another read-only review. Josh approval required before any merge.
+
+## 2026-08-05 02:25 UTC — Engineering platform roadmap priority update
+
+- Backlog item/objective: roadmap/governance update — record newly approved
+  engineering-platform priorities after ENGDASH-004 merged.
+- Branch and commit: `agent/engplat-roadmap-priorities`; commit pending at
+  log-write time.
+- Status: `DONE` governance/roadmap documentation update, pending validation,
+  commit, push, PR creation, and Josh read-only review.
+- Files changed: `AGENT_BACKLOG.md`, `AGENT_OPERATING_PLAN.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `ITERATION_PROGRESS_LOG.md`,
+  plus required report artifacts.
+- Tests/backtests run: governance parsing and consistency tests plus
+  `git diff --check` to be run after edits and recorded in the task report.
+- Important decisions/discoveries: no existing backlog IDs were found for
+  `ENGPLAT-001`, `ENGPLAT-002`, `ENGPLAT-003`, `ENGDASH-005`, `ENGDASH-006`, or
+  `ENGCTRL-001`; existing `CONFIG-002` remains TODO/P1 and is queued behind
+  the new platform priorities. No runtime code, dashboard implementation,
+  routes, controls, trading behavior, secrets, deployment configuration, or
+  repository extraction was changed.
+- Next action: commit and push the governance-only branch, open a PR against
+  `main`, and stop for Josh's read-only review. Recommended next governance
+  remediation is to define narrow allowed areas for `ENGPLAT-001` only.
+
+## 2026-08-05 11:38 UTC — Engineering platform roadmap reprioritization
+
+- Backlog item/objective: Update the approved roadmap priority order, explicitly
+  defer ENGPLAT-003, and create the Engineering Platform Vision document.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending (governance-only update)
+- Status: `DONE` governance-only changes; pending validation, commit, push, PR.
+- Files changed: `AGENT_BACKLOG.md`, `AGENT_OPERATING_PLAN.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `ENGINEERING_PLATFORM_VISION.md`
+  (new), plus this progress log.
+- Tests/backtests run: `git diff --check` pass; governance/backlog/operating
+  focused tests `2 passed, 373 deselected`; full safe suite `375 passed,
+  86 warnings` (no regressions).
+- Important decisions/discoveries: Updated Phase EP priority order to
+  ENGPLAT-001 → ENGDASH-005 → ENGPLAT-002 → ENGDASH-006 → ENGCTRL-001 →
+  CONFIG-002 → ENGPLAT-003 (explicitly deferred). Changed ENGPLAT-003 status
+  from BLOCKED to TODO (deferred). Added `ENGINEERING_PLATFORM_VISION.md`
+  describing mission, vision, core principles, architecture, managed project
+  model, future capabilities, and platform non-specificity. No runtime code,
+  dashboard, trading, secrets, or deployment changes.
+- Next action: commit and push the updated governance-only branch, open a PR
+  against `main`, and stop for Josh's read-only review.
+
+## 2026-08-05 11:50 UTC — Strengthen engineering platform vision + fix governance consistency
+
+- Backlog item/objective: Strengthen ENGINEERING_PLATFORM_VISION.md with new sections; fix MENTOR.md dependency inconsistency; perform read-only governance review.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending
+- Status: `DONE` governance-only changes; pending validation, commit, push, PR update.
+- Files changed: `MENTOR.md` (add missing dependency notes), `ENGINEERING_PLATFORM_VISION.md` (major revision: +10KB, new sections for Safety Philosophy, Dashboard Philosophy, Engineering Culture, Platform Architecture, Managed Project Contract, Project Lifecycle, Repository Extraction Strategy, non-executable Future Managed-Project Configuration note), plus this progress log.
+- Tests/backtests run: to be run post-edit.
+- Important decisions/discoveries: Consistency review found MENTOR.md missing dependency notes for ENGPLAT-002, ENGDASH-005, ENGDASH-006, ENGCTRL-001 that were present in AGENT_OPERATING_PLAN.md and TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md. Fixed. Vision doc revised to be a durable architectural reference with all requested sections. No runtime code, trading, or deployment changes.
+- Next action: validate, commit, push, PR update, stop for Josh read-only review.
+
+## 2026-08-05 11:57 UTC — ENGPLAT-001 governance remediation
+
+- Backlog item/objective: ENGPLAT-001 governance remediation — define narrow allowed areas, implementation boundaries, project registration contract, acceptance criteria, test strategy, and risks.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending
+- Status: `DONE` governance remediation; pending validation, commit, push, PR update.
+- Files changed: `AGENT_BACKLOG.md` (ENGPLAT-001 governance remediation block added), `MENTOR.md` (project configuration contract architecture note), `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` (same architecture note), plus this progress log.
+- Tests/backtests run: to be run post-edit.
+- Important decisions/discoveries: ENGPLAT-001 scope is strictly the typed model + validation + trading-bot instance + governance docs. No adapters, no dashboard, no workflow changes, no persistence. 6 allowed files total. 14 acceptance criteria. 12 planned tests. 6 identified risks. No runtime code changes in this remediation.
+- Next action: validate, commit, push, PR update, stop for Josh read-only review.
+
+## 2026-08-05 12:05 UTC — ENGSUP-001 architectural design and roadmap insertion
+
+- Backlog item/objective: Design ENGSUP-001 (Automated Engineering Supervisor and Structured Handoff Protocol) as a governance-only backlog entry; insert into roadmap priority order; update all governance documents.
+- Branch: `agent/engplat-roadmap-priorities`
+- Commit: pending
+- Status: `DONE` governance-only design; pending validation, commit, push, PR update.
+- Files changed: `AGENT_BACKLOG.md` (ENGSUP-001 backlog entry inserted ~25KB; priority order updated to 8 items), `MENTOR.md` (priority order + ENGSUP-001 section + supervisor maturity path), `AGENT_OPERATING_PLAN.md` (priority order + operational constraints), `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` (priority order + dependency notes + ENGSUP-001 section), `ENGINEERING_PLATFORM_VISION.md` (supervisor future capability + supervisor maturity path table), plus this progress log.
+- Tests/backtests run: to be run post-edit.
+- Important decisions/discoveries: ENGSUP-001 inserted as new P1 TODO between ENGPLAT-002 and ENGDASH-006. Full design includes: structured completion packet schema, supervisor decision contract, evidence verification requirements, human approval gate matrix, automatic transition matrix, loop protection rules, privacy/security constraints, dashboard integration design (non-executable), phased implementation (4 phases), 15 acceptance criteria, 14 planned tests, 7 risks. Updated priority: 1-ENGPLAT-001, 2-ENGDASH-005, 3-ENGPLAT-002, 4-ENGSUP-001, 5-ENGDASH-006, 6-ENGCTRL-001, 7-CONFIG-002, 8-ENGPLAT-003 deferred. No runtime code, trading, or deployment changes.
+- Next action: validate, commit, push, PR update, stop for Josh read-only review.
