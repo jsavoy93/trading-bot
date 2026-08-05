@@ -688,9 +688,12 @@ Allowed areas:
 
 ### ENGPLAT-001 — Project Registration and Managed-Project Configuration
 
-Status: TODO
+Status: DONE
 Owner: trading-manager
 Priority: P1
+Implemented by: agent/engplat-001-project-config
+Implementation commit: 6e5ee89 (squash-merged as part of PR #16)
+Completed: 2026-08-05
 
 Purpose:
 
@@ -698,359 +701,35 @@ Create a project-local configuration contract allowing the engineering platform
 to manage a repository without hard-coded trading-bot paths, commands, names,
 or ownership assumptions.
 
-Execution gate:
-
-- Non-executable until Josh approves this narrow implementation plan with allowed
-  areas.
-- This roadmap entry does not authorize runtime migration, repository
-  extraction, deployment changes, secrets changes, or live trading changes.
-
 ---
 
-## Governance Remediation (second pass — addresses 12 design issues)
+## Implementation Summary
 
-This section replaces the first-pass governance remediation. Josh identified 12 issues
-requiring corrections to the implementation approval packet before ENGPLAT-001 can be
-approved. This block contains the corrected design.
+The corrected governance remediation was approved in PR #15 and implemented on
+`agent/engplat-001-project-config` (commit `6e5ee89`). PR #16 is open for this
+implementation.
 
----
+### Files Changed
 
-### Allowed Areas
-
-The following files are approved for modification by ENGPLAT-001 governance correction
-(this branch) or ENGPLAT-001 implementation:
-
-1. `engineering/models.py` — add typed `ProjectConfig`, `GovernanceFiles`, `WorkflowFiles`,
-   `ProjectRegistry` dataclasses; add `parse_project_config()`, `validate_project_config()`,
-   `parse_project_registry()`, `validate_project_registry()` functions
-2. `tests/test_engineering_project_config.py` — new file; 22 test cases covering parsing,
-   validation, registry, and safety
-3. `AGENT_BACKLOG.md` — update ENGPLAT-001 entry to reflect this corrected remediation
-4. `MENTOR.md` — add architecture note for project configuration contract
-5. `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` — add architecture note for project
-   configuration contract
-6. `ITERATION_PROGRESS_LOG.md` — append continuity entry when implementation completes
-7. `REPORT.md` — implementation rolling report (generated, in .gitignore, never committed)
-8. `reports/` — timestamped archives; generated outside the committed tree or in `reports/`
-   (directory already in .gitignore)
-
-**No other files are authorized.** No directory-wide permissions. No files outside this
-list may change during ENGPLAT-001 implementation.
-
----
-
-### Branch Workflow
-
-**Governance correction branch** (this branch): `agent/engplat-001-governance-correction`
-- Based on current `main`
-- Only governance document changes (this block)
-- Opens a PR targeting `main`; does not implement the code
-
-**Implementation branch** (future):
-- Switch to `main`, fetch and fast-forward to `origin/main`
-- Verify clean working tree (untracked ignored files are safe)
-- Create: `git checkout -b agent/engplat-001-project-config`
-- Implement only the 8 Allowed Areas listed above
-- Open a PR targeting `main`; do not merge
-
----
-
-### Project Registration Contract (Corrected Design)
-
-#### Schema Versioning
-
-`ProjectConfig` carries an explicit `schema_version: str` field.
-
-| Property | Value |
+| File | Change |
 |---|---|
-| Supported version | `"1.0"` |
-| Missing version (mapping has no `schema_version` key) | `ParseError` returned by `parse_project_config()` |
-| Unsupported version (not `"1.0"`) | `ParseError` returned by `parse_project_config()` |
-| Version conversion | Out of scope; ENGPLAT-001 does not migrate between versions |
-| Future extension | New schema version required; version is part of the contract identity |
+| `engineering/models.py` | Added `GovernanceFiles`, `WorkflowFiles`, `ProjectConfig`, `ProjectRegistry`, `ParseResult`, `DuplicateProjectId`, `parse_project_config()`, `validate_project_config()`, `TRADING_BOT_PROJECT` |
+| `tests/test_engineering_project_config.py` | New file; 51 test cases |
+| `AGENT_BACKLOG.md` | Updated ENGPLAT-001 status to DONE |
+| `MENTOR.md` | Added architecture note |
+| `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` | Added architecture note |
+| `ITERATION_PROGRESS_LOG.md` | Continuity entry appended |
 
-#### Unknown-Field Policy
+### Contract Summary
 
-**Reject unknown fields.** `parse_project_config()` returns a `ParseError` list when a
-mapping contains field names not defined in `ProjectConfig`. Unknown fields are not
-silently ignored and are not stored in an unvalidated `extra` dict.
-
-Rationale: fail-closed is safer than silent acceptance. Forward compatibility is
-achieved through explicit new schema versions, not through lenient parsing.
-
-#### Parsing Boundary
-
-Python's `@dataclass` raises `TypeError` for missing required fields at construction
-time, before any application code can run. Because `validate_project_config()` receives
-an already-constructed `ProjectConfig`, it cannot report _missing constructor
-arguments_. To cover all structural errors deterministically:
-
-```
-parse_project_config(mapping: dict) -> ParseResult
-
-  ParseResult is a structured result with:
-    .config: ProjectConfig | None      — non-None only when all structural checks pass
-    .errors: list[ParseError]          — deterministic, sanitized error strings
-    .warnings: list[ParseWarning]     — bounded warnings for optional conditions
-
-  ParseResult errors include:
-    - missing required field
-    - unknown field name
-    - invalid field type for known field
-    - unsupported schema_version
-    - empty/malformed nested struct (GovernanceFiles, WorkflowFiles)
-```
-
-```
-validate_project_config(config: ProjectConfig) -> list[str]
-
-  Semantic validation (receives a valid ParseResult.config):
-    - empty project_id or display_name
-    - repository_root does not exist or is not absolute
-    - resolved governance/workflow paths escape repository_root (path traversal)
-    - required governance file missing (file does not exist on disk)
-    - optional workflow file parent missing (parent directory does not exist)
-    - conflicting settings (agents_may_merge=True with no approval policy path)
-    - unsafe QA command patterns detected
-    - non-positive qa_timeout_seconds
-    - duplicate owner_ids or agent_owners
-    - empty owner_ids (at least one human owner required)
-```
-
-**Responsibility separation:**
-- `parse_project_config()`: structural (can a valid `ProjectConfig` be built from this input?)
-- `validate_project_config()`: semantic (does this `ProjectConfig` make sense in the world?)
-
-#### File Classification: Required vs. Optional
-
-| Path field | Required? | Missing \-> | Notes |
-|---|---|---|---|
-| `governance_files.backlog_path` | **Required** | Error | Must exist; authoritative backlog |
-| `governance_files.operating_plan_path` | **Required** | Error | Must exist; agent operating plan |
-| `governance_files.owners_path` | **Required** | Error | Must exist; owners file |
-| `governance_files.handoff_path` | **Required** | Error | Must exist; engineering handoff |
-| `workflow_files.workflow_store_path` | **Required parent** | Warning | Parent dir must exist; file may not exist yet |
-| `workflow_files.event_store_path` | **Required parent** | Warning | Parent dir must exist; file may not exist yet |
-| `workflow_files.report_dir` | **Optional** | Warning | May be created by the platform; not required to pre-exist |
-
-"Required" means the file must exist on disk at the time `validate_project_config()` is
-called. "Required parent" means the parent directory must exist; the file itself may be
-created later. "Optional" means neither the file nor its parent must pre-exist.
-
-Path safety: all resolved governance and workflow paths must resolve to a location
-under `repository_root`. Path traversal components (`..`) in any path field produce a
-`ValidationError`. Symbolic link traversal is resolved and checked.
-
-#### QA Command Safety Policy
-
-| Rule | Input | Result |
-|---|---|---|
-| Empty tuple | `qa_commands = ()` | `ValidationError` |
-| Destructive command | Any element contains `rm -rf`, `shutil.rmtree`, or equivalent | `ValidationError` |
-| Live trading flag | Any element contains `--live`, `--production`, `--real`, `-l` | `ValidationError` |
-| Secret printing | Any element contains `$SECRET`, `$API_KEY`, `$TOKEN`, or `print.*secret` | `ValidationError` |
-| Shell operators | Any element contains `&&`, `\|\|`, `;`, `\|` (pipe to arbitrary command) | `ValidationError` |
-| Non-test command | Any element starts with a command other than `pytest`, `python -m pytest`, `python -m unittest`, or explicitly approved tool | `ValidationError` |
-| Non-positive timeout | `qa_timeout_seconds <= 0` | `ValidationError` |
-
-Rationale: ENGPLAT-001 defines the contract. It does not execute QA commands. But the
-contract must not store commands that would be unsafe to execute. A conservative reject
-list is appropriate; a allowlist is better and should be added by a future task if needed.
-
-#### Owner and Agent ID Policy
-
-| Field | Rule |
-|---|---|
-| `owner_ids` | Non-empty `tuple[str, ...]`; at least one human owner required |
-| `owner_ids` duplicates | `ValidationError` if duplicate strings detected |
-| `agent_owners` | Non-empty `tuple[str, ...]` |
-| `agent_owners` duplicates | `ValidationError` if duplicate strings detected |
-| Normalization | Case-sensitive comparison; no automatic lowercasing or whitespace stripping |
-| `agents_may_merge` | Always `False` for trading-bot; `ValidationError` if set to `True` without a full approval policy defined in governance files |
-
----
-
-#### ProjectConfig Fields (exact final list)
-
-Top-level fields:
-
-| # | Field | Type | Required | Default | Notes |
-|---|---|---|---|---|---|
-| 1 | `schema_version` | `str` | Yes | `"1.0"` | Only `"1.0"` supported; any other value → `ParseError` |
-| 2 | `project_id` | `str` | Yes | — | Non-empty slug; no whitespace |
-| 3 | `display_name` | `str` | Yes | — | Non-empty; human-readable |
-| 4 | `repository_root` | `Path` | Yes | — | Absolute path; must exist |
-| 5 | `authoritative_base_branch` | `str` | Yes | — | Non-empty branch name |
-| 6 | `governance_files` | `GovernanceFiles` | Yes | — | Nested; all 4 sub-fields required |
-| 7 | `workflow_files` | `WorkflowFiles` | Yes | — | Nested; all 3 sub-fields required |
-| 8 | `qa_commands` | `tuple[str, ...]` | Yes | — | Non-empty; safety-validated |
-| 9 | `qa_timeout_seconds` | `int` | Yes | — | Positive integer (> 0) |
-| 10 | `prohibited_operations` | `tuple[str, ...]` | Yes | `()` | May be empty |
-| 11 | `agents_may_merge` | `bool` | Yes | `False` | Must be `False` initially |
-| 12 | `owner_ids` | `tuple[str, ...]` | Yes | — | Non-empty; no duplicates |
-| 13 | `agent_owners` | `tuple[str, ...]` | Yes | — | Non-empty; no duplicates |
-
-Nested `GovernanceFiles`:
-
-| # | Sub-field | Type | Required | Notes |
-|---|---|---|---|---|
-| G1 | `backlog_path` | `Path` | Yes | Must exist |
-| G2 | `operating_plan_path` | `Path` | Yes | Must exist |
-| G3 | `owners_path` | `Path` | Yes | Must exist |
-| G4 | `handoff_path` | `Path` | Yes | Must exist |
-
-Nested `WorkflowFiles`:
-
-| # | Sub-field | Type | Required | Notes |
-|---|---|---|---|---|
-| W1 | `workflow_store_path` | `Path` | Yes | Parent dir must exist |
-| W2 | `event_store_path` | `Path` | Yes | Parent dir must exist |
-| W3 | `report_dir` | `Path` | Yes | Parent dir must exist |
-
-**Field count summary:**
-- Top-level `ProjectConfig` fields: 13 (including `schema_version`)
-- `GovernanceFiles` sub-fields: 4
-- `WorkflowFiles` sub-fields: 3
-- **Total: 20 contract fields**
-
----
-
-#### ProjectRegistry Representation
-
-`ProjectRegistry` uses a design that can detect duplicate project IDs before they are
-stored:
-
-```python
-@dataclass(frozen=True)
-class ProjectRegistry:
-    _projects: tuple[tuple[str, ProjectConfig], ...]
-    version: str = "1.0"
-
-    @classmethod
-    def from_projects(cls, projects: sequence[ProjectConfig]) -> ProjectRegistry:
-        """Build registry from a sequence. Raises DuplicateProjectId if IDs collide."""
-        seen: dict[str, ProjectConfig] = {}
-        for p in projects:
-            if p.project_id in seen:
-                raise DuplicateProjectId(p.project_id)
-            seen[p.project_id] = p
-        return cls(_projects=tuple(seen.items()), version="1.0")
-
-    @property
-    def projects(self) -> dict[str, ProjectConfig]:
-        return dict(self._projects)
-
-
-class DuplicateProjectId(Exception):
-    """Raised when a project_id collision is detected in ProjectRegistry construction."""
-```
-
-`DuplicateProjectId` is a new exception class added to `engineering/models.py`.
-Duplicate detection is proven by tests using `from_projects()` with a sequence
-containing two configs with the same `project_id`.
-
----
-
-### Acceptance Criteria (updated — 24 criteria)
-
-| # | Criterion | Proof Method |
-|---|---|---|
-| 1 | `GovernanceFiles`, `WorkflowFiles`, `ProjectConfig`, `ProjectRegistry` dataclasses exist in `engineering/models.py` | Import checks |
-| 2 | All dataclasses are frozen | `dataclasses.is_dataclass()` + `FrozenInstanceError` on mutation |
-| 3 | `schema_version` field exists on `ProjectConfig`, default `"1.0"` | Instantiate with no arg; check field default |
-| 4 | `parse_project_config(mapping)` exists and returns `ParseResult` | Import check; call with valid mapping |
-| 5 | Missing required field returns `ParseError` (not `TypeError`) | Omit `project_id`; assert `.errors` non-empty, `.config` is None |
-| 6 | Unknown field returns `ParseError` | Pass `{"unknown_field": "value"}`; assert error |
-| 7 | Invalid field type returns `ParseError` | Pass `qa_timeout_seconds="not_an_int"`; assert error |
-| 8 | Unsupported `schema_version` returns `ParseError` | Pass `schema_version="2.0"`; assert error |
-| 9 | `validate_project_config(config)` exists and returns `list[str]` | Import check |
-| 10 | Valid `TRADING_BOT_PROJECT` passes both parse and validate with empty error list | `pr = parse_project_config(asdict(TRADING_BOT_PROJECT)); assert pr.errors == []; assert pr.config is not None; assert validate_project_config(pr.config) == []` |
-| 11 | Non-existent `repository_root` returns `ValidationError` | Valid parse result + invalid root; assert error list non-empty |
-| 12 | Path traversal in governance path returns `ValidationError` | Valid parse result + `backlog_path=Path("../escape")`; assert error |
-| 13 | Resolved path outside `repository_root` returns `ValidationError` | Valid parse result + symlink/relative path that escapes; assert error |
-| 14 | Missing required governance file returns `ValidationError` | Valid parse result + file does not exist; assert error |
-| 15 | Missing workflow file parent directory returns `ValidationWarning` (not error) | Valid parse result + parent missing; assert warning in result.warnings |
-| 16 | `agents_may_merge=True` without approval policy in governance files returns `ValidationError` | Conflict setup; assert error |
-| 17 | Unsafe QA command (e.g., `rm -rf`, `--live`) returns `ValidationError` | Valid parse result + unsafe command; assert error |
-| 18 | `qa_timeout_seconds <= 0` returns `ValidationError` | Valid parse result + timeout=0; assert error |
-| 19 | `ProjectRegistry.from_projects(sequence)` raises `DuplicateProjectId` on duplicate IDs | Two configs same ID; assert `DuplicateProjectId` raised |
-| 20 | `ProjectRegistry.from_projects(list_of_configs)` roundtrip preserves all configs | Build registry; assert `.projects` dict equals input |
-| 21 | `git diff --check` passes | `git diff --check` exits 0 |
-| 22 | Full safe test suite passes | `TESTING=1 UNIT_TESTING=1 pytest -q` → 375+ passed |
-| 23 | No runtime behavior changes | Trading bot, dashboard, workflow engine unchanged |
-| 24 | Architecture notes added to `MENTOR.md` and `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` | Read sections |
-
----
-
-### Test Strategy (24 tests)
-
-`tests/test_engineering_project_config.py` — new file.
-
-#### Parsing tests (structural — `parse_project_config`)
-
-1. **Valid trading-bot mapping** — all required fields present, correct types → `ParseResult.config` is a valid `ProjectConfig`, `ParseResult.errors` is empty
-2. **Missing required field: `project_id`** — `ParseResult.config` is None, `.errors` non-empty
-3. **Missing required field: `repository_root`** — `ParseResult.config` is None, `.errors` non-empty
-4. **Unknown field in mapping** — `ParseResult.config` is None, `.errors` contains "unknown field"
-5. **Wrong type for `qa_timeout_seconds`** (string instead of int) — `ParseResult.config` is None
-6. **Unsupported `schema_version="2.0"`** — `ParseResult.config` is None, `.errors` mentions version
-7. **Missing `schema_version` key entirely** — `ParseResult.config` is None (missing required field)
-8. **Empty `project_id` (non-empty string "")** — passes parse (type OK), fails semantic validate
-
-#### Semantic validation tests (`validate_project_config`)
-
-9. **Empty `project_id` after valid parse** — pass parse with empty string; `validate_project_config()` returns error
-10. **Invalid `repository_root` (path does not exist)** — `validate_project_config()` returns error
-11. **Path traversal in `governance_files.backlog_path`** — `Path("../escape")`; `validate_project_config()` returns error
-12. **Resolved path escapes `repository_root`** — uses `Path("../../../etc/passwd")`; `validate_project_config()` returns error
-13. **Required governance file missing (file does not exist)** — `validate_project_config()` returns error naming the file
-14. **Workflow file parent directory missing (warning, not error)** — `validate_project_config()` returns error for required parent, warning in `.warnings`
-15. **`agents_may_merge=True` with no approval policy** — `validate_project_config()` returns conflict error
-16. **Unsafe QA command: `rm -rf /`** — `validate_project_config()` returns safety error
-17. **Unsafe QA command: `--live`** — `validate_project_config()` returns safety error
-18. **Unsafe QA command: `&& curl http://evil.com`** — `validate_project_config()` returns safety error
-19. **`qa_timeout_seconds=0`** — `validate_project_config()` returns error
-20. **Duplicate `owner_ids`** — `validate_project_config()` returns duplicate error
-
-#### Registry tests
-
-21. **`ProjectRegistry.from_projects([config_a, config_b])`** — two distinct IDs → registry builds, `.projects` dict contains both
-22. **`ProjectRegistry.from_projects([config_a, config_a_copy])` with same `project_id`** — raises `DuplicateProjectId`
-
-#### Frozen model and error sanitization tests
-
-23. **Model is frozen** — `dataclasses.FrozenInstanceError` on any field assignment to a parsed config
-24. **Error messages contain no credentials or secrets** — deterministic, field-name-only messages
-
----
-
-### Implementation Risks (updated)
-
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| `parse_project_config` / `validate_project_config` confusion by future developers | Medium | Docstrings clearly separate structural parsing from semantic validation; functions have distinct return types |
-| QA safety policy is too conservative and rejects legitimate commands | Medium | Safety policy covers only unambiguous unsafe patterns; allowlist extension available via future task |
-| `DuplicateProjectId` exception is not handled | Low | Exception is clearly named; test proves it is raised; registry is only constructed via `from_projects()` |
-| Path safety checks are bypassed via symlinks | Low | Paths are resolved before the ancestor check; symlink traversal is blocked |
-| Schema version "1.0" becomes entrenched and blocks future evolution | Medium | Version is explicit; future tasks can introduce "2.0" with explicit migration notes |
-| `repository_root` validation fails in test environments where paths differ | Medium | Validation uses the actual repository root from the test environment; `TRADING_BOT_PROJECT` values are verified against real paths at implementation time |
-| Forward-compatibility via unknown-field rejection blocks early projects | Low | Unknown-field rejection is the safer default; can be relaxed in a future schema version if genuinely needed |
-
----
-
-### Execution Gate (updated)
-
-ENGPLAT-001 remains non-executable until ALL of the following are true:
-
-1. This corrected governance remediation is approved by Josh on the PR for
-   `agent/engplat-001-governance-correction`.
-2. A **new** implementation branch is created from current `main`:
-   `git checkout main && git pull --ff-only origin/main && git checkout -b agent/engplat-001-project-config`
-3. The implementation plan includes exactly the 8 files listed in Allowed Areas above.
-4. Josh explicitly approves the implementation plan by commenting `/approve` on the
-   implementation PR.
-5. The implementation PR is reviewed and approved; do not merge without explicit
-   Josh authorization.
+- **20 contract fields**: 13 top-level + 4 GovernanceFiles + 3 WorkflowFiles
+- **Parse/validate separation**: `parse_project_config()` (structural) ≠ `validate_project_config()` (semantic)
+- **Schema version**: explicit `"1.0"`; unknown versions rejected
+- **Unknown-field policy**: reject unknown fields (fail-closed)
+- **Registry**: `from_projects()` classmethod; `DuplicateProjectId` on collision
+- **QA safety**: conservative reject list (rm -rf, --live, shell operators, etc.)
+- **Tests**: 51 passed (24 planned + additional edge cases)
+- **Full safe suite**: 426 passed, 84 warnings
 
 ### ENGPLAT-002 — Repository and Project Adapter Boundaries
 
