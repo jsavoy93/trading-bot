@@ -12,6 +12,31 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ---
 
+## Approved Engineering Platform Priority Order (2026-08-05)
+
+Josh approved the next engineering-platform priorities after ENGDASH-004 merged
+via PR #13 at merge commit `31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`.
+
+Priority order:
+
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
+2. `ENGPLAT-002` — Repository and Project Adapter Boundaries
+3. `ENGDASH-005` — Engineering Timeline and Historical Activity
+4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+5. `ENGCTRL-001` — Safe Engineering Control Panel
+6. `CONFIG-002` — Dashboard-to-engine synchronization
+
+Roadmap constraints:
+
+- `CONFIG-002` remains queued behind the engineering-platform work unless Josh
+  later changes the priority.
+- Future implementation tasks remain non-executable until each receives narrow
+  allowed areas and explicit Josh approval for that implementation slice.
+- Do not extract a reusable engineering-platform repository until `ENGPLAT-001`
+  and `ENGPLAT-002` have been proven through normal use.
+
+---
+
 ## Phase O — Governance
 
 ### OPS-017 — Add bounded OPS-015 launcher and manual smoke setup
@@ -657,6 +682,215 @@ Allowed areas:
 - AGENT_OPERATING_PLAN.md
 - AGENT_BACKLOG.md
 
+## Phase EP — Engineering Platform Roadmap
+
+### ENGPLAT-001 — Project Registration and Managed-Project Configuration
+
+Status: TODO
+Owner: trading-manager
+Priority: P1
+
+Purpose:
+
+Create a project-local configuration contract allowing the engineering platform
+to manage a repository without hard-coded trading-bot paths, commands, names,
+or ownership assumptions.
+
+Execution gate:
+
+- Non-executable until Josh approves a narrow implementation plan with allowed
+  areas for this task.
+- This roadmap entry does not authorize runtime migration, repository
+  extraction, deployment changes, secrets changes, or live trading changes.
+
+Acceptance criteria:
+
+- A typed project configuration defines project ID and display name.
+- A typed project configuration defines repository root.
+- A typed project configuration defines authoritative base branch.
+- A typed project configuration defines governance file paths.
+- A typed project configuration defines backlog path.
+- A typed project configuration defines workflow and event-store paths.
+- A typed project configuration defines report locations.
+- A typed project configuration defines safe QA commands.
+- A typed project configuration defines owner/agent mappings.
+- A typed project configuration defines prohibited operations.
+- A typed project configuration defines whether agents may merge.
+- A typed project configuration defines project-specific safety constraints.
+- Configuration validation fails closed.
+- The trading-bot project can be represented using this configuration.
+- No runtime behavior is migrated in this task unless separately approved.
+- No secrets or live credentials are stored in project configuration.
+
+### ENGPLAT-002 — Repository and Project Adapter Boundaries
+
+Status: TODO
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-001
+
+Purpose:
+
+Move project-specific filesystem, Git, governance, report, and workflow access
+behind narrow interfaces suitable for future extraction into a reusable
+engineering-platform repository.
+
+Execution gate:
+
+- Non-executable until `ENGPLAT-001` is accepted and Josh approves a narrow
+  implementation plan with allowed areas for this task.
+- No broad rewrite or repository extraction is authorized by this roadmap entry.
+
+Acceptance criteria:
+
+- Engineering services receive project/repository dependencies through typed
+  interfaces or adapters.
+- Hard-coded “trading-bot” text and paths are removed from reusable components.
+- Governance documents remain project-local.
+- Existing trading-bot engineering behavior remains compatible.
+- No broad rewrite or repository extraction occurs yet.
+- Tests prove adapters cannot mutate outside their configured project root.
+
+### ENGDASH-005 — Engineering Timeline and Historical Activity
+
+Status: TODO
+Owner: dashboard-agent
+Priority: P1
+
+Depends on: ENGDASH-004
+
+Purpose:
+
+Add a bounded historical timeline showing engineering tasks, workflow stages,
+agent delegations, test runs, reviews, approvals, commits, PR activity,
+failures, and merges.
+
+Execution gate:
+
+- Non-executable until Josh approves a narrow implementation plan with allowed
+  areas for this task.
+- Should consume the `ENGPLAT-001` project boundary where practical.
+- No controls or mutation endpoints are authorized by this roadmap entry.
+
+Acceptance criteria:
+
+- Timeline data is read-only.
+- Results are bounded, ordered, and timestamped.
+- Event-source failures degrade to health warnings.
+- Dynamic text is escaped and sanitized.
+- No unbounded Git, report, event, or filesystem scans.
+- The timeline supports project configuration rather than hard-coded paths.
+- No controls or mutation endpoints are added.
+
+### ENGDASH-006 — Live Agent Activity and Execution Visibility
+
+Status: TODO
+Owner: dashboard-agent
+Priority: P1
+
+Depends on: ENGDASH-004
+
+Purpose:
+
+Expose the current and most recent bounded agent execution state without
+revealing private reasoning, secrets, raw credentials, or unbounded output.
+
+Execution gate:
+
+- Non-executable until Josh approves a narrow implementation plan with allowed
+  areas for this task.
+- Must avoid creating a competing workflow-state model.
+- No arbitrary process inspection or shell access is authorized by this roadmap
+  entry.
+
+Acceptance criteria:
+
+- Show agent identity/role, task, workflow stage, start time, elapsed time,
+  latest safe status, blocker, timeout state, and last completed action.
+- Do not expose private chain-of-thought or hidden reasoning.
+- Agent output excerpts are sanitized and bounded.
+- Missing or stale activity is clearly labeled.
+- No arbitrary process inspection or shell access is exposed through the UI.
+- The dashboard remains usable when no agent is active.
+
+### ENGCTRL-001 — Safe Engineering Control Panel
+
+Status: TODO
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGDASH-005, ENGDASH-006
+
+Purpose:
+
+Add narrowly authorized, audited workflow controls after the read-only
+dashboard and adapter boundaries are stable.
+
+Execution gate:
+
+- Non-executable until stable dashboard/query boundaries exist after
+  `ENGDASH-005` and `ENGDASH-006`, and Josh approves a separate read-only design
+  review plus a narrow implementation plan with allowed areas.
+- No merge button, safety bypass, live-trading control, arbitrary shell, Git,
+  file-edit, deployment, secret, brokerage, or trading action is authorized.
+
+Acceptance criteria:
+
+- Only pause may be considered as a candidate control.
+- Only resume may be considered as a candidate control.
+- Only cancel an active bounded workflow may be considered as a candidate
+  control.
+- Only retry an explicitly retryable failed step may be considered as a
+  candidate control.
+- Only start the next already-approved workflow step may be considered as a
+  candidate control.
+- Only record a human approval or rejection may be considered as a candidate
+  control.
+- Every action is authenticated, authorized, validated, and audited.
+- Controls call EngineeringControlService or equivalent bounded services.
+- No arbitrary shell, Git, file-edit, deployment, secret, brokerage, or trading
+  action is exposed.
+- No merge button.
+- No safety bypass.
+- No live-trading control.
+- Control implementation requires a separate Josh approval after read-only
+  design review.
+
+### ENGPLAT-003 — Extract Reusable Engineering Platform Repository
+
+Status: BLOCKED
+Owner: trading-manager
+Priority: P3
+
+Depends on: ENGPLAT-001, ENGPLAT-002
+
+Purpose:
+
+Future placeholder for extracting reusable engineering-platform code into a
+separate repository after configuration and adapter boundaries have been proven
+through normal use.
+
+Execution gate:
+
+- Deferred and non-executable.
+- Extraction must not start until `ENGPLAT-001` and `ENGPLAT-002` are stable
+  through normal project use.
+- Project-local governance remains in each managed repository.
+- Cross-repository versioning, deployment, authentication, and migration require
+  separate planning and human approval.
+
+Acceptance criteria:
+
+- Extraction occurs only after configuration and adapter boundaries are stable.
+- Project-local governance remains in each managed repository.
+- Cross-repository versioning requires separate planning and human approval.
+- Cross-repository deployment requires separate planning and human approval.
+- Cross-repository authentication requires separate planning and human approval.
+- Cross-repository migration requires separate planning and human approval.
+
+---
+
 ## Phase A — Trustworthy Tests
 
 ### TEST-001 — Prevent live brokerage calls from tests
@@ -796,6 +1030,16 @@ Allowed areas:
 Status: TODO
 Owner: dashboard-agent
 Priority: P1
+
+Queued behind: ENGPLAT-001, ENGPLAT-002, ENGDASH-005, ENGDASH-006, ENGCTRL-001
+
+Backlog treatment:
+
+- Preserve the existing task definition and priority metadata.
+- Remain queued behind the engineering-platform work unless Josh later changes
+  the priority.
+- Do not perform the prior proposed governance remediation yet.
+- Do not implement this task as part of engineering-platform roadmap work.
 
 Acceptance criteria:
 
@@ -1082,7 +1326,7 @@ Completed evidence:
 
 ### ENGDASH-004 — Live engineering status and workflow aggregation
 
-Status: REVIEW
+Status: DONE
 Owner: dashboard-agent
 Priority: P1
 
@@ -1159,9 +1403,10 @@ Completed evidence:
 - Full safe suite: `375 passed, 82 warnings`.
 - Route inventory: `/api/engineering/snapshot` GET only; `/engineering` GET only;
   `/openapi.json`, `/docs`, and `/redoc` return 404; mutation methods return 405.
-- PR #13: https://github.com/jsavoy93/trading-bot/pull/13 — OPEN, MERGEABLE, targeting `main`; not merged.
+- PR #13: https://github.com/jsavoy93/trading-bot/pull/13 — merged into `main`.
+- Merge commit on `main`: `31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`.
 - Implementation commit before evidence-only remediation: `b71279c9deded45bc1abc6110fa4a2e1241c4d7a`.
-- Evidence-only remediation/final branch tip: this evidence-only correction commit on PR #13; exact hash verified after commit/push in the terminal report because a commit cannot record its own final object ID.
+- Evidence-only remediation/final reviewed branch tip: `cd0260bd72496e6e9d5a7446e8a4a050c7cc52bc`.
 
 ---
 

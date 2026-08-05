@@ -142,3 +142,30 @@ still required, and residual risk for every pending operational check.
 - Tasks requiring `git diff --check`, clean `git status`, merge, push, or merge-readiness verification also use read-only reporting mode, even when combined with another operation.
 - Read-only reporting writes no repository artifact. Its only archive is `/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md`.
 - If classification is uncertain, use read-only mode. Never require the user to request an exception, and never fall back to a repository-local report if the external archive fails.
+
+## Approved Engineering-Platform Roadmap Priority (2026-08-05)
+
+After ENGDASH-004 merged via PR #13 at merge commit
+`31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`, Josh approved this next
+platform priority order:
+
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
+2. `ENGPLAT-002` — Repository and Project Adapter Boundaries
+3. `ENGDASH-005` — Engineering Timeline and Historical Activity
+4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+5. `ENGCTRL-001` — Safe Engineering Control Panel
+6. `CONFIG-002` — Dashboard-to-engine synchronization
+
+Operational constraints for this roadmap:
+
+- `ENGPLAT-002` depends on `ENGPLAT-001`.
+- `ENGDASH-005` and `ENGDASH-006` depend on `ENGDASH-004` and should not create
+  competing workflow-state models or mutation surfaces.
+- `ENGCTRL-001` follows stable dashboard/query boundaries and requires separate
+  Josh approval after read-only design review.
+- `ENGPLAT-003` repository extraction is deferred until `ENGPLAT-001` and
+  `ENGPLAT-002` are proven through normal use.
+- `CONFIG-002` remains queued behind these engineering-platform priorities
+  unless Josh later changes the priority.
+- Roadmap entries do not authorize broad allowed areas. Each implementation
+  requires a separate narrow allowed-area remediation and Josh approval.

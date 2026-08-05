@@ -814,3 +814,28 @@ OPS-017 automated focused tests passed 67 tests and the full safe suite passed
 push, or PR was created. OPS-017 remains BLOCKED pending Josh's separate
 approval for external secret provisioning and the real seven-interaction smoke
 sequence. DASH-007, OPS-016, and CONFIG-001 remain unstarted.
+
+## Engineering Platform Roadmap Approved 2026-08-05
+
+ENGDASH-004 is merged through PR #13 at merge commit
+`31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`. The next approved
+engineering-platform priority order is:
+
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
+2. `ENGPLAT-002` — Repository and Project Adapter Boundaries
+3. `ENGDASH-005` — Engineering Timeline and Historical Activity
+4. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+5. `ENGCTRL-001` — Safe Engineering Control Panel
+6. `CONFIG-002` — Dashboard-to-engine synchronization
+
+Important constraints:
+
+- `CONFIG-002` stays queued behind the platform work unless Josh changes the
+  priority.
+- `ENGPLAT-003` extraction is only a deferred placeholder; do not start
+  extraction until configuration and adapter boundaries have been proven in
+  normal use and Josh approves separate cross-repository planning.
+- New roadmap tasks are non-executable until each receives narrow allowed areas
+  and explicit Josh approval. Do not use the roadmap as authorization for broad
+  rewrites, runtime migration, API controls, deployment changes, secrets work,
+  trading behavior changes, or repository extraction.

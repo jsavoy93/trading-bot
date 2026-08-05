@@ -1239,3 +1239,26 @@ explicitly.
 - Tests/backtests run: required `git diff --check`, focused dashboard tests, and route inventory run after file edits and recorded in terminal report.
 - Important decisions: PR #13 verified OPEN/MERGEABLE against `main`; stale committed references to pending PR creation and old commit hash are being corrected.
 - Next action: run required verification, commit/push evidence-only correction to PR #13, then stop for another read-only review. Josh approval required before any merge.
+
+## 2026-08-05 02:25 UTC — Engineering platform roadmap priority update
+
+- Backlog item/objective: roadmap/governance update — record newly approved
+  engineering-platform priorities after ENGDASH-004 merged.
+- Branch and commit: `agent/engplat-roadmap-priorities`; commit pending at
+  log-write time.
+- Status: `DONE` governance/roadmap documentation update, pending validation,
+  commit, push, PR creation, and Josh read-only review.
+- Files changed: `AGENT_BACKLOG.md`, `AGENT_OPERATING_PLAN.md`, `MENTOR.md`,
+  `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `ITERATION_PROGRESS_LOG.md`,
+  plus required report artifacts.
+- Tests/backtests run: governance parsing and consistency tests plus
+  `git diff --check` to be run after edits and recorded in the task report.
+- Important decisions/discoveries: no existing backlog IDs were found for
+  `ENGPLAT-001`, `ENGPLAT-002`, `ENGPLAT-003`, `ENGDASH-005`, `ENGDASH-006`, or
+  `ENGCTRL-001`; existing `CONFIG-002` remains TODO/P1 and is queued behind
+  the new platform priorities. No runtime code, dashboard implementation,
+  routes, controls, trading behavior, secrets, deployment configuration, or
+  repository extraction was changed.
+- Next action: commit and push the governance-only branch, open a PR against
+  `main`, and stop for Josh's read-only review. Recommended next governance
+  remediation is to define narrow allowed areas for `ENGPLAT-001` only.
