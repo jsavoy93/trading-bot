@@ -1329,3 +1329,36 @@ explicitly.
 - Tests/backtests run: `TESTING=1 UNIT_TESTING=1 pytest tests/test_engineering_project_config.py` → 51 passed; full safe suite → 426 passed, 84 warnings
 - Important decisions/discoveries: bool type coercion in parse_project_config rejects non-bool values strictly; QA safety errors redact command values; schema_version field required (not optional); DuplicateProjectId detected before dict construction; path escape check uses resolve() to block symlink traversal
 - Next action: Open PR #16 targeting main; stop for Josh read-only review; do not merge without explicit authorization
+
+## architecture-roadmap-2026-08-06 — Governance revision: ProjectContext + revised roadmap
+
+Date (UTC): 2026-08-06
+Backlog item: Architecture & Roadmap Reassessment
+Branch: agent/engplat-002-architecture
+Commit: cc4c324
+Status: COMPLETE
+
+Files changed:
+- AGENTS.md: +8 lines — architectural rule
+- AGENT_BACKLOG.md: +360 lines — revised roadmap, ProjectContext design, ENGPLAT-003, ENGPLAT-004
+- MENTOR.md: +65 lines — ProjectContext architecture section
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md: +74 lines — revised roadmap, ProjectContext
+
+Tests run: .venv/bin/python -m pytest -x (full safe suite)
+Test results: 426 passed, 83 warnings
+
+Key decisions:
+1. ENGPLAT-002 (Phase 1: Adapter Layer) promoted ahead of ENGDASH-005
+2. ENGPLAT-003 (Project Bootstrap) separated as independent task from ENGPLAT-002 Phase 1
+3. ENGPLAT-004 (extraction) renumbered; 12 objective readiness criteria defined
+4. ProjectContext concept designed: 8-field frozen dataclass, 6 adapter protocols, factory function
+5. Architectural rule established: no direct repository path access except through adapters
+6. ENGDASH-005 now depends on ENGPLAT-002 in addition to existing dependencies
+
+Known risks:
+- ENGPLAT-002 Phase 1 is large (~10 files); scope creep is primary risk
+- Bootstrap (ENGPLAT-003) is speculative until Phase 1 is proven
+- Roadmap reorder delays ENGDASH-005; ENGDASH-005 no longer blocks ENGSUP-001
+
+Next action: Josh reviews and approves PR #17. If approved, next implementation
+task is ENGPLAT-002 Phase 1 (Project Adapter Layer).
