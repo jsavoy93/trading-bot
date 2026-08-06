@@ -923,6 +923,19 @@ This avoids replacing one global dependency with a `ProjectContext` "god object.
 - Fail closed on semantic validation errors (deterministic, sanitized errors)
 - Perform no side effects: no file creation, no network calls, no Git mutation
 
+### Foundation Platform Contracts
+
+Three contracts form the foundation of the engineering platform:
+
+| Contract | Defined by | Purpose |
+|---|---|---|
+| `ProjectConfig` | ENGPLAT-001 | Describes a managed project (schema, paths, governance files, workflow files, QA config) |
+| `ProjectContext` | ENGPLAT-002A | Provides project-scoped engineering services via adapter Protocol types |
+| `EvidenceBundle` | ENGSUP-001 Phase 1 | Provides verified decision evidence for supervisor workflows |
+
+`ProjectConfig` is the input. `ProjectContext` is the runtime service container.
+`EvidenceBundle` is the supervisor's verified evidence record.
+
 ### Adapter protocol responsibilities
 
 | Adapter | Wraps | Path consumed from | Migration phase |

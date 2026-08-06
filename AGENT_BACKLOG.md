@@ -1795,6 +1795,55 @@ distinguish:
 
 ---
 
+##### EvidenceBundle Architecture
+
+All supervisor decisions operate on a single verified `EvidenceBundle` assembled from
+authoritative evidence sources. Future supervisor components consume only the
+EvidenceBundle rather than opening files independently.
+
+**Evidence priority order** (highest to lowest):
+
+| Priority | Source | Type |
+|---|---|---|
+| 1 | Repository verification | Directly verified Git state |
+| 2 | Structured completion packet | `CompletionPacket` from event store |
+| 3 | Structured QA/test evidence | Typed test results |
+| 4 | REPORT.md | Rolling narrative (latest) |
+| 5 | Matching timestamped implementation report | `reports/YYYYMMDD_HHMMSS_<task>.md` |
+| 6 | Matching audit/review report | `reports/YYYYMMDD_HHMMSS_<review>.md` |
+| 7 | PR metadata | GitHub API state |
+
+**Evidence rules**:
+
+- Supervisor independently verifies evidence at priorities 1, 2, 3, and 7.
+- REPORT.md (priority 4) is informative; never authoritative by itself.
+- Completion packets (priority 2) are never blindly trusted.
+- Repository state (priority 1) always overrides reported state.
+- Missing evidence produces deterministic bounded recommendations; does not block.
+- Stale evidence must be detected and flagged.
+- Conflicting evidence must produce explicit review findings, not assumptions.
+
+**EvidenceBundle lifecycle**:
+
+```
+Collect → Verify → Normalize → Build EvidenceBundle → Decision Engine → Prompt Generator → Prompt Validation
+```
+
+1. **Collect**: Gather evidence from all sources (event store, filesystem, Git, GitHub API)
+2. **Verify**: Independently verify repository state, commit, tests, PR status
+3. **Normalize**: Convert heterogeneous evidence to typed structures
+4. **Build EvidenceBundle**: Assemble verified evidence with source labels and timestamps
+5. **Decision Engine**: Apply supervisor rules to EvidenceBundle → `SupervisorDecision`
+6. **Prompt Generator**: Produce bounded instruction from `SupervisorDecision` + EvidenceBundle
+7. **Prompt Validation**: Verify prompt does not exceed bounds, contains no secrets, preserves gates
+
+**Benefits of EvidenceBundle approach**:
+- Reduces duplicated parsing across supervisor components
+- Enables evidence-level caching (verified state cached; re-verified on conflict)
+- Supports dashboard evidence visualization (show sources per fact)
+- Enables multi-project supervisor (one EvidenceBundle per project)
+- Supports audit trail (EvidenceBundle serialized to event store)
+
 #### Phase 2 — Routine Auto-Dispatch
 
 **Goal**: Eliminate manual copying for routine, low-risk transitions.
@@ -1874,6 +1923,23 @@ Individual phases have their own entry criteria.
 12. **Privacy: evidence truncation** — diff > 50 lines → truncated with "..." marker
 13. **Auto-dispatch: not authorized in Phase 1** — decision generated but dispatch flag is `False`
 14. **Auto-dispatch whitelist: only authorized kinds dispatch** — non-whitelisted kinds require approval
+
+`tests/test_engineering_supervisor_evidence_bundle.py`
+
+15. **EvidenceBundle: priority-1 overrides priority-4** — REPORT.md claims clean; Git shows dirty → bundle marks git_verified=True, report_stale=True
+16. **EvidenceBundle: stale detection** — REPORT.md timestamp older than event store packet → stale flag set
+17. **EvidenceBundle: conflicting evidence** — packet says merged, GitHub API shows open → explicit conflict finding, no assumption
+18. **EvidenceBundle: missing non-critical evidence** — REPORT.md unavailable → supervisor proceeds with available evidence
+19. **EvidenceBundle: missing critical evidence** — repository verification unavailable → supervisor escalates, does not proceed
+20. **EvidenceBundle: priority order enforced** — priority-1 state contradicts priority-4 → priority-1 used, priority-4 flagged
+21. **EvidenceBundle: lifecycle — Collect** — all sources gathered without blocking
+22. **EvidenceBundle: lifecycle — Verify** — git/gitHub verified independently; no blind trust
+23. **EvidenceBundle: lifecycle — Normalize** — heterogeneous evidence converted to typed structures
+24. **EvidenceBundle: lifecycle — Build** — bundle includes source labels, timestamps, content hashes
+25. **EvidenceBundle: lifecycle — Prompt Validation** — prompt within bounds, no secrets, gates preserved
+26. **EvidenceBundle: bounded reading** — REPORT.md > 64 KB → truncated at bound
+27. **EvidenceBundle: secret redaction** — content matches secret patterns → redacted in supervisor output
+28. **EvidenceBundle: wrong-task report ignored** — report for task X, supervisor evaluating Y → task mismatch flagged
 
 ---
 
