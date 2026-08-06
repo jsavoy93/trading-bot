@@ -879,9 +879,11 @@ rules, acceptance criteria, and implementation risks.
 ENGPLAT-001 delivered the typed `ProjectConfig` contract but no service consumes it.
 The platform has the vocabulary but not yet the grammar of project-agnostic design.
 
-ENGPLAT-002A defines the `ProjectContext` contract: a read-only runtime dependency
-container encapsulating all project-specific dependencies. Services receive a
-`ProjectContext` rather than constructing their own paths.
+ENGPLAT-002A (governance approved, pending implementation) defines the
+`ProjectContext` contract: a read-only runtime dependency container encapsulating
+all project-specific dependencies. Services receive a `ProjectContext` rather than
+constructing their own paths. Factory contract: Option B (concrete construction
+deferred to 002B).
 
 ### The Architectural Rule
 
@@ -898,13 +900,13 @@ The current named-file list covers existing services: `manager.py`, `backlog.py`
 ```
 ProjectContext
 ├── config: ProjectConfig          # The typed project configuration
-├── git: GitAdapter                # Scoped Git operations
+├── git: GitReadAdapter           # Read-only Git operations (mutations deferred)
 ├── governance: GovernanceAdapter  # Governance document access
-├── workflow: WorkflowAdapter       # Workflow and event persistence
-├── qa: QAAdapter                  # QA command and timeout
-├── files: FileAdapter             # Safe filesystem access scoped to repo
-├── events: EventAdapter           # Event append and query
-└── metadata: ProjectMetadata      # Project identity and policy
+├── workflow: WorkflowAdapter      # Workflow and event persistence
+├── qa: QAAdapter                 # QA configuration (execution deferred to 002B)
+├── files: FileReadAdapter         # Bounded filesystem access (writes deferred)
+├── events: EventAdapter           # Bounded event operations
+└── metadata: ProjectMetadata       # Project identity and policy
 ```
 
 ### Propagation Rule
@@ -925,11 +927,11 @@ This avoids replacing one global dependency with a `ProjectContext` "god object.
 
 | Adapter | Wraps | Path consumed from | Migration phase |
 |---|---|---|---|
-| `GitAdapter` | `GitService` | `config.repository_root` | 002C |
+| `GitReadAdapter` | `GitService` | `config.repository_root` | 002C |
 | `GovernanceAdapter` | `backlog.py`, file reads | `governance_files.*_path` | 002B |
 | `WorkflowAdapter` | `WorkflowStore`, `EventStore` | `workflow_files.*_path` | 002B |
-| `QAAdapter` | `QA_runner` | `qa_commands`, `qa_timeout_seconds` | 002C |
-| `FileAdapter` | Direct filesystem access | `config.repository_root` | 002C |
+| `QAAdapter` | `QA_runner` | `qa_commands`, `qa_timeout_seconds` | 002A (Protocol defined); execution (run_qa) in 002C |
+| `FileReadAdapter` | Direct filesystem access | `config.repository_root` | 002C |
 | `EventAdapter` | `EngineeringEventStore` | `workflow_files.event_store_path` | 002B |
 
 ### Service migration matrix

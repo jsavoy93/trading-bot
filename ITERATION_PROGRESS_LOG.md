@@ -1395,3 +1395,32 @@ Key corrections:
 10. Service migration matrix: explicit phase column per service
 
 Next action: Josh reviews PR #17 (now with corrections) and approves or requests changes.
+
+## engplat-002a-governance-2026-08-06 — ENGPLAT-002A governance remediation
+
+Date (UTC): 2026-08-06
+Backlog item: ENGPLAT-002A governance remediation
+Branch: agent/engplat-002a-governance
+Commit: a5c79b8
+Status: COMPLETE
+
+Files changed:
+- AGENT_BACKLOG.md: precise protocol signatures (GitReadAdapter, GovernanceAdapter,
+  WorkflowAdapter, QAAdapter, FileReadAdapter, EventAdapter), Option B factory
+  contract, validation/error contract, updated scope and acceptance criteria
+- MENTOR.md: protocol name updates (GitReadAdapter, FileReadAdapter), QAAdapter
+  phase annotation
+
+Tests run: .venv/bin/python -m pytest -x (full safe suite)
+Test results: 426 passed, 82 warnings
+
+Key decisions:
+1. Protocol signatures precise: GitReadAdapter (5 read methods, no mutations),
+   GovernanceAdapter (4 methods), WorkflowAdapter (3), QAAdapter (2, no run_qa),
+   FileReadAdapter (3, no write_text), EventAdapter (3, list_events has limit)
+2. Factory Option B: define signature in 002A, concrete construction in 002B
+3. Validation: 6 failure conditions with deterministic error types
+4. 10 acceptance criteria covering all protocol and factory requirements
+
+Next action: Josh reviews PR #18 and approves. If approved, implementation branch
+agent/engplat-002a-project-context-contracts created from current main.
