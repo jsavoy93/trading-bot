@@ -576,21 +576,32 @@ Josh approved the revised engineering-platform priorities on 2026-08-06.
 
 Priority order:
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration ✅ DONE
-2. `ENGPLAT-002` — Project Adapter Layer (Phase 1)
-3. `ENGPLAT-003` — Project Bootstrap (Phase 2)
+2. `ENGPLAT-002A` — ProjectContext Contracts and Composition Boundary
+3. `ENGPLAT-002B` — Local Read Adapters and Manager Integration
 4. `ENGDASH-005` — Engineering Timeline and Historical Activity
-5. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
-6. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-7. `ENGCTRL-001` — Safe Engineering Control Panel
-8. `CONFIG-002` — Dashboard-to-engine synchronization
-9. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (deferred)
+5. `ENGPLAT-002C` — Remaining Adapters and Service Migration
+6. `ENGPLAT-003` — Project Bootstrap
+7. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+8. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+9. `ENGCTRL-001` — Safe Engineering Control Panel
+10. `CONFIG-002` — Dashboard-to-engine synchronization
+11. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (deferred)
 
 Dependency notes:
-- `ENGPLAT-002` (Phase 1) depends on `ENGPLAT-001`.
-- `ENGPLAT-003` (Phase 2) depends on `ENGPLAT-002` (Phase 1).
-- `ENGDASH-005` depends on `ENGPLAT-001`, `ENGPLAT-002`, and `ENGDASH-004`;
-  should consume adapter interfaces rather than hard-coding paths.
-- `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002`; Phase 1 (prompt
+- `ENGPLAT-002A` depends on `ENGPLAT-001`. Defines contracts only; no concrete
+  adapters or service migrations.
+- `ENGPLAT-002B` depends on `ENGPLAT-002A`. Implements read-oriented adapters
+  (GovernanceAdapter, WorkflowAdapter, EventAdapter) and integrates manager.
+- `ENGDASH-005` depends on `ENGPLAT-001`, `ENGPLAT-002B`, and `ENGDASH-004`.
+  It needs only stable read interfaces for governance, workflow history, and events.
+  It does not need Git, QA, or write adapters. Unblocked after 002B.
+- `ENGPLAT-002C` depends on `ENGPLAT-002B`. Completes remaining adapters
+  (GitAdapter, QAAdapter, FileAdapter) and migrates remaining services.
+  Follows ENGDASH-005 so dashboard does not wait for full adapter suite.
+- `ENGPLAT-003` (Bootstrap) depends on `ENGPLAT-002C`. Bootstrap generates
+  `ProjectConfig` instances for new repositories and should not proceed until
+  the full adapter contract is stable.
+- `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002C`. Phase 1 (prompt
   generation) begins after adapters are proven; auto-dispatch requires separate
   Phase 2 Josh approval.
 - `ENGDASH-006` depends on `ENGDASH-004` and must avoid a competing
@@ -599,9 +610,10 @@ Dependency notes:
   and `ENGDASH-006`, and requires separate Josh approval after read-only design
   review.
 - `ENGPLAT-004` repository extraction is explicitly deferred until
-  `ENGPLAT-002`, `ENGPLAT-003`, `ENGDASH-005`, and `ENGSUP-001 Phase 1`
-  are proven through normal use and Josh separately approves cross-repository
-  planning.
+  `ENGPLAT-002A`, `ENGPLAT-002B`, `ENGPLAT-002C`, `ENGPLAT-003`, `ENGDASH-005`,
+  and `ENGSUP-001 Phase 1` are proven through normal use and Josh separately
+  approves cross-repository planning. See extraction readiness criteria in
+  `AGENT_BACKLOG.md` for the 16 measurable criteria.
 - `CONFIG-002` remains queued behind the platform priorities unless Josh later
   changes the priority.
 
@@ -635,9 +647,15 @@ ENGPLAT-001 delivered the typed `ProjectConfig` contract but no engineering serv
 consumes it. The platform has the vocabulary of project configuration but not yet
 the grammar — services still access repository paths directly.
 
-ENGPLAT-002 Phase 1 introduces `ProjectContext`: a read-only runtime object encapsulating
-all project-specific dependencies. Services receive `ProjectContext` rather than
-constructing their own paths or filenames.
+ENGPLAT-002A introduces `ProjectContext`: a read-only runtime dependency container
+encapsulating all project-specific dependencies. Services receive a `ProjectContext`
+rather than constructing their own paths or filenames.
+
+The roadmap splits ENGPLAT-002 into three governed tasks:
+- ENGPLAT-002A (contracts): defines Protocol types and factory contract
+- ENGPLAT-002B (read adapters): GovernanceAdapter, WorkflowAdapter, EventAdapter
+  + manager integration; unblocks ENGDASH-005
+- ENGPLAT-002C (remaining adapters): GitAdapter, QAAdapter, FileAdapter + migrations
 
 ```
 ProjectContext

@@ -24,11 +24,22 @@ Hard rules:
 - **Architectural constraint**: No engineering service may directly access
   repository-specific filesystem paths, filenames, repository names, or workflow
   store locations except through approved platform adapters. All project access
-  must flow through `ProjectContext` once ENGPLAT-002 Phase 1 is complete.
-  This applies to `manager.py`, `backlog.py`, `reporter.py`, `qa_runner.py`,
-  `event_store.py`, `workflow_store.py`, `query_service.py`, `git_service.py`,
-  and `config.py`. Rationale: the platform must be reusable across arbitrary
-  repositories, not just the trading-bot. Direct path access prevents extraction.
+  must flow through `ProjectContext` once ENGPLAT-002B is complete.
+
+  The current named-file list covers existing reusable engineering services:
+  `manager.py`, `backlog.py`, `reporter.py`, `qa_runner.py`, `event_store.py`,
+  `workflow_store.py`, `query_service.py`, `git_service.py`, `config.py`.
+
+  Future reusable engineering services — including ENGDASH-005, ENGSUP-001,
+  ENGDASH-006, and ENGCTRL-001 — must also follow the same adapter-boundary rule
+  and are expected to be added to the named-file list when their implementation
+  is approved.
+
+  Adapter implementations are the approved filesystem-access boundary. Tests,
+  bootstrap tools, migration tools, and project-local application code are not
+  automatically governed by this rule; they require their own explicit scope.
+  Ordinary trading-bot runtime code under `src/` is not being prohibited from
+  legitimate project-local filesystem access by this platform rule.
 - Do not use or request live brokerage credentials.
 - Do not merge branches.
 - Do not push directly to main.
