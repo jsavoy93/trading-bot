@@ -783,27 +783,57 @@ Execution gate:
 
 ---
 
+### ENGPLAT-002A scope
+
+- Define `@dataclass(frozen=True) class ProjectContext` with all 8 fields
+- Define `GitReadAdapter` Protocol (read-only; no mutations)
+- Define `GovernanceAdapter` Protocol
+- Define `WorkflowAdapter` Protocol
+- Define `QAAdapter` Protocol (configuration only; no `run_qa`)
+- Define `FileReadAdapter` Protocol (read-only; no `write_text`)
+- Define `EventAdapter` Protocol
+- Define `@dataclass(frozen=True) class ProjectMetadata`
+- Define the `build_project_context(config: ProjectConfig)` factory contract
+  (Option B: deferred concrete construction to 002B; 002A defines signature + validation)
+- Define the propagation rule
+- Define the validation and error contract (deterministic, sanitized, no fallback)
+- Tests: structural tests proving dataclass immutability, Protocol checkability,
+  factory fails closed on invalid config, no side effects
+
+### ENGPLAT-002A acceptance criteria
+
+- `ProjectContext` frozen dataclass with all 8 fields defined
+- `GitReadAdapter` Protocol defined (read-only; no mutation methods)
+- `GovernanceAdapter` Protocol defined with `load_backlog`, `load_owners`,
+  `load_operating_plan`, `load_handoff`
+- `WorkflowAdapter` Protocol defined with `workflow_store`, `event_store`,
+  `archive_completed`
+- `QAAdapter` Protocol defined with `configured_command`, `timeout_seconds`
+  (no `run_qa`)
+- `FileReadAdapter` Protocol defined with `resolve`, `exists`, `read_text`
+  (no `write_text`); `resolve` must raise `ValueError` on path escape
+- `EventAdapter` Protocol defined with `append`, `list_events`, `pause_state`;
+  `list_events` has mandatory limit
+- `ProjectMetadata` frozen dataclass with all 9 fields defined
+- `build_project_context()` factory contract documented: validates internally,
+  fails closed, deterministic errors, no side effects
+- Validation error contract documented: all 6 failure conditions with error types
+- Propagation rule documented
+- Option B chosen: concrete adapter construction deferred to 002B
+- Structural tests: invalid `ProjectConfig` produces deterministic `ValueError`
+- No concrete adapter implementations
+- No `manager.py` changes
+- No `Path.cwd()` or hard-coded trading-bot fallback in contract path
+- Full test suite passes (no new failures introduced by type/contract definitions)
+
+---
+
 ## ProjectContext Architectural Design
 
 ProjectContext is a read-only runtime dependency container encapsulating everything
 an engineering service needs to operate on a managed project. Engineering services
 receive a ProjectContext rather than constructing their own paths or hard-coding
 repository-specific filenames.
-
-### Design
-
-```python
-@dataclass(frozen=True)
-class ProjectContext:
-    config: ProjectConfig
-    git: GitAdapter
-    governance: GovernanceAdapter
-    workflow: WorkflowAdapter
-    qa: QAAdapter
-    files: FileAdapter
-    events: EventAdapter
-    metadata: ProjectMetadata
-```
 
 ### Propagation Rule
 
@@ -819,75 +849,131 @@ ctx = build_project_context(config)
 manager.run(ctx)
 
 # Delegated services receive only what they need
-def review_workflow(ctx: ProjectContext, task_id: str) -> ReviewDecision:
-    # reads governance via narrow adapter
-    task = ctx.governance.load_backlog()  # or pass only governance adapter
-    events = ctx.events.list_events(limit=100)  # or pass only events adapter
-    # ...
+def review_workflow(governance: GovernanceAdapter, events: EventAdapter,
+                    task_id: str) -> ReviewDecision:
+    task = governance.load_backlog()
+    evts = events.list_events(limit=100)
+    ...
 ```
 
-### Adapter interfaces
+---
 
-**GitAdapter** — scoped Git operations
+## Factory Contract: Option B (Deferred Construction)
+
+**Recommendation: Option B -- define the factory contract in 002A; defer concrete
+adapter construction to 002B.**
+
+Rationale: 002A is about type definitions and contracts. Creating stub adapter
+implementations in 002A that would be replaced in 002B adds technical debt.
+Defining only the contract signature in 002A keeps 002A clean and 002B responsible
+for actual adapter construction.
+
+The factory contract requires:
+- `build_project_context(config: ProjectConfig) -> ProjectContext`
+- Validation of `ProjectConfig` via `validate_project_config()` internally
+- Fail-closed on semantic errors; deterministic sanitized errors
+- No side effects
+- `NotImplementedError` or similar for adapter construction (since 002A does not
+  implement adapters -- 002B provides concrete adapters)
+
+---
+
+## Protocol Definitions
+
+All types prefixed with `models.` refer to `engineering.models`.
+
+### GitReadAdapter -- read-only Git operations
 
 ```python
-class GitAdapter(Protocol):
+class GitReadAdapter(Protocol):
     def current_branch(self) -> str: ...
     def is_clean(self) -> bool: ...
-    def repository_state(self) -> RepositoryState: ...
+    def repository_state(self) -> models.RepositoryState: ...
     def branch_exists(self, branch: str) -> bool: ...
     def is_ancestor(self, ancestor: str, descendant: str) -> bool: ...
-    def prepare_feature_branch(self, branch: str, base: str) -> RepositoryState: ...
 ```
 
-**GovernanceAdapter** — governance document access
+Mutation methods (e.g., `prepare_feature_branch`) are deferred to a future
+`GitMutationAdapter`. Do not include mutation methods in `GitReadAdapter`.
+
+### GovernanceAdapter -- governance document access
 
 ```python
 class GovernanceAdapter(Protocol):
-    def load_backlog(self) -> tuple[BacklogTask, ...]: ...
+    def load_backlog(self) -> tuple[models.BacklogTask, ...]: ...
     def load_owners(self) -> str: ...
     def load_operating_plan(self) -> str: ...
     def load_handoff(self) -> str: ...
 ```
 
-**WorkflowAdapter** — workflow and event persistence
+`load_backlog()` returns `tuple[BacklogTask, ...]`. Other methods return raw
+document strings. Implementations may cache documents for the adapter lifetime.
+
+### WorkflowAdapter -- workflow and event persistence access
 
 ```python
 class WorkflowAdapter(Protocol):
-    def workflow_store(self) -> WorkflowStore: ...
-    def event_store(self) -> EngineeringEventStore: ...
-    def archive_completed(self, workflow: StoredWorkflow) -> Path: ...
+    def workflow_store(self) -> models.WorkflowStore: ...
+    def event_store(self) -> models.EngineeringEventStore: ...
+    def archive_completed(self, workflow: models.StoredWorkflow) -> Path: ...
 ```
 
-**QAAdapter** — QA command execution
+Store types are already project-scoped via DI. The adapter scopes access to
+`ProjectConfig.workflow_files`. Read-only in 002A.
+
+### QAAdapter -- QA configuration access
 
 ```python
 class QAAdapter(Protocol):
-    def run_qa(self, repo_root: Path) -> QAExecution: ...
     def configured_command(self) -> tuple[str, ...]: ...
     def timeout_seconds(self) -> int: ...
 ```
 
-**FileAdapter** — safe filesystem access scoped to repository
+`run_qa()` is deferred to 002B. Do not include in the 002A contract.
+
+### FileReadAdapter -- project-root-bounded filesystem access
 
 ```python
-class FileAdapter(Protocol):
+class FileReadAdapter(Protocol):
     def resolve(self, relative_path: Path) -> Path: ...
     def exists(self, relative_path: Path) -> bool: ...
     def read_text(self, relative_path: Path) -> str: ...
-    def write_text(self, relative_path: Path, text: str) -> None: ...
 ```
 
-**EventAdapter** — event append and query
+`resolve()` must raise `ValueError` if the path escapes `repository_root`.
+Write methods deferred to a future `FileWriteAdapter`.
+
+### EventAdapter -- bounded event append and query
 
 ```python
 class EventAdapter(Protocol):
-    def append(self, event: EngineeringEvent) -> bool: ...
-    def list_events(self, limit: int = 100) -> tuple[StoredEvent, ...]: ...
+    def append(self, event: models.EngineeringEvent) -> bool: ...
+    def list_events(self, limit: int = 100) -> tuple[models.StoredEvent, ...]: ...
     def pause_state(self) -> dict[str, object]: ...
 ```
 
-**ProjectMetadata** — project identity and configuration
+`list_events` has a mandatory limit. `append` accepts only `EngineeringEvent`.
+
+---
+
+## ProjectContext
+
+```python
+@dataclass(frozen=True)
+class ProjectContext:
+    config: ProjectConfig
+    git: GitReadAdapter
+    governance: GovernanceAdapter
+    workflow: WorkflowAdapter
+    qa: QAAdapter
+    files: FileReadAdapter
+    events: EventAdapter
+    metadata: ProjectMetadata
+```
+
+All fields required. No optional adapters.
+
+## ProjectMetadata
 
 ```python
 @dataclass(frozen=True)
@@ -902,29 +988,42 @@ class ProjectMetadata:
     prohibited_operations: tuple[str, ...]
 ```
 
-### Factory contract
+---
+
+## Factory Contract
 
 ```python
-def build_project_context(config: ProjectConfig) -> ProjectContext:
-    ...
+def build_project_context(config: ProjectConfig) -> ProjectContext: ...
 ```
 
-The factory implementation must:
+Contract requirements:
+- Validates `config` internally via `validate_project_config()`
+- Raises `ValueError` (deterministic, sanitized) on semantic validation failure
+- Returns a `ProjectContext` with all 7 adapter fields
+- No side effects: no file creation, network, Git mutation, QA, or workflow start
+- Error messages contain no secrets, raw paths, or command output
+- On `NotImplementedError` from adapter construction (002A only): 002B replaces
+  with a concrete implementation
 
-- Accept a `ProjectConfig` and validate it internally via `validate_project_config()`
-- **Fail closed** on semantic validation errors — raise with a deterministic,
-  sanitized error message; do not rely solely on callers asserting prior validation
-- Construct exactly the approved adapters (GitAdapter, GovernanceAdapter,
-  WorkflowAdapter, QAAdapter, FileAdapter, EventAdapter) and ProjectMetadata
-- Produce deterministic errors: the same invalid input must produce the same error
-- Perform **no side effects**: do not create files, run QA, start workflows,
-  mutate Git, perform network calls, or execute arbitrary shell commands
-  during construction
+---
 
-ENGPLAT-002A defines the factory contract. It may implement the contract
-signature without implementing all concrete adapter construction behavior.
+## Validation and Error Contract
 
-### Architectural rule (binding)
+| Condition | Error | Behavior |
+|---|---|---|
+| Invalid `ProjectConfig` | `ValueError`, sanitized | Fail immediately |
+| Missing adapter factory (Option B) | `TypeError` | Fail at construction |
+| Adapter factory returns wrong type | `TypeError` | Fail immediately |
+| Path escape via `FileReadAdapter.resolve()` | `ValueError` | Fail immediately |
+| Unsupported schema version | `ValueError` from `validate_project_config()` | Fail immediately |
+| Duplicate project_id | `DuplicateProjectId` | Fail immediately |
+
+No fallback to `Path.cwd()`, hard-coded filenames, or `TRADING_BOT_PROJECT`
+inside the 002A contract path. Errors are deterministic.
+
+---
+
+## Architectural Rule
 
 > **No engineering service may directly access repository-specific filesystem paths,
 > filenames, or repository names except through approved platform adapters.**
@@ -933,41 +1032,15 @@ The current named-file list (`manager.py`, `backlog.py`, `reporter.py`, `qa_runn
 `event_store.py`, `workflow_store.py`, `query_service.py`, `git_service.py`, `config.py`)
 covers existing reusable engineering services.
 
-Future reusable engineering services — including ENGDASH-005, ENGSUP-001, ENGDASH-006,
-and ENGCTRL-001 — must also follow the same adapter-boundary rule and are expected
+Future reusable engineering services -- including ENGDASH-005, ENGSUP-001, ENGDASH-006,
+and ENGCTRL-001 -- must also follow the same adapter-boundary rule and are expected
 to be added to the named-file list when their implementation is approved.
 
 Adapter implementations are the approved filesystem-access boundary. Tests, bootstrap
 tools, migration tools, and project-local application code are not automatically governed
-by the current named-file list; they require their own explicit scope. Ordinary
-trading-bot runtime code under `src/` is not being prohibited from legitimate
-project-local filesystem access by this platform rule.
-
-### ENGPLAT-002A scope
-
-- Define `@dataclass(frozen=True) class ProjectContext` with all 8 fields
-- Define the 6 adapter Protocol types
-- Define `@dataclass(frozen=True) class ProjectMetadata`
-- Define the `build_project_context(config: ProjectConfig)` factory contract
-  (may be a stub; concrete adapter construction deferred to 002B)
-- Define the propagation rule (entry point receives context; downstream services
-  receive only what they need)
-- Tests: structural tests proving the dataclass is frozen, adapters are Protocols,
-  factory fails closed on invalid config
-
-### ENGPLAT-002A acceptance criteria
-
-- `ProjectContext` frozen dataclass with all 8 fields defined
-- All 6 adapter Protocol types defined with correct signatures
-- `ProjectMetadata` frozen dataclass with all 9 fields defined
-- `build_project_context()` factory defined with documented failure behavior
-- Factory contract states it must fail closed on semantic validation errors
-- Factory contract states no side effects (no file creation, no network, no Git mutation)
-- Propagation rule documented
-- Structural tests: invalid `ProjectConfig` produces a deterministic error
-- No concrete adapter implementations
-- No service migrations
-- Full test suite passes (no new failures introduced by type/contract definitions)
+by this rule; they require their own explicit scope. Ordinary trading-bot runtime code
+under `src/` is not being prohibited from legitimate project-local filesystem access
+by this platform rule.
 
 ---
 
