@@ -1703,7 +1703,97 @@ read-only evaluation loop.
 - No agent is dispatched automatically.
 - Dashboard shows pending decision (read-only display; no controls).
 
-**Entry criteria**: ENGPLAT-001 and ENGPLAT-002 complete and stable.
+**Entry criteria**: ENGPLAT-001 and ENGPLAT-002 complete and stable; Phase 1b REPORT.md reading rules defined.
+#### Phase 1b — Supervisor REPORT.md Reading Rules
+
+**Goal**: Allow the supervisor to read REPORT.md as a bounded supporting source,
+without treating it as authoritative or allowing it to override directly verified state.
+
+##### Source Priority
+
+Authoritative sources, in order of precedence:
+1. Directly verified repository and PR state
+2. Structured completion packet
+3. Structured test/evidence records
+4. REPORT.md and timestamped `reports/` as supporting narrative only
+
+**REPORT.md must never override directly verified state.**
+
+##### REPORT.md Usage
+
+The supervisor may extract from REPORT.md:
+- Executive summary
+- Implementation rationale
+- Known risks
+- Compatibility concerns
+- Manual verification recommendations
+- Unresolved questions
+- Reviewer findings
+- Proposed next action
+
+##### Verification Requirements
+
+Any factual claim from REPORT.md concerning the following must be independently
+verified before use in a generated prompt:
+- Branch
+- Commit
+- Working-tree state
+- Tests
+- PR state
+- Mergeability
+- Task status
+- Approval state
+
+##### Staleness Handling
+
+If REPORT.md conflicts with verified state:
+1. Mark the report as stale
+2. Identify the conflicting fields
+3. Use verified state
+4. Do not fail the entire supervisor run unless the conflict affects safety or scope
+
+##### Bounded Reading
+
+- Read only a bounded maximum size (configurable; default 64 KB)
+- Prefer the executive summary and relevant sections
+- Do not ingest unbounded logs
+- Sanitize excerpts
+- Never expose secrets or raw credentials
+- Record the report path, modification time, and content hash used
+
+##### Multiple Reports
+
+If both REPORT.md and timestamped `reports/` archives exist:
+- REPORT.md = latest rolling narrative
+- Timestamped reports = immutable historical evidence
+- Prefer the archive matching the current task/run
+- Do not combine reports from different runs without explicit task/run matching
+
+##### Prompt Generation
+
+The generated prompt may cite report-derived risks or rationale, but must clearly
+distinguish:
+- Verified facts (from direct verification)
+- Report claims (from REPORT.md)
+- Supervisor inference
+- Recommendations
+
+##### Planned Tests
+
+`tests/test_engineering_supervisor_report_reading.py`
+
+1. **REPORT.md matches verified state** — current REPORT.md branch/commit matches Git state → no staleness flag
+2. **Stale REPORT.md** — REPORT.md claims HEAD=abc but Git shows xyz → staleness flagged, verified state used
+3. **Oversized report truncation** — REPORT.md > 64 KB → truncated at bound, excerpt flag set
+4. **Secret-like content redaction** — content matches secret patterns → redacted in supervisor output
+5. **Wrong-task report ignored** — report is for task X, supervisor evaluating task Y → task mismatch flagged
+6. **Timestamped archive preferred** — both REPORT.md and matching timestamped archive exist → archive used
+7. **Report unavailable** — no REPORT.md and no matching archive → supervisor proceeds without it; no blocking
+8. **Report claims verified independently** — report claims tests=426, supervisor re-runs → verified
+9. **Report claims conflict with verified** — report claims merged, verified shows open → staleness + verified used
+10. **Prompt distinguishes sources** — generated prompt labels each fact as verified / report-claim / inference
+
+---
 
 #### Phase 2 — Routine Auto-Dispatch
 
