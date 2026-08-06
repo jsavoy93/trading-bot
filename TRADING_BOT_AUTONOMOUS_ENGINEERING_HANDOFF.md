@@ -607,16 +607,19 @@ narrow allowed-area remediation and Josh approval before implementation begins.
 
 ### Project Configuration Contract (ENGPLAT-001)
 
-`engineering/models.py` will contain the typed `ProjectConfig` frozen dataclass
-and `validate_project_config()` function as part of ENGPLAT-001.
+ENGPLAT-001 is implemented. `engineering/models.py` contains the typed
+`ProjectConfig`, `GovernanceFiles`, `WorkflowFiles`, `ProjectRegistry` frozen
+dataclasses; `parse_project_config()` (structural parsing); `validate_project_config()`
+(semantic validation); and `TRADING_BOT_PROJECT` constant.
 
-The project configuration contract defines the information every managed project
-must provide to the platform. It is the architectural foundation for all future
-adapter and registry work (ENGPLAT-002). Format TBD; the typed model is the
-canonical contract.
-
-The trading-bot `TRADING_BOT_PROJECT` constant in `engineering/models.py` will
-demonstrate that the trading-bot can be represented using the contract.
+Key design points:
+- `parse_project_config(mapping) -> ParseResult`: structural errors only
+  (missing fields, unknown fields, type errors, schema version)
+- `validate_project_config(config) -> list[str]`: semantic errors only
+  (path safety, file existence, QA safety, policy conflicts)
+- `ProjectRegistry.from_projects(list)`: raises `DuplicateProjectId` on collision
+- Schema version `"1.0"`; unknown versions are rejected
+- QA safety: rejects destructive, live-trading, shell-operator, and secret-printing commands
 
 See `AGENT_BACKLOG.md` ENGPLAT-001 for the full contract table, validation
 rules, acceptance criteria, and implementation risks.

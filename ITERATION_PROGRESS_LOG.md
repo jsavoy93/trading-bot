@@ -1318,3 +1318,14 @@ explicitly.
 - Tests/backtests run: to be run post-edit.
 - Important decisions/discoveries: ENGSUP-001 inserted as new P1 TODO between ENGPLAT-002 and ENGDASH-006. Full design includes: structured completion packet schema, supervisor decision contract, evidence verification requirements, human approval gate matrix, automatic transition matrix, loop protection rules, privacy/security constraints, dashboard integration design (non-executable), phased implementation (4 phases), 15 acceptance criteria, 14 planned tests, 7 risks. Updated priority: 1-ENGPLAT-001, 2-ENGDASH-005, 3-ENGPLAT-002, 4-ENGSUP-001, 5-ENGDASH-006, 6-ENGCTRL-001, 7-CONFIG-002, 8-ENGPLAT-003 deferred. No runtime code, trading, or deployment changes.
 - Next action: validate, commit, push, PR update, stop for Josh read-only review.
+
+## 2026-08-05 16:33 UTC — ENGPLAT-001 implementation complete
+
+- Backlog item/objective: Implement ENGPLAT-001 project registration contract per corrected governance (PR #15)
+- Branch: `agent/engplat-001-project-config`
+- Commit: `6e5ee89` (implementation), to be squash-merged via PR #16
+- Status: `DONE`
+- Files changed: `engineering/models.py` (+new types/functions/constant), `tests/test_engineering_project_config.py` (new, 51 tests), `AGENT_BACKLOG.md` (ENGPLAT-001 status→DONE), `MENTOR.md` (architecture note updated), `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` (architecture note updated), `ITERATION_PROGRESS_LOG.md` (this entry)
+- Tests/backtests run: `TESTING=1 UNIT_TESTING=1 pytest tests/test_engineering_project_config.py` → 51 passed; full safe suite → 426 passed, 84 warnings
+- Important decisions/discoveries: bool type coercion in parse_project_config rejects non-bool values strictly; QA safety errors redact command values; schema_version field required (not optional); DuplicateProjectId detected before dict construction; path escape check uses resolve() to block symlink traversal
+- Next action: Open PR #16 targeting main; stop for Josh read-only review; do not merge without explicit authorization
