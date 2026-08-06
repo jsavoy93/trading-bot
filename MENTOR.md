@@ -872,6 +872,71 @@ Key design points:
 See `AGENT_BACKLOG.md` ENGPLAT-001 for the full contract table, validation
 rules, acceptance criteria, and implementation risks.
 
+---
+
+## ProjectContext Architecture (Post-ENGPLAT-001)
+
+ENGPLAT-001 delivered the typed `ProjectConfig` contract but no service consumes it.
+The platform has the vocabulary but not yet the grammar of project-agnostic design.
+
+ENGPLAT-002 Phase 1 introduces `ProjectContext`: a read-only runtime object that
+encapsulates everything an engineering service needs to operate on a managed project.
+Services receive `ProjectContext` rather than constructing their own paths.
+
+### The Architectural Rule
+
+> **No engineering service may directly access repository-specific filesystem paths,
+> filenames, or repository names except through approved platform adapters.**
+
+### ProjectContext composition
+
+```
+ProjectContext
+├── config: ProjectConfig          # The typed project configuration
+├── git: GitAdapter                # Scoped Git operations
+├── governance: GovernanceAdapter  # Governance document access
+├── workflow: WorkflowAdapter       # Workflow and event persistence
+├── qa: QAAdapter                  # QA command and timeout
+├── files: FileAdapter             # Safe filesystem access scoped to repo
+├── events: EventAdapter           # Event append and query
+└── metadata: ProjectMetadata      # Project identity and policy
+```
+
+### Adapter protocol responsibilities
+
+| Adapter | Wraps | Path consumed from |
+|---|---|---|
+| `GitAdapter` | `GitService` | `config.repository_root` |
+| `GovernanceAdapter` | `backlog.py`, file reads | `governance_files.*_path` |
+| `WorkflowAdapter` | `WorkflowStore`, `EventStore` | `workflow_files.*_path` |
+| `QAAdapter` | `QA_runner` | `qa_commands`, `qa_timeout_seconds` |
+| `FileAdapter` | Direct filesystem access | `config.repository_root` |
+| `EventAdapter` | `EngineeringEventStore` | `workflow_files.event_store_path` |
+
+### Files with hard-coded assumptions (requiring adapter refactoring)
+
+| File | Problem | Status |
+|---|---|---|
+| `manager.py` | `Path.cwd()`, hard-coded `AGENT_BACKLOG.md`, `.agent-state/engineering-events.sqlite3`, `.git/engineering-workflow.json` | Needs refactor |
+| `reporter.py` | Hard-coded `RISKS` tuple, `NEXT_ACTION` string | Needs refactor |
+| `qa_runner.py` | `QA_TIMEOUT_SECONDS = 300` constant | Needs refactor |
+| `config.py` | `REQUIRED_REPOSITORY_PATHS` hard-coded list | Needs refactor |
+| `event_store.py` | `DEFAULT_EVENT_STORE_PATH` constant | Needs refactor |
+| `backlog.py` | Hard-coded path resolution | Needs refactor |
+| `query_service.py` | DI in place; needs `ProjectContext` wiring | Partial |
+| `git_service.py` | Already DI with `repo_root: Path` | Already clean |
+| `codex_cli_wrapper.py` | Default runtime `.agent-state/codex-runs` | Minor |
+
+### Extraction readiness (ENGPLAT-004)
+
+The platform should not be extracted until all 12 readiness criteria are met
+(defined in AGENT_BACKLOG.md ENGPLAT-004). Key criteria:
+- All services consume `ProjectContext` via adapters
+- At least one non-trading-bot managed project exists
+- Supervisor Phase 1 operational
+- Engineering timeline (ENGDASH-005) operational
+- Josh separately approves cross-repository planning
+
 ### Automated Engineering Supervisor (ENGSUP-001)
 
 ENGSUP-001 replaces the manual copying of agent reports and next-step prompts

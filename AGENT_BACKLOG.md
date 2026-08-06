@@ -12,30 +12,53 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ---
 
-## Approved Engineering Platform Priority Order (2026-08-05)
+## Approved Engineering Platform Priority Order (Revised 2026-08-06)
 
-Josh approved the next engineering-platform priorities after ENGDASH-004 merged
-via PR #13 at merge commit `31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`.
+ENGPLAT-001 (ProjectConfig contract) is complete and merged. The typed project
+configuration contract exists but is not yet consumed by any engineering service.
+The platform has the vocabulary but not the grammar of project-agnostic design.
+
+Josh approved the revised engineering-platform priorities on 2026-08-06.
 
 Priority order:
 
-1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
-2. `ENGDASH-005` — Engineering Timeline and Historical Activity
-3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
-4. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
-5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-6. `ENGCTRL-001` — Safe Engineering Control Panel
-7. `CONFIG-002` — Dashboard-to-engine synchronization
-8. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration ✅ DONE
+2. `ENGPLAT-002` — Project Adapter Layer (Phase 1)
+3. `ENGPLAT-003` — Project Bootstrap (Phase 2)
+4. `ENGDASH-005` — Engineering Timeline and Historical Activity
+5. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+6. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+7. `ENGCTRL-001` — Safe Engineering Control Panel
+8. `CONFIG-002` — Dashboard-to-engine synchronization
+9. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (deferred)
+
+**Rationale for reorder:**
+
+- ENGDASH-005 was originally ahead of ENGPLAT-002 based on the risk that
+  ENGDASH-005 might hard-code paths. With ENGPLAT-001 complete, that risk is
+  now greater, not lesser: ENGDASH-005 would be building on a foundation that
+  does not yet provide project-agnostic adapters. Promoting ENGPLAT-002 ahead
+  of ENGDASH-005 ensures the timeline consumes established adapter interfaces
+  rather than hard-coding paths that will need retrofitting.
+
+- ENGPLAT-003 (Project Bootstrap) is separated from ENGPLAT-002 because
+  bootstrap is about *creating* new managed projects while ENGPLAT-002 Phase 1
+  is about *adapting existing services* to consume ProjectConfig. They have
+  different scope, different risks, and different allowed-file sets. Keeping
+  them as separate roadmap items provides cleaner review and approval boundaries.
 
 Roadmap constraints:
 
 - `CONFIG-002` remains queued behind the engineering-platform work unless Josh
   later changes the priority.
 - Future implementation tasks remain non-executable until each receives narrow
-  allowed areas and explicit Josh approval for that implementation slice.
-- Do not extract a reusable engineering-platform repository until `ENGPLAT-001`
-  and `ENGPLAT-002` have been proven through normal use.
+  allowed areas and Josh approval for that implementation slice.
+- Do not extract a reusable engineering-platform repository until all preceding
+  tasks (ENGPLAT-002, ENGPLAT-003, ENGDASH-005, ENGSUP-001 Phase 1) have been
+  proven through normal use and Josh separately approves cross-repository
+  planning.
+- ENGPLAT-004 extraction is explicitly deferred; see extraction readiness
+  criteria in MENTOR.md.
 
 ---
 
@@ -731,7 +754,7 @@ implementation.
 - **Tests**: 51 passed (24 planned + additional edge cases)
 - **Full safe suite**: 426 passed, 84 warnings
 
-### ENGPLAT-002 — Repository and Project Adapter Boundaries
+### ENGPLAT-002 — Project Adapter Layer
 
 Status: TODO
 Owner: trading-manager
@@ -739,27 +762,254 @@ Priority: P1
 
 Depends on: ENGPLAT-001
 
+Phase: 1 of 2
+
 Purpose:
 
-Move project-specific filesystem, Git, governance, report, and workflow access
-behind narrow interfaces suitable for future extraction into a reusable
-engineering-platform repository.
+Introduce the ProjectContext runtime concept. Refactor engineering services to
+consume ProjectConfig through narrow typed adapter interfaces rather than
+directly accessing repository filesystem paths or hard-coded filenames.
+
+This is Phase 1. Phase 2 is ENGPLAT-003 (Project Bootstrap).
 
 Execution gate:
 
-- Non-executable until `ENGPLAT-001` is accepted and Josh approves a narrow
-  implementation plan with allowed areas for this task.
-- No broad rewrite or repository extraction is authorized by this roadmap entry.
+- Non-executable until Josh approves a narrow implementation plan with allowed
+  areas for this task.
+- No runtime behavior changes, no feature additions, no extraction.
+- Do not implement ProjectContext; design it in backlog entry text only.
 
-Acceptance criteria:
+---
 
-- Engineering services receive project/repository dependencies through typed
-  interfaces or adapters.
-- Hard-coded “trading-bot” text and paths are removed from reusable components.
-- Governance documents remain project-local.
-- Existing trading-bot engineering behavior remains compatible.
-- No broad rewrite or repository extraction occurs yet.
-- Tests prove adapters cannot mutate outside their configured project root.
+## ProjectContext Architectural Design (ENGPLAT-002)
+
+ProjectContext is a read-only runtime object encapsulating everything an
+engineering service needs to operate on a managed project. Engineering services
+must never construct their own paths or access repository-specific assumptions
+directly — they receive a ProjectContext instead.
+
+### Design
+
+```python
+@dataclass(frozen=True)
+class ProjectContext:
+    config: ProjectConfig
+    git: GitAdapter
+    governance: GovernanceAdapter
+    workflow: WorkflowAdapter
+    qa: QAAdapter
+    files: FileAdapter
+    events: EventAdapter
+    metadata: ProjectMetadata
+```
+
+### Adapter interfaces
+
+**GitAdapter** — scoped Git operations
+
+```python
+class GitAdapter(Protocol):
+    def current_branch(self) -> str: ...
+    def is_clean(self) -> bool: ...
+    def repository_state(self) -> RepositoryState: ...
+    def branch_exists(self, branch: str) -> bool: ...
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool: ...
+    def prepare_feature_branch(self, branch: str, base: str) -> RepositoryState: ...
+```
+
+**GovernanceAdapter** — governance document access
+
+```python
+class GovernanceAdapter(Protocol):
+    def load_backlog(self) -> tuple[BacklogTask, ...]: ...
+    def load_owners(self) -> str: ...
+    def load_operating_plan(self) -> str: ...
+    def load_handoff(self) -> str: ...
+```
+
+**WorkflowAdapter** — workflow and event persistence
+
+```python
+class WorkflowAdapter(Protocol):
+    def workflow_store(self) -> WorkflowStore: ...
+    def event_store(self) -> EngineeringEventStore: ...
+    def archive_completed(self, workflow: StoredWorkflow) -> Path: ...
+```
+
+**QAAdapter** — QA command execution
+
+```python
+class QAAdapter(Protocol):
+    def run_qa(self, repo_root: Path) -> QAExecution: ...
+    def configured_command(self) -> tuple[str, ...]: ...
+    def timeout_seconds(self) -> int: ...
+```
+
+**FileAdapter** — safe filesystem access scoped to repository
+
+```python
+class FileAdapter(Protocol):
+    def resolve(self, relative_path: Path) -> Path: ...
+    def exists(self, relative_path: Path) -> bool: ...
+    def read_text(self, relative_path: Path) -> str: ...
+    def write_text(self, relative_path: Path, text: str) -> None: ...
+```
+
+**EventAdapter** — event append and query
+
+```python
+class EventAdapter(Protocol):
+    def append(self, event: EngineeringEvent) -> bool: ...
+    def list_events(self, limit: int = 100) -> tuple[StoredEvent, ...]: ...
+    def pause_state(self) -> dict[str, object]: ...
+```
+
+**ProjectMetadata** — project identity and configuration
+
+```python
+@dataclass(frozen=True)
+class ProjectMetadata:
+    project_id: str
+    display_name: str
+    repository_root: Path
+    authoritative_base_branch: str
+    agents_may_merge: bool
+    owner_ids: tuple[str, ...]
+    agent_owners: tuple[str, ...]
+    prohibited_operations: tuple[str, ...]
+```
+
+### ProjectContext factory
+
+```python
+def build_project_context(config: ProjectConfig) -> ProjectContext:
+    git = GitAdapterImpl(config)
+    governance = GovernanceAdapterImpl(config)
+    workflow = WorkflowAdapterImpl(config)
+    qa = QAAdapterImpl(config)
+    files = FileAdapterImpl(config)
+    events = EventAdapterImpl(config)
+    metadata = ProjectMetadata(
+        project_id=config.project_id,
+        display_name=config.display_name,
+        repository_root=config.repository_root,
+        authoritative_base_branch=config.authoritative_base_branch,
+        agents_may_merge=config.agents_may_merge,
+        owner_ids=config.owner_ids,
+        agent_owners=config.agent_owners,
+        prohibited_operations=config.prohibited_operations,
+    )
+    return ProjectContext(
+        config=config, git=git, governance=governance,
+        workflow=workflow, qa=qa, files=files, events=events,
+        metadata=metadata,
+    )
+```
+
+### Services requiring ProjectContext refactoring
+
+| Service | Current Problem | Refactor Target |
+|---|---|---|
+| `manager.py` | `Path.cwd()`, hard-coded `AGENT_BACKLOG.md`, `.agent-state/engineering-events.sqlite3`, `.git/engineering-workflow.json` | Accept `ProjectContext`; use `governance.load_backlog()`, `workflow.workflow_store()`, `events.event_store()` |
+| `backlog.py` | Hard-coded file path logic | Accept `governance: GovernanceAdapter`; use `governance.load_backlog()` |
+| `event_store.py` | `DEFAULT_EVENT_STORE_PATH = Path(".agent-state/engineering-events.sqlite3")` | Accept `path: Path` from `workflow_files.event_store_path` via adapter |
+| `workflow_store.py` | Hard-coded path via constructor argument (acceptable DI pattern) | Accept path from `workflow_files.workflow_store_path` |
+| `reporter.py` | `RISKS = (...)`, `NEXT_ACTION` hard-coded strings | Accept `governance: GovernanceAdapter` for risks/action; use `workflow.archive_completed()` |
+| `query_service.py` | Already DI; `backlog_path` explicit but not from adapter | Accept `context: ProjectContext` |
+| `git_service.py` | Already DI with `repo_root: Path` | Wrap in `GitAdapterImpl` using `config.repository_root` |
+| `qa_runner.py` | `QA_TIMEOUT_SECONDS = 300` constant | Accept `qa: QAAdapter`; use `qa.timeout_seconds()` |
+| `config.py` | `REQUIRED_REPOSITORY_PATHS` hard-coded list | Validate against `governance_files` from `ProjectConfig` |
+| `codex_cli_wrapper.py` | Default runtime `.agent-state/codex-runs` | Accept `runtime_root` from config or env override |
+
+### Architectural rule (binding)
+
+> **No engineering service may directly access repository-specific filesystem paths,
+> filenames, or repository names except through approved platform adapters.**
+
+This rule applies to all services listed in the table above. It is a long-term
+constraint, not a Phase 1 implementation requirement. Phase 1 establishes the
+pattern; later tasks (ENGDASH-005, ENGSUP-001, ENGDASH-006) consume it.
+
+### Phase 1 scope
+
+- Define adapter protocol types in `engineering/adapters.py`
+- Implement adapter classes wrapping existing service logic
+- Add `build_project_context(config: ProjectConfig) -> ProjectContext` factory
+- Refactor `manager.py` to accept and propagate `ProjectContext`
+- Add backward-compatibility shim: `TRADING_BOT_PROJECT` constant feeds adapter
+  factory; existing behavior is preserved for the trading-bot project
+- Tests: adapter unit tests + backward-compatibility regression suite
+- No new runtime behavior; no feature additions; no dashboard changes
+
+### Phase 1 acceptance criteria
+
+- `ProjectContext` frozen dataclass with all 8 adapter/metadata fields defined
+- Adapter protocol types defined (GitAdapter, GovernanceAdapter, WorkflowAdapter,
+  QAAdapter, FileAdapter, EventAdapter)
+- `build_project_context(TRADING_BOT_PROJECT)` produces a context that existing
+  services can consume without behavioral change
+- `manager.py` refactored to accept `ProjectContext`; hard-coded paths removed
+  from the manager's service construction
+- Backward-compatibility: existing trading-bot workflow continues to function
+  identically after refactoring
+- Full test suite passes without modification of test assertions
+- No engineering service directly imports or constructs a Path relative to
+  `Path.cwd()` or any string literal repository name
+
+---
+
+### ENGPLAT-003 — Project Bootstrap
+
+Status: TODO
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-002
+
+Phase: 2 of 2
+
+Purpose:
+
+Enable the engineering platform to create a new managed project from a template
+rather than only managing an existing project with a pre-existing `ProjectConfig`.
+
+The platform currently manages repositories that already have governance files,
+backlog, and engineering infrastructure. Bootstrap closes that gap by generating
+the initial project structure for a brand-new repository.
+
+### Bootstrap scope
+
+- Generate a `ProjectConfig` for a new repository (interactive prompts or
+  template-driven configuration)
+- Create governance files from templates: `AGENT_BACKLOG.md`, `OWNERS.md`,
+  `AGENT_OPERATING_PLAN.md`, handoff document
+- Create engineering defaults: `.agent-state/` directory structure, initial
+  `.gitignore` entries for `.agent-state/`, `reports/`
+- Create initial QA configuration: `pyproject.toml` or `pytest.ini` defaults
+- Register the new project in a `ProjectRegistry` or add to the existing
+  registry file
+- Validate generated `ProjectConfig` via `parse_project_config()` and
+  `validate_project_config()`
+
+### What bootstrap does NOT do
+
+- Does not clone or initialize a Git repository
+- Does not create trading-bot-specific files, strategies, or runtime code
+- Does not configure brokerage credentials
+- Does not deploy or configure external services
+
+### ENGPLAT-003 is separated from ENGPLAT-002 Phase 1 because
+
+1. Phase 1 is about *adapting existing services* to consume ProjectConfig
+2. Phase 2 is about *generating* new ProjectConfig instances from templates
+3. They have different allowed-file sets, different implementation risks,
+   and different review boundaries
+4. Keeping them as separate roadmap items provides cleaner approval gates
+
+Execution gate:
+
+- Non-executable until ENGPLAT-002 Phase 1 is complete and Josh approves
+  a separate narrow implementation plan for this task.
 
 ### ENGDASH-005 — Engineering Timeline and Historical Activity
 
@@ -767,7 +1017,7 @@ Status: TODO
 Owner: dashboard-agent
 Priority: P1
 
-Depends on: ENGPLAT-001, ENGDASH-004
+Depends on: ENGPLAT-001, ENGPLAT-002, ENGDASH-004
 
 Purpose:
 
@@ -1423,33 +1673,65 @@ Acceptance criteria:
 - Control implementation requires a separate Josh approval after read-only
   design review.
 
-### ENGPLAT-003 — Extract Reusable Engineering Platform Repository
+### ENGPLAT-004 — Extract Reusable Engineering Platform Repository
 
 Status: TODO
 Owner: trading-manager
 Priority: P3
 
-Depends on: ENGPLAT-001, ENGPLAT-002
+Depends on: ENGPLAT-002, ENGPLAT-003, ENGDASH-005, ENGSUP-001 Phase 1
 
 Purpose:
 
-Future placeholder for extracting reusable engineering-platform code into a
-separate repository after configuration and adapter boundaries have been proven
-through normal use.
+Extract reusable engineering-platform code into a separate repository after
+configuration, adapter boundaries, supervisor, and timeline services have been
+proven through normal use.
 
 Execution gate:
 
 - Explicitly deferred. Non-executable.
-- Extraction must not start until `ENGPLAT-001` and `ENGPLAT-002` are stable
-  through normal project use and Josh separately approves cross-repository
-  planning.
+- Extraction must not start until all preceding tasks are stable through normal
+  project use and Josh separately approves cross-repository planning.
 - Project-local governance remains in each managed repository.
 - Cross-repository versioning, deployment, authentication, and migration require
   separate planning and human approval.
 
+---
+
+## Extraction Readiness Criteria
+
+Extraction (ENGPLAT-004) must NOT begin until ALL of the following are true:
+
+| # | Criterion | Task that Proves It |
+|---|---|---|
+| 1 | `ProjectConfig` is consumed by all engineering services | ENGPLAT-002 Phase 1 |
+| 2 | Adapter protocol types are defined and stable | ENGPLAT-002 Phase 1 |
+| 3 | `TRADING_BOT_PROJECT` is the only instantiation; a second test project exists | ENGPLAT-003 |
+| 4 | Governance files are loaded through `GovernanceFiles` adapter | ENGPLAT-002 Phase 1 |
+| 5 | Workflow persistence uses `WorkflowFiles` paths via adapter | ENGPLAT-002 Phase 1 |
+| 6 | Event store uses `WorkflowFiles.event_store_path` via adapter | ENGPLAT-002 Phase 1 |
+| 7 | Report output uses `WorkflowFiles.report_dir` via adapter | ENGPLAT-002 Phase 1 |
+| 8 | QA commands + timeout come from `ProjectConfig` via adapter | ENGPLAT-002 Phase 1 |
+| 9 | At least one non-trading-bot managed project exists in testing | ENGPLAT-003 |
+| 10 | Supervisor is operational with Phase 1 complete | ENGSUP-001 Phase 1 |
+| 11 | Engineering timeline is operational | ENGDASH-005 |
+| 12 | Josh separately approves cross-repository planning | Governance approval |
+
+**Statement of correctness (preserved and strengthened):**
+
+> "The engineering platform should not be extracted into its own repository until
+> all core engineering services consume ProjectContext rather than repository-specific
+> assumptions."
+
+This statement was correct when ENGPLAT-001 was the only done task. It remains
+correct and is now more precisely stated: extraction requires full adapter
+consumption (ENGPLAT-002 Phase 1), a second project (ENGPLAT-003), supervisor
+(ENGSUP-001 Phase 1), and timeline (ENGDASH-005) — not just the contract.
+
 Acceptance criteria:
 
-- Extraction occurs only after configuration and adapter boundaries are stable.
+- Extraction occurs only after all 12 readiness criteria above are satisfied.
+- At least one non-trading-bot project is successfully managed by the platform.
 - Project-local governance remains in each managed repository.
 - Cross-repository versioning requires separate planning and human approval.
 - Cross-repository deployment requires separate planning and human approval.

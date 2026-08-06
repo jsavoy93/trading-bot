@@ -21,6 +21,14 @@ Agents in this repository must follow `AGENT_OPERATING_PLAN.md`.
 Hard rules:
 
 - Do not enable live trading.
+- **Architectural constraint**: No engineering service may directly access
+  repository-specific filesystem paths, filenames, repository names, or workflow
+  store locations except through approved platform adapters. All project access
+  must flow through `ProjectContext` once ENGPLAT-002 Phase 1 is complete.
+  This applies to `manager.py`, `backlog.py`, `reporter.py`, `qa_runner.py`,
+  `event_store.py`, `workflow_store.py`, `query_service.py`, `git_service.py`,
+  and `config.py`. Rationale: the platform must be reusable across arbitrary
+  repositories, not just the trading-bot. Direct path access prevents extraction.
 - Do not use or request live brokerage credentials.
 - Do not merge branches.
 - Do not push directly to main.

@@ -566,28 +566,30 @@ settings/dashboard/bot tests, 10 focused dashboard-route subset tests, 7
 smart-bot decision-path tests, and the full safe suite of 343 tests with live
 brokerage blocked.
 
-──────── Engineering Platform Roadmap Approved 2026-08-05
+──────── Engineering Platform Roadmap Approved (Revised 2026-08-06)
 
-ENGDASH-004 has been merged into `main` via PR #13 at merge commit
-`31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`. The next approved priorities move
-the engineering automation work toward project registration, adapter
-boundaries, richer read-only dashboard visibility, and only later narrowly
-approved controls.
+ENGPLAT-001 has been merged into `main`. The typed project configuration contract
+exists but is not yet consumed by any engineering service. The platform has the
+vocabulary but not yet the grammar of project-agnostic design.
+
+Josh approved the revised engineering-platform priorities on 2026-08-06.
 
 Priority order:
-1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
-2. `ENGDASH-005` — Engineering Timeline and Historical Activity
-3. `ENGPLAT-002` — Repository and Project Adapter Boundaries
-4. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
-5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-6. `ENGCTRL-001` — Safe Engineering Control Panel
-7. `CONFIG-002` — Dashboard-to-engine synchronization
-8. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration ✅ DONE
+2. `ENGPLAT-002` — Project Adapter Layer (Phase 1)
+3. `ENGPLAT-003` — Project Bootstrap (Phase 2)
+4. `ENGDASH-005` — Engineering Timeline and Historical Activity
+5. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+6. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+7. `ENGCTRL-001` — Safe Engineering Control Panel
+8. `CONFIG-002` — Dashboard-to-engine synchronization
+9. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (deferred)
 
 Dependency notes:
-- `ENGPLAT-002` depends on `ENGPLAT-001`.
-- `ENGDASH-005` depends on `ENGPLAT-001` and `ENGDASH-004`; should consume the
-  project boundary from `ENGPLAT-001` where practical.
+- `ENGPLAT-002` (Phase 1) depends on `ENGPLAT-001`.
+- `ENGPLAT-003` (Phase 2) depends on `ENGPLAT-002` (Phase 1).
+- `ENGDASH-005` depends on `ENGPLAT-001`, `ENGPLAT-002`, and `ENGDASH-004`;
+  should consume adapter interfaces rather than hard-coding paths.
 - `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002`; Phase 1 (prompt
   generation) begins after adapters are proven; auto-dispatch requires separate
   Phase 2 Josh approval.
@@ -596,9 +598,10 @@ Dependency notes:
 - `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`
   and `ENGDASH-006`, and requires separate Josh approval after read-only design
   review.
-- `ENGPLAT-003` repository extraction is explicitly deferred until
-  `ENGPLAT-001` and `ENGPLAT-002` are proven through normal use and Josh
-  separately approves cross-repository planning.
+- `ENGPLAT-004` repository extraction is explicitly deferred until
+  `ENGPLAT-002`, `ENGPLAT-003`, `ENGDASH-005`, and `ENGSUP-001 Phase 1`
+  are proven through normal use and Josh separately approves cross-repository
+  planning.
 - `CONFIG-002` remains queued behind the platform priorities unless Josh later
   changes the priority.
 
@@ -623,6 +626,37 @@ Key design points:
 
 See `AGENT_BACKLOG.md` ENGPLAT-001 for the full contract table, validation
 rules, acceptance criteria, and implementation risks.
+
+---
+
+### ProjectContext: From Vocabulary to Grammar
+
+ENGPLAT-001 delivered the typed `ProjectConfig` contract but no engineering service
+consumes it. The platform has the vocabulary of project configuration but not yet
+the grammar — services still access repository paths directly.
+
+ENGPLAT-002 Phase 1 introduces `ProjectContext`: a read-only runtime object encapsulating
+all project-specific dependencies. Services receive `ProjectContext` rather than
+constructing their own paths or filenames.
+
+```
+ProjectContext
+├── config: ProjectConfig          # The typed project configuration
+├── git: GitAdapter                # Scoped Git operations
+├── governance: GovernanceAdapter  # Governance document access
+├── workflow: WorkflowAdapter       # Workflow and event persistence
+├── qa: QAAdapter                  # QA command and timeout
+├── files: FileAdapter             # Safe filesystem access scoped to repo
+├── events: EventAdapter           # Event append and query
+└── metadata: ProjectMetadata       # Project identity and policy
+```
+
+The architectural rule: **no engineering service may directly access
+repository-specific filesystem paths, filenames, or repository names except
+through approved platform adapters.**
+
+See `AGENT_BACKLOG.md` ENGPLAT-002 for the full adapter protocol designs,
+service dependency matrix, and Phase 1 scope.
 
 ### Automated Engineering Supervisor (ENGSUP-001)
 
