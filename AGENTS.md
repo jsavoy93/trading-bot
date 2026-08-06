@@ -211,13 +211,105 @@ If an acceptance criterion cannot be directly proven, mark the item **incomplete
 
 ### Manager Task Reporting Requirements
 
-Every manager task report must include the following timing and status fields:
+Every manager task report must follow the standardized bounded format below.
+Timing and status fields (start time, end time, elapsed, continuity, stale/blocked)
+are preserved and should appear within the executive summary or decision packet as
+appropriate.
 
-- **Task start time** — timestamp (UTC) when work began
-- **Task end time** — timestamp (UTC) when work stopped
-- **Elapsed time** — total wall-clock duration of the task
-- **Continuity** — whether the task ran continuously or was resumed after a gap
-- **Stale/blocked status** — if the task could not complete in a reasonable time, the manager must report it as blocked or stale
-- **Resumed-task explanation** — before continuing work on a resumed task, the manager must explain why it was paused and what has changed to allow resumption
+#### 1. Telegram Executive Summary
 
-A task is considered stale when it has been inactive for more than 48 hours without a status update. The manager must report stale status to Josh before continuing any resumed task.
+Always begin with exactly these fields:
+
+```
+Task:
+Decision:
+Branch:
+Commit:
+Tests:
+Report:
+PR:
+Blockers:
+Next:
+```
+
+Rules:
+- Keep under 15 lines
+- One value per field
+- If unavailable: write "Unavailable"
+- Do not repeat this section later in the same response
+
+#### 2. Decision Packet
+
+After the executive summary, include only sections relevant to the current decision.
+
+Allowed headings:
+- Scope
+- Files Changed
+- Acceptance Criteria
+- Test Evidence
+- Blocking Findings
+- Non-Blocking Findings
+- Risks
+- Decision Required
+- Recommended Next Action
+
+Rules:
+- Do not restate the executive summary
+- Keep each section bounded
+- Prefer tables only when they materially improve comparison
+- Do not include full source-code signatures unless Josh specifically requested them
+- Distinguish verified facts, proposed design, assumptions, and recommendations
+
+#### 3. Detailed Archive
+
+Put exhaustive details in `REPORT.md` and the timestamped archive at
+`reports/YYYY-MM-DD_HHMMSS_<task>.md`. Telegram summarizes the archive rather
+than reproducing it. The archive contains:
+- Full protocol signatures
+- Complete acceptance criteria
+- Complete test plan
+- Line-by-line review evidence
+- Dependency matrices
+- Long architectural rationale
+
+#### 4. Duplicate Prevention
+
+Every manager run has a unique `run_id`. Before emitting a completion packet:
+- Compare task_id, branch, head_commit, decision, and run_id with the last emitted packet
+- Do not emit an identical packet twice
+- On retry: "Duplicate delivery suppressed; prior packet remains authoritative."
+
+#### 5. Message Chunking
+
+If the platform splits a long Telegram response:
+- Label chunks as Part 1/N, Part 2/N
+- Never restart the packet from the beginning
+- Keep the executive summary entirely in Part 1
+- Put exhaustive details in the archive instead of additional Telegram chunks
+
+#### 6. Evidence Discipline
+
+For every completion packet:
+- Verify branch, commit, working-tree state, PR state, and test results directly
+- Do not trust prior prose as the sole source
+- Identify proposed details as proposals rather than verified implementation
+- Josh remains the approval authority
+
+#### 7. Recommended Next Prompt
+
+End every manager packet with one bounded, ready-to-paste recommended prompt when
+another action is needed. The prompt must:
+- Reflect the current verified state
+- Preserve human approval gates
+- Avoid repeating the full history
+- State exact scope and stop conditions
+- Not be included when the correct action is simply to wait
+
+#### 8. Apply Going Forward
+
+All future manager tasks use this format. Do not rewrite historical reports.
+
+#### Stale Task Rule
+
+A task is considered stale when inactive for more than 48 hours without a status
+update. The manager must report stale status to Josh before continuing a resumed task.
