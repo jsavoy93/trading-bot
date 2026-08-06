@@ -1329,3 +1329,69 @@ explicitly.
 - Tests/backtests run: `TESTING=1 UNIT_TESTING=1 pytest tests/test_engineering_project_config.py` → 51 passed; full safe suite → 426 passed, 84 warnings
 - Important decisions/discoveries: bool type coercion in parse_project_config rejects non-bool values strictly; QA safety errors redact command values; schema_version field required (not optional); DuplicateProjectId detected before dict construction; path escape check uses resolve() to block symlink traversal
 - Next action: Open PR #16 targeting main; stop for Josh read-only review; do not merge without explicit authorization
+
+## architecture-roadmap-2026-08-06 — Governance revision: ProjectContext + revised roadmap
+
+Date (UTC): 2026-08-06
+Backlog item: Architecture & Roadmap Reassessment
+Branch: agent/engplat-002-architecture
+Commit: cc4c324
+Status: COMPLETE
+
+Files changed:
+- AGENTS.md: +8 lines — architectural rule
+- AGENT_BACKLOG.md: +360 lines — revised roadmap, ProjectContext design, ENGPLAT-003, ENGPLAT-004
+- MENTOR.md: +65 lines — ProjectContext architecture section
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md: +74 lines — revised roadmap, ProjectContext
+
+Tests run: .venv/bin/python -m pytest -x (full safe suite)
+Test results: 426 passed, 83 warnings
+
+Key decisions:
+1. ENGPLAT-002 (Phase 1: Adapter Layer) promoted ahead of ENGDASH-005
+2. ENGPLAT-003 (Project Bootstrap) separated as independent task from ENGPLAT-002 Phase 1
+3. ENGPLAT-004 (extraction) renumbered; 12 objective readiness criteria defined
+4. ProjectContext concept designed: 8-field frozen dataclass, 6 adapter protocols, factory function
+5. Architectural rule established: no direct repository path access except through adapters
+6. ENGDASH-005 now depends on ENGPLAT-002 in addition to existing dependencies
+
+Known risks:
+- ENGPLAT-002 Phase 1 is large (~10 files); scope creep is primary risk
+- Bootstrap (ENGPLAT-003) is speculative until Phase 1 is proven
+- Roadmap reorder delays ENGDASH-005; ENGDASH-005 no longer blocks ENGSUP-001
+
+Next action: Josh reviews and approves PR #17. If approved, next implementation
+task is ENGPLAT-002 Phase 1 (Project Adapter Layer).
+
+## architecture-review-corrections-2026-08-06 — Governance corrections to PR #17
+
+Date (UTC): 2026-08-06
+Backlog item: Architecture review findings correction
+Branch: agent/engplat-002-architecture
+Commit: 541262a
+Status: COMPLETE
+
+Files changed:
+- AGENTS.md: +13 lines — filesystem rule clarified; future services included
+- AGENT_BACKLOG.md: +211 lines net — ENGPLAT-002 split into 002A/002B/002C;
+  roadmap order updated; ENGDASH-005 dep → 002B; extraction criteria → 16 measurable
+- MENTOR.md: +20 lines net — updated service migration matrix with phase column;
+  propagation rule; factory contract; backward-compat rules; extraction criteria count
+- TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md: updated roadmap; dependency notes
+
+Tests run: .venv/bin/python -m pytest -x (full safe suite)
+Test results: 426 passed, 83 warnings
+
+Key corrections:
+1. ENGPLAT-002 split into 002A (contracts), 002B (read adapters), 002C (remaining)
+2. ENGDASH-005 now depends on ENGPLAT-002B (not full 002 sequence)
+3. ENGSUP-001 now depends on ENGPLAT-002C (not ENGPLAT-002 broadly)
+4. Extraction criteria expanded 12 → 16 with measurable evidence definitions
+5. Backward-compat shim: DeprecationWarning + removal milestone defined
+6. Bootstrap: dry-run explicit, overwrite protection as explicit criterion
+7. Propagation rule: entry point → ProjectContext; downstream → narrow adapter
+8. Factory contract: fail-closed, deterministic errors, no side effects
+9. Filesystem rule: future services explicitly included; tests/bootstrap separate
+10. Service migration matrix: explicit phase column per service
+
+Next action: Josh reviews PR #17 (now with corrections) and approves or requests changes.

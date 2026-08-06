@@ -872,6 +872,100 @@ Key design points:
 See `AGENT_BACKLOG.md` ENGPLAT-001 for the full contract table, validation
 rules, acceptance criteria, and implementation risks.
 
+---
+
+## ProjectContext Architecture (Post-ENGPLAT-001)
+
+ENGPLAT-001 delivered the typed `ProjectConfig` contract but no service consumes it.
+The platform has the vocabulary but not yet the grammar of project-agnostic design.
+
+ENGPLAT-002A defines the `ProjectContext` contract: a read-only runtime dependency
+container encapsulating all project-specific dependencies. Services receive a
+`ProjectContext` rather than constructing their own paths.
+
+### The Architectural Rule
+
+> **No engineering service may directly access repository-specific filesystem paths,
+> filenames, or repository names except through approved platform adapters.**
+
+The current named-file list covers existing services: `manager.py`, `backlog.py`,
+`reporter.py`, `qa_runner.py`, `event_store.py`, `workflow_store.py`,
+`query_service.py`, `git_service.py`, `config.py`. Future services
+(ENGDASH-005, ENGSUP-001, ENGDASH-006, ENGCTRL-001) must follow the same pattern.
+
+### ProjectContext composition
+
+```
+ProjectContext
+├── config: ProjectConfig          # The typed project configuration
+├── git: GitAdapter                # Scoped Git operations
+├── governance: GovernanceAdapter  # Governance document access
+├── workflow: WorkflowAdapter       # Workflow and event persistence
+├── qa: QAAdapter                  # QA command and timeout
+├── files: FileAdapter             # Safe filesystem access scoped to repo
+├── events: EventAdapter           # Event append and query
+└── metadata: ProjectMetadata      # Project identity and policy
+```
+
+### Propagation Rule
+
+The application entry point (manager) receives `ProjectContext`.
+Downstream services receive only the narrow adapter or data dependency they require.
+Do not pass the entire `ProjectContext` into every service by default.
+This avoids replacing one global dependency with a `ProjectContext` "god object."
+
+### Factory Contract
+
+`build_project_context(config)` must:
+- Validate the `ProjectConfig` internally via `validate_project_config()`
+- Fail closed on semantic validation errors (deterministic, sanitized errors)
+- Perform no side effects: no file creation, no network calls, no Git mutation
+
+### Adapter protocol responsibilities
+
+| Adapter | Wraps | Path consumed from | Migration phase |
+|---|---|---|---|
+| `GitAdapter` | `GitService` | `config.repository_root` | 002C |
+| `GovernanceAdapter` | `backlog.py`, file reads | `governance_files.*_path` | 002B |
+| `WorkflowAdapter` | `WorkflowStore`, `EventStore` | `workflow_files.*_path` | 002B |
+| `QAAdapter` | `QA_runner` | `qa_commands`, `qa_timeout_seconds` | 002C |
+| `FileAdapter` | Direct filesystem access | `config.repository_root` | 002C |
+| `EventAdapter` | `EngineeringEventStore` | `workflow_files.event_store_path` | 002B |
+
+### Service migration matrix
+
+| Service | Problem | Phase | Notes |
+|---|---|---|---|
+| `manager.py` | `Path.cwd()`, hard-coded paths | **002B** | Receives `ProjectContext`; passes adapters to sub-services |
+| `workflow_store.py` | DI with `state_path: Path` | Later | Already path-injected; wrap or compose rather than rewrite |
+| `event_store.py` | `DEFAULT_EVENT_STORE_PATH` constant | **002B** | Adapter composition via WorkflowAdapter |
+| `query_service.py` | DI; needs wiring | 002C | Already DI-compliant; wire to `ProjectContext` |
+| `git_service.py` | Already DI with `repo_root: Path` | 002C | Wrap in `GitAdapterImpl` |
+| `reporter.py` | Hard-coded `RISKS`, `NEXT_ACTION` | 002C | Use `GovernanceAdapter` for strings |
+| `qa_runner.py` | `QA_TIMEOUT_SECONDS = 300` constant | 002C | Use `QAAdapter.timeout_seconds()` |
+| `config.py` | `REQUIRED_REPOSITORY_PATHS` hard-coded list | 002C | Validate against `governance_files` |
+| `backlog.py` | Hard-coded path logic | 002B | Covered by GovernanceAdapter; no direct migration needed |
+| `codex_cli_wrapper.py` | Default runtime `.agent-state/codex-runs` | Later | Accept `runtime_root` from config or env |
+
+### Backward-compatibility shim
+
+`TRADING_BOT_PROJECT` constant feeds the adapter factory for the trading-bot project.
+A `DeprecationWarning` is emitted when the shim is used. Removal milestone:
+"after ENGPLAT-002C is complete AND a second managed project has passed integration
+testing" — not a fixed calendar date.
+
+### Extraction readiness (ENGPLAT-004)
+
+The platform should not be extracted until all 16 readiness criteria are met
+(defined in AGENT_BACKLOG.md ENGPLAT-004). Key criteria:
+- All services consume `ProjectContext` via adapters (002A through 002C)
+- Adapter signatures stable through ≥3 normal workflow runs
+- At least one non-trading-bot managed project exists
+- Supervisor Phase 1 operational (ENGSUP-001 Phase 1)
+- Engineering timeline operational (ENGDASH-005)
+- Versioning, authentication, migration plans approved
+- Josh separately approves cross-repository planning
+
 ### Automated Engineering Supervisor (ENGSUP-001)
 
 ENGSUP-001 replaces the manual copying of agent reports and next-step prompts
