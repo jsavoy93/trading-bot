@@ -1469,3 +1469,23 @@ agent/engplat-002a-project-context-contracts created from current main.
   - KEY FINDING: TRADING_BOT_PROJECT.workflow_files.event_store_path = engineering/event_store.db, but manager.py hardcodes .agent-state/engineering-events.sqlite3 — paths differ
   - Resolution: backward-compat main() keeps old path; new _manager_main uses config path
 - Next action: Push governance PR, stop for Josh review and approval.
+
+## 2026-08-07 14:41:00–15:05:00 UTC — ENGPLAT-002B governance revision (post Josh review)
+
+- Elapsed time: ~24 minutes
+- Continuity: Continuous (same PR #26 branch)
+- Backlog item/objective: ENGPLAT-002B governance revision — resolve 3 blocking findings from Josh's read-only review
+- Branch: `agent/engplat-002b-governance`
+- Commit: [pending push]
+- Status: DONE — GOVERNANCE_REVISED
+- Files changed:
+  - `AGENT_BACKLOG.md` (+146/-56 lines — revised design decisions, updated acceptance criteria, updated test plan)
+  - `MENTOR.md` (+10/-14 lines — corrected 002B design decisions summary)
+- Decisions/risks:
+  - D1 revised: main() now clean deprecation shim — no hardcoded paths, delegates entirely to _manager_main(TRADING_BOT_PROJECT)
+  - D3 (CapabilityUnavailable): replaces NotImplementedError for deferred git/qa/files — typed, deterministic
+  - D4 (Lazy construction): EventAdapterImpl uses lazy _store initialization — no filesystem side effects at factory time
+  - TRADING_BOT_PROJECT.workflow_files.event_store_path is the single authoritative path — no competing authority
+  - 22 tests required (added 8 new tests to original 14)
+  - Acceptance criteria updated: 17 criteria covering all 3 corrections
+- Next action: Push to PR #26, stop for Josh re-review.

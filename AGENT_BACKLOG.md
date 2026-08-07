@@ -1125,29 +1125,47 @@ Execution gate:
 
 ## Design Decisions (resolved before implementation)
 
-### D1: Event store path resolution
+### D1: Single authoritative event-store path (revised)
 
 **Finding:** `manager.py` hardcodes the event store path as
 `repo_root / ".agent-state" / "engineering-events.sqlite3"`.
 `TRADING_BOT_PROJECT.workflow_files.event_store_path` is set to
-`engineering / "event_store.db"`. These are different paths.
+`engineering / "event_store.db"`. These differ.
 
-**Resolution:**
+**Verification:**
+- `.agent-state/engineering-events.sqlite3` does not exist in the repository
+  (confirmed: no such file; no Git history for that path).
+- No historical workflow event data exists at the hardcoded path.
+- No migration is required.
 
-- The existing `main()` function in `manager.py` retains its current
-  hardcoded paths (acting as the backward-compat shim). It continues to use
-  `.agent-state/engineering-events.sqlite3` for running workflows.
-- A new `_manager_main(config: ProjectConfig)` function is added. It uses
-  `build_project_context(config)` and the concrete adapters. This function
-  uses the paths from `config.workflow_files` (i.e., `engineering/event_store.db`
-  for `TRADING_BOT_PROJECT`).
-- The shim emits a `DeprecationWarning` and calls `_manager_main(TRADING_BOT_PROJECT)`.
-- No existing workflow data is migrated. If a workflow is mid-run when this
-  change is deployed, it completes using the old paths; subsequent runs use
-  the new paths transparently.
+**Resolution (corrected):**
 
-**Rationale:** Minimizes blast radius. Existing running workflows are not
-interrupted. The new path is the authoritative one going forward.
+The legacy `main()` entry point must NOT preserve two runtime configuration
+authorities. The authoritative event-store path is:
+
+```
+TRADING_BOT_PROJECT.workflow_files.event_store_path
+  = <repo_root> / "engineering" / "event_store.db"
+```
+
+`manager.py` is refactored so:
+
+- **`main()`** (legacy entry): emits one bounded `DeprecationWarning`, then
+  delegates entirely to `_manager_main(TRADING_BOT_PROJECT)`. It contains no
+  hardcoded paths of its own.
+- **`_manager_main(config: ProjectConfig)`** (new entry): constructs
+  `build_project_context(config)` and uses concrete adapters for all store access.
+  Uses paths derived exclusively from `config.workflow_files`.
+- No `Path.cwd()` usage in either entry point.
+- No second runtime configuration authority remains in `manager.py`.
+- No migration logic for `.agent-state/engineering-events.sqlite3`.
+
+The single authoritative path is used by both the new `_manager_main` and
+the `EventAdapterImpl` constructed within it.
+
+**Rationale:** The approved architecture prohibits maintaining two runtime
+configuration authorities merely to avoid a migration that is not needed.
+Since no historical data exists at the hardcoded path, no migration is required.
 
 ### D2: Adapter composition vs store modification
 
@@ -1158,31 +1176,99 @@ interrupted. The new path is the authoritative one going forward.
 - `WorkflowAdapter` wraps a `WorkflowStore` instance constructed with
   `config.workflow_files.workflow_store_path` and passes the `EngineeringEventStore`
   as the `event_store=` kwarg.
-- `EventAdapter` wraps an `EngineeringEventStore` instance constructed with
-  `config.workflow_files.event_store_path`.
+- `EventAdapter` wraps an `EngineeringEventStore` instance constructed lazily.
 
 No `WorkflowStore` or `EngineeringEventStore` constructor is modified.
 
-### D3: Deferred adapter fields (GitReadAdapter, QAAdapter, FileReadAdapter)
+### D3: Deferred adapter fields — explicit CapabilityUnavailable
 
-**Decision:** Retain `NotImplementedError` stubs for `git`, `qa`, `files` fields
-in `ProjectContext`. The deferred stubs from 002A remain in `context.py`.
-`build_project_context()` continues to return a `ProjectContext` with all 8 fields,
-but only `git`, `governance`, `workflow`, `qa`, `files`, `events` from 002B onward
-are usable. `git`, `qa`, `files` raise `NotImplementedError` until 002C.
+**Problem:** The draft said `build_project_context(TRADING_BOT_PROJECT)` must
+"produce usable context" while `git`, `qa`, `files` raise `NotImplementedError`.
+A context that fails unexpectedly on 3 of 8 fields is not "usable" — it
+violates the rule: "A ProjectContext must not appear fully usable while
+containing production capabilities that fail unexpectedly."
 
-Downstream services that need only read adapters receive only those adapters;
-they are not forced to receive a `ProjectContext` with broken fields.
+**Decision:** Adopt Option B — explicit unavailable-capability contract.
 
-### D4: `EngineeringEventStore` constructor side effect
+1. Add `class CapabilityUnavailable(Exception)` to `engineering/adapters.py`:
 
-**Finding:** `EngineeringEventStore.__init__()` calls `_ensure_schema()` which
-creates the parent directory (`mkdir(parents=True, mode=0o700)`) and the schema
-file if they do not exist.
+   ```python
+   @dataclass(frozen=True)
+   class CapabilityUnavailable(Exception):
+       project_id: str     # which project this context is for
+       capability: str     # one of: "git", "qa", "files"
+   ```
 
-**Decision:** Accept this side effect. It is a required precondition for the
-store to function. The governance explicitly permits "constructor already
-requires it" side effects. `WorkflowStore.__init__()` has no side effects.
+2. In `engineering/context.py`, the deferred adapters for `git`, `qa`, `files`
+   raise `CapabilityUnavailable(project_id, capability)` instead of
+   `NotImplementedError`.
+
+3. The `CapabilityUnavailable` message is deterministic and contains only
+   `project_id` and `capability` — no raw paths, no secrets, no command output.
+
+4. This preserves the 002A contract (all 8 fields present, frozen dataclass)
+   while making the deferred capabilities explicit and typed.
+
+5. Callers can catch `CapabilityUnavailable` specifically if they need to
+   detect unavailable capabilities before use.
+
+**What changes:**
+- `engineering/adapters.py` gains `CapabilityUnavailable` dataclass
+- `engineering/context.py` replaces `_DEFERRED_MSG` with `CapabilityUnavailable`
+- `tests/test_engineering_project_context.py` updates deferred-capability tests
+- The 002A contract is not changed (no new context type, no `ReadProjectContext`)
+
+### D4: Lazy event-store construction (side-effect-free factory)
+
+**Finding:** `EngineeringEventStore.__init__()` calls `_ensure_schema()` which:
+- Creates the parent directory: `self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)`
+- Creates the schema file via `CREATE TABLE` SQL
+- Changes file permissions
+
+The `build_project_context()` contract states: "No side effects: no file
+creation, network, Git mutation, QA execution, or workflow state changes."
+
+Accepting this side effect would contradict the approved factory contract.
+
+**Decision:** `EventAdapterImpl` uses **lazy construction**.
+
+```python
+class EventAdapterImpl:
+    def __init__(self, event_store_path: Path):
+        self._event_store_path = event_store_path
+        self._store: EngineeringEventStore | None = None   # not constructed yet
+
+    def _get_store(self) -> EngineeringEventStore:
+        if self._store is None:
+            self._store = EngineeringEventStore(self._event_store_path)
+        return self._store
+
+    def append(self, event: EngineeringEvent) -> bool:
+        return self._get_store().append(event)
+
+    def list_events(self, limit: int = 100) -> tuple[StoredEvent, ...]:
+        return self._get_store().list_events(limit=limit)
+
+    def pause_state(self) -> dict[str, object]:
+        return self._get_store().pause_state()
+```
+
+**Effect:**
+- `build_project_context()` constructs `EventAdapterImpl` but does NOT call
+  `_get_store()`, so the event database directory and schema are NOT created
+  at factory time.
+- The database is created only when the first event operation occurs
+  (`append`, `list_events`, or `pause_state`).
+- This preserves the "no side effects at construction time" contract.
+- `WorkflowAdapterImpl` should NOT eagerly construct `EngineeringEventStore`
+  at init time either; it should receive an `EventAdapterImpl` instance and
+  call `adapter.event_store()` only when needed (lazy from the `EventAdapterImpl`
+  perspective).
+
+**Verification:** `WorkflowStore.__init__()` has no side effects — it only stores
+its arguments. It is safe to construct eagerly.
+
+**Summary:** `build_project_context()` creates no filesystem artifacts.
 
 ---
 
@@ -1401,12 +1487,15 @@ Downstream functions receive only what they need:
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Event store path switch breaks in-flight workflows | Low | Medium | Backward-compat `main()` keeps old path; new code uses config path |
-| `EngineeringEventStore` schema migration | Low | High | `EngineeringEventStore` schema is already at version 1; `engineering/event_store.db` is a new file for new runs |
-| Adapter leaks raw store internals | Medium | Low | Adapters are typed Protocol wrappers; downstream code uses only Protocol methods |
+| Event store path switch breaks in-flight workflows | Low | Medium | No historical data at old path; single authoritative path from `TRADING_BOT_PROJECT` |
+| `EngineeringEventStore` schema migration | Low | High | Schema is at version 1; `engineering/event_store.db` is a new file |
+| Adapter leaks raw store internals | Medium | Low | Adapters are typed Protocol wrappers; documented as known limitation for 002C |
 | `DeprecationWarning` appears inside workflow loops | Low | Low | Warning emitted only in `main()` shim, not in adapter operations |
-| Circular import from `context.py` importing concrete adapter modules | Medium | Medium | Keep adapter classes in `context.py` initially; split to separate files only if size warrants |
+| Circular import from `context.py` importing concrete adapter modules | Medium | Medium | Keep adapter classes in `context.py`; split only if size exceeds 200 lines |
 | `WorkflowStore` created with wrong `event_store` reference | Low | High | `WorkflowAdapterImpl` owns both stores; passes its own `EngineeringEventStore` as `event_store=` kwarg |
+| `CapabilityUnavailable` mistaken for `NotImplementedError` | Low | Medium | Tests prove `CapabilityUnavailable` type specifically |
+| Lazy initialization thread-safety | Low | Low | `EngineeringEventStore` constructed once per adapter instance |
+| Old event-store path retained as dead code | Low | Low | Governance prohibits two runtime authorities; no data at old path |
 
 ---
 
@@ -1438,22 +1527,25 @@ The shim is the existing `main()` function in `manager.py`. It:
 
 ### ENGPLAT-002B acceptance criteria
 
+- [ ] `CapabilityUnavailable` dataclass added to `engineering/adapters.py`
+- [ ] Deferred adapters (`git`, `qa`, `files`) raise `CapabilityUnavailable` (not `NotImplementedError`)
+- [ ] `EventAdapterImpl` uses lazy construction (`_store` initialized on first method call)
+- [ ] `build_project_context()` creates zero filesystem artifacts at factory time
 - [ ] GovernanceAdapter, WorkflowAdapter, EventAdapter implemented and passing tests
-- [ ] `manager.py` refactored to accept `ProjectContext` via `_manager_main(config)`
-- [ ] Hard-coded paths removed from `_manager_main`; retained in `main()` shim only
+- [ ] `manager.py` refactored — `_manager_main(config)` uses `ProjectContext`; `main()` is a clean deprecation shim
+- [ ] No hardcoded `.agent-state/engineering-events.sqlite3` path in any manager entry function
 - [ ] `build_project_context(TRADING_BOT_PROJECT)` produces a context where
       `context.governance.load_backlog()` returns non-empty task tuple
 - [ ] `context.events.list_events(limit=N)` correctly limits results
 - [ ] `context.workflow.archive_completed()` delegates to `WorkflowStore.archive_completed()`
 - [ ] Backward-compat shim (`main()`) emits exactly one `DeprecationWarning`
 - [ ] No `DeprecationWarning` emitted from adapter operations inside workflow loops
+- [ ] `context.git`, `context.qa`, `context.files` raise `CapabilityUnavailable` with correct `project_id` and `capability` fields
+- [ ] All 22 new tests pass
 - [ ] No `git_service.py`, `qa_runner.py`, `reporter.py`, `query_service.py`,
       `config.py`, or `codex_cli_wrapper.py` migration
-- [ ] Full test suite passes without modification of existing test assertions
-- [ ] `engineering/adapters.py` unchanged (Protocol definitions only)
+- [ ] Full test suite passes without modifying existing test assertions
 - [ ] ENGDASH-005 can begin after 002B (it needs only stable read interfaces)
-
----
 
 ### ENGPLAT-002C — Remaining Adapters and Service Migration
 

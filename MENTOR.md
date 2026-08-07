@@ -884,19 +884,17 @@ a read-only runtime dependency container encapsulating all project-specific
 dependencies. Services receive a `ProjectContext` rather than constructing their
 own paths. Factory contract: Option B (concrete construction deferred to 002B).
 
-ENGPLAT-002B (governance in progress) implements concrete GovernanceAdapter,
-WorkflowAdapter, EventAdapter, and integrates `manager.py` with `ProjectContext`.
+ENGPLAT-002B (governance in revision — PR #26) implements concrete
+GovernanceAdapter, WorkflowAdapter, EventAdapter, and integrates `manager.py`
+with `ProjectContext`. Corrected design decisions (post Josh review):
 
-**Key 002B design decisions (resolved before implementation):**
-- `manager.py` gets a new `_manager_main(config: ProjectConfig)` entry point
-  using concrete adapters with config-derived paths
-- Existing `main()` becomes the backward-compat shim, emitting a single
-  `DeprecationWarning` then calling `_manager_main(TRADING_BOT_PROJECT)`
-- No workflow data migration; old `main()` keeps its hardcoded paths for
-  any in-flight workflows
-- `GitReadAdapter`, `QAAdapter`, `FileReadAdapter` remain as `NotImplementedError`
-  stubs until 002C
-- Event store path: `engineering/event_store.db` (from `TRADING_BOT_PROJECT`)
+- `main()` is a clean deprecation shim: emits one bounded `DeprecationWarning`,
+  then delegates entirely to `_manager_main(TRADING_BOT_PROJECT)`. No hardcoded paths.
+- `_manager_main(config)` uses `build_project_context(config)` and concrete adapters.
+  Single authoritative event-store path from `config.workflow_files.event_store_path`.
+- `CapabilityUnavailable` replaces `NotImplementedError` for deferred capabilities.
+- `EventAdapterImpl` uses lazy construction: no filesystem side effect at factory time.
+- No data at old `.agent-state/engineering-events.sqlite3` path; no migration needed.
 
 ### The Architectural Rule
 
