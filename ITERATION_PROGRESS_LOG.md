@@ -1424,3 +1424,27 @@ Key decisions:
 
 Next action: Josh reviews PR #18 and approves. If approved, implementation branch
 agent/engplat-002a-project-context-contracts created from current main.
+
+## 2026-08-07 11:40:00–12:05:00 UTC — ENGPLAT-002A implementation
+
+- Elapsed time: ~25 minutes
+- Continuity: Continuous
+- Backlog item/objective: ENGPLAT-002A — ProjectContext Contracts and Composition Boundary
+- Branch: `agent/engplat-002a-project-context-contracts`
+- Commit: [pending push]
+- Status: `DONE`
+- Files changed:
+  - `engineering/adapters.py` (+1 new file, Protocol + ProjectContext + ProjectMetadata)
+  - `engineering/context.py` (+1 new file, build_project_context factory with Option B deferred adapters)
+  - `tests/test_engineering_project_context.py` (+1 new file, 40 structural contract tests)
+- Tests/backtests:
+  - Focused: 40 passed, 1 warning (test_engineering_project_context.py)
+  - Full safe suite: 466 passed, 84 warnings (previously 426 passed)
+  - git diff --check: clean
+- Decisions/risks:
+  - Option B chosen for factory (deferred adapters raise NotImplementedError until 002B)
+  - All six Protocols are @runtime_checkable
+  - adapters.py uses TYPE_CHECKING imports for event_store/workflow_store to avoid cycles
+  - context.py uses module-level private deferred adapter classes (importable by tests)
+  - Validation failures are deterministic and sanitized (no raw config values in errors)
+- Next action: Push branch, open PR # targeting main, stop for Josh's read-only review.
