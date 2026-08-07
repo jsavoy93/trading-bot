@@ -1844,6 +1844,218 @@ Collect → Verify → Normalize → Build EvidenceBundle → Decision Engine �
 - Enables multi-project supervisor (one EvidenceBundle per project)
 - Supports audit trail (EvidenceBundle serialized to event store)
 
+##### Decision Pipeline and Recommendation Architecture
+
+**Pipeline flow**:
+
+```
+ProjectContext → EvidenceBundle → Decision Engine → Recommendation Generator → Prompt Generator → Human
+```
+
+The Decision Engine consumes only an `EvidenceBundle`. It never reads repository
+files directly. It never trusts completion packets without independent verification.
+It produces deterministic, reproducible output: identical evidence always produces
+identical decisions.
+
+**DecisionResult contract**:
+
+```python
+@dataclass(frozen=True)
+class DecisionResult:
+    decision_type: DecisionType          # e.g., CONTINUE, ESCALATE, WAIT_FOR_APPROVAL
+    severity: Severity                   # e.g., BLOCKING, WARNING, INFO
+    confidence: Confidence               # VERIFIED, HIGH, MEDIUM, LOW, UNKNOWN
+    evidence_used: tuple[str, ...]       # evidence IDs or source labels used
+    missing_evidence: tuple[str, ...]    # evidence types that were unavailable
+    blockers: tuple[str, ...]           # blocking issues requiring resolution
+    warnings: tuple[str, ...]          # non-blocking concerns
+    human_action_required: bool          # True if Josh must act before proceeding
+    recommended_next_step: str           # exactly one bounded next action
+    bounded_prompt: str                  # instruction for the next agent (bounded, no secrets)
+    explanation_summary: str             # ≤ 5 sentences; no raw chain-of-thought
+    evidence_conflicts: tuple[EvidenceConflict, ...]  # any conflicts detected
+    stale_evidence: tuple[str, ...]     # evidence IDs flagged as stale
+```
+
+**Recommendation priority order** (highest to lowest authority):
+
+1. **Repository truth** — directly verified Git/GitHub state
+2. **Verification failures** — conflicts between reported and verified state
+3. **Blocking engineering defects** — test failures, broken builds, dirty trees
+4. **Required human approvals** — merge requests, scope changes, safety-sensitive decisions
+5. **Warnings** — non-blocking concerns, degraded confidence
+6. **Optimization suggestions** — low-risk improvements, style, cleanup
+
+**Conflict resolution rules**:
+
+| Conflict | Authoritative Source | Supervisor Action | Recommendation |
+|---|---|---|---|
+| REPORT claims clean; Git shows dirty | Git | Flag mismatch; use git | BLOCKING: dirty tree |
+| QA reports pass; completion packet says fail | QA results | Flag mismatch | BLOCKING: QA evidence conflict |
+| Completion packet says merged; GitHub API shows open | GitHub API | Flag mismatch | BLOCKING: PR state conflict |
+| PR metadata stale (HEAD mismatch) | Git HEAD | Flag staleness | ESCALATE: PR metadata stale |
+| Audit report missing | N/A | Log missing | WARNING: no audit evidence |
+| Regression results unavailable | N/A | Flag missing | WAIT: regression evidence required |
+| Workflow state unknown | Git log | Flag unknown | ESCALATE: unclear workflow state |
+| REPORT.md stale | Event store timestamp | Flag stale | Use verified; ignore report claim |
+
+**Confidence scoring**:
+
+| Level | Definition | Required Evidence |
+|---|---|---|
+| VERIFIED | Independently confirmed by ≥2 sources | Git + GitHub API agree |
+| HIGH | Single authoritative source confirmed | Git state verified |
+| MEDIUM | Corroborated but not independently verified | Completion packet + partial corroboration |
+| LOW | Single uncorroborated source | Report only |
+| UNKNOWN | No evidence available | None |
+
+Confidence depends only on available evidence. The supervisor never infers
+confidence heuristically. If no evidence exists for a claim, confidence is UNKNOWN.
+
+**Bounded recommendation rules**:
+
+Every supervisor recommendation must:
+- Stay inside the approved scope for the current phase
+- Identify exactly one next action
+- Never expand scope or propose unapproved work
+- Preserve human approval gates (never bypass Josh authorization)
+- Include explicit stop criteria
+- List missing evidence when evidence is unavailable
+
+**Shared output model**:
+
+All interfaces (dashboard, Telegram, CLI, future integrations) consume the same
+`DecisionResult` rather than generating independent recommendations.
+
+```
+Dashboard: displays DecisionResult fields; shows evidence sources per claim
+Telegram: renders DecisionResult as formatted message; links to evidence
+CLI: outputs DecisionResult as structured JSON or table
+API: serializes DecisionResult; includes evidence bundle reference
+Future: same DecisionResult; no independent recommendation generation
+```
+
+This guarantees that dashboard, Telegram, CLI, and future interfaces all show
+the same decision and evidence. The supervisor is the single source of
+recommendation truth.
+
+##### Engineering Workflow State Machine
+
+The canonical workflow state machine governs every engineering task. All platform
+components derive state from the same immutable event history.
+
+**Workflow states** (in order):
+
+```
+TODO
+↓
+PLANNING
+↓
+APPROVED_FOR_IMPLEMENTATION
+↓
+IMPLEMENTING
+↓
+IMPLEMENTATION_COMPLETE
+↓
+QA_RUNNING
+↓
+QA_FAILED | QA_PASSED
+↓
+READ_ONLY_REVIEW
+↓
+CHANGES_REQUESTED | APPROVED_FOR_MERGE
+↓
+MERGED
+↓
+ARCHIVED
+```
+
+**State definitions and required evidence**:
+
+| State | Entry Criteria | Exit Criteria | Required EvidenceBundle | DecisionResult |
+|---|---|---|---|---|
+| `TODO` | Task in backlog | Manager begins work | Backlog entry, ProjectContext | None |
+| `PLANNING` | Manager drafts plan | Josh approves plan | Plan draft, ProjectContext | `WAIT_FOR_APPROVAL` |
+| `APPROVED_FOR_IMPLEMENTATION` | Josh approves plan | Agent begins work | Approved plan, scope | `CONTINUE` |
+| `IMPLEMENTING` | Agent starts work | Implementation complete | Allowed-areas diff, git state | None |
+| `IMPLEMENTATION_COMPLETE` | Diff complete, tests pass locally | QA begins | Full diff, test results | `CONTINUE` |
+| `QA_RUNNING` | QA invoked | QA result available | QA execution record | None |
+| `QA_FAILED` | QA exit ≠ 0 | Agent fixes or scopes back | QA failure evidence | `WAIT_FOR_APPROVAL` |
+| `QA_PASSED` | QA exit = 0 | Review begins | QA pass evidence | `CONTINUE` |
+| `READ_ONLY_REVIEW` | Manager opens PR | Review complete | PR metadata, diff | `WAIT_FOR_APPROVAL` |
+| `CHANGES_REQUESTED` | Reviewer requests changes | Agent addresses | Review comments | `CONTINUE` (→ IMPLEMENTING) |
+| `APPROVED_FOR_MERGE` | Josh approves PR | Merge begins | Approval evidence | `CONTINUE` |
+| `MERGED` | Merge complete | Archive initiated | Merge commit, event | `CONTINUE` |
+| `ARCHIVED` | Workflow archived | Terminal | Archive path | None |
+
+**Transition rules**:
+
+| From | To | Allowed? | Gate | Trigger |
+|---|---|---|---|---|
+| TODO | PLANNING | Yes | None | Manager picks task |
+| PLANNING | APPROVED_FOR_IMPLEMENTATION | Yes | Josh approval | `APPROVED_FOR_MERGE` DecisionResult |
+| PLANNING | TODO | Yes | None | Josh rejects plan |
+| APPROVED_FOR_IMPLEMENTATION | IMPLEMENTING | Yes | None | Agent starts work |
+| IMPLEMENTING | IMPLEMENTATION_COMPLETE | Yes | None | All changes complete |
+| IMPLEMENTATION_COMPLETE | QA_RUNNING | Yes | None | QA invoked |
+| QA_RUNNING | QA_PASSED | Yes | None | QA exit 0 |
+| QA_RUNNING | QA_FAILED | Yes | None | QA exit ≠ 0 |
+| QA_FAILED | IMPLEMENTING | Yes | None | Agent begins fixes |
+| QA_PASSED | READ_ONLY_REVIEW | Yes | None | PR opened |
+| READ_ONLY_REVIEW | APPROVED_FOR_MERGE | Yes | Josh approval | `APPROVED_FOR_MERGE` |
+| READ_ONLY_REVIEW | CHANGES_REQUESTED | Yes | None | Reviewer requests changes |
+| CHANGES_REQUESTED | IMPLEMENTING | Yes | None | Agent begins fixes |
+| CHANGES_REQUESTED | READ_ONLY_REVIEW | Yes | None | Agent re-submits |
+| APPROVED_FOR_MERGE | MERGED | Yes | None (future: auto or Josh) | Merge committed |
+| MERGED | ARCHIVED | Yes | None | Archive initiated |
+| Any | ARCHIVED | No | — | Invalid: no resurrection |
+| QA_PASSED | IMPLEMENTING | No | — | Invalid: cannot regress |
+| CHANGES_REQUESTED | APPROVED_FOR_MERGE | No | — | Invalid: must re-review |
+
+**Workflow invariants** (enforced):
+
+- Exactly one active state per workflow at any time
+- Every transition is recorded in the event store with full audit fields
+- Every transition is attributable to an actor (manager, supervisor, Josh)
+- No approval gate may be skipped
+- No transition occurs without a corresponding DecisionResult (for state changes)
+- No hidden or undocumented transitions exist
+- All transitions are deterministic: same EvidenceBundle + state → same next state
+- `ARCHIVED` is terminal: no transitions out
+- `TODO` is the only valid initial state
+
+**Workflow event model**:
+
+Each transition records:
+
+```python
+@dataclass(frozen=True)
+class WorkflowTransitionEvent:
+    event_id: str
+    workflow_id: str
+    previous_state: WorkflowState
+    new_state: WorkflowState
+    timestamp: datetime
+    actor: str                    # manager | supervisor | josh | system
+    trigger: str                  # e.g., "qa_passed", "josh_approved"
+    evidence_bundle_id: str        # reference to EvidenceBundle used
+    decision_result_id: str        # reference to DecisionResult (if applicable)
+    notes: str                     # human-readable note (bounded, no secrets)
+    allowed_areas_changed: bool    # True if scope expanded during this transition
+```
+
+**Canonical state derivation**:
+
+Manager, Supervisor, Dashboard, Telegram, and CLI all derive current workflow state
+from the same immutable event history. No component maintains its own state copy.
+
+```
+EventStore.query(workflow_id) → ordered transitions → current_state
+```
+
+This guarantees that all interfaces show identical state because they read
+the same event history.
+
 #### Phase 2 — Routine Auto-Dispatch
 
 **Goal**: Eliminate manual copying for routine, low-risk transitions.
