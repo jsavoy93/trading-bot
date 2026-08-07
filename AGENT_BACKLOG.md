@@ -1099,7 +1099,7 @@ by this platform rule.
 
 ### ENGPLAT-002B — Local Read Adapters and Manager Integration
 
-Status: TODO
+Status: GOVERNANCE_DRAFT
 Owner: trading-manager
 Priority: P1
 
@@ -1113,52 +1113,345 @@ the manager.
 
 Execution gate:
 
-- Non-executable until ENGPLAT-002A is complete and Josh approves a separate
-  narrow implementation plan with allowed areas for this task.
+- Non-executable until Josh approves this governance plan and opens an
+  implementation PR from a feature branch.
 - Do not implement GitAdapter, QAAdapter, or FileAdapter in this task.
+  Those belong to 002C.
 - Do not migrate reporter.py, query_service.py, git_service.py, qa_runner.py,
-  config.py, or codex_cli_wrapper.py.
+  config.py, or codex_cli_wrapper.py. Those belong to 002C.
 - Do not implement Project Bootstrap.
 
-### ENGPLAT-002B scope
+---
 
-- Implement GovernanceAdapter wrapping existing `backlog.py` and governance file reads
-- Implement WorkflowAdapter wrapping `WorkflowStore` and `EventStore` construction
-- Implement EventAdapter wrapping `EngineeringEventStore`
-- Implement context construction for those three adapters
-- Refactor `manager.py` to accept `ProjectContext` at the entry boundary
-- Manager passes only required adapters or values to downstream services
-- Add backward-compatibility shim: `TRADING_BOT_PROJECT` constant feeds adapter
-  factory; existing behavior is preserved for the trading-bot project
-- Add focused compatibility tests proving existing trading-bot workflow unchanged
-- No dashboard implementation
+## Design Decisions (resolved before implementation)
 
-### Backward-compatibility shim rules
+### D1: Event store path resolution
 
-The shim:
+**Finding:** `manager.py` hardcodes the event store path as
+`repo_root / ".agent-state" / "engineering-events.sqlite3"`.
+`TRADING_BOT_PROJECT.workflow_files.event_store_path` is set to
+`engineering / "event_store.db"`. These are different paths.
 
-- Uses `TRADING_BOT_PROJECT` constant; does not reintroduce hard-coded paths
-- Preserves existing single-project trading-bot behavior exactly
-- Is explicitly temporary: a `DeprecationWarning` is emitted when the shim
-  is used, citing "ENGPLAT-002C complete + second managed project integration"
-  as the removal condition
-- Does not allow services to bypass `ProjectContext` indefinitely
-- Does not create two competing configuration sources
-- Removal milestone: remove after ENGPLAT-002C is complete AND a second managed
-  project has passed integration testing (not a fixed calendar date)
+**Resolution:**
+
+- The existing `main()` function in `manager.py` retains its current
+  hardcoded paths (acting as the backward-compat shim). It continues to use
+  `.agent-state/engineering-events.sqlite3` for running workflows.
+- A new `_manager_main(config: ProjectConfig)` function is added. It uses
+  `build_project_context(config)` and the concrete adapters. This function
+  uses the paths from `config.workflow_files` (i.e., `engineering/event_store.db`
+  for `TRADING_BOT_PROJECT`).
+- The shim emits a `DeprecationWarning` and calls `_manager_main(TRADING_BOT_PROJECT)`.
+- No existing workflow data is migrated. If a workflow is mid-run when this
+  change is deployed, it completes using the old paths; subsequent runs use
+  the new paths transparently.
+
+**Rationale:** Minimizes blast radius. Existing running workflows are not
+interrupted. The new path is the authoritative one going forward.
+
+### D2: Adapter composition vs store modification
+
+**Decision:** Compose existing stores rather than modifying them.
+
+- `GovernanceAdapter` wraps `backlog.load_backlog()` and `Path.read_text()`.
+  No store modification needed.
+- `WorkflowAdapter` wraps a `WorkflowStore` instance constructed with
+  `config.workflow_files.workflow_store_path` and passes the `EngineeringEventStore`
+  as the `event_store=` kwarg.
+- `EventAdapter` wraps an `EngineeringEventStore` instance constructed with
+  `config.workflow_files.event_store_path`.
+
+No `WorkflowStore` or `EngineeringEventStore` constructor is modified.
+
+### D3: Deferred adapter fields (GitReadAdapter, QAAdapter, FileReadAdapter)
+
+**Decision:** Retain `NotImplementedError` stubs for `git`, `qa`, `files` fields
+in `ProjectContext`. The deferred stubs from 002A remain in `context.py`.
+`build_project_context()` continues to return a `ProjectContext` with all 8 fields,
+but only `git`, `governance`, `workflow`, `qa`, `files`, `events` from 002B onward
+are usable. `git`, `qa`, `files` raise `NotImplementedError` until 002C.
+
+Downstream services that need only read adapters receive only those adapters;
+they are not forced to receive a `ProjectContext` with broken fields.
+
+### D4: `EngineeringEventStore` constructor side effect
+
+**Finding:** `EngineeringEventStore.__init__()` calls `_ensure_schema()` which
+creates the parent directory (`mkdir(parents=True, mode=0o700)`) and the schema
+file if they do not exist.
+
+**Decision:** Accept this side effect. It is a required precondition for the
+store to function. The governance explicitly permits "constructor already
+requires it" side effects. `WorkflowStore.__init__()` has no side effects.
+
+---
+
+## Allowed Areas
+
+### Required (must change)
+
+1. **`engineering/context.py`**
+   - Replace deferred `_DeferredGovernanceAdapter`, `_DeferredWorkflowAdapter`,
+     `_DeferredEventAdapter` with concrete implementations
+   - Add concrete `GovernanceAdapterImpl`, `WorkflowAdapterImpl`, `EventAdapterImpl`
+     classes
+   - Update `build_project_context()` to construct concrete adapters for
+     `governance`, `workflow`, `events`; retain deferred stubs for `git`, `qa`, `files`
+   - Retain all existing deferred adapter classes at module level (importable by tests)
+   - **Conditional:** If the concrete classes exceed 200 lines total, split into
+     `engineering/governance_adapter.py`, `engineering/workflow_adapter.py`,
+     `engineering/event_adapter.py`; otherwise keep in `context.py`
+   - Do NOT modify the factory signature or `ProjectContext` dataclass structure
+
+### Required (must change)
+
+2. **`engineering/manager.py`**
+   - Add `_manager_main(config: ProjectConfig) -> int` — new ProjectContext-aware entry
+   - `_manager_main` constructs `context = build_project_context(config)` and uses
+     `context.governance`, `context.workflow`, `context.events` for all store access
+   - Remove direct `EngineeringEventStore(...)` and `WorkflowStore(...)` construction
+     from `_manager_main`
+   - Keep the existing `main()` function as the backward-compat shim
+   - The shim emits `warnings.warn(DeprecationWarning(...))` then calls
+     `_manager_main(TRADING_BOT_PROJECT)`
+   - Shallow propagation: `drive_workflow`, `dispatch_workflow`, `persist_workflow_result`
+     receive only the specific adapters they need (not the full `ProjectContext`)
+   - `persist_workflow_result` signature updated to accept `WorkflowAdapter` instead of
+     `WorkflowStore` so it can call `adapter.archive_completed(workflow)`
+   - **Do NOT change** `main()` hardcoded paths (those ARE the backward-compat path)
+   - **Do NOT change** existing CLI argument parsing or task-selection logic
+
+### Required (must add)
+
+3. **`tests/test_engineering_project_context.py`** (update existing file)
+   - Update `TestProtocolConformance` to test concrete adapters instead of deferred stubs
+   - Add new `TestGovernanceAdapter`, `TestWorkflowAdapter`, `TestEventAdapter` classes
+     proving real behavior (not just `isinstance`)
+   - Update `TestDeferredFactoryBehavior` → `TestConcreteFactoryBehavior`
+   - Keep all existing tests that verify frozen dataclasses, no `cwd` fallback,
+     no trading-bot fallback, no side effects, import boundary
+
+### Conditional (if adapter classes exceed 200 lines)
+
+4. **`engineering/governance_adapter.py`** (new file)
+   - Concrete `GovernanceAdapterImpl` class
+   - Required only if concrete adapter code exceeds governance guidance
+
+5. **`engineering/workflow_adapter.py`** (new file)
+   - Concrete `WorkflowAdapterImpl` class
+   - Required only if concrete adapter code exceeds governance guidance
+
+6. **`engineering/event_adapter.py`** (new file)
+   - Concrete `EventAdapterImpl` class
+   - Required only if concrete adapter code exceeds governance guidance
+
+### Governance files (authorized)
+
+7. **`AGENT_BACKLOG.md`** — update ENGPLAT-002B governance with this plan
+8. **`MENTOR.md`** — add ENGPLAT-002B as a known active governance item
+9. **`ITERATION_PROGRESS_LOG.md`** — append governance planning entry
+10. **`REPORT.md`** — update current report
+11. **`reports/`** — archive current report
+
+---
+
+## Implementation Notes
+
+### GovernanceAdapter implementation
+
+```python
+class GovernanceAdapterImpl:
+    def __init__(self, governance_files: GovernanceFiles): ...
+    def load_backlog(self) -> tuple[BacklogTask, ...]: ...
+    def load_owners(self) -> str: ...
+    def load_operating_plan(self) -> str: ...
+    def load_handoff(self) -> str: ...
+```
+
+- `load_backlog()` calls `parse_backlog(path.read_text())` using
+  `self._governance_files.backlog_path`
+- All `load_*()` methods call `path.read_text(encoding="utf-8")` on their
+  respective paths from `GovernanceFiles`
+- All methods raise `ValueError` if the path does not exist (fails closed)
+- No caching required for 002B (the adapter is constructed per workflow run)
+- No hard-coded filenames; all paths come from `GovernanceFiles`
+
+### WorkflowAdapter implementation
+
+```python
+class WorkflowAdapterImpl:
+    def __init__(self, workflow_files: WorkflowFiles, event_store: EngineeringEventStore): ...
+    def workflow_store(self) -> WorkflowStore: ...
+    def event_store(self) -> EngineeringEventStore: ...
+    def archive_completed(self, workflow: StoredWorkflow) -> Path: ...
+```
+
+- `WorkflowStore` constructed with `state_path=workflow_files.workflow_store_path`
+  and `event_store=self._event_store`
+- `event_store()` returns `self._event_store` (owned by this adapter)
+- `archive_completed()` delegates to `self._workflow_store.archive_completed(workflow)`
+- No new files created at construction time
+
+### EventAdapter implementation
+
+```python
+class EventAdapterImpl:
+    def __init__(self, event_store_path: Path): ...
+    def append(self, event: EngineeringEvent) -> bool: ...
+    def list_events(self, limit: int = 100) -> tuple[StoredEvent, ...]: ...
+    def pause_state(self) -> dict[str, object]: ...
+```
+
+- `EngineeringEventStore` constructed at init time (creates parent dir + schema)
+- `append()`, `list_events(limit)`, `pause_state()` delegate directly to the store
+- `list_events` enforces `limit` parameter (store already validates 1-500)
+- No Telegram/network coupling at the adapter level
+
+### Manager propagation rule
+
+Downstream functions receive only what they need:
+
+| Function | Receives | Why |
+|---|---|---|
+| `load_backlog()` | Already a module-level function; no change | Pure function |
+| `drive_workflow()` | `WorkflowStore` (not full context) | Only needs workflow persistence |
+| `dispatch_workflow()` | `StoredWorkflow`, `GitReadAdapter` (002C) | Only reads workflow state |
+| `persist_workflow_result()` | `WorkflowAdapter` | Needs `archive_completed()` |
+| `select_next_task()` | `tuple[BacklogTask, ...]` | Only needs task list |
+
+---
+
+## Test Plan
+
+### New behavioral tests (prove actual behavior, not just source text)
+
+1. `test_governance_adapter_load_backlog_returns_tasks`
+   - Create temp governance files matching a `ProjectConfig`
+   - Construct `GovernanceAdapterImpl` from that config
+   - Call `load_backlog()` and assert it returns `tuple[BacklogTask, ...]`
+   - Assert task_id, title match the temp file content
+
+2. `test_governance_adapter_load_owners_returns_string`
+   - Same pattern; verify `load_owners()` returns non-empty string
+
+3. `test_governance_adapter_path_escape_fails_closed`
+   - Provide a `GovernanceFiles` with a path outside `repository_root`
+   - Assert `ValueError` is raised before any file is read
+
+4. `test_workflow_adapter_uses_configured_paths`
+   - Create temp workflow paths in a `ProjectConfig`
+   - Construct `WorkflowAdapterImpl` from that config
+   - Assert `adapter.workflow_store().state_path` matches configured path
+
+5. `test_event_adapter_append_and_list`
+   - Create temp event store path
+   - Construct `EventAdapterImpl`
+   - Append a test event, list it back, assert it is returned
+
+6. `test_event_adapter_list_limit_enforced`
+   - Append 10 events, call `list_events(limit=3)`, assert exactly 3 returned
+
+7. `test_event_adapter_pause_state_returns_dict`
+   - Construct `EventAdapterImpl`, call `pause_state()`, assert dict returned
+
+8. `test_build_project_context_produces_usable_adapters`
+   - With valid `TRADING_BOT_PROJECT`, call `build_project_context()`
+   - Assert `context.governance.load_backlog()` returns non-empty tuple
+   - Assert `context.events.list_events(limit=10)` returns tuple
+   - Assert `context.workflow.workflow_store()` returns `WorkflowStore` instance
+
+9. `test_manager_context_entry_uses_configured_paths`
+   - Call `_manager_main(TRADING_BOT_PROJECT)`
+   - Verify it does not use `.agent-state/engineering-events.sqlite3`
+   - Verify it uses `engineering/event_store.db` (from `TRADING_BOT_PROJECT`)
+
+10. `test_manager_legacy_main_emits_deprecation_warning`
+    - Capture `warnings` during `main([])` call
+    - Assert exactly one `DeprecationWarning` is emitted
+    - Assert the warning message contains the removal condition text
+
+11. `test_no_deprecation_warning_in_workflow_loop`
+    - Simulate `_manager_main` being called repeatedly
+    - Assert `DeprecationWarning` is NOT emitted from adapter operations
+
+12. `test_no_git_mutation_in_adapter_construction`
+    - Mock `subprocess.run`
+    - Call `build_project_context()` with a valid config
+    - Assert `subprocess.run` was never called
+
+13. `test_no_qa_execution_in_adapter_construction`
+    - Mock `subprocess.run`
+    - Call `build_project_context()` with a valid config
+    - Assert no QA command was run
+
+14. `test_manager_uses_project_config_paths_not_hardcoded`
+    - Create a `ProjectConfig` with custom paths
+    - Call `_manager_main(config)`
+    - Verify adapters use the custom paths, not hardcoded defaults
+
+### Keep existing tests (verify no regression)
+
+- All 40 existing tests in `test_engineering_project_context.py` continue to pass
+- All 426 existing tests in the full suite continue to pass
+- `test_engineering_manager.py` existing tests continue to pass
+
+---
+
+## Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Event store path switch breaks in-flight workflows | Low | Medium | Backward-compat `main()` keeps old path; new code uses config path |
+| `EngineeringEventStore` schema migration | Low | High | `EngineeringEventStore` schema is already at version 1; `engineering/event_store.db` is a new file for new runs |
+| Adapter leaks raw store internals | Medium | Low | Adapters are typed Protocol wrappers; downstream code uses only Protocol methods |
+| `DeprecationWarning` appears inside workflow loops | Low | Low | Warning emitted only in `main()` shim, not in adapter operations |
+| Circular import from `context.py` importing concrete adapter modules | Medium | Medium | Keep adapter classes in `context.py` initially; split to separate files only if size warrants |
+| `WorkflowStore` created with wrong `event_store` reference | Low | High | `WorkflowAdapterImpl` owns both stores; passes its own `EngineeringEventStore` as `event_store=` kwarg |
+
+---
+
+## Non-Blocking Findings from ENGPLAT-002A Audit (addressed in 002B)
+
+1. `TYPE_CHECKING` annotation exposure in `adapters.py` — `EngineeringEventStore`
+   and `WorkflowStore` imported only under `TYPE_CHECKING`. 002B concrete adapters
+   are defined in `context.py` which imports these types at module level, resolving
+   the annotation gap. No action needed in `adapters.py`.
+
+---
+
+## Backward-Compatibility Shim (Formal Contract)
+
+The shim is the existing `main()` function in `manager.py`. It:
+
+1. Uses `TRADING_BOT_PROJECT` constant to feed the adapter factory
+2. Emits exactly one `DeprecationWarning` with text:
+   `"Manager is using a legacy single-project entry path. "
+   "This path is deprecated and will be removed after ENGPLAT-002C is complete "
+   "AND a second managed project has passed integration testing. "
+   "Do not rely on this path in new code."`
+3. Calls `_manager_main(TRADING_BOT_PROJECT)` which uses concrete adapters
+4. Does NOT create a second `ProjectConfig` instance
+5. Does NOT bypass `ProjectContext`
+6. Does NOT emit repeated warnings inside workflow loops
+
+---
 
 ### ENGPLAT-002B acceptance criteria
 
-- GovernanceAdapter, WorkflowAdapter, EventAdapter implemented and passing tests
-- `manager.py` refactored to accept `ProjectContext`; hard-coded paths removed
-  from the manager's service construction
-- `build_project_context(TRADING_BOT_PROJECT)` produces a context that unmodified
-  downstream services can consume without behavioral change
-- Backward-compatibility shim emits `DeprecationWarning` at the legacy entry point
-- No `git_service.py`, `qa_runner.py`, `reporter.py`, `query_service.py`,
-  `config.py`, or `codex_cli_wrapper.py` migration in this task
-- Full test suite passes without modification of test assertions
-- ENGDASH-005 can begin after 002B (it needs only stable read interfaces)
+- [ ] GovernanceAdapter, WorkflowAdapter, EventAdapter implemented and passing tests
+- [ ] `manager.py` refactored to accept `ProjectContext` via `_manager_main(config)`
+- [ ] Hard-coded paths removed from `_manager_main`; retained in `main()` shim only
+- [ ] `build_project_context(TRADING_BOT_PROJECT)` produces a context where
+      `context.governance.load_backlog()` returns non-empty task tuple
+- [ ] `context.events.list_events(limit=N)` correctly limits results
+- [ ] `context.workflow.archive_completed()` delegates to `WorkflowStore.archive_completed()`
+- [ ] Backward-compat shim (`main()`) emits exactly one `DeprecationWarning`
+- [ ] No `DeprecationWarning` emitted from adapter operations inside workflow loops
+- [ ] No `git_service.py`, `qa_runner.py`, `reporter.py`, `query_service.py`,
+      `config.py`, or `codex_cli_wrapper.py` migration
+- [ ] Full test suite passes without modification of existing test assertions
+- [ ] `engineering/adapters.py` unchanged (Protocol definitions only)
+- [ ] ENGDASH-005 can begin after 002B (it needs only stable read interfaces)
 
 ---
 

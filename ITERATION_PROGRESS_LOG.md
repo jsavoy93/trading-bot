@@ -1448,3 +1448,24 @@ agent/engplat-002a-project-context-contracts created from current main.
   - context.py uses module-level private deferred adapter classes (importable by tests)
   - Validation failures are deterministic and sanitized (no raw config values in errors)
 - Next action: Push branch, open PR # targeting main, stop for Josh's read-only review.
+
+## 2026-08-07 12:32:00–13:05:00 UTC — ENGPLAT-002B governance planning
+
+- Elapsed time: ~33 minutes
+- Continuity: Continuous
+- Backlog item/objective: ENGPLAT-002B governance planning — Local Read Adapters and Manager Integration
+- Branch: `agent/engplat-002b-governance`
+- Commit: [pending push]
+- Status: DONE — GOVERNANCE_DRAFT
+- Files changed:
+  - `AGENT_BACKLOG.md` (+373 lines — full 002B governance plan)
+  - `MENTOR.md` (+23 lines — updated 002A/DONE, 002B/governance_draft, key design decisions)
+- Tests/backtests: Not run; governance-only task
+- Decisions/risks:
+  - D1: Event store path resolution — manager keeps hardcoded paths in legacy main(); new _manager_main(config) uses config-derived paths
+  - D2: Composition over modification — adapters wrap existing stores without modifying them
+  - D3: Retain NotImplementedError stubs for git/qa/files until 002C
+  - D4: EngineeringEventStore constructor side effect accepted (required precondition)
+  - KEY FINDING: TRADING_BOT_PROJECT.workflow_files.event_store_path = engineering/event_store.db, but manager.py hardcodes .agent-state/engineering-events.sqlite3 — paths differ
+  - Resolution: backward-compat main() keeps old path; new _manager_main uses config path
+- Next action: Push governance PR, stop for Josh review and approval.
