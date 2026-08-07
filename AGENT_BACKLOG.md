@@ -783,6 +783,59 @@ Execution gate:
 
 ---
 
+### ENGPLAT-002A allowed areas (implementation governance)
+
+Exact files authorized for 002A implementation. No other files may be created or modified.
+
+**New files**:
+
+| File | Purpose |
+|---|---|
+| `engineering/adapters.py` | Protocol definitions + `ProjectContext` dataclass + `ProjectMetadata` |
+| `engineering/context.py` | `build_project_context()` factory stub (Option B: raises `NotImplementedError`) |
+| `tests/test_engineering_project_context.py` | Structural contract tests |
+
+**Governance files updated** (no runtime code changes):
+
+| File | Change |
+|---|---|
+| `AGENT_BACKLOG.md` | This allowed-areas section added |
+| `MENTOR.md` | Optional: update adapter protocol responsibilities table |
+
+**Not authorized** (explicit prohibitions):
+
+- `engineering/` — any existing files (manager.py, backlog.py, etc.)
+- `src/` — any runtime trading code
+- `tests/` — any existing test files
+- `dashboard/` — any dashboard code
+- `reports/` — report generation
+- `config.py`, `git_service.py`, `qa_runner.py`, `reporter.py`, `query_service.py`
+- Any concrete adapter implementations (GovernanceAdapter, WorkflowAdapter, etc.)
+- Any `manager.py` changes
+- Any backward-compatibility shim
+- Any filesystem artifacts outside `engineering/adapters.py`, `engineering/context.py`
+
+### ENGPLAT-002A implementation risks
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Protocol signatures drift from `engineering/models.py` types | Medium | Signatures reference `models.` namespace; update if models.py changes |
+| Factory stub confuses future implementors (002B) | Low | Contract documentation explicitly states stub; 002B implements concrete adapters |
+| Structural tests insufficient to catch signature errors | Medium | Use `runtime_checkable()`; test import and Protocol membership |
+| Import cycles if adapters.py imports models.py circularly | Low | models.py already imported by other engineering modules; verify no cycle |
+
+### ENGPLAT-002A stop criteria
+
+Implementation stops immediately if:
+- Any change attempts to modify an existing engineering/ file
+- Any change attempts to implement a concrete adapter class
+- Any change attempts to modify manager.py
+- Any change attempts to add a backward-compatibility shim
+- Structural tests fail after the allowed attempt
+- Repository becomes dirty (uncommitted changes to prohibited files)
+
+---
+
 ### ENGPLAT-002A scope
 
 - Define `@dataclass(frozen=True) class ProjectContext` with all 8 fields
