@@ -1992,6 +1992,123 @@ This guarantees that dashboard, Telegram, CLI, and future interfaces all show
 the same decision and evidence. The supervisor is the single source of
 recommendation truth.
 
+##### Engineering Workflow State Machine
+
+The canonical workflow state machine governs every engineering task. All platform
+components derive state from the same immutable event history.
+
+**Workflow states** (in order):
+
+```
+TODO
+↓
+PLANNING
+↓
+APPROVED_FOR_IMPLEMENTATION
+↓
+IMPLEMENTING
+↓
+IMPLEMENTATION_COMPLETE
+↓
+QA_RUNNING
+↓
+QA_FAILED | QA_PASSED
+↓
+READ_ONLY_REVIEW
+↓
+CHANGES_REQUESTED | APPROVED_FOR_MERGE
+↓
+MERGED
+↓
+ARCHIVED
+```
+
+**State definitions and required evidence**:
+
+| State | Entry Criteria | Exit Criteria | Required EvidenceBundle | DecisionResult |
+|---|---|---|---|---|
+| `TODO` | Task in backlog | Manager begins work | Backlog entry, ProjectContext | None |
+| `PLANNING` | Manager drafts plan | Josh approves plan | Plan draft, ProjectContext | `WAIT_FOR_APPROVAL` |
+| `APPROVED_FOR_IMPLEMENTATION` | Josh approves plan | Agent begins work | Approved plan, scope | `CONTINUE` |
+| `IMPLEMENTING` | Agent starts work | Implementation complete | Allowed-areas diff, git state | None |
+| `IMPLEMENTATION_COMPLETE` | Diff complete, tests pass locally | QA begins | Full diff, test results | `CONTINUE` |
+| `QA_RUNNING` | QA invoked | QA result available | QA execution record | None |
+| `QA_FAILED` | QA exit ≠ 0 | Agent fixes or scopes back | QA failure evidence | `WAIT_FOR_APPROVAL` |
+| `QA_PASSED` | QA exit = 0 | Review begins | QA pass evidence | `CONTINUE` |
+| `READ_ONLY_REVIEW` | Manager opens PR | Review complete | PR metadata, diff | `WAIT_FOR_APPROVAL` |
+| `CHANGES_REQUESTED` | Reviewer requests changes | Agent addresses | Review comments | `CONTINUE` (→ IMPLEMENTING) |
+| `APPROVED_FOR_MERGE` | Josh approves PR | Merge begins | Approval evidence | `CONTINUE` |
+| `MERGED` | Merge complete | Archive initiated | Merge commit, event | `CONTINUE` |
+| `ARCHIVED` | Workflow archived | Terminal | Archive path | None |
+
+**Transition rules**:
+
+| From | To | Allowed? | Gate | Trigger |
+|---|---|---|---|---|
+| TODO | PLANNING | Yes | None | Manager picks task |
+| PLANNING | APPROVED_FOR_IMPLEMENTATION | Yes | Josh approval | `APPROVED_FOR_MERGE` DecisionResult |
+| PLANNING | TODO | Yes | None | Josh rejects plan |
+| APPROVED_FOR_IMPLEMENTATION | IMPLEMENTING | Yes | None | Agent starts work |
+| IMPLEMENTING | IMPLEMENTATION_COMPLETE | Yes | None | All changes complete |
+| IMPLEMENTATION_COMPLETE | QA_RUNNING | Yes | None | QA invoked |
+| QA_RUNNING | QA_PASSED | Yes | None | QA exit 0 |
+| QA_RUNNING | QA_FAILED | Yes | None | QA exit ≠ 0 |
+| QA_FAILED | IMPLEMENTING | Yes | None | Agent begins fixes |
+| QA_PASSED | READ_ONLY_REVIEW | Yes | None | PR opened |
+| READ_ONLY_REVIEW | APPROVED_FOR_MERGE | Yes | Josh approval | `APPROVED_FOR_MERGE` |
+| READ_ONLY_REVIEW | CHANGES_REQUESTED | Yes | None | Reviewer requests changes |
+| CHANGES_REQUESTED | IMPLEMENTING | Yes | None | Agent begins fixes |
+| CHANGES_REQUESTED | READ_ONLY_REVIEW | Yes | None | Agent re-submits |
+| APPROVED_FOR_MERGE | MERGED | Yes | None (future: auto or Josh) | Merge committed |
+| MERGED | ARCHIVED | Yes | None | Archive initiated |
+| Any | ARCHIVED | No | — | Invalid: no resurrection |
+| QA_PASSED | IMPLEMENTING | No | — | Invalid: cannot regress |
+| CHANGES_REQUESTED | APPROVED_FOR_MERGE | No | — | Invalid: must re-review |
+
+**Workflow invariants** (enforced):
+
+- Exactly one active state per workflow at any time
+- Every transition is recorded in the event store with full audit fields
+- Every transition is attributable to an actor (manager, supervisor, Josh)
+- No approval gate may be skipped
+- No transition occurs without a corresponding DecisionResult (for state changes)
+- No hidden or undocumented transitions exist
+- All transitions are deterministic: same EvidenceBundle + state → same next state
+- `ARCHIVED` is terminal: no transitions out
+- `TODO` is the only valid initial state
+
+**Workflow event model**:
+
+Each transition records:
+
+```python
+@dataclass(frozen=True)
+class WorkflowTransitionEvent:
+    event_id: str
+    workflow_id: str
+    previous_state: WorkflowState
+    new_state: WorkflowState
+    timestamp: datetime
+    actor: str                    # manager | supervisor | josh | system
+    trigger: str                  # e.g., "qa_passed", "josh_approved"
+    evidence_bundle_id: str        # reference to EvidenceBundle used
+    decision_result_id: str        # reference to DecisionResult (if applicable)
+    notes: str                     # human-readable note (bounded, no secrets)
+    allowed_areas_changed: bool    # True if scope expanded during this transition
+```
+
+**Canonical state derivation**:
+
+Manager, Supervisor, Dashboard, Telegram, and CLI all derive current workflow state
+from the same immutable event history. No component maintains its own state copy.
+
+```
+EventStore.query(workflow_id) → ordered transitions → current_state
+```
+
+This guarantees that all interfaces show identical state because they read
+the same event history.
+
 #### Phase 2 — Routine Auto-Dispatch
 
 **Goal**: Eliminate manual copying for routine, low-risk transitions.
