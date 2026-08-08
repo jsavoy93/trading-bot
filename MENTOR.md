@@ -879,11 +879,22 @@ rules, acceptance criteria, and implementation risks.
 ENGPLAT-001 delivered the typed `ProjectConfig` contract but no service consumes it.
 The platform has the vocabulary but not yet the grammar of project-agnostic design.
 
-ENGPLAT-002A (governance approved, pending implementation) defines the
-`ProjectContext` contract: a read-only runtime dependency container encapsulating
-all project-specific dependencies. Services receive a `ProjectContext` rather than
-constructing their own paths. Factory contract: Option B (concrete construction
-deferred to 002B).
+ENGPLAT-002A (merged, audited PASS) defines the `ProjectContext` contract:
+a read-only runtime dependency container encapsulating all project-specific
+dependencies. Services receive a `ProjectContext` rather than constructing their
+own paths. Factory contract: Option B (concrete construction deferred to 002B).
+
+ENGPLAT-002B (governance in revision — PR #26) implements concrete
+GovernanceAdapter, WorkflowAdapter, EventAdapter, and integrates `manager.py`
+with `ProjectContext`. Corrected design decisions (post Josh review):
+
+- `main()` is a clean deprecation shim: emits one bounded `DeprecationWarning`,
+  then delegates entirely to `_manager_main(TRADING_BOT_PROJECT)`. No hardcoded paths.
+- `_manager_main(config)` uses `build_project_context(config)` and concrete adapters.
+  Single authoritative event-store path from `config.workflow_files.event_store_path`.
+- `CapabilityUnavailable` replaces `NotImplementedError` for deferred capabilities.
+- `EventAdapterImpl` uses lazy construction: no filesystem side effect at factory time.
+- No data at old `.agent-state/engineering-events.sqlite3` path; no migration needed.
 
 ### The Architectural Rule
 
