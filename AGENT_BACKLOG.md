@@ -1304,7 +1304,7 @@ its arguments. It is safe to construct eagerly.
      receive only the specific adapters they need (not the full `ProjectContext`)
    - `persist_workflow_result` signature updated to accept `WorkflowAdapter` instead of
      `WorkflowStore` so it can call `adapter.archive_completed(workflow)`
-   - **Do NOT change** `main()` hardcoded paths (those ARE the backward-compat path)
+   - `main()` is a clean deprecation shim only; it contains no hardcoded repository-specific paths
    - **Do NOT change** existing CLI argument parsing or task-selection logic
 
 ### Required (must add)
@@ -1388,8 +1388,8 @@ class EventAdapterImpl:
     def pause_state(self) -> dict[str, object]: ...
 ```
 
-- `EngineeringEventStore` constructed at init time (creates parent dir + schema)
-- `append()`, `list_events(limit)`, `pause_state()` delegate directly to the store
+- `EngineeringEventStore` NOT constructed in `__init__`; stored as `None`; initialized lazily on first operation via `_get_store()`; no filesystem artifact created at construction time
+- `append()`, `list_events(limit)`, `pause_state()` delegate through `_get_store()`
 - `list_events` enforces `limit` parameter (store already validates 1-500)
 - No Telegram/network coupling at the adapter level
 
