@@ -1673,25 +1673,55 @@ def create_engineering_query_service(config: EngineeringDashboardProviderConfig)
 `EngineeringQueryService` is constructed with direct `EngineeringEventStore`
 and `WorkflowStore` instances, bypassing the adapter boundary.
 
-**Required fix (narrow):**
-- `EngineeringQueryService` must accept `EventAdapter` and `WorkflowAdapter`
-  (from `engineering/adapters.py`) rather than constructing stores directly.
-- `EngineeringQueryService` accesses:
-  - `event_store.list_events(limit)` → maps to `event_adapter.list_events(limit)`
-  - `event_store.pause_state()` → maps to `event_adapter.pause_state()`
-  - `workflow_store.exists()` → maps to `workflow_adapter.workflow_store().exists()`
-  - `workflow_store.load()` → maps to `workflow_adapter.workflow_store().load()`
-- `ReadOnlyEngineeringEventStore` remains used internally by
-  `EventAdapterImpl._get_store()` (ENGPLAT-002B lazy construction). The
-  refactoring moves the construction responsibility to the adapter boundary,
-  not to the query service.
-- `WorkflowStore` is constructed by `WorkflowAdapterImpl.workflow_store()`
-  (ENGPLAT-002B). The query service receives `WorkflowAdapter` and calls
-  `.workflow_store()` to get the store instance.
+**Required fix (backward-compatible Union approach):**
 
-**Note:** This is the minimal wiring change. The `EngineeringQueryService`
-interface (what data it returns) is preserved. Only the dependency injection
-changes to use adapters.
+`EngineeringQueryService.__init__` must use `Union[...]` type annotations to
+accept both concrete store types and adapter protocols, so that existing callers
+outside the ENGDASH-005 scope continue to work without modification:
+
+- `EngineeringEventStore` (concrete) and `EventAdapter` (protocol) both satisfy the
+  `event_store` parameter via `Union[EngineeringEventStore, EventAdapter]`
+- `WorkflowStore` (concrete) and `WorkflowAdapter` (protocol) both satisfy the
+  `workflow_store` parameter via `Union[WorkflowStore, WorkflowAdapter]`
+
+Internally, `EngineeringQueryService` calls:
+  - `event_store.list_events(limit)` — method present on both `EngineeringEventStore` and `EventAdapter`
+  - `event_store.pause_state()` — method present on both `EngineeringEventStore` and `EventAdapter`
+  - `workflow_store.exists()` — method present on both `WorkflowStore` and the `WorkflowAdapter` protocol's `workflow_store()` return
+  - `workflow_store.load()` — method present on both `WorkflowStore` and the `WorkflowAdapter` protocol's `workflow_store()` return
+
+This means:
+- `engineering/telegram_service.py` (not in scope) passes `EngineeringEventStore`/`WorkflowStore` objects directly — no change required ✅
+- `tests/test_engineering_query_service.py` (prohibited from modification) passes concrete store objects — no change required ✅
+- `dashboard_api/providers.py` (in scope) passes `EventAdapterImpl`/`WorkflowAdapterImpl` from `build_project_context()` — adapter boundary used ✅
+
+**Do NOT** change the constructor to accept only `EventAdapter`/`WorkflowAdapter` protocols. That would break existing callers outside the governance scope without a backward-compatibility path.
+
+The `ReadOnlyEngineeringEventStore` class (in `dashboard_api/providers.py`)
+remains used by `EventAdapterImpl._get_store()` (ENGPLAT-002B lazy construction).
+The refactoring moves the construction responsibility to the adapter boundary,
+not to the query service.
+
+### Issue 5: Timeline ordering
+
+The governance requires "deterministic (ascending by `occurred_at`)" ordering.
+
+**Current behavior:** `timeline_projection()` returns events in ascending `sequence`
+order (from `EngineeringEventStore.list_events()` which does `ORDER BY sequence DESC`
+then `reversed()`). This happens to be roughly chronological but is NOT explicitly
+sorted by `occurred_at` — the `sequence` and `occurred_at` columns are independent.
+
+**Required fix:** Add a deterministic sort step in `EngineeringQueryService.snapshot()`
+after `timeline_projection()` returns:
+```python
+timeline = timeline_projection(
+    self.event_store.list_events(limit=timeline_limit), limit=timeline_limit
+)
+timeline.sort(key=lambda e: e.get("occurred_at", ""))  # ascending occurred_at
+```
+
+This is a one-line post-processing step within `engineering/query_service.py`.
+`engineering/event_projection.py` is NOT modified.
 
 ---
 
@@ -1705,7 +1735,7 @@ No other files may be created or modified.
 | File | Authorization reason |
 |---|---|
 | `dashboard_api/providers.py` | Remove `_discover_repo_root()`, hard-coded paths, and fallback-to-cwd. Accept explicit `repo_root`, `workflow_state_path`, `event_store_path` via `EngineeringDashboardProviderConfig`. Wire `EngineeringQueryService` to adapters. |
-| `engineering/query_service.py` | Migrate `EngineeringQueryService.__init__` to accept `EventAdapter` + `WorkflowAdapter` instead of direct `EngineeringEventStore` + `WorkflowStore` instances. Preserve all existing query/snapshot behavior. |
+| `engineering/query_service.py` | Migrate `EngineeringQueryService.__init__` to accept `Union[EngineeringEventStore, EventAdapter]` and `Union[WorkflowStore, WorkflowAdapter]` for backward compatibility. Add explicit `timeline.sort(key=lambda e: e.get("occurred_at", ""))` in `snapshot()` for deterministic ordering. Preserve all existing query/snapshot behavior. |
 
 **Runtime files (NOT authorized — already implemented by ENGPLAT-002B):**
 
@@ -1727,7 +1757,7 @@ No other files may be created or modified.
 - `engineering/` broadly — only `query_service.py` is authorized
 - `dashboard_api/` broadly — only `providers.py` is authorized
 - `tests/` broadly — only new test file above is authorized
-- Any existing test file modification (changes to `tests/test_engineering_query_service.py`, `tests/test_engineering_project_context.py`, `tests/test_engineering_manager.py` are out of scope for this task)
+- Any existing test file modification (changes to `tests/test_engineering_query_service.py`, `tests/test_engineering_project_context.py`, `tests/test_engineering_manager.py` are out of scope for this task). Note: the `Union` backward-compatibility design means `tests/test_engineering_query_service.py` requires no changes — the constructor accepts both concrete store types and adapter protocols via `Union[...]`.
 
 **Governance files (update only):**
 
@@ -1850,14 +1880,13 @@ Implementation stops immediately if:
       from `dashboard_api/providers.py`
 - [ ] `_discover_repo_root()` removed from `dashboard_api/providers.py`
 - [ ] `EngineeringDashboardProviderConfig.for_repo()` no longer uses cwd fallback
-- [ ] `EngineeringQueryService` accepts `EventAdapter` and `WorkflowAdapter`
-      (not direct `EngineeringEventStore`/`WorkflowStore` construction)
+- [ ] `EngineeringQueryService.__init__` accepts `Union[EngineeringEventStore, EventAdapter]` and `Union[WorkflowStore, WorkflowAdapter]`; existing callers (`engineering/telegram_service.py`, `tests/test_engineering_query_service.py`) require no modification
 - [ ] `EngineeringQueryService.snapshot()` behavior unchanged (same data returned)
 - [ ] Existing `GET /engineering` route continues to serve HTML dashboard
 - [ ] Existing `GET /api/engineering/snapshot` route continues to serve JSON snapshot
 - [ ] `DashboardSnapshot.recent_events` populated from adapter-backed timeline
 - [ ] Timeline is bounded by the `timeline_limit` parameter (max 500)
-- [ ] Timeline ordering is deterministic (ascending by `occurred_at`)
+- [ ] Timeline ordering is deterministic: `timeline.sort(key=lambda e: e.get("occurred_at", ""))` applied in `EngineeringQueryService.snapshot()` after `timeline_projection()` returns
 - [ ] Empty/unavailable timeline degrades gracefully (no crash; "unavailable" shown)
 - [ ] All dynamic text in timeline is HTML-escaped before rendering
 - [ ] No `Path.cwd()` or git discovery in the dashboard data path
@@ -1881,7 +1910,7 @@ New behavioral tests in `tests/test_dashboard_timeline.py`:
 | [TST-007] `test_timeline_empty_source_graceful` | Empty event source returns empty tuple, not exception |
 | [TST-008] `test_timeline_multiple_events` | Multiple events rendered without crash |
 | [TST-009] `test_timeline_html_escaping` | Event payload text with `<`, `>`, `&` is HTML-escaped in output |
-| [TST-010] `test_query_service_uses_adapters` | `EngineeringQueryService` accepts `EventAdapter` + `WorkflowAdapter` |
+| [TST-010] `test_query_service_uses_adapters` | `EngineeringQueryService.__init__` accepts `Union[EngineeringEventStore, EventAdapter]` and `Union[WorkflowStore, WorkflowAdapter]`; both concrete stores and adapter protocols work as arguments |
 | [TST-011] `test_no_trading_runtime_imports` | Dashboard timeline code does not import `src.core` or `trading_bot` modules |
 | [TST-012] `test_existing_snapshot_route_works` | `GET /api/engineering/snapshot` returns 200 with JSON |
 | [TST-013] `test_existing_dashboard_route_works` | `GET /engineering` returns 200 with HTML |
