@@ -176,6 +176,32 @@ class EventAdapter(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# CapabilityUnavailable
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CapabilityUnavailable(Exception):
+    """Explicit unavailable-capability error for deferred ProjectContext fields.
+
+    Raised deterministically when a ProjectContext git, qa, or files adapter
+    is accessed before ENGPLAT-002C provides a concrete implementation.
+
+    The message is bounded and contains only project_id and capability name.
+    No raw paths, secrets, or command output are included.
+    """
+
+    project_id: str
+    capability: str  # one of: "git", "qa", "files"
+
+    def __str__(self) -> str:
+        return (
+            f"capability {self.capability!r} is not yet available "
+            f"for project {self.project_id!r} (ENGPLAT-002C pending)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # ProjectMetadata
 # ---------------------------------------------------------------------------
 
