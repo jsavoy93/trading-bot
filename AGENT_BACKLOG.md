@@ -1787,7 +1787,8 @@ No other files may be created or modified.
 
 | File | Authorization reason |
 |---|---|
-| `dashboard_api/providers.py` | Remove `_discover_repo_root()`, hard-coded paths, and fallback-to-cwd. Accept explicit `repo_root`, `workflow_state_path`, `event_store_path` via `EngineeringDashboardProviderConfig`. Wire `EngineeringQueryService` to adapters. |
+| `dashboard_api/providers.py` | Remove `_discover_repo_root()`, hard-coded paths, and fallback-to-cwd. Accept explicit `repo_root`, `workflow_state_path`, `event_store_path` via `EngineeringDashboardProviderConfig`. Wire `EngineeringQueryService` to adapters with `event_source` and `workflow_source` parameters. |
+| `dashboard_api/app.py` | Update `create_default_read_model()` to obtain the authoritative `ProjectConfig` (`TRADING_BOT_PROJECT` from `engineering.models`), call `build_project_context()` to get the `ProjectContext`, extract `workflow_files` and `governance_files` paths, and construct an explicit `EngineeringDashboardProviderConfig` — no `None` fallback, no `Path.cwd()`, no `_discover_repo_root()`. Preserve all existing routes and application startup behavior. |
 | `engineering/query_service.py` | `EngineeringQueryService.__init__` accepts `event_source: EngineeringEventStore \| EventAdapter` and `workflow_source: WorkflowStore \| WorkflowAdapter` with one-time `isinstance` normalization of `workflow_source` to `WorkflowStore`. Add deterministic three-key sort (occurred_at, -sequence, event_id) in `snapshot()`. Preserve all existing query/snapshot behavior. |
 
 **Runtime files (NOT authorized — already implemented by ENGPLAT-002B):**
@@ -1798,9 +1799,16 @@ No other files may be created or modified.
 | `engineering/context.py` | `GovernanceAdapterImpl`, `WorkflowAdapterImpl`, `EventAdapterImpl`, `build_project_context()` already implemented by ENGPLAT-002B. Do not modify. |
 | `engineering/models.py` | ENGPLAT-001 types already finalized. Do not modify unless required by a genuine 002B contract gap. |
 | `dashboard_api/engineering_read_model.py` | Do not authorize. The read model (`DashboardSnapshot`, `EngineeringDashboardReadModel`) is already defined by ENGDASH-004 and does not require structural changes for timeline data (the timeline comes from `query_service.snapshot()`). |
-| `dashboard_api/app.py` | Do not authorize. Routes `/engineering` and `/api/engineering/snapshot` are already established by ENGDASH-004. ENGDASH-005 extends existing data flows, not route structure. |
+| `dashboard_api/engineering_read_model.py` | Do not authorize. The read model (`DashboardSnapshot`, `EngineeringDashboardReadModel`) is already defined by ENGDASH-004 and does not require structural changes for timeline data. |
 
-**Test files (new only — do not modify existing tests):**
+**Test files (modify existing):**
+
+| File | Authorization |
+|---|---|
+| `tests/test_dashboard_api_provider.py` | Update `test_default_app_uses_real_provider_and_preserves_exact_route_surface` to pass an explicit `EngineeringDashboardProviderConfig` to `create_app(provider)` instead of relying on `create_default_read_model()`. Update line 102 from `isinstance(query_service.event_store, ReadOnlyEngineeringEventStore)` to verify bounded `list_events()` and `pause_state()` behavior through `EngineeringQueryService.snapshot()` — capability/behavior assertion, not concrete type assertion. No other changes. |
+| `tests/test_dashboard_api_app.py` | Update `TestClient(create_app())` call to construct an explicit `EngineeringDashboardProviderConfig` and pass it to `create_app(provider)`. Preserve all existing route, safety, and HTML behavior assertions. No other changes. |
+
+**Test files (new):**
 
 | File | Purpose |
 |---|---|
@@ -1808,9 +1816,9 @@ No other files may be created or modified.
 
 **NOT authorized:**
 - `engineering/` broadly — only `query_service.py` is authorized
-- `dashboard_api/` broadly — only `providers.py` is authorized
-- `tests/` broadly — only new test file above is authorized
-- Any existing test file modification (`tests/test_engineering_query_service.py`, `tests/test_engineering_project_context.py`, `tests/test_engineering_manager.py` are out of scope for this task)
+- `dashboard_api/` broadly — only `providers.py` and `app.py` are authorized (as specified above)
+- `tests/` broadly — only `test_dashboard_api_provider.py`, `test_dashboard_api_app.py`, and `test_dashboard_timeline.py` are authorized
+- Any other existing test file modification (`tests/test_engineering_query_service.py`, `tests/test_engineering_project_context.py`, `tests/test_engineering_manager.py` are out of scope for this task)
 - `engineering/telegram_service.py` — not in scope; backward-compatible design means it requires no changes
 - `engineering/event_projection.py` — not authorized; sort is applied in `query_service.py` after `timeline_projection()` returns
 
@@ -1920,7 +1928,7 @@ Implementation stops immediately if:
 - Any change introduces `Path.cwd()`, `_discover_repo_root()`, or equivalent
   repository discovery logic into the dashboard path
 - Any change creates a new route beyond the two established by ENGDASH-004
-- Any change modifies an existing test file
+- Any change modifies an existing test file outside the authorized scope (`tests/test_dashboard_api_provider.py` lines 102 and 167, `tests/test_dashboard_api_app.py` line 290)
 - Any change attempts to implement Git, QA, or File adapter functionality
 - Full test suite fails after the allowed attempt
 - Repository becomes dirty with uncommitted changes to prohibited files
@@ -1944,7 +1952,15 @@ Implementation stops immediately if:
 - [ ] Timeline ordering is deterministic: primary key `occurred_at` ascending, tiebreaker `-sequence` descending, fallback `event_id` lexicographic ascending; missing/malformed `occurred_at` values use `""` sentinel (sorts before all valid timestamps); no crash on None or non-string values
 - [ ] Empty/unavailable timeline degrades gracefully (no crash; "unavailable" shown)
 - [ ] All dynamic text in timeline is HTML-escaped before rendering
+- [ ] `dashboard_api/app.py` uses `TRADING_BOT_PROJECT` (from `engineering.models`) and `build_project_context()` to obtain paths; `create_default_read_model()` passes an explicit `EngineeringDashboardProviderConfig` to `create_engineering_dashboard_provider()`
 - [ ] No `Path.cwd()` or git discovery in the dashboard data path
+- [ ] No `_discover_repo_root()` fallback in `app.py`
+- [ ] No hard-coded event/workflow/governance path in `app.py`
+- [ ] `create_app()` / module-level `app` starts successfully with the approved default project composition
+- [ ] `GET /engineering` remains operational after `app.py` changes
+- [ ] `GET /api/engineering/snapshot` remains operational after `app.py` changes
+- [ ] No new route added by `app.py` changes
+- [ ] No network, Git, or QA side effects from `app.py` import or startup
 - [ ] No `ProjectContext` dependency inside `EngineeringQueryService`
 - [ ] Both dependency forms (concrete stores; adapter-wrapped stores) produce identical `snapshot()` output for the same input data
 - [ ] `git diff --check` passes
@@ -1962,6 +1978,7 @@ New behavioral tests in `tests/test_dashboard_timeline.py`:
 | `test_no_cwd_fallback` | Provider path uses only explicitly supplied config |
 | `test_no_discover_repo_root_in_path` | `_discover_repo_root` not called during provider construction |
 | `test_event_store_path_from_config` | `ReadOnlyEngineeringEventStore` uses config-supplied path, not DEFAULT constant |
+| [TST-011] `test_no_trading_runtime_imports` | Dashboard timeline and platform code does not import `src.core`, `trading_bot`, or equivalent trading-runtime modules |
 | [TST-005] `test_timeline_bounded` | `timeline_projection` result count ≤ `timeline_limit` |
 | [TST-006a] `test_timeline_deterministic_order_ascending_occurred_at` | Events returned in ascending `occurred_at` order; ties broken by `-sequence` (higher sequence first) |
 | [TST-007] `test_timeline_empty_source_graceful` | Empty event source returns empty tuple, not exception |
