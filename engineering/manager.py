@@ -1,28 +1,38 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
 
 from engineering.backlog import load_backlog
 from engineering.config import missing_required_paths
-from engineering.event_store import EngineeringEventStore
-from engineering.git_service import GitService
+from engineering.context import build_project_context
 from engineering.manager_driver import DriverBounds, drive_workflow
-from engineering.models import WorkflowState
+from engineering.models import ProjectConfig, TRADING_BOT_PROJECT
 from engineering.planner import build_execution_plan, select_next_task
 from engineering.workflow_engine import dispatch_workflow
-from engineering.workflow_store import StoredWorkflow, WorkflowStore
+from engineering.workflow_store import StoredWorkflow
 
 
 def persist_workflow_result(
-    workflow_store: WorkflowStore, workflow: StoredWorkflow
+    workflow_adapter,  # WorkflowAdapter
+    workflow: StoredWorkflow,
 ) -> Path | None:
+    """Persist workflow result using the WorkflowAdapter.
+
+    Receives WorkflowAdapter (not WorkflowStore) per ENGPLAT-002B shallow
+    propagation rule. Calls adapter.workflow_store().archive_completed() and
+    adapter.workflow_store().clear().
+    """
+    from engineering.models import WorkflowState
+
     if workflow.state is not WorkflowState.COMPLETE:
-        workflow_store.save(workflow)
+        workflow_adapter.workflow_store().save(workflow)
         return None
 
-    archive_path = workflow_store.archive_completed(workflow)
-    workflow_store.clear()
+    store = workflow_adapter.workflow_store()
+    archive_path = store.archive_completed(workflow)
+    store.clear()
     return archive_path
 
 
@@ -75,9 +85,13 @@ def _bounds(args: argparse.Namespace) -> DriverBounds:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    repo_root = Path.cwd()
+def _manager_main(config: ProjectConfig, args: argparse.Namespace) -> int:
+    """ProjectContext-aware manager entry point.
+
+    Uses build_project_context(config) for all store access.
+    Derives paths exclusively from config. No hardcoded paths.
+    """
+    repo_root = config.repository_root
     missing_paths = missing_required_paths(repo_root)
 
     if missing_paths:
@@ -91,17 +105,18 @@ def main(argv: list[str] | None = None) -> int:
 
         return 1
 
+    ctx = build_project_context(config)
+
+    # Git is a deferred adapter (002C). Use GitService directly for repo state.
+    from engineering.git_service import GitService
     git = GitService(repo_root)
     state = git.repository_state()
-    event_store = EngineeringEventStore(
-        repo_root / ".agent-state" / "engineering-events.sqlite3"
-    )
-    workflow_store = WorkflowStore(
-        repo_root / ".git" / "engineering-workflow.json",
-        event_store=event_store,
-    )
 
-    tasks = load_backlog(repo_root / "AGENT_BACKLOG.md")
+    workflow_adapter = ctx.workflow
+    event_adapter = ctx.events
+    governance_adapter = ctx.governance
+
+    tasks = governance_adapter.load_backlog()
     available_tasks = tuple(task for task in tasks if task.is_available)
 
     print("Engineering Manager")
@@ -113,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Tasks:      {len(tasks)}")
     print(f"Available:  {len(available_tasks)}")
 
+    workflow_store = workflow_adapter.workflow_store()
+
     if workflow_store.exists():
         if args.drive:
             result = drive_workflow(workflow_store, _bounds(args))
@@ -120,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         workflow = workflow_store.load()
         workflow = dispatch_workflow(workflow)
-        archive_path = persist_workflow_result(workflow_store, workflow)
+        archive_path = persist_workflow_result(workflow_adapter, workflow)
 
         print()
         print("Workflow")
@@ -164,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_driver_result(result)
         return 0
     workflow = dispatch_workflow(workflow)
-    archive_path = persist_workflow_result(workflow_store, workflow)
+    archive_path = persist_workflow_result(workflow_adapter, workflow)
 
     print()
     print("Workflow")
@@ -179,6 +196,21 @@ def main(argv: list[str] | None = None) -> int:
     print("Repository action: NONE")
 
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Legacy entry point — emits DeprecationWarning then delegates to _manager_main."""
+    args = _parser().parse_args(argv)
+
+    warnings.warn(
+        "engineering.manager.main() is deprecated and will be removed after "
+        "ENGPLAT-002C is complete and a second managed project has passed "
+        "integration testing. Use _manager_main(TRADING_BOT_PROJECT) directly.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    return _manager_main(TRADING_BOT_PROJECT, args)
 
 
 if __name__ == "__main__":

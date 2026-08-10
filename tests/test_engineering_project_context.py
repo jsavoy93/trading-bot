@@ -1,8 +1,9 @@
-"""Structural contract tests for ENGPLAT-002A ProjectContext.
+"""Structural contract tests for ENGPLAT-002B ProjectContext.
 
-Scope: These tests verify the structural contracts defined by ENGPLAT-002A.
-They do not implement concrete adapters (deferred to 002B), do not perform
-side effects, and do not modify any existing engineering/ files.
+Scope: These tests verify the structural contracts defined by ENGPLAT-002A
+and the concrete adapter implementations provided by ENGPLAT-002B. They do
+not perform side effects and do not modify any existing engineering/ files
+except authorized test updates required by the merged ENGPLAT-002B governance.
 
 Allowed imports:
 - standard library (dataclasses, pathlib, typing, typing.protocol, inspect)
@@ -39,12 +40,14 @@ from engineering.models import (
 )
 from engineering.context import (
     _DeferredGitAdapter,
-    _DeferredGovernanceAdapter,
-    _DeferredWorkflowAdapter,
     _DeferredQAAdapter,
     _DeferredFileReadAdapter,
-    _DeferredEventAdapter,
+    GovernanceAdapterImpl,
+    WorkflowAdapterImpl,
+    EventAdapterImpl,
+    build_project_context,
 )
+from engineering.adapters import CapabilityUnavailable
 
 
 # ---------------------------------------------------------------------------
@@ -238,36 +241,31 @@ class TestProtocolsRuntimeCheckable:
 # ---------------------------------------------------------------------------
 
 class TestProtocolConformance:
-    """Verify that deferred adapter stubs satisfy their Protocol contracts.
+    """Verify that concrete adapters satisfy their Protocol contracts.
 
-    Each deferred adapter in engineering.context is a minimal class that
-    implements all required methods (all raising NotImplementedError).
-    isinstance() checks pass because the structural signatures are present.
+    ENGPLAT-002B provides GovernanceAdapterImpl, WorkflowAdapterImpl,
+    EventAdapterImpl as concrete implementations. Deferred adapters
+    (_DeferredGitAdapter, _DeferredQAAdapter, _DeferredFileReadAdapter)
+    remain as stubs raising CapabilityUnavailable.
     """
 
     def test_deferred_git_adapter_satisfies_protocol(self):
-        from engineering.context import _DeferredGitAdapter
-        assert isinstance(_DeferredGitAdapter(), GitReadAdapter)
+        assert isinstance(_DeferredGitAdapter("test"), GitReadAdapter)
 
-    def test_deferred_governance_adapter_satisfies_protocol(self):
-        from engineering.context import _DeferredGovernanceAdapter
-        assert isinstance(_DeferredGovernanceAdapter(), GovernanceAdapter)
+    def test_concrete_governance_adapter_satisfies_protocol(self):
+        assert issubclass(GovernanceAdapterImpl, GovernanceAdapter)
 
-    def test_deferred_workflow_adapter_satisfies_protocol(self):
-        from engineering.context import _DeferredWorkflowAdapter
-        assert isinstance(_DeferredWorkflowAdapter(), WorkflowAdapter)
+    def test_concrete_workflow_adapter_satisfies_protocol(self):
+        assert issubclass(WorkflowAdapterImpl, WorkflowAdapter)
+
+    def test_concrete_event_adapter_satisfies_protocol(self):
+        assert issubclass(EventAdapterImpl, EventAdapter)
 
     def test_deferred_qa_adapter_satisfies_protocol(self):
-        from engineering.context import _DeferredQAAdapter
-        assert isinstance(_DeferredQAAdapter(), QAAdapter)
+        assert isinstance(_DeferredQAAdapter("test"), QAAdapter)
 
     def test_deferred_file_adapter_satisfies_protocol(self):
-        from engineering.context import _DeferredFileReadAdapter
-        assert isinstance(_DeferredFileReadAdapter(), FileReadAdapter)
-
-    def test_deferred_event_adapter_satisfies_protocol(self):
-        from engineering.context import _DeferredEventAdapter
-        assert isinstance(_DeferredEventAdapter(), EventAdapter)
+        assert isinstance(_DeferredFileReadAdapter("test"), FileReadAdapter)
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +276,6 @@ class TestProjectContextComposition:
     def test_context_preserves_config(self):
         """Context.config returns the same ProjectConfig passed to the factory."""
         config = _minimal_config(project_id="preserve-test")
-        # We can't use the real factory (needs real paths), so construct directly
         ctx = _build_context_directly_for_test(config)
         assert ctx.config is config
         assert ctx.config.project_id == "preserve-test"
@@ -306,6 +303,21 @@ class TestProjectContextComposition:
         assert isinstance(ctx.files, FileReadAdapter)
         assert isinstance(ctx.events, EventAdapter)
         assert isinstance(ctx.metadata, ProjectMetadata)
+
+    def test_concrete_adapters_are_correct_types(self, tmp_path):
+        """build_project_context returns concrete *Impl adapters for 002B scope."""
+        config = _minimal_config(repository_root=tmp_path)
+        (tmp_path / "AGENT_BACKLOG.md").touch()
+        (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
+        (tmp_path / "OWNERS.md").touch()
+        (tmp_path / "TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md").touch()
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "reports").mkdir()
+
+        ctx = build_project_context(config)
+        assert isinstance(ctx.governance, GovernanceAdapterImpl)
+        assert isinstance(ctx.workflow, WorkflowAdapterImpl)
+        assert isinstance(ctx.events, EventAdapterImpl)
 
 
 # ---------------------------------------------------------------------------
@@ -550,9 +562,9 @@ class TestImportBoundary:
 # ---------------------------------------------------------------------------
 
 class TestDeferredFactoryBehavior:
-    def test_deferred_adapters_raise_not_implemented(self, tmp_path):
-        """Deferred adapters raise NotImplementedError on every method call."""
-        config = _minimal_config(repository_root=tmp_path)
+    def test_deferred_adapters_raise_capability_unavailable(self, tmp_path):
+        """Deferred adapters raise CapabilityUnavailable on every method call."""
+        config = _minimal_config(project_id="deferred-test", repository_root=tmp_path)
         (tmp_path / "AGENT_BACKLOG.md").touch()
         (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
         (tmp_path / "OWNERS.md").touch()
@@ -562,24 +574,21 @@ class TestDeferredFactoryBehavior:
 
         ctx = build_project_context(config)
 
-        # All deferred adapters should raise NotImplementedError
-        with pytest.raises(NotImplementedError):
+        # Deferred git, qa, files raise CapabilityUnavailable
+        with pytest.raises(CapabilityUnavailable) as exc_git:
             ctx.git.current_branch()
+        assert exc_git.value.project_id == "deferred-test"
+        assert exc_git.value.capability == "git"
 
-        with pytest.raises(NotImplementedError):
-            ctx.governance.load_backlog()
-
-        with pytest.raises(NotImplementedError):
-            ctx.workflow.workflow_store()
-
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(CapabilityUnavailable) as exc_qa:
             ctx.qa.configured_command()
+        assert exc_qa.value.project_id == "deferred-test"
+        assert exc_qa.value.capability == "qa"
 
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(CapabilityUnavailable) as exc_files:
             ctx.files.resolve(Path("x"))
-
-        with pytest.raises(NotImplementedError):
-            ctx.events.append(None)  # type: ignore[arg-type]
+        assert exc_files.value.project_id == "deferred-test"
+        assert exc_files.value.capability == "files"
 
     def test_error_messages_are_sanitized(self, tmp_path):
         """Validation errors contain no secrets or raw command output."""
@@ -593,8 +602,8 @@ class TestDeferredFactoryBehavior:
         assert "\n" not in error_msg
 
     def test_deferred_error_is_deterministic(self, tmp_path):
-        """NotImplementedError message is stable (not random or time-based)."""
-        config = _minimal_config(repository_root=tmp_path)
+        """CapabilityUnavailable message is stable (not random or time-based)."""
+        config = _minimal_config(project_id="det-test", repository_root=tmp_path)
         (tmp_path / "AGENT_BACKLOG.md").touch()
         (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
         (tmp_path / "OWNERS.md").touch()
@@ -605,13 +614,15 @@ class TestDeferredFactoryBehavior:
         ctx1 = build_project_context(config)
         ctx2 = build_project_context(config)
 
-        with pytest.raises(NotImplementedError) as exc1:
+        with pytest.raises(CapabilityUnavailable) as exc1:
             ctx1.git.current_branch()
-        with pytest.raises(NotImplementedError) as exc2:
+        with pytest.raises(CapabilityUnavailable) as exc2:
             ctx2.git.current_branch()
 
         # Same error message on every call
         assert str(exc1.value) == str(exc2.value)
+        assert "det-test" in str(exc1.value)
+        assert "git" in str(exc1.value)
 
 
 # ---------------------------------------------------------------------------
@@ -631,14 +642,21 @@ def _build_context_directly_for_test(config: ProjectConfig) -> ProjectContext:
         prohibited_operations=config.prohibited_operations,
     )
 
+    event_adapter = EventAdapterImpl(config.workflow_files.event_store_path)
+    workflow_adapter = WorkflowAdapterImpl(config.workflow_files, event_adapter)
+    governance_adapter = GovernanceAdapterImpl(
+        config.governance_files,
+        config.repository_root,
+    )
+
     return ProjectContext(
         config=config,
-        git=_DeferredGitAdapter(),
-        governance=_DeferredGovernanceAdapter(),
-        workflow=_DeferredWorkflowAdapter(),
-        qa=_DeferredQAAdapter(),
-        files=_DeferredFileReadAdapter(),
-        events=_DeferredEventAdapter(),
+        git=_DeferredGitAdapter(config.project_id),
+        governance=governance_adapter,
+        workflow=workflow_adapter,
+        qa=_DeferredQAAdapter(config.project_id),
+        files=_DeferredFileReadAdapter(config.project_id),
+        events=event_adapter,
         metadata=metadata,
     )
 
