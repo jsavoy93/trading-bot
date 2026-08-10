@@ -1547,6 +1547,362 @@ The shim is the existing `main()` function in `manager.py`. It:
 - [ ] Full test suite passes without modifying existing test assertions
 - [ ] ENGDASH-005 can begin after 002B (it needs only stable read interfaces)
 
+---
+
+### ENGDASH-005 — Engineering Timeline and Historical Activity
+
+Status: GOVERNANCE_DRAFT
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-001, ENGPLAT-002A, ENGPLAT-002B, ENGDASH-004
+
+Purpose:
+
+Consume the ENGPLAT-002B project/adapter boundary to add bounded historical
+engineering timeline data to the existing engineering dashboard, without
+introducing new repository-discovery logic, Path.cwd() fallback, or duplicate
+event-store authority.
+
+ENGPLAT-002B is merged (PR #27) and provides:
+- `GovernanceAdapterImpl` wrapping backlog/governance file reads
+- `WorkflowAdapterImpl` composing `WorkflowStore` and `EventAdapterImpl`
+- `EventAdapterImpl` with lazy `EngineeringEventStore` construction
+- `build_project_context(config)` factory
+
+ENGDASH-004 established:
+- `GET /engineering` (HTML dashboard)
+- `GET /api/engineering/snapshot` (JSON snapshot)
+- `EngineeringDashboardReadModel.snapshot()` returning `DashboardSnapshot`
+- `DashboardSnapshot.recent_events` field (currently populated from timeline data)
+
+ENGDASH-005 extends the existing routes and read model with richer timeline data.
+
+---
+
+## Architecture Requirement
+
+ENGDASH-005 must consume project-scoped read interfaces.
+
+The dashboard must NOT determine its project using:
+- `Path.cwd()`
+- `_discover_repo_root()` or equivalent git toplevel discovery
+- hard-coded `.agent-state` paths
+- hard-coded trading-bot paths
+- direct construction of project-specific event stores when
+  `ProjectContext`/`EventAdapter` provides the approved boundary
+
+Preferred dependency flow:
+
+```
+validated ProjectConfig
+  → build_project_context(...)
+  → EventAdapter / GovernanceAdapter / approved read dependencies
+  → EngineeringQueryService / dashboard provider
+  → DashboardSnapshot
+  → existing engineering dashboard UI
+```
+
+Do not pass `ProjectContext` throughout the entire dashboard if narrower
+adapter dependencies are sufficient.
+
+---
+
+## Provider Path Remediation Requirements
+
+### Issue 1: `_discover_repo_root()` in dashboard_api/providers.py
+
+**Current behavior:**
+```python
+def create_engineering_dashboard_provider(
+    config: EngineeringDashboardProviderConfig | None = None,
+) -> EngineeringDashboardReadModel:
+    resolved = config or EngineeringDashboardProviderConfig.for_repo(_discover_repo_root())
+```
+
+`_discover_repo_root()` uses `git rev-parse --show-toplevel` and falls back
+to `Path.cwd()`. This violates the architecture requirement.
+
+**Required fix:**
+- Remove `_discover_repo_root()` entirely.
+- `create_engineering_dashboard_provider()` requires a non-None config.
+- `EngineeringDashboardProviderConfig` must be constructed with explicit
+  `repo_root`, `backlog_path`, `workflow_state_path`, and `event_store_path`
+  supplied from outside the dashboard (e.g., from the application entry point
+  that knows the project configuration).
+- `EngineeringDashboardProviderConfig.for_repo()` must be removed or redefined
+  to require explicit path arguments with no discovery fallback.
+
+### Issue 2: hard-coded DEFAULT_EVENT_STORE_PATH
+
+**Current behavior:**
+```python
+DEFAULT_EVENT_STORE_PATH = Path(".agent-state/engineering-events.sqlite3")
+```
+
+**Required fix:**
+- `DEFAULT_EVENT_STORE_PATH` must be removed from `dashboard_api/providers.py`.
+- The event store path must be sourced exclusively from `EngineeringDashboardProviderConfig`
+  which receives it from the application-level project configuration.
+- No fallback to a hard-coded constant within the dashboard code.
+
+### Issue 3: hard-coded DEFAULT_WORKFLOW_STATE_PATH
+
+**Current behavior:**
+```python
+DEFAULT_WORKFLOW_STATE_PATH = Path(".git/engineering-workflow.json")
+```
+
+**Required fix:**
+- `DEFAULT_WORKFLOW_STATE_PATH` must be removed from `dashboard_api/providers.py`.
+- The workflow state path must be sourced exclusively from `EngineeringDashboardProviderConfig`
+  supplied by the application entry point.
+
+### Issue 4: ReadOnlyEngineeringEventStore construction
+
+**Current behavior:**
+```python
+def create_engineering_query_service(config: EngineeringDashboardProviderConfig) -> EngineeringQueryService:
+    return EngineeringQueryService(
+        event_store=ReadOnlyEngineeringEventStore(config.resolved_event_store_path),
+        workflow_store=WorkflowStore(config.resolved_workflow_state_path),
+        backlog_path=config.resolved_backlog_path,
+    )
+```
+
+`EngineeringQueryService` is constructed with direct `EngineeringEventStore`
+and `WorkflowStore` instances, bypassing the adapter boundary.
+
+**Required fix (narrow):**
+- `EngineeringQueryService` must accept `EventAdapter` and `WorkflowAdapter`
+  (from `engineering/adapters.py`) rather than constructing stores directly.
+- `EngineeringQueryService` accesses:
+  - `event_store.list_events(limit)` → maps to `event_adapter.list_events(limit)`
+  - `event_store.pause_state()` → maps to `event_adapter.pause_state()`
+  - `workflow_store.exists()` → maps to `workflow_adapter.workflow_store().exists()`
+  - `workflow_store.load()` → maps to `workflow_adapter.workflow_store().load()`
+- `ReadOnlyEngineeringEventStore` remains used internally by
+  `EventAdapterImpl._get_store()` (ENGPLAT-002B lazy construction). The
+  refactoring moves the construction responsibility to the adapter boundary,
+  not to the query service.
+- `WorkflowStore` is constructed by `WorkflowAdapterImpl.workflow_store()`
+  (ENGPLAT-002B). The query service receives `WorkflowAdapter` and calls
+  `.workflow_store()` to get the store instance.
+
+**Note:** This is the minimal wiring change. The `EngineeringQueryService`
+interface (what data it returns) is preserved. Only the dependency injection
+changes to use adapters.
+
+---
+
+## Allowed Areas
+
+Exact files authorized for ENGDASH-005 implementation.
+No other files may be created or modified.
+
+**Runtime files (modify):**
+
+| File | Authorization reason |
+|---|---|
+| `dashboard_api/providers.py` | Remove `_discover_repo_root()`, hard-coded paths, and fallback-to-cwd. Accept explicit `repo_root`, `workflow_state_path`, `event_store_path` via `EngineeringDashboardProviderConfig`. Wire `EngineeringQueryService` to adapters. |
+| `engineering/query_service.py` | Migrate `EngineeringQueryService.__init__` to accept `EventAdapter` + `WorkflowAdapter` instead of direct `EngineeringEventStore` + `WorkflowStore` instances. Preserve all existing query/snapshot behavior. |
+
+**Runtime files (NOT authorized — already implemented by ENGPLAT-002B):**
+
+| File | Authorization reason |
+|---|---|
+| `engineering/adapters.py` | Protocol types and `CapabilityUnavailable` already implemented by ENGPLAT-002B. Do not modify unless implementation exposes a genuine defect. |
+| `engineering/context.py` | `GovernanceAdapterImpl`, `WorkflowAdapterImpl`, `EventAdapterImpl`, `build_project_context()` already implemented by ENGPLAT-002B. Do not modify. |
+| `engineering/models.py` | ENGPLAT-001 types already finalized. Do not modify unless required by a genuine 002B contract gap. |
+| `dashboard_api/engineering_read_model.py` | Do not authorize. The read model (`DashboardSnapshot`, `EngineeringDashboardReadModel`) is already defined by ENGDASH-004 and does not require structural changes for timeline data (the timeline comes from `query_service.snapshot()`). |
+| `dashboard_api/app.py` | Do not authorize. Routes `/engineering` and `/api/engineering/snapshot` are already established by ENGDASH-004. ENGDASH-005 extends existing data flows, not route structure. |
+
+**Test files (new only — do not modify existing tests):**
+
+| File | Purpose |
+|---|---|
+| `tests/test_dashboard_timeline.py` | Behavioral tests for dashboard timeline: explicit config, no cwd fallback, no `_discover_repo_root()`, bounded timeline, deterministic ordering, HTML escaping, graceful degradation. |
+
+**NOT authorized:**
+- `engineering/` broadly — only `query_service.py` is authorized
+- `dashboard_api/` broadly — only `providers.py` is authorized
+- `tests/` broadly — only new test file above is authorized
+- Any existing test file modification (changes to `tests/test_engineering_query_service.py`, `tests/test_engineering_project_context.py`, `tests/test_engineering_manager.py` are out of scope for this task)
+
+**Governance files (update only):**
+
+| File | Change |
+|---|---|
+| `AGENT_BACKLOG.md` | This ENGDASH-005 governance section added |
+| `MENTOR.md` | Optional: add ENGDASH-005 to roadmap notes |
+| `ITERATION_PROGRESS_LOG.md` | Continuity entry |
+
+---
+
+## Existing Route Surface
+
+ENGDASH-004 intentionally established:
+- `GET /engineering` (HTML dashboard)
+- `GET /api/engineering/snapshot` (JSON snapshot)
+
+**Decision:** Extend these existing routes. Do not add a new route.
+
+Rationale: Timeline data is a natural extension of the existing snapshot.
+Adding a new route would require separate authorization and adds unnecessary
+complexity. The existing read model (`EngineeringDashboardReadModel.snapshot()`)
+already returns `DashboardSnapshot` with a `recent_events` field; the timeline
+data comes from `query_service.snapshot(timeline_limit=N)`.
+
+If a new route is proposed during implementation (e.g., a dedicated timeline
+endpoint), stop and report it as a design decision requiring Josh approval
+before proceeding.
+
+---
+
+## Timeline Data-Source Matrix
+
+Classify every proposed timeline category against current data availability:
+
+| Category | Status | Evidence |
+|---|---|---|
+| Workflow state transitions | **STRUCTURED DATA EXISTS** | `EventType.WORKFLOW_TRANSITION` in `engineering_events` table; `workflow_events()` in `event_projection.py` |
+| Delegation status changes | **STRUCTURED DATA EXISTS** | `EventType.DELEGATION_STATUS` in `engineering_events` table; `DelegationStatus` in `models.py` |
+| QA results | **STRUCTURED DATA EXISTS** | `EventType.QA_RESULT` in `engineering_events` table; `qa` evidence in workflow |
+| Report generation | **STRUCTURED DATA EXISTS** | `EventType.REPORT_GENERATED` in `engineering_events` table |
+| Approval-required events | **STRUCTURED DATA EXISTS** | `EventType.APPROVAL_REQUIRED` in `engineering_events` table |
+| Task completion | **STRUCTURED DATA EXISTS** | `EventType.TASK_COMPLETED` in `engineering_events` table |
+| Task failures | **STRUCTURED DATA EXISTS** | `EventType.TASK_FAILED` in `engineering_events` table |
+| Workflow blocked/stale | **STRUCTURED DATA EXISTS** | `EventType.WORKFLOW_BLOCKED`, `WORKFLOW_STALE` in `engineering_events` table |
+| Manager pause/resume | **STRUCTURED DATA EXISTS** | `EventType.MANAGER_PAUSED`, `MANAGER_RESUMED` in `engineering_events` table (OPS-014/OPS-015) |
+| Git commits | **NOT AVAILABLE YET** | No `EngineeringEvent` for git commits; requires `GitAdapter` (ENGPLAT-002C) |
+| PR opened/merged/closed | **NOT AVAILABLE YET** | No structured `EngineeringEvent` for PR lifecycle; requires GitHub adapter (out of scope) |
+| Agent reasoning/prompts | **NOT AVAILABLE** | Never persisted; private chain-of-thought |
+| Raw test output | **NOT AVAILABLE** | Only bounded `output_summary` stored in QA evidence |
+
+**Implication:** ENGDASH-005 renders only the structured data that already
+exists. No new event types are fabricated. Fields requiring 002C
+capabilities (Git commits, etc.) are marked deferred/not-available and degrade
+gracefully with a "timeline data unavailable" indication.
+
+---
+
+## Structured Event / History Rules
+
+The following rules apply to all timeline rendering:
+
+1. **Bounded event count:** `timeline_limit` parameter (mandatory, max 500)
+2. **Deterministic ordering:** events sorted by `occurred_at` ascending
+3. **Timestamps:** UTC ISO-8601 format for all event times
+4. **Project/task/run identity:** `task_id`, `workflow_id`, `run_id` shown where available
+5. **Source/type classification:** `event_type` and `severity` shown for each event
+6. **No unbounded scans:** no full git history scan, no unbounded report iteration
+7. **Stale/unavailable source indication:** when `EngineeringQueryService.snapshot()`
+   throws or returns empty, render "timeline unavailable" instead of crashing
+8. **Dynamic text sanitized:** all event payload text rendered through HTML escape
+   (`html.escape` in Python). Prose messages, failure reasons, and similar
+   dynamic content are HTML-escaped before rendering.
+9. **No private reasoning:** do not expose chain-of-thought, agent prompts,
+   raw Codex output, or internal notes
+10. **No raw secrets:** tokens, API keys, chat IDs, tokens never rendered in timeline
+11. **No unrestricted command output:** only bounded `output_summary` from QA evidence
+
+---
+
+## ENGDASH-005 / ENGPLAT-002C Boundary
+
+ENGDASH-005 may consume the read adapters implemented in 002B.
+
+ENGDASH-005 must NOT implement 002C work such as:
+- `GitAdapter` implementation
+- `QAAdapter` implementation
+- `FileAdapter` implementation
+- reporter migration
+- config migration
+- broad `query_service.py` migration unrelated to timeline (wiring for timeline
+  IS in scope; unrelated migration is NOT)
+- service-wide path cleanup beyond the narrow scope above
+
+If a desired timeline field requires a 002C capability, that field is marked
+**deferred/not-available** rather than pulling 002C into ENGDASH-005.
+
+---
+
+## Stop Criteria
+
+Implementation stops immediately if:
+- Any change attempts to modify `engineering/adapters.py` or `engineering/context.py`
+  (those are ENGPLAT-002B artifacts; 002B is merged)
+- Any change introduces `Path.cwd()`, `_discover_repo_root()`, or equivalent
+  repository discovery logic into the dashboard path
+- Any change creates a new route beyond the two established by ENGDASH-004
+- Any change modifies an existing test file
+- Any change attempts to implement Git, QA, or File adapter functionality
+- Full test suite fails after the allowed attempt
+- Repository becomes dirty with uncommitted changes to prohibited files
+
+---
+
+## Acceptance Criteria
+
+- [ ] `create_engineering_dashboard_provider()` requires explicit non-None config
+      with all paths supplied (no auto-discovery)
+- [ ] `DEFAULT_EVENT_STORE_PATH` and `DEFAULT_WORKFLOW_STATE_PATH` constants removed
+      from `dashboard_api/providers.py`
+- [ ] `_discover_repo_root()` removed from `dashboard_api/providers.py`
+- [ ] `EngineeringDashboardProviderConfig.for_repo()` no longer uses cwd fallback
+- [ ] `EngineeringQueryService` accepts `EventAdapter` and `WorkflowAdapter`
+      (not direct `EngineeringEventStore`/`WorkflowStore` construction)
+- [ ] `EngineeringQueryService.snapshot()` behavior unchanged (same data returned)
+- [ ] Existing `GET /engineering` route continues to serve HTML dashboard
+- [ ] Existing `GET /api/engineering/snapshot` route continues to serve JSON snapshot
+- [ ] `DashboardSnapshot.recent_events` populated from adapter-backed timeline
+- [ ] Timeline is bounded by the `timeline_limit` parameter (max 500)
+- [ ] Timeline ordering is deterministic (ascending by `occurred_at`)
+- [ ] Empty/unavailable timeline degrades gracefully (no crash; "unavailable" shown)
+- [ ] All dynamic text in timeline is HTML-escaped before rendering
+- [ ] No `Path.cwd()` or git discovery in the dashboard data path
+- [ ] `git diff --check` passes
+- [ ] Full safe test suite passes
+
+---
+
+## Planned Tests
+
+New behavioral tests in `tests/test_dashboard_timeline.py`:
+
+| Test | What it verifies |
+|---|---|
+| `test_provider_requires_explicit_config` | `create_engineering_dashboard_provider(None)` raises `TypeError` or `ValueError` |
+| `test_no_cwd_fallback` | Provider path uses only explicitly supplied config |
+| `test_no_discover_repo_root_in_path` | `_discover_repo_root` not called during provider construction |
+| `test_event_store_path_from_config` | `ReadOnlyEngineeringEventStore` uses config-supplied path, not DEFAULT constant |
+| [TST-005] `test_timeline_bounded` | `timeline_projection` result count ≤ `timeline_limit` |
+| [TST-006] `test_timeline_deterministic_order` | Events returned in ascending `occurred_at` order |
+| [TST-007] `test_timeline_empty_source_graceful` | Empty event source returns empty tuple, not exception |
+| [TST-008] `test_timeline_multiple_events` | Multiple events rendered without crash |
+| [TST-009] `test_timeline_html_escaping` | Event payload text with `<`, `>`, `&` is HTML-escaped in output |
+| [TST-010] `test_query_service_uses_adapters` | `EngineeringQueryService` accepts `EventAdapter` + `WorkflowAdapter` |
+| [TST-011] `test_no_trading_runtime_imports` | Dashboard timeline code does not import `src.core` or `trading_bot` modules |
+| [TST-012] `test_existing_snapshot_route_works` | `GET /api/engineering/snapshot` returns 200 with JSON |
+| [TST-013] `test_existing_dashboard_route_works` | `GET /engineering` returns 200 with HTML |
+| [TST-014] `test_no_mutation_methods` | Timeline is read-only; no POST/PUT/DELETE on timeline data |
+| [TST-015] `test_no_network_git_qa_side_effects` | Provider construction has no network, git, or QA side effects |
+
+---
+
+## Governance Workflow
+
+1. Create a governance branch from `main` (already done: `agent/engdash-005-governance-remediation`).
+2. Write this governance section into `AGENT_BACKLOG.md`.
+3. Run `git diff --check`.
+4. Commit and push.
+5. Open a PR targeting `main`.
+6. Stop for Josh review.
+
+**This is GOVERNANCE ONLY. Do not implement ENGDASH-005 in this task.**
+
+---
+
 ### ENGPLAT-002C — Remaining Adapters and Service Migration
 
 Status: TODO
