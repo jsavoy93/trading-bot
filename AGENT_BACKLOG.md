@@ -1099,7 +1099,7 @@ by this platform rule.
 
 ### ENGPLAT-002B — Local Read Adapters and Manager Integration
 
-Status: GOVERNANCE_DRAFT
+Status: DONE
 Owner: trading-manager
 Priority: P1
 
