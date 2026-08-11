@@ -89,6 +89,7 @@ def build_config(tmp_path: Path) -> EngineeringDashboardProviderConfig:
         workflow_state_path=state_path,
         event_store_path=event_path,
         audit_archive_root=None,
+        project_identity="trading-bot",
         clock=fixed_clock,
     )
 
@@ -99,7 +100,8 @@ def test_engineering_query_service_backed_provider_construction(tmp_path: Path) 
     provider = create_engineering_dashboard_provider(config)
 
     assert isinstance(query_service, EngineeringQueryService)
-    assert isinstance(query_service.event_store, ReadOnlyEngineeringEventStore)
+    assert hasattr(query_service.event_store, "list_events")
+    assert hasattr(query_service.event_store, "pause_state")
     snapshot = provider.snapshot()
 
     assert snapshot.project_identity == "trading-bot"

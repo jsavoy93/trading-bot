@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
-import sqlite3
 import subprocess
 from typing import Callable
 
@@ -16,11 +15,10 @@ from dashboard_api.engineering_read_model import (
 from engineering.engineering_events import EngineeringEvent, EventSeverity, EventType, sanitize_payload
 from engineering.event_store import StoredEvent
 from engineering.query_service import EngineeringQueryService
-from engineering.workflow_store import WorkflowStore
+from engineering.workflow_store import StoredWorkflow, WorkflowStore
+import sqlite3
 
 
-DEFAULT_WORKFLOW_STATE_PATH = Path(".git/engineering-workflow.json")
-DEFAULT_EVENT_STORE_PATH = Path(".agent-state/engineering-events.sqlite3")
 DEFAULT_AUDIT_ARCHIVE_ROOT = Path("/root/.openclaw/audit-archives")
 MAX_DIRTY_PATHS = 100
 MAX_GIT_OUTPUT_CHARS = 2_000
@@ -34,29 +32,26 @@ class EngineeringDashboardProviderConfig:
     backlog_path: Path | None = None
     workflow_state_path: Path | None = None
     event_store_path: Path | None = None
+    workflow_report_dir: Path | None = None
     audit_archive_root: Path | None = DEFAULT_AUDIT_ARCHIVE_ROOT
     project_identity: str = "trading-bot"
     clock: Callable[[], datetime] = lambda: datetime.now(UTC)
-
-    @classmethod
-    def for_repo(cls, repo_root: Path) -> "EngineeringDashboardProviderConfig":
-        return cls(repo_root=repo_root)
 
     @property
     def resolved_repo_root(self) -> Path:
         return self.repo_root.resolve()
 
     @property
-    def resolved_backlog_path(self) -> Path:
-        return self.backlog_path or self.resolved_repo_root / "AGENT_BACKLOG.md"
+    def resolved_backlog_path(self) -> Path | None:
+        return self.backlog_path
 
     @property
-    def resolved_workflow_state_path(self) -> Path:
-        return self.workflow_state_path or self.resolved_repo_root / DEFAULT_WORKFLOW_STATE_PATH
+    def resolved_workflow_state_path(self) -> Path | None:
+        return self.workflow_state_path
 
     @property
-    def resolved_event_store_path(self) -> Path:
-        return self.event_store_path or self.resolved_repo_root / DEFAULT_EVENT_STORE_PATH
+    def resolved_event_store_path(self) -> Path | None:
+        return self.event_store_path
 
     @property
     def resolved_audit_root(self) -> Path | None:
@@ -132,6 +127,9 @@ class ReadOnlyEngineeringEventStore:
 
     path: Path
 
+    def append(self, event: EngineeringEvent) -> bool:
+        raise RuntimeError("read-only engineering event source cannot append")
+
     def list_events(self, *, limit: int = 100) -> tuple[StoredEvent, ...]:
         if not 1 <= limit <= 500:
             raise ValueError("Event query limit must be between 1 and 500")
@@ -197,41 +195,63 @@ class ReadOnlyEngineeringEventStore:
         )
 
 
-def create_engineering_query_service(config: EngineeringDashboardProviderConfig) -> EngineeringQueryService:
+
+@dataclass(frozen=True)
+class ReadOnlyWorkflowAdapter:
+    """WorkflowAdapter-compatible wrapper that avoids event-store writes."""
+
+    workflow_state_path: Path
+    event_source: object
+
+    def workflow_store(self) -> WorkflowStore:
+        return WorkflowStore(self.workflow_state_path, event_store=self.event_source)
+
+    def event_store(self) -> object:
+        return self.event_source
+
+    def archive_completed(self, workflow: StoredWorkflow) -> Path:
+        raise RuntimeError("read-only workflow adapter cannot archive workflows")
+
+
+def create_engineering_query_service(
+    config: EngineeringDashboardProviderConfig,
+) -> EngineeringQueryService:
+    """Wire EngineeringQueryService using explicit adapter-backed config paths."""
+    event_store_path = config.resolved_event_store_path
+    workflow_state_path = config.resolved_workflow_state_path
+    backlog_path = config.resolved_backlog_path
+
+    if event_store_path is None or workflow_state_path is None or backlog_path is None:
+        raise ValueError(
+            "create_engineering_query_service requires explicit non-None "
+            "event_store_path, workflow_state_path, and backlog_path in config"
+        )
+
+    event_adapter = ReadOnlyEngineeringEventStore(event_store_path)
+    workflow_adapter = ReadOnlyWorkflowAdapter(workflow_state_path, event_adapter)
     return EngineeringQueryService(
-        event_store=ReadOnlyEngineeringEventStore(config.resolved_event_store_path),
-        workflow_store=WorkflowStore(config.resolved_workflow_state_path),
-        backlog_path=config.resolved_backlog_path,
+        event_source=event_adapter,
+        workflow_source=workflow_adapter,
+        backlog_path=backlog_path,
     )
 
 
 def create_engineering_dashboard_provider(
-    config: EngineeringDashboardProviderConfig | None = None,
+    config: EngineeringDashboardProviderConfig | None,
 ) -> EngineeringDashboardReadModel:
-    resolved = config or EngineeringDashboardProviderConfig.for_repo(_discover_repo_root())
+    """Create dashboard read model with explicit config."""
+    if config is None:
+        raise TypeError("create_engineering_dashboard_provider requires explicit config")
     return EngineeringDashboardReadModel(
-        query_service=create_engineering_query_service(resolved),
-        repository_reader=GitRepositorySummaryReader(resolved.resolved_repo_root),
+        query_service=create_engineering_query_service(config),
+        repository_reader=GitRepositorySummaryReader(config.resolved_repo_root),
         report_index=ReportIndex(
-            repo_root=resolved.resolved_repo_root,
-            audit_root=resolved.resolved_audit_root,
+            repo_root=config.resolved_repo_root,
+            audit_root=config.resolved_audit_root,
         ),
-        clock=resolved.clock,
-        project_identity=resolved.project_identity,
+        clock=config.clock,
+        project_identity=config.project_identity,
     )
-
-
-def _discover_repo_root() -> Path:
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=5,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        return Path(result.stdout.strip())
-    return Path.cwd()
 
 
 def _parse_dirty_paths(status_output: str) -> list[str]:

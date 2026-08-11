@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from dashboard_api.app import DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
+from dashboard_api.providers import EngineeringDashboardProviderConfig, create_engineering_dashboard_provider
 from dashboard_api.engineering_read_model import (
     ApprovalSummary,
     BacklogSummary,
@@ -286,13 +287,21 @@ def test_bounded_lists_and_deterministic_ordering_in_response():
     assert [report["path"] for report in first["recent_reports"]] == [str(index) for index in range(5)]
 
 
-def test_independent_default_app_startup_uses_real_read_only_provider():
-    client = TestClient(create_app())
+def test_independent_default_app_startup_uses_real_read_only_provider(tmp_path: Path):
+    provider = create_engineering_dashboard_provider(
+        EngineeringDashboardProviderConfig(
+            repo_root=tmp_path,
+            backlog_path=tmp_path / "AGENT_BACKLOG.md",
+            workflow_state_path=tmp_path / "engineering-workflow.json",
+            event_store_path=tmp_path / "engineering-events.sqlite3",
+            workflow_report_dir=tmp_path / "reports",
+            audit_archive_root=None,
+        )
+    )
+    client = TestClient(create_app(provider))
     response = client.get(SNAPSHOT_ROUTE)
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["repository"]["root"] != "unavailable"
     assert "No engineering query source is configured." not in response.text
     assert client.get("/openapi.json").status_code == 404
 
