@@ -171,7 +171,7 @@ def _safe_occurred_at(value: object) -> str:
         return ""
     if isinstance(value, str):
         return value
-    return str(value)
+    return ""
 
 
 def _safe_sequence(value: object) -> int:

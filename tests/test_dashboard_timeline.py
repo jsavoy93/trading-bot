@@ -308,7 +308,7 @@ def test_timeline_malformed_occurred_at(tmp_path: Path) -> None:
         (event(1, "2026-08-10T00:00:00+00:00"), event(2, {"bad": "timestamp"}, "bad")),
     ).snapshot()["timeline"]
 
-    assert [item["event_id"] for item in timeline] == ["event-001", "bad"]
+    assert [item["event_id"] for item in timeline] == ["bad", "event-001"]
 
 
 def test_timeline_limit_still_enforced(tmp_path: Path) -> None:
