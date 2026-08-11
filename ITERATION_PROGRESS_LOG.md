@@ -1489,3 +1489,13 @@ agent/engplat-002a-project-context-contracts created from current main.
   - 22 tests required (added 8 new tests to original 14)
   - Acceptance criteria updated: 17 criteria covering all 3 corrections
 - Next action: Push to PR #26, stop for Josh re-review.
+
+## 2026-08-11T01:06:38Z — ENGPLAT-002B status remediation
+
+- Backlog item/objective: Narrow remediation to unblock ENGDASH-005 full-suite validation by correcting ENGPLAT-002B active status.
+- Branch/commit: `agent/engplat-002b-status-remediation`, commit pending at log write time.
+- Status: DONE for remediation implementation; awaiting Josh PR review.
+- Files changed: `AGENT_BACKLOG.md`, `REPORT.md`, `reports/2026-08-11_010638_engplat-002b-status-remediation.md`, `ITERATION_PROGRESS_LOG.md`.
+- Tests: backlog parser PASS (`parsed 49 tasks`); `tests/test_engineering_workflow_engine.py::test_dispatch_workflow_handles_every_state -q` PASS (`9 passed, 1 warning`); `git diff --check` PASS.
+- Important decisions/discoveries: ENGPLAT-001 was already DONE. Actual invalid active status was ENGPLAT-002B `GOVERNANCE_DRAFT`; PR #27 confirmed ENGPLAT-002B implementation was merged. Parser still has non-blocking suffix-ID limitation for IDs like ENGPLAT-002B.
+- Next action: Josh reviews/merges the remediation PR; then restore/resume preserved ENGDASH-005 implementation and rerun full validation.
