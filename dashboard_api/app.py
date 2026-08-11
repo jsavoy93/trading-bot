@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from html import escape
 from typing import Mapping, Protocol
 
@@ -18,7 +19,12 @@ from dashboard_api.engineering_read_model import (
     TestingSummary,
     WorkflowSummary,
 )
-from dashboard_api.providers import create_engineering_dashboard_provider
+from engineering.context import build_project_context
+from engineering.models import TRADING_BOT_PROJECT
+from dashboard_api.providers import (
+    EngineeringDashboardProviderConfig,
+    create_engineering_dashboard_provider,
+)
 
 
 SNAPSHOT_ROUTE = "/api/engineering/snapshot"
@@ -31,9 +37,27 @@ class SnapshotProvider(Protocol):
 
 
 def create_default_read_model() -> SnapshotProvider:
-    """Create the default read-only EngineeringQueryService-backed provider."""
+    """Create the default read-only EngineeringQueryService-backed provider.
 
-    return create_engineering_dashboard_provider()
+    Uses TRADING_BOT_PROJECT + build_project_context to build an explicit
+    EngineeringDashboardProviderConfig without repo discovery, hard-coded repo
+    paths, or dashboard-specific path env vars.
+    """
+    context = build_project_context(TRADING_BOT_PROJECT)
+    project = context.config
+    wf = project.workflow_files
+    gov = project.governance_files
+
+    config = EngineeringDashboardProviderConfig(
+        repo_root=context.metadata.repository_root,
+        backlog_path=gov.backlog_path,
+        workflow_state_path=wf.workflow_store_path,
+        event_store_path=wf.event_store_path,
+        workflow_report_dir=wf.report_dir,
+        project_identity=context.metadata.project_id,
+        clock=lambda: datetime.now(UTC),
+    )
+    return create_engineering_dashboard_provider(config)
 
 
 def create_app(snapshot_provider: SnapshotProvider | None = None) -> FastAPI:
@@ -277,10 +301,15 @@ def _reports_section(reports: tuple[object, ...]) -> str:
 def _events_section(events: tuple[Mapping[str, object], ...]) -> str:
     items = []
     for event in events:
-        label = event.get("event_type") or event.get("message") or "event"
+        label = event.get("event_type") or event.get("type") or event.get("message") or "event"
         task = event.get("task_id")
         occurred = event.get("occurred_at")
-        items.append(f"<li><strong>{_html(label)}</strong> {_html(task)} <code>{_html(occurred)}</code></li>")
+        payload = event.get("payload")
+        payload_text = f" <span>{_html(payload)}</span>" if payload else ""
+        items.append(
+            f"<li><strong>{_html(label)}</strong> {_html(task)} "
+            f"<code>{_html(occurred)}</code>{payload_text}</li>"
+        )
     return f"<section><h2>Recent timeline/events</h2><ul>{''.join(items) or '<li>None</li>'}</ul></section>"
 
 

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from engineering.backlog import load_backlog
 from engineering.event_projection import timeline_projection
 from engineering.event_store import EngineeringEventStore
 from engineering.planner import select_next_task
 from engineering.workflow_store import StoredWorkflow, WorkflowStore
+
+if TYPE_CHECKING:
+    from engineering.adapters import EventAdapter, WorkflowAdapter
+else:
+    # Import at runtime for isinstance checks; TYPE_CHECKING-only would cause NameError
+    from engineering.adapters import EventAdapter, WorkflowAdapter  # noqa: F401
 
 
 MAX_BACKLOG_TASKS = 500
@@ -17,16 +24,34 @@ class EngineeringQueryService:
     def __init__(
         self,
         *,
-        event_store: EngineeringEventStore,
-        workflow_store: WorkflowStore,
-        backlog_path: Path,
-    ):
-        self.event_store = event_store
-        self.workflow_store = workflow_store
+        event_source: EngineeringEventStore | "EventAdapter" | None = None,
+        workflow_source: WorkflowStore | "WorkflowAdapter" | None = None,
+        backlog_path: Path | None = None,
+        # Backward-compat aliases for existing concrete-store callers.
+        event_store: EngineeringEventStore | None = None,
+        workflow_store: WorkflowStore | None = None,
+    ) -> None:
+        if event_source is None and event_store is not None:
+            event_source = event_store
+        if workflow_source is None and workflow_store is not None:
+            workflow_source = workflow_store
+        if event_source is None:
+            raise TypeError("event_source is required")
+        if workflow_source is None:
+            raise TypeError("workflow_source is required")
+        if backlog_path is None:
+            raise TypeError("backlog_path is required")
+
+        self.event_store = event_source
+        self._workflow_store: WorkflowStore = (
+            workflow_source.workflow_store()
+            if isinstance(workflow_source, WorkflowAdapter)
+            else workflow_source
+        )
         self.backlog_path = backlog_path
 
     def _workflow(self) -> StoredWorkflow | None:
-        return self.workflow_store.load() if self.workflow_store.exists() else None
+        return self._workflow_store.load() if self._workflow_store.exists() else None
 
     def snapshot(self, *, timeline_limit: int = 100) -> dict[str, object]:
         workflow = self._workflow()
@@ -40,6 +65,7 @@ class EngineeringQueryService:
         delegation = workflow.delegation if workflow else None
         qa = workflow.qa if workflow else None
         pause = self.event_store.pause_state()
+
         gaps = []
         if workflow is None:
             gaps.append("No active workflow is recorded.")
@@ -59,9 +85,7 @@ class EngineeringQueryService:
                 if workflow and current_task
                 else None
             ),
-            "timeline": timeline_projection(
-                self.event_store.list_events(limit=timeline_limit), limit=timeline_limit
-            ),
+            "timeline": self._timeline(timeline_limit),
             "agent_run": (
                 {
                     "agent_name": delegation.agent_name,
@@ -127,3 +151,31 @@ class EngineeringQueryService:
             ),
             "pause": pause,
         }
+
+    def _timeline(self, timeline_limit: int) -> list[dict[str, object]]:
+        timeline = timeline_projection(
+            self.event_store.list_events(limit=timeline_limit), limit=timeline_limit
+        )
+        timeline.sort(
+            key=lambda event: (
+                _safe_occurred_at(event.get("occurred_at")),
+                -_safe_sequence(event.get("sequence")),
+                str(event.get("event_id") or ""),
+            )
+        )
+        return timeline
+
+
+def _safe_occurred_at(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _safe_sequence(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
