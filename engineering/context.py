@@ -76,17 +76,21 @@ class GitAdapterImpl(GitReadAdapter):
         return self._git.is_ancestor(ancestor, descendant)
 
 
-class _DeferredQAAdapter(QAAdapter):
-    """Deferred QAAdapter — raises CapabilityUnavailable (002C provides concrete)."""
+class QAAdapterImpl(QAAdapter):
+    """Concrete QAAdapter exposing ProjectConfig QA configuration.
 
-    def __init__(self, project_id: str):
-        self._project_id = project_id
+    Does NOT execute QA. run_qa() execution is a separate concern addressed
+    in a future slice. This adapter provides configuration access only.
+    """
+
+    def __init__(self, config: ProjectConfig) -> None:
+        self._config = config
 
     def configured_command(self) -> tuple[str, ...]:
-        raise CapabilityUnavailable(self._project_id, "qa")
+        return self._config.qa_commands
 
     def timeout_seconds(self) -> int:
-        raise CapabilityUnavailable(self._project_id, "qa")
+        return self._config.qa_timeout_seconds
 
 
 class _DeferredFileReadAdapter(FileReadAdapter):
@@ -281,7 +285,7 @@ def build_project_context(config: ProjectConfig) -> ProjectContext:
         git=GitAdapterImpl(config.repository_root),
         governance=governance_adapter,
         workflow=workflow_adapter,
-        qa=_DeferredQAAdapter(config.project_id),
+        qa=QAAdapterImpl(config),
         files=_DeferredFileReadAdapter(config.project_id),
         events=event_adapter,
         metadata=metadata,

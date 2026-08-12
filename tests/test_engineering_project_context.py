@@ -40,7 +40,7 @@ from engineering.models import (
 )
 from engineering.context import (
     GitAdapterImpl,
-    _DeferredQAAdapter,
+    QAAdapterImpl,
     _DeferredFileReadAdapter,
     GovernanceAdapterImpl,
     WorkflowAdapterImpl,
@@ -243,10 +243,10 @@ class TestProtocolsRuntimeCheckable:
 class TestProtocolConformance:
     """Verify that concrete adapters satisfy their Protocol contracts.
 
-    ENGPLAT-002B provides GovernanceAdapterImpl, WorkflowAdapterImpl,
-    EventAdapterImpl as concrete implementations. Deferred adapters
-    (_DeferredGitAdapter, _DeferredQAAdapter, _DeferredFileReadAdapter)
-    remain as stubs raising CapabilityUnavailable.
+    ENGPLAT-002B/002C provides GovernanceAdapterImpl, WorkflowAdapterImpl,
+    EventAdapterImpl, and QAAdapterImpl as concrete implementations.
+    Deferred adapter (_DeferredFileReadAdapter) remains as a stub raising
+    CapabilityUnavailable.
     """
 
     def test_git_adapter_impl_satisfies_protocol(self):
@@ -261,8 +261,35 @@ class TestProtocolConformance:
     def test_concrete_event_adapter_satisfies_protocol(self):
         assert issubclass(EventAdapterImpl, EventAdapter)
 
-    def test_deferred_qa_adapter_satisfies_protocol(self):
-        assert isinstance(_DeferredQAAdapter("test"), QAAdapter)
+    def test_qa_adapter_impl_satisfies_protocol(self):
+        # QAAdapterImpl is concrete — test with a minimal config-like object
+        from engineering.models import ProjectConfig, GovernanceFiles, WorkflowFiles
+        from pathlib import Path
+        root = Path("/tmp/test-qa-impl")
+        config = ProjectConfig(
+            project_id="proto-test",
+            display_name="Proto Test",
+            repository_root=root,
+            authoritative_base_branch="main",
+            governance_files=GovernanceFiles(
+                backlog_path=root / "AGENT_BACKLOG.md",
+                operating_plan_path=root / "AGENT_OPERATING_PLAN.md",
+                owners_path=root / "OWNERS.md",
+                handoff_path=root / "TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md",
+            ),
+            workflow_files=WorkflowFiles(
+                workflow_store_path=root / ".git" / "workflow.json",
+                event_store_path=root / ".git" / "events.db",
+                report_dir=root / "reports",
+            ),
+            qa_commands=("python -m pytest",),
+            qa_timeout_seconds=300,
+            prohibited_operations=("no_live_trading",),
+            agents_may_merge=False,
+            owner_ids=("test-owner",),
+            agent_owners=("test-agent",),
+        )
+        assert isinstance(QAAdapterImpl(config), QAAdapter)
 
     def test_deferred_file_adapter_satisfies_protocol(self):
         assert isinstance(_DeferredFileReadAdapter("test"), FileReadAdapter)
@@ -562,8 +589,8 @@ class TestImportBoundary:
 # ---------------------------------------------------------------------------
 
 class TestDeferredFactoryBehavior:
-    def test_deferred_adapters_raise_capability_unavailable(self, tmp_path):
-        """Deferred adapters raise CapabilityUnavailable on every method call."""
+    def test_files_deferred_adapter_raises_capability_unavailable(self, tmp_path):
+        """Files adapter remains deferred; raises CapabilityUnavailable on every method call."""
         config = _minimal_config(project_id="deferred-test", repository_root=tmp_path)
         (tmp_path / "AGENT_BACKLOG.md").touch()
         (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
@@ -574,12 +601,7 @@ class TestDeferredFactoryBehavior:
 
         ctx = build_project_context(config)
 
-        # Deferred qa and files raise CapabilityUnavailable; git is now concrete
-        with pytest.raises(CapabilityUnavailable) as exc_qa:
-            ctx.qa.configured_command()
-        assert exc_qa.value.project_id == "deferred-test"
-        assert exc_qa.value.capability == "qa"
-
+        # ctx.qa is now concrete (QAAdapterImpl); ctx.files remains deferred
         with pytest.raises(CapabilityUnavailable) as exc_files:
             ctx.files.resolve(Path("x"))
         assert exc_files.value.project_id == "deferred-test"
@@ -596,8 +618,8 @@ class TestDeferredFactoryBehavior:
         # Should be a single-line, bounded message
         assert "\n" not in error_msg
 
-    def test_deferred_error_is_deterministic(self, tmp_path):
-        """CapabilityUnavailable message is stable (not random or time-based)."""
+    def test_files_capability_unavailable_is_deterministic(self, tmp_path):
+        """Files CapabilityUnavailable message is stable (not random or time-based)."""
         config = _minimal_config(project_id="det-test", repository_root=tmp_path)
         (tmp_path / "AGENT_BACKLOG.md").touch()
         (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
@@ -609,16 +631,34 @@ class TestDeferredFactoryBehavior:
         ctx1 = build_project_context(config)
         ctx2 = build_project_context(config)
 
-        # git is now concrete; qa and files remain deferred
-        with pytest.raises(CapabilityUnavailable) as exc_qa1:
-            ctx1.qa.configured_command()
-        with pytest.raises(CapabilityUnavailable) as exc_qa2:
-            ctx2.qa.configured_command()
+        # files remains deferred; qa is now concrete
+        with pytest.raises(CapabilityUnavailable) as exc_files1:
+            ctx1.files.resolve(Path("x"))
+        with pytest.raises(CapabilityUnavailable) as exc_files2:
+            ctx2.files.resolve(Path("x"))
 
         # Same error message on every call
-        assert str(exc_qa1.value) == str(exc_qa2.value)
-        assert "det-test" in str(exc_qa1.value)
-        assert "qa" in str(exc_qa1.value)
+        assert str(exc_files1.value) == str(exc_files2.value)
+        assert "det-test" in str(exc_files1.value)
+        assert "files" in str(exc_files1.value)
+
+    def test_qa_adapter_returns_deterministic_values(self, tmp_path):
+        """QAAdapterImpl returns deterministic config values on repeated calls."""
+        config = _minimal_config(project_id="qa-det-test", repository_root=tmp_path)
+        (tmp_path / "AGENT_BACKLOG.md").touch()
+        (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
+        (tmp_path / "OWNERS.md").touch()
+        (tmp_path / "TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md").touch()
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "reports").mkdir()
+
+        ctx = build_project_context(config)
+
+        # Values are deterministic across calls
+        assert ctx.qa.configured_command() == ctx.qa.configured_command()
+        assert ctx.qa.timeout_seconds() == ctx.qa.timeout_seconds()
+        assert ctx.qa.configured_command() == config.qa_commands
+        assert ctx.qa.timeout_seconds() == config.qa_timeout_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -650,7 +690,7 @@ def _build_context_directly_for_test(config: ProjectConfig) -> ProjectContext:
         git=GitAdapterImpl(config.repository_root),
         governance=governance_adapter,
         workflow=workflow_adapter,
-        qa=_DeferredQAAdapter(config.project_id),
+        qa=QAAdapterImpl(config),
         files=_DeferredFileReadAdapter(config.project_id),
         events=event_adapter,
         metadata=metadata,
