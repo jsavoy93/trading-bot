@@ -2051,6 +2051,145 @@ Requirements:
 
 ---
 
+### ENGPLAT-002C1 — Git Adapter Implementation and Integration
+
+Status: IN_PROGRESS
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-002B
+
+Purpose:
+
+Replace `_DeferredGitAdapter` with concrete `GitAdapterImpl` wrapping `GitService`;
+update `manager.py` to use `ctx.git` instead of constructing `GitService` directly.
+
+This is Slice 1 of ENGPLAT-002C. Subsequent slices cover QAAdapter, FileAdapter,
+and remaining service migrations.
+
+---
+
+### ENGPLAT-002C1 allowed areas (implementation governance)
+
+**REQUIRED (runtime):**
+
+- `engineering/context.py`
+  - Add `GitAdapterImpl` class (thin wrapper around `GitService`)
+  - Replace `_DeferredGitAdapter(config.project_id)` with `GitAdapterImpl(config.repository_root)`
+    in `build_project_context()` return statement
+  - Do NOT change the `build_project_context()` function signature
+
+- `engineering/manager.py`
+  - Remove: `from engineering.git_service import GitService` (line ~110)
+  - Remove: `git = GitService(repo_root)` (line ~111)
+  - Change: `state = git.repository_state()` → `state = ctx.git.repository_state()`
+  - The `repo_root` variable (from `config.repository_root`) remains for error reporting
+  - Do NOT change any task selection, branch safety, approval gates, or workflow logic
+
+**REQUIRED (tests):**
+
+- `tests/test_engineering_git_adapter.py` (new file)
+  - Protocol conformance: `isinstance(GitAdapterImpl(...), GitReadAdapter)`
+  - Round-trip: `git_adapter.repository_state()` matches direct `GitService(repo_root).repository_state()`
+  - All five protocol methods delegate correctly
+  - Existing `tests/test_engineering_git_service.py` tests remain unchanged and pass
+
+**NOT AUTHORIZED:**
+
+- `engineering/adapters.py` — GitReadAdapter protocol is already complete; no changes
+- `engineering/git_service.py` — GitService class is unchanged; GitAdapterImpl wraps it
+- `engineering/telegram_service.py` — smoke launcher Path.cwd() is a separate architectural
+  concern (SHOULD BE SEPARATE SLICE); not included in 002C1
+- Any QA, File, or reporter migration
+- Any dashboard changes
+- Any workflow_store, event_store, or backlog changes
+- Any new routes or filesystem side effects
+
+---
+
+### ENGPLAT-002C1 acceptance criteria
+
+1. `isinstance(GitAdapterImpl(Path(...)), GitReadAdapter)` returns `True`
+2. `GitAdapterImpl(repo_root).repository_state()` returns identical `RepositoryState` to
+   `GitService(repo_root).repository_state()` for the same `repo_root`
+3. `manager.py` contains no direct import or instantiation of `GitService`
+4. `manager.py` calls `ctx.git.repository_state()` (not `GitService(...).repository_state()`)
+5. `tests/test_engineering_git_adapter.py` exists and passes
+6. `tests/test_engineering_git_service.py` passes unchanged
+7. `tests/test_engineering_manager.py` passes unchanged
+8. No `Path.cwd()` introduced in any changed file
+9. `ctx.qa` and `ctx.files` remain `CapabilityUnavailable`
+
+---
+
+### ENGPLAT-002C1 implementation notes
+
+**GitAdapterImpl design:**
+
+```python
+class GitAdapterImpl(GitReadAdapter):
+    """Concrete GitReadAdapter wrapping GitService.
+
+    repo_root is supplied explicitly. No Path.cwd(), no discovery.
+    All methods delegate to the wrapped GitService instance.
+    """
+
+    def __init__(self, repo_root: Path) -> None:
+        self._git = GitService(repo_root)
+
+    def current_branch(self) -> str:
+        return self._git.current_branch()
+
+    def is_clean(self) -> bool:
+        return self._git.is_clean()
+
+    def repository_state(self) -> RepositoryState:
+        return self._git.repository_state()
+
+    def branch_exists(self, branch: str) -> bool:
+        return self._git.branch_exists(branch)
+
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        return self._git.is_ancestor(ancestor, descendant)
+```
+
+**Why telegram_service.py is excluded from 002C1:**
+
+The smoke launcher in `telegram_service.py` uses `Path.cwd()` to derive `repo_root`.
+This is architecturally distinct from `manager.py` because:
+
+1. The smoke launcher is a standalone entry point with no `ProjectConfig` available
+2. `repo_root` is used both for path validation AND as an explicit argument to
+   `WorkflowStore(workflow_state_path=repo_root / ".git/engineering-workflow.json")`
+3. Replacing this requires either a new command-line argument (`--repo-root`) or
+   a convention for smoke-launcher repo discovery that is independent of the
+   adapter migration
+
+The smoke launcher Path.cwd() will be addressed in a dedicated slice (likely
+ENGPLAT-002C2 or a separate engineering task).
+
+---
+
+### ENGPLAT-002C1 risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| GitAdapterImpl introduces subtle behavioral difference | Low | Medium | Round-trip test verifies identical output |
+| Manager behavior changes inadvertently | Low | High | Only one call pattern changes; existing tests cover behavior |
+| Backward compatibility with existing GitService callers | Low | Low | GitService remains unchanged; only manager.py migrates |
+
+---
+
+### ENGPLAT-002C1 stop criteria
+
+Stop and report if:
+- `GitReadAdapter` protocol signature changes (requires re-review of all callers)
+- Any behavioral change detected in manager output or test behavior
+- Any new filesystem side effects or Git mutations
+- Scope expansion requested
+
+---
+
 ### ENGPLAT-003 — Project Bootstrap
 
 Status: TODO
