@@ -39,7 +39,7 @@ from engineering.models import (
     validate_project_config,
 )
 from engineering.context import (
-    _DeferredGitAdapter,
+    GitAdapterImpl,
     _DeferredQAAdapter,
     _DeferredFileReadAdapter,
     GovernanceAdapterImpl,
@@ -249,8 +249,8 @@ class TestProtocolConformance:
     remain as stubs raising CapabilityUnavailable.
     """
 
-    def test_deferred_git_adapter_satisfies_protocol(self):
-        assert isinstance(_DeferredGitAdapter("test"), GitReadAdapter)
+    def test_git_adapter_impl_satisfies_protocol(self):
+        assert isinstance(GitAdapterImpl(Path("/root/.openclaw/workspace/trading-bot")), GitReadAdapter)
 
     def test_concrete_governance_adapter_satisfies_protocol(self):
         assert issubclass(GovernanceAdapterImpl, GovernanceAdapter)
@@ -574,12 +574,7 @@ class TestDeferredFactoryBehavior:
 
         ctx = build_project_context(config)
 
-        # Deferred git, qa, files raise CapabilityUnavailable
-        with pytest.raises(CapabilityUnavailable) as exc_git:
-            ctx.git.current_branch()
-        assert exc_git.value.project_id == "deferred-test"
-        assert exc_git.value.capability == "git"
-
+        # Deferred qa and files raise CapabilityUnavailable; git is now concrete
         with pytest.raises(CapabilityUnavailable) as exc_qa:
             ctx.qa.configured_command()
         assert exc_qa.value.project_id == "deferred-test"
@@ -614,15 +609,16 @@ class TestDeferredFactoryBehavior:
         ctx1 = build_project_context(config)
         ctx2 = build_project_context(config)
 
-        with pytest.raises(CapabilityUnavailable) as exc1:
-            ctx1.git.current_branch()
-        with pytest.raises(CapabilityUnavailable) as exc2:
-            ctx2.git.current_branch()
+        # git is now concrete; qa and files remain deferred
+        with pytest.raises(CapabilityUnavailable) as exc_qa1:
+            ctx1.qa.configured_command()
+        with pytest.raises(CapabilityUnavailable) as exc_qa2:
+            ctx2.qa.configured_command()
 
         # Same error message on every call
-        assert str(exc1.value) == str(exc2.value)
-        assert "det-test" in str(exc1.value)
-        assert "git" in str(exc1.value)
+        assert str(exc_qa1.value) == str(exc_qa2.value)
+        assert "det-test" in str(exc_qa1.value)
+        assert "qa" in str(exc_qa1.value)
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +647,7 @@ def _build_context_directly_for_test(config: ProjectConfig) -> ProjectContext:
 
     return ProjectContext(
         config=config,
-        git=_DeferredGitAdapter(config.project_id),
+        git=GitAdapterImpl(config.repository_root),
         governance=governance_adapter,
         workflow=workflow_adapter,
         qa=_DeferredQAAdapter(config.project_id),

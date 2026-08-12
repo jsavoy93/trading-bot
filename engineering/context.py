@@ -49,26 +49,31 @@ if TYPE_CHECKING:
 # These are used ONLY for git, qa, files (deferred to 002C).
 
 
-class _DeferredGitAdapter(GitReadAdapter):
-    """Deferred GitReadAdapter — raises CapabilityUnavailable (002C provides concrete)."""
+class GitAdapterImpl(GitReadAdapter):
+    """Concrete GitReadAdapter wrapping GitService.
 
-    def __init__(self, project_id: str):
-        self._project_id = project_id
+    repo_root is supplied explicitly. No Path.cwd(), no discovery.
+    All methods delegate to the wrapped GitService instance.
+    """
+
+    def __init__(self, repo_root: Path) -> None:
+        from engineering.git_service import GitService
+        self._git = GitService(repo_root)
 
     def current_branch(self) -> str:
-        raise CapabilityUnavailable(self._project_id, "git")
+        return self._git.current_branch()
 
     def is_clean(self) -> bool:
-        raise CapabilityUnavailable(self._project_id, "git")
+        return self._git.is_clean()
 
     def repository_state(self):
-        raise CapabilityUnavailable(self._project_id, "git")
+        return self._git.repository_state()
 
     def branch_exists(self, branch: str) -> bool:
-        raise CapabilityUnavailable(self._project_id, "git")
+        return self._git.branch_exists(branch)
 
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
-        raise CapabilityUnavailable(self._project_id, "git")
+        return self._git.is_ancestor(ancestor, descendant)
 
 
 class _DeferredQAAdapter(QAAdapter):
@@ -273,7 +278,7 @@ def build_project_context(config: ProjectConfig) -> ProjectContext:
     # Step 4: return fully-populated ProjectContext
     return ProjectContext(
         config=config,
-        git=_DeferredGitAdapter(config.project_id),
+        git=GitAdapterImpl(config.repository_root),
         governance=governance_adapter,
         workflow=workflow_adapter,
         qa=_DeferredQAAdapter(config.project_id),

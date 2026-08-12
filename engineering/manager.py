@@ -107,10 +107,7 @@ def _manager_main(config: ProjectConfig, args: argparse.Namespace) -> int:
 
     ctx = build_project_context(config)
 
-    # Git is a deferred adapter (002C). Use GitService directly for repo state.
-    from engineering.git_service import GitService
-    git = GitService(repo_root)
-    state = git.repository_state()
+    state = ctx.git.repository_state()
 
     workflow_adapter = ctx.workflow
     event_adapter = ctx.events
