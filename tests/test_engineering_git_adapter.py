@@ -165,12 +165,12 @@ class TestBuildProjectContext:
         assert ctx.git.current_branch() == direct_git.current_branch()
         assert ctx.git.is_clean() == direct_git.is_clean()
 
-    def test_ctx_qa_still_raises_capability_unavailable(self) -> None:
+    def test_ctx_qa_is_qa_adapter_impl(self) -> None:
+        """ctx.qa is concrete QAAdapterImpl (ENGPLAT-002C2)."""
+        from engineering.context import QAAdapterImpl
         config = _minimal_config(TRADING_BOT_ROOT)
         ctx = build_project_context(config)
-        with pytest.raises(CapabilityUnavailable) as exc_info:
-            ctx.qa.configured_command()
-        assert exc_info.value.capability == "qa"
+        assert isinstance(ctx.qa, QAAdapterImpl)
 
     def test_ctx_files_still_raises_capability_unavailable(self) -> None:
         config = _minimal_config(TRADING_BOT_ROOT)
