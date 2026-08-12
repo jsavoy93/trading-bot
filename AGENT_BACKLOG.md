@@ -2190,6 +2190,160 @@ Stop and report if:
 
 ---
 
+### ENGPLAT-002C2 — QAAdapter Implementation
+
+Status: IN_PROGRESS
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-002B
+
+Purpose:
+
+Replace `_DeferredQAAdapter` with concrete `QAAdapterImpl` exposing
+`ProjectConfig.qa_commands` and `ProjectConfig.qa_timeout_seconds` through
+`ProjectContext`.
+
+This is Slice 2 of ENGPLAT-002C. Subsequent slices cover FileAdapter and remaining
+service migrations.
+
+---
+
+### ENGPLAT-002C2 allowed areas (implementation governance)
+
+**REQUIRED (runtime):**
+
+- `engineering/context.py`
+  - Add `QAAdapterImpl` class — thin wrapper exposing `config.qa_commands` and
+    `config.qa_timeout_seconds`
+  - Replace `_DeferredQAAdapter(config.project_id)` with `QAAdapterImpl(config)`
+    in `build_project_context()` return statement
+  - Do NOT change the `build_project_context()` function signature
+
+**REQUIRED (test compatibility):**
+
+- `tests/test_engineering_project_context.py`
+  - Replace `_DeferredQAAdapter` import/reference with `QAAdapterImpl`
+  - Update `_build_context_directly_for_test` helper to use `QAAdapterImpl`
+  - Remove stale assertions that `ctx.qa` raises `CapabilityUnavailable`
+  - Preserve `ctx.files` deferred `CapabilityUnavailable` assertions
+  - Preserve `GitAdapterImpl` expectations
+  - No unrelated refactoring
+
+- `tests/test_engineering_git_adapter.py`
+  - Replace `test_ctx_qa_still_raises_capability_unavailable` with
+    `test_ctx_qa_is_qa_adapter_impl` verifying `ctx.qa` is concrete
+  - No other GitAdapter test changes
+
+- `tests/test_engineering_qa_adapter.py` (new file)
+  - Protocol conformance: `isinstance(QAAdapterImpl(...), QAAdapter)`
+  - `configured_command()` returns exactly `config.qa_commands`
+  - `timeout_seconds()` returns exactly `config.qa_timeout_seconds`
+  - `build_project_context(config).qa` is `QAAdapterImpl`
+  - `ctx.git` remains `GitAdapterImpl`
+  - `ctx.files` still raises `CapabilityUnavailable`
+  - Construction: no QA execution, no subprocess, no files, no `Path.cwd()`
+
+**NOT AUTHORIZED:**
+
+- `engineering/adapters.py` — `QAAdapter` protocol is already complete; no changes
+- `engineering/qa_runner.py` — not required for config-only adapter
+- `engineering/workflow/qa.py` — QA execution concern, separate slice
+- `engineering/qa.py` — QA execution concern, separate slice
+- `engineering/git_service.py` — unchanged
+- `engineering/manager.py` — unchanged
+- `engineering/telegram_service.py` — separate slice
+- Any QA execution in this slice
+- Any dashboard changes
+- Any workflow_store, event_store, or backlog changes
+- Any new routes or filesystem side effects
+
+---
+
+### ENGPLAT-002C2 acceptance criteria
+
+1. `isinstance(QAAdapterImpl(...), QAAdapter)` returns `True`
+2. `QAAdapterImpl(config).configured_command()` returns exactly `config.qa_commands`
+3. `QAAdapterImpl(config).timeout_seconds()` returns exactly `config.qa_timeout_seconds`
+4. `build_project_context(config).qa` is `QAAdapterImpl`
+5. `ctx.git` is still `GitAdapterImpl`
+6. `ctx.files` still raises `CapabilityUnavailable`
+7. Invalid `ProjectConfig` still fails before adapter construction
+8. `QAAdapterImpl` construction does not execute QA
+9. `QAAdapterImpl` construction creates no files
+10. `QAAdapterImpl` construction performs no subprocess execution
+11. `QAAdapterImpl` construction performs no network or Git operation
+12. No `Path.cwd()` or repository discovery is introduced
+13. Existing `QA runner` behavior remains unchanged
+14. Existing `GitAdapter` behavior remains unchanged
+15. Full safe suite passes with the actual final test count reported
+
+---
+
+### ENGPLAT-002C2 implementation notes
+
+**QAAdapterImpl design:**
+
+```python
+class QAAdapterImpl(QAAdapter):
+    """Concrete QAAdapter exposing ProjectConfig QA configuration.
+
+    Does NOT execute QA. run_qa() execution is a separate concern addressed
+    in a future slice. This adapter provides configuration access only.
+    """
+
+    def __init__(self, config: ProjectConfig) -> None:
+        self._config = config
+
+    def configured_command(self) -> tuple[str, ...]:
+        return self._config.qa_commands
+
+    def timeout_seconds(self) -> int:
+        return self._config.qa_timeout_seconds
+```
+
+**Why CONFIG-ONLY:**
+
+The `QAAdapter` protocol docstring explicitly states:
+"run_qa() execution is deferred to 002C."
+This slice activates the CONFIGURATION ACCESS portion of the deferred work.
+QA execution (run_qa) remains a separate slice.
+
+**Why qa_runner.py is NOT authorized:**
+
+`qa_runner.py` contains hardcoded `QA_TIMEOUT_SECONDS = 300` and execution logic.
+Modifying it to use `ProjectConfig.qa_timeout_seconds` is a separate concern
+(QA execution path) and is not required to make the config-only adapter work.
+
+**ENGSUP-001 impact:**
+
+ENGPLAT-002C2 advances supervisor readiness by making project QA configuration
+available through `ProjectContext`. QA execution and result orchestration remain
+separate concerns. This slice does not fully unblock ENGSUP-001 Phase 1 alone.
+
+---
+
+### ENGPLAT-002C2 risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| QAAdapterImpl construction accidentally runs QA | Low | High | No subprocess calls in `__init__` |
+| Protocol mismatch between adapter and callers | Low | Medium | Runtime `isinstance` check in tests |
+| Test compatibility changes miss a stale assertion | Medium | Low | Explicit test file authorization in allowed areas |
+
+---
+
+### ENGPLAT-002C2 stop criteria
+
+Stop and report if:
+- `QAAdapter` protocol signature changes (requires re-review of all callers)
+- Any behavioral change detected in existing test behavior
+- Any new filesystem side effects or subprocess execution during construction
+- Scope expansion requested
+- `engineering/adapters.py` requires modification
+
+---
+
 ### ENGPLAT-003 — Project Bootstrap
 
 Status: TODO

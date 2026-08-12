@@ -1532,3 +1532,15 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests: N/A (governance planning)
 - Important decisions/discoveries: GitReadAdapter protocol is already complete (no changes to adapters.py); GitAdapterImpl goes in context.py; manager.py migrates one call pattern (GitService → ctx.git); telegram_service.py smoke launcher Path.cwd() is excluded as a separate slice; GitAdapterImpl is a thin wrapper around existing GitService with no behavioral change.
 - Next action: Josh reviews the ENGPLAT-002C1 governance entry in AGENT_BACKLOG.md. If approved, next agent run implements from `agent/engplat-002c1-git-adapter` following the exact Allowed Areas.
+
+## 2026-08-12T01:24Z — ENGPLAT-002C2 governance remediation
+
+- Elapsed time: N/A (read-only governance planning)
+- Continuity: Continuous
+- Backlog item/objective: ENGPLAT-002C2 — QAAdapter Implementation (Slice 2 of ENGPLAT-002C)
+- Branch/commit: `agent/engplat-002c2-qa-adapter-governance`, commit pending
+- Status: PENDING JOSH APPROVAL — governance planning only, no implementation
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`, `reports/2026-08-12_012423_engplat-002c2-qa-adapter-governance.md`
+- Tests: N/A (governance planning)
+- Important decisions/discoveries: QAAdapter protocol is already complete (config-only: configured_command(), timeout_seconds() only; no run_qa()); QAAdapterImpl is a thin config-only wrapper; qa_runner.py is NOT authorized (hardcoded timeout is execution-path concern); test compatibility changes required for test_engineering_project_context.py and test_engineering_git_adapter.py (same pattern as 002C1); ENGSUP-001 impact is partial (advances readiness, does not fully unblock Phase 1 alone).
+- Next action: Josh reviews the ENGPLAT-002C2 governance entry in AGENT_BACKLOG.md. If approved, next agent run implements from `agent/engplat-002c2-qa-adapter` following the exact Allowed Areas.
