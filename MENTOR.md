@@ -823,9 +823,10 @@ engineering-platform priority order is:
 
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
 2. `ENGDASH-005` — Engineering Timeline and Historical Activity
-3. `ENGPLAT-002C1` — Git Adapter Implementation (Slice 1 of ENGPLAT-002C)
-4. `ENGPLAT-002` — Repository and Project Adapter Boundaries (002A ✅, 002B ✅, 002C in progress)
-5. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+3. `ENGPLAT-002C1` — Git Adapter Implementation (Slice 1 of ENGPLAT-002C) ✅
+4. `ENGPLAT-002C2` — QAAdapter Implementation (Slice 2 of ENGPLAT-002C)
+5. `ENGPLAT-002` — Repository and Project Adapter Boundaries (002A ✅, 002B ✅, 002C in progress)
+6. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
 5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
 6. `ENGCTRL-001` — Safe Engineering Control Panel
 7. `CONFIG-002` — Dashboard-to-engine synchronization
