@@ -1520,3 +1520,15 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests: focused ENGDASH-005 command PASS (`42 passed, 2 warnings`); relevant regressions PASS (`62 passed, 2 warnings`); full safe suite PASS (`489 passed, 82 warnings`); `git diff --check` PASS.
 - Important decisions/discoveries: default dashboard app composition now uses `TRADING_BOT_PROJECT` plus `build_project_context()` to build explicit provider config; query service keeps old concrete-store aliases while accepting adapter-backed sources; timeline ordering is bounded and deterministic. Parser suffix-ID limitation remains a non-blocking follow-up.
 - Next action: Push branch, open ENGDASH-005 implementation PR targeting main, and stop for Josh read-only review.
+
+## 2026-08-12T00:10Z — ENGPLAT-002C1 governance remediation
+
+- Elapsed time: N/A (read-only governance planning)
+- Continuity: Continuous
+- Backlog item/objective: ENGPLAT-002C1 — Git Adapter Implementation and Integration (Slice 1 of ENGPLAT-002C)
+- Branch/commit: `agent/engplat-002c1-git-adapter`, commit pending
+- Status: PENDING JOSH APPROVAL — governance planning only, no implementation
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`, `REPORT.md`, `ITERATION_PROGRESS_LOG.md`, `reports/2026-08-12_001037_engplat-002c1-git-adapter-governance.md`
+- Tests: N/A (governance planning)
+- Important decisions/discoveries: GitReadAdapter protocol is already complete (no changes to adapters.py); GitAdapterImpl goes in context.py; manager.py migrates one call pattern (GitService → ctx.git); telegram_service.py smoke launcher Path.cwd() is excluded as a separate slice; GitAdapterImpl is a thin wrapper around existing GitService with no behavioral change.
+- Next action: Josh reviews the ENGPLAT-002C1 governance entry in AGENT_BACKLOG.md. If approved, next agent run implements from `agent/engplat-002c1-git-adapter` following the exact Allowed Areas.
