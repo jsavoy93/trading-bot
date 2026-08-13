@@ -1544,3 +1544,15 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests: N/A (governance planning)
 - Important decisions/discoveries: QAAdapter protocol is already complete (config-only: configured_command(), timeout_seconds() only; no run_qa()); QAAdapterImpl is a thin config-only wrapper; qa_runner.py is NOT authorized (hardcoded timeout is execution-path concern); test compatibility changes required for test_engineering_project_context.py and test_engineering_git_adapter.py (same pattern as 002C1); ENGSUP-001 impact is partial (advances readiness, does not fully unblock Phase 1 alone).
 - Next action: Josh reviews the ENGPLAT-002C2 governance entry in AGENT_BACKLOG.md. If approved, next agent run implements from `agent/engplat-002c2-qa-adapter` following the exact Allowed Areas.
+
+## 2026-08-13T02:05Z — ENGPLAT-002C3 governance remediation
+
+- Elapsed time: N/A (read-only governance planning)
+- Continuity: Continuous
+- Backlog item/objective: ENGPLAT-002C3 — FileReadAdapter Implementation (Slice 3 of ENGPLAT-002C)
+- Branch/commit: `agent/engplat-002c3-file-adapter-governance`, commit pending
+- Status: PENDING JOSH APPROVAL — governance planning only, no implementation
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`
+- Tests: N/A (governance planning)
+- Important decisions/discoveries: FileReadAdapter protocol is already complete (read-only, 3 methods: resolve/exists/read_text); containment logic adopts existing models.py pattern (resolve non-strict, relative_to containment check); symlink loop raises RuntimeError from pathlib.resolve(strict=False) — must be caught and converted to ValueError; broken symlinks inside repo are accepted (resolve succeeds, exists returns False, read_text raises FileNotFoundError); broken symlinks escaping repo raise ValueError; error messages must not expose raw host paths; Option B absolute-path policy (allow absolute, enforce containment); ctx.files has zero runtime callers; FileWriteAdapter is deferred to future slice.
+- Next action: Josh reviews the ENGPLAT-002C3 governance entry in AGENT_BACKLOG.md. If approved, next agent run implements from `agent/engplat-002c3-file-adapter` following the exact Allowed Areas.
