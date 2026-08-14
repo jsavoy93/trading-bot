@@ -2344,6 +2344,227 @@ Stop and report if:
 
 ---
 
+### ENGPLAT-002C3 — FileReadAdapter Implementation
+
+Status: IN_PROGRESS
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-002B
+
+Purpose:
+
+Replace `_DeferredFileReadAdapter` with concrete `FileReadAdapterImpl` providing
+repository-bounded filesystem reads through `ProjectContext`.
+
+This is Slice 3 of ENGPLAT-002C. This completes the transition of all three
+previously deferred `ProjectContext` capabilities (`git`, `qa`, `files`) from
+deferred stubs to concrete adapters.
+
+---
+
+### ENGPLAT-002C3 allowed areas (implementation governance)
+
+**REQUIRED (runtime):**
+
+- `engineering/context.py`
+  - Add `FileReadAdapterImpl` class — repository-bounded read-only adapter
+  - Replace `_DeferredFileReadAdapter(config.project_id)` with
+    `FileReadAdapterImpl(config.repository_root)` in `build_project_context()`
+  - Do NOT change the `build_project_context()` function signature
+
+**REQUIRED (new tests):**
+
+- `tests/test_engineering_file_adapter.py` (new file)
+  - Behavioral tests for `FileReadAdapterImpl`:
+    1. Protocol conformance: `isinstance(FileReadAdapterImpl(...), FileReadAdapter)`
+    2. `resolve()` returns bounded resolved path for contained inputs
+    3. `resolve()` raises `ValueError` on parent traversal escape
+    4. `resolve()` raises `ValueError` on nested traversal escape
+    5. `resolve()` accepts absolute contained paths
+    6. `resolve()` raises `ValueError` on absolute path outside repo
+    7. `resolve()` accepts symlink to inside target
+    8. `resolve()` raises `ValueError` on symlink to outside target
+    9. `resolve()` returns bounded candidate for broken symlink to inside target
+    10. `resolve()` raises `ValueError` on broken symlink to outside target
+    11. `resolve()` raises `ValueError` on symlink loop (RuntimeError converted)
+    12. `exists()` returns `True` for existing file
+    13. `exists()` returns `True` for existing directory
+    14. `exists()` returns `False` for missing contained target
+    15. `exists()` returns `False` for broken contained symlink target
+    16. `exists()` raises `ValueError` on escape
+    17. `read_text()` returns exact UTF-8 contents
+    18. `read_text()` raises `FileNotFoundError` for missing target
+    19. `read_text()` raises `FileNotFoundError` for broken contained symlink target
+    20. `read_text()` raises `IsADirectoryError` for directory
+    21. `read_text()` raises `ValueError` on escape
+    22. Error messages do not leak raw host paths
+    23. Constructor has no filesystem side effects
+    24. No `Path.cwd()` or repository discovery in `__init__`
+    25. `build_project_context(config).files` is `FileReadAdapterImpl`
+    26. `ctx.git` remains `GitAdapterImpl`
+    27. `ctx.qa` remains `QAAdapterImpl`
+
+**REQUIRED (test compatibility):**
+
+- `tests/test_engineering_project_context.py`
+  - Replace `_DeferredFileReadAdapter` import/reference with `FileReadAdapterImpl`
+  - Update `_build_context_directly_for_test` helper to use `FileReadAdapterImpl`
+  - Remove stale `CapabilityUnavailable` expectations for `ctx.files`
+  - Preserve `GitAdapterImpl` and `QAAdapterImpl` expectations
+  - Update docstrings related to deferred file capability
+  - No unrelated refactoring
+
+- `tests/test_engineering_git_adapter.py`
+  - Replace `test_ctx_files_still_raises_capability_unavailable` with
+    `test_ctx_files_is_file_read_adapter_impl` verifying `ctx.files` is concrete
+  - No other GitAdapter test changes
+
+- `tests/test_engineering_qa_adapter.py`
+  - Replace stale `ctx.files` `CapabilityUnavailable` assertion with
+    concrete `FileReadAdapterImpl` / `FileReadAdapter` check
+  - No QAAdapter behavior changes
+
+**NOT AUTHORIZED:**
+
+- `engineering/adapters.py` — `FileReadAdapter` protocol is already complete
+- `engineering/models.py` — containment logic already exists; not to be modified
+- `engineering/qa_runner.py` — not in scope
+- `engineering/workflow/qa.py` — not in scope
+- `engineering/qa.py` — not in scope
+- `engineering/git_service.py` — unchanged
+- `engineering/manager.py` — unchanged
+- `engineering/telegram_service.py` — separate slice
+- Any write methods (`write_text`, `mkdir`, `unlink`, `rename`, `delete`, `chmod`)
+- Any temp-file creation
+- Any runtime caller migration (no callers currently use `ctx.files`)
+- Any dashboard changes
+- Any Path.cwd() cleanup in unrelated services
+
+---
+
+### ENGPLAT-002C3 acceptance criteria
+
+1. `isinstance(FileReadAdapterImpl(...), FileReadAdapter)` returns `True`
+2. `resolve()` returns bounded resolved path for contained relative files
+3. `resolve()` raises bounded `ValueError` on parent traversal escape
+4. `resolve()` raises bounded `ValueError` on nested traversal escape
+5. `resolve()` accepts absolute contained paths
+6. `resolve()` raises bounded `ValueError` on absolute path outside repo
+7. `resolve()` accepts symlink to inside target (existing or broken)
+8. `resolve()` raises bounded `ValueError` on symlink to outside target
+9. `resolve()` raises bounded `ValueError` on symlink loop (RuntimeError converted)
+10. `exists()` returns `True` for existing file and directory
+11. `exists()` returns `False` for missing or broken contained target
+12. `exists()` raises `ValueError` on escape attempt
+13. `read_text()` returns exact UTF-8 contents for existing file
+14. `read_text()` raises `FileNotFoundError` for missing or broken contained target
+15. `read_text()` raises `IsADirectoryError` for directory
+16. `read_text()` raises `ValueError` on escape attempt
+17. Error messages do not expose raw host paths
+18. `FileReadAdapterImpl` construction has no filesystem side effects
+19. No `Path.cwd()` or repository discovery in `__init__`
+20. `build_project_context(config).files` is `FileReadAdapterImpl`
+21. `ctx.git` is still `GitAdapterImpl`
+22. `ctx.qa` is still `QAAdapterImpl`
+23. Full safe suite passes with the actual final test count reported
+24. `git diff --check` passes
+
+---
+
+### ENGPLAT-002C3 FileReadAdapterImpl semantics
+
+**Constructor:**
+
+```python
+class FileReadAdapterImpl(FileReadAdapter):
+    def __init__(self, repository_root: Path) -> None:
+        self._root = repository_root.resolve()
+```
+
+**resolve(path) algorithm:**
+
+```python
+def resolve(self, path: Path) -> Path:
+    # 1. Resolve candidate (non-strict: follows symlinks, does not require existence)
+    candidate = (self._root / path).resolve(strict=False)
+    # 2. Symlink loop -> RuntimeError from pathlib; convert to bounded ValueError
+    except RuntimeError:
+        raise ValueError("files: path resolution failed")
+    # 3. Containment check
+    try:
+        candidate.relative_to(self._root)
+    except ValueError:
+        raise ValueError("files: path escapes repository_root")
+    # 4. Return bounded path (existence not required)
+    return candidate
+```
+
+**exists(path) algorithm:**
+
+```python
+def exists(self, path: Path) -> bool:
+    contained = self.resolve(path)  # raises ValueError on escape
+    return contained.exists()
+```
+
+**read_text(path) algorithm:**
+
+```python
+def read_text(self, path: Path) -> str:
+    contained = self.resolve(path)  # raises ValueError on escape
+    return contained.read_text(encoding="utf-8")
+```
+
+**Symlink policy:**
+
+- Symlink to existing target inside repo: allowed
+- Symlink to nonexistent target inside repo: resolve succeeds, exists=False, read_text raises FileNotFoundError
+- Symlink to existing target outside repo: ValueError (escape)
+- Symlink to nonexistent target outside repo: ValueError (escape)
+- Symlink loop: RuntimeError converted to ValueError
+
+**Absolute-path policy (Option B):**
+
+Relative and absolute Path inputs are both allowed. Safety is determined solely by
+resolved containment within repository_root. Absolute path that resolves inside repo
+is accepted; absolute path that escapes is rejected with ValueError.
+
+**Error sanitization:**
+
+All ValueErrors contain only the field name (`"files"`), a static bounded phrase,
+and the caller-supplied relative path (if included). Do NOT include resolved
+absolute paths, repo root paths, or raw `relative_to()` exception text.
+
+---
+
+### ENGPLAT-002C3 stop criteria
+
+Stop and report if:
+- `FileReadAdapter` protocol signature changes (requires re-review)
+- Any behavioral change detected in existing test behavior
+- Any new filesystem side effects or subprocess execution during construction
+- Scope expansion requested
+- `engineering/adapters.py` or `engineering/models.py` requires modification
+- Any write method is introduced
+- Any runtime caller migration is proposed as part of this slice
+
+---
+
+### ENGPLAT-002C3 ENGPLAT-004 wording
+
+After 002C3, the three previously deferred `ProjectContext` capabilities are concrete:
+
+- `ctx.git` concrete (002C1 — GitReadAdapter via `GitAdapterImpl`)
+- `ctx.qa` concrete (002C2 — QAAdapter via `QAAdapterImpl`, configuration-only)
+- `ctx.files` concrete (002C3 — FileReadAdapter via `FileReadAdapterImpl`, read-only)
+
+This completes the three adapter migrations in ENGPLAT-002C. It does NOT mean
+ENGPLAT-004 extraction readiness is complete. Broader service migration and
+extraction-cleanliness criteria remain separate.
+
+---
+
 ### ENGPLAT-003 — Project Bootstrap
 
 Status: TODO
