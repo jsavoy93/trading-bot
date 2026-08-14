@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering.adapters import QAAdapter, CapabilityUnavailable
+from engineering.adapters import QAAdapter
 from engineering.context import QAAdapterImpl, build_project_context
 from engineering.models import GovernanceFiles, ProjectConfig, WorkflowFiles
 
@@ -132,12 +132,11 @@ class TestBuildProjectContextWiring:
         # Must NOT be a deferred stub
         assert not type(ctx.git).__name__.startswith("_Deferred")
 
-    def test_ctx_files_still_raises_capability_unavailable(self) -> None:
+    def test_ctx_files_is_file_read_adapter_impl(self) -> None:
+        from engineering.context import FileReadAdapterImpl
         config = _minimal_config(TRADING_BOT_ROOT)
         ctx = build_project_context(config)
-        with pytest.raises(CapabilityUnavailable) as exc_info:
-            ctx.files.exists(Path("."))
-        assert exc_info.value.capability == "files"
+        assert isinstance(ctx.files, FileReadAdapterImpl)
 
 
 # ---------------------------------------------------------------------------

@@ -1556,3 +1556,15 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests: N/A (governance planning)
 - Important decisions/discoveries: FileReadAdapter protocol is already complete (read-only, 3 methods: resolve/exists/read_text); containment logic adopts existing models.py pattern (resolve non-strict, relative_to containment check); symlink loop raises RuntimeError from pathlib.resolve(strict=False) — must be caught and converted to ValueError; broken symlinks inside repo are accepted (resolve succeeds, exists returns False, read_text raises FileNotFoundError); broken symlinks escaping repo raise ValueError; error messages must not expose raw host paths; Option B absolute-path policy (allow absolute, enforce containment); ctx.files has zero runtime callers; FileWriteAdapter is deferred to future slice.
 - Next action: Josh reviews the ENGPLAT-002C3 governance entry in AGENT_BACKLOG.md. If approved, next agent run implements from `agent/engplat-002c3-file-adapter` following the exact Allowed Areas.
+
+## 2026-08-14T11:55Z — ENGPLAT-002C3 implementation
+
+- Elapsed time: ~15 minutes
+- Continuity: Continuous
+- Backlog item/objective: ENGPLAT-002C3 — FileReadAdapterImpl Implementation (Slice 3 of ENGPLAT-002C)
+- Branch/commit: `agent/engplat-002c3-file-adapter-implementation`, commit `020507c`
+- Status: `DONE` (stopped for Josh review)
+- Files changed: `engineering/context.py` (+57/-14), `tests/test_engineering_file_adapter.py` (new, 33 tests), `tests/test_engineering_project_context.py` (+3/-4), `tests/test_engineering_git_adapter.py` (+1/-3), `tests/test_engineering_qa_adapter.py` (+1/-3)
+- Tests: `test_engineering_file_adapter.py` 33 passed; compatibility suite 105 passed; full safe suite 552 passed (1 pre-existing unrelated flaky dashboard test)
+- Important decisions: FileReadAdapterImpl replaces _DeferredFileReadAdapter in build_project_context(); engineering/adapters.py unchanged; engineering/models.py unchanged; ctx.git remains concrete; ctx.qa remains concrete; symlink loop caught as RuntimeError from pathlib.resolve(strict=False) and converted to bounded ValueError("files: path resolution failed")
+- Next action: Josh reviews PR #36; agent does not merge automatically.
