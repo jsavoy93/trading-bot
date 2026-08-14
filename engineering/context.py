@@ -93,20 +93,57 @@ class QAAdapterImpl(QAAdapter):
         return self._config.qa_timeout_seconds
 
 
-class _DeferredFileReadAdapter(FileReadAdapter):
-    """Deferred FileReadAdapter — raises CapabilityUnavailable (002C provides concrete)."""
+class FileReadAdapterImpl(FileReadAdapter):
+    """Concrete FileReadAdapter — bounded filesystem read access.
 
-    def __init__(self, project_id: str):
-        self._project_id = project_id
+    All operations are resolved relative to the supplied repository_root.
+    Construction is side-effect free: no file reads, no Path.cwd(), no
+    repository discovery, no network calls.
+    """
+
+    def __init__(self, repository_root: Path) -> None:
+        self._root = repository_root.resolve()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_safe(self, relative_path: Path) -> Path:
+        """Resolve and contain a relative path; raise ValueError on escape.
+
+        Handles symlink loops by catching pathlib.RuntimeError and
+        converting to a bounded ValueError. Never exposes raw exception
+        text from relative_to() or pathlib internals.
+        """
+        try:
+            candidate = (self._root / relative_path).resolve(strict=False)
+        except RuntimeError:
+            # Symlink loop or similar — pathlib resolve() raises RuntimeError
+            raise ValueError("files: path resolution failed")
+
+        # Enforce containment: resolved path must remain inside _root
+        try:
+            candidate.relative_to(self._root)
+        except ValueError:
+            raise ValueError("files: path escapes repository_root")
+
+        return candidate
+
+    # ------------------------------------------------------------------
+    # FileReadAdapter contract
+    # ------------------------------------------------------------------
 
     def resolve(self, relative_path: Path) -> Path:
-        raise CapabilityUnavailable(self._project_id, "files")
+        """Resolve a relative path; raise ValueError if it escapes."""
+        return self._resolve_safe(relative_path)
 
     def exists(self, relative_path: Path) -> bool:
-        raise CapabilityUnavailable(self._project_id, "files")
+        """Return True if the contained target exists; ValueError on escape."""
+        return self._resolve_safe(relative_path).exists()
 
     def read_text(self, relative_path: Path) -> str:
-        raise CapabilityUnavailable(self._project_id, "files")
+        """Return UTF-8 text content; raise on missing/escape/directory."""
+        return self._resolve_safe(relative_path).read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +323,7 @@ def build_project_context(config: ProjectConfig) -> ProjectContext:
         governance=governance_adapter,
         workflow=workflow_adapter,
         qa=QAAdapterImpl(config),
-        files=_DeferredFileReadAdapter(config.project_id),
+        files=FileReadAdapterImpl(config.repository_root),
         events=event_adapter,
         metadata=metadata,
     )

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from engineering.adapters import CapabilityUnavailable, GitReadAdapter
+from engineering.adapters import GitReadAdapter
 from engineering.context import GitAdapterImpl, build_project_context
 from engineering.git_service import GitService
 from engineering.models import GovernanceFiles, ProjectConfig, WorkflowFiles
@@ -172,12 +172,11 @@ class TestBuildProjectContext:
         ctx = build_project_context(config)
         assert isinstance(ctx.qa, QAAdapterImpl)
 
-    def test_ctx_files_still_raises_capability_unavailable(self) -> None:
+    def test_ctx_files_is_file_read_adapter_impl(self) -> None:
+        from engineering.context import FileReadAdapterImpl
         config = _minimal_config(TRADING_BOT_ROOT)
         ctx = build_project_context(config)
-        with pytest.raises(CapabilityUnavailable) as exc_info:
-            ctx.files.exists(Path("."))
-        assert exc_info.value.capability == "files"
+        assert isinstance(ctx.files, FileReadAdapterImpl)
 
 
 # ---------------------------------------------------------------------------

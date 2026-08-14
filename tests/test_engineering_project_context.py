@@ -41,13 +41,12 @@ from engineering.models import (
 from engineering.context import (
     GitAdapterImpl,
     QAAdapterImpl,
-    _DeferredFileReadAdapter,
+    FileReadAdapterImpl,
     GovernanceAdapterImpl,
     WorkflowAdapterImpl,
     EventAdapterImpl,
     build_project_context,
 )
-from engineering.adapters import CapabilityUnavailable
 
 
 # ---------------------------------------------------------------------------
@@ -243,10 +242,9 @@ class TestProtocolsRuntimeCheckable:
 class TestProtocolConformance:
     """Verify that concrete adapters satisfy their Protocol contracts.
 
-    ENGPLAT-002B/002C provides GovernanceAdapterImpl, WorkflowAdapterImpl,
-    EventAdapterImpl, and QAAdapterImpl as concrete implementations.
-    Deferred adapter (_DeferredFileReadAdapter) remains as a stub raising
-    CapabilityUnavailable.
+    ENGPLAT-002C provides GovernanceAdapterImpl, WorkflowAdapterImpl,
+    EventAdapterImpl, QAAdapterImpl, and FileReadAdapterImpl as concrete
+    implementations.
     """
 
     def test_git_adapter_impl_satisfies_protocol(self):
@@ -291,8 +289,8 @@ class TestProtocolConformance:
         )
         assert isinstance(QAAdapterImpl(config), QAAdapter)
 
-    def test_deferred_file_adapter_satisfies_protocol(self):
-        assert isinstance(_DeferredFileReadAdapter("test"), FileReadAdapter)
+    def test_file_adapter_impl_satisfies_protocol(self):
+        assert isinstance(FileReadAdapterImpl(Path("/tmp/test-root")), FileReadAdapter)
 
 
 # ---------------------------------------------------------------------------
@@ -589,9 +587,9 @@ class TestImportBoundary:
 # ---------------------------------------------------------------------------
 
 class TestDeferredFactoryBehavior:
-    def test_files_deferred_adapter_raises_capability_unavailable(self, tmp_path):
-        """Files adapter remains deferred; raises CapabilityUnavailable on every method call."""
-        config = _minimal_config(project_id="deferred-test", repository_root=tmp_path)
+    def test_files_adapter_is_concrete(self, tmp_path):
+        """Files adapter is concrete FileReadAdapterImpl (ENGPLAT-002C)."""
+        config = _minimal_config(project_id="concrete-test", repository_root=tmp_path)
         (tmp_path / "AGENT_BACKLOG.md").touch()
         (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
         (tmp_path / "OWNERS.md").touch()
@@ -600,12 +598,10 @@ class TestDeferredFactoryBehavior:
         (tmp_path / "reports").mkdir()
 
         ctx = build_project_context(config)
-
-        # ctx.qa is now concrete (QAAdapterImpl); ctx.files remains deferred
-        with pytest.raises(CapabilityUnavailable) as exc_files:
-            ctx.files.resolve(Path("x"))
-        assert exc_files.value.project_id == "deferred-test"
-        assert exc_files.value.capability == "files"
+        assert isinstance(ctx.files, FileReadAdapterImpl)
+        assert isinstance(ctx.files, FileReadAdapter)
+        # Must NOT be a deferred stub
+        assert not type(ctx.files).__name__.startswith("_Deferred")
 
     def test_error_messages_are_sanitized(self, tmp_path):
         """Validation errors contain no secrets or raw command output."""
@@ -618,8 +614,8 @@ class TestDeferredFactoryBehavior:
         # Should be a single-line, bounded message
         assert "\n" not in error_msg
 
-    def test_files_capability_unavailable_is_deterministic(self, tmp_path):
-        """Files CapabilityUnavailable message is stable (not random or time-based)."""
+    def test_files_resolve_is_deterministic(self, tmp_path):
+        """Files resolve() is stable across repeated calls."""
         config = _minimal_config(project_id="det-test", repository_root=tmp_path)
         (tmp_path / "AGENT_BACKLOG.md").touch()
         (tmp_path / "AGENT_OPERATING_PLAN.md").touch()
@@ -631,16 +627,12 @@ class TestDeferredFactoryBehavior:
         ctx1 = build_project_context(config)
         ctx2 = build_project_context(config)
 
-        # files remains deferred; qa is now concrete
-        with pytest.raises(CapabilityUnavailable) as exc_files1:
-            ctx1.files.resolve(Path("x"))
-        with pytest.raises(CapabilityUnavailable) as exc_files2:
-            ctx2.files.resolve(Path("x"))
+        result1 = ctx1.files.resolve(Path("AGENT_BACKLOG.md"))
+        result2 = ctx2.files.resolve(Path("AGENT_BACKLOG.md"))
 
-        # Same error message on every call
-        assert str(exc_files1.value) == str(exc_files2.value)
-        assert "det-test" in str(exc_files1.value)
-        assert "files" in str(exc_files1.value)
+        # Same path returned on every call
+        assert result1 == result2
+        assert str(result1).endswith("AGENT_BACKLOG.md")
 
     def test_qa_adapter_returns_deterministic_values(self, tmp_path):
         """QAAdapterImpl returns deterministic config values on repeated calls."""
@@ -691,7 +683,7 @@ def _build_context_directly_for_test(config: ProjectConfig) -> ProjectContext:
         governance=governance_adapter,
         workflow=workflow_adapter,
         qa=QAAdapterImpl(config),
-        files=_DeferredFileReadAdapter(config.project_id),
+        files=FileReadAdapterImpl(config.repository_root),
         events=event_adapter,
         metadata=metadata,
     )
