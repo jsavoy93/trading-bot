@@ -1,0 +1,201 @@
+# {display_name} Workspace
+
+> **EVERY TIME I work on this codebase: I must say out loud:**
+> **"I'm reading MENTOR.md for instructions"**
+> before I answer any question about this codebase.**
+
+> **⚠️ This is a living document. When I discover something important, make a
+> significant change, or fix a bug — I must update MENTOR.md so the knowledge
+> persists.**
+
+**FIRST: Read `MENTOR.md` before answering any questions about this codebase.**
+Also read `AUTONOMOUS_ENGINEERING_HANDOFF.md` before making architectural or
+workflow changes.
+
+## Agent Operating Safety Rules
+
+Agents in this repository must follow `AGENT_OPERATING_PLAN.md`.
+
+Hard rules:
+
+- Do not enable live trading.
+- **Architectural constraint**: No engineering service may directly access
+  repository-specific filesystem paths, filenames, repository names, or workflow
+  store locations except through approved platform adapters. All project access
+  must flow through `ProjectContext`.
+- Do not use or request live brokerage credentials.
+- Do not merge branches.
+- Do not push directly to main.
+- Do not delete, move, or archive whole files without explicit approval.
+- Do not run endless autonomous loops.
+- Do not modify secrets, `.env`, database files, generated result files, or
+  OpenClaw config unless explicitly authorized.
+- Stop if the repository is dirty.
+- Stop if tests fail after the allowed attempt.
+- Stop if the task requires destructive migration.
+- Stop if acceptance criteria are unclear.
+- Prefer branch-based, test-backed work.
+- Report exact files changed, tests run, risks, and next step.
+
+## Reporting Requirements
+
+For every completed or stopped task, the agent must select exactly one reporting
+mode before creating any report artifact.
+
+### Automatic reporting-mode selection
+
+Use **read-only reporting mode** when any part of the task is a merge readiness
+check, merge execution, audit, review, dependency gate check, preflight
+validation, verification-only task, documentation inspection, or promises not to
+modify the repository. Also use read-only reporting mode whenever the task
+requires `git diff --check`, a clean `git status`, a merge, a push, or
+merge-readiness verification.
+
+Use **implementation reporting mode** only for a normal engineering task that
+modifies repository content and does not match any read-only condition above.
+
+### Implementation reporting mode
+
+Creating `REPORT.md` and `reports/<timestamp>_<task>.md` is part of the reporting
+process. REPORT.md is the current rolling report and must be completely
+overwritten for every task.
+
+`REPORT.md` must always contain:
+
+- Executive summary
+- Task or purpose
+- Branch
+- Commit
+- Files changed
+- Tests run
+- Exact test summary
+- Overall acceptance result
+- Known risks
+- Manager decision
+- Next recommended action
+
+`REPORT.md` must not contain full criterion-by-criterion acceptance evidence,
+long command output, complete diffs, or repeated sections.
+
+The timestamped archive at `reports/YYYY-MM-DD_HHMMSS_<task>.md` contains the
+complete detailed record including every acceptance criterion, proof method,
+exact result, PASS or FAIL, and full diagnostics.
+
+### Read-only reporting mode
+
+Read-only reporting writes only the authoritative timestamped archive outside
+the repository at:
+
+`/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md`
+
+The external archive is the authoritative audit record. Do not create a rolling
+`REPORT.md` for a read-only task.
+
+## Controlled Agent Workflow
+
+All agents must follow `AGENT_OPERATING_PLAN.md`, `AGENT_BACKLOG.md`, and
+`OWNERS.md`.
+
+Before modifying files:
+
+1. Verify the repository is clean.
+2. Select one approved backlog item.
+3. State measurable acceptance criteria.
+4. State the files allowed to change.
+5. Create or use the assigned agent branch.
+
+Hard restrictions:
+
+- Never merge into main.
+- Never push directly to main.
+- Never enable live trading.
+- Never use live brokerage credentials.
+- Never modify secrets or OpenClaw configuration without explicit authorization.
+- Never delete, move, or archive whole files without explicit approval.
+- Never expand the assigned scope.
+- Never run an endless improvement loop.
+- Stop if the repository is dirty.
+- Stop if required tests fail.
+- Stop if acceptance criteria cannot be explained clearly.
+
+Every final report must include:
+
+- Backlog item
+- Branch
+- Commit
+- Files changed
+- Tests run
+- Test results
+- Known risks
+- Manager review decision
+- Clear request for approval
+
+### Acceptance Evidence (Required)
+
+For every completed backlog item, the report must include an **Acceptance
+Evidence** section with:
+
+1. **Each acceptance criterion** — the original criterion text
+2. **Proof method** — exact command or inspection used to verify it
+3. **Exact result** — the actual output, output snippet, or observation
+4. **Status** — `PASS` or `FAIL`
+
+### Manager Task Reporting Requirements
+
+Every manager task report must follow the standardized bounded format:
+
+#### 1. Telegram Executive Summary
+
+Always begin with exactly these fields:
+
+```
+Task:
+Decision:
+Branch:
+Commit:
+Tests:
+Report:
+PR:
+Blockers:
+Next:
+```
+
+Rules:
+
+- Keep under 15 lines
+- One value per field
+- If unavailable: write "Unavailable"
+
+#### 2. Decision Packet
+
+After the executive summary, include only sections relevant to the current
+decision: Scope, Files Changed, Acceptance Criteria, Test Evidence, Blocking
+Findings, Non-Blocking Findings, Risks, Decision Required, Recommended Next
+Action.
+
+#### 3. Detailed Archive
+
+Put exhaustive details in `REPORT.md` and the timestamped archive.
+
+#### 4. Duplicate Prevention
+
+Do not emit an identical packet twice. On retry: "Duplicate delivery suppressed;
+prior packet remains authoritative."
+
+#### 5. Evidence Discipline
+
+Verify branch, commit, working-tree state, PR state, and test results directly.
+Do not trust prior prose as the sole source.
+
+#### 6. Recommended Next Prompt
+
+End every manager packet with one bounded, ready-to-paste recommended prompt.
+
+#### 7. Apply Going Forward
+
+All future manager tasks use this format.
+
+#### Stale Task Rule
+
+A task is considered stale when inactive for more than 48 hours without a status
+update. The manager must report stale status before continuing.

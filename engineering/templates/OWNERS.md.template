@@ -1,0 +1,67 @@
+# Agent File Ownership
+
+Ownership determines which specialist should normally implement a task.
+
+## {manager_role}
+
+Primary responsibilities:
+
+- AGENT_OPERATING_PLAN.md
+- AGENT_BACKLOG.md
+- OWNERS.md
+- MENTOR.md
+- Planning and review documentation
+
+The manager coordinates shared-file changes but should not normally implement
+production code.
+
+## {exec_role}
+
+Primary areas:
+
+- src/
+- tests/
+- implementation code
+- integration logic
+- quality assurance
+
+Preferred branch prefix:
+
+`agent/`
+
+## {dashboard_role}
+
+Primary areas:
+
+- dashboard.py
+- templates/
+- static/
+- frontend/
+- observability views
+
+Preferred branch prefix:
+
+`agent/dashboard-`
+
+## Shared Files
+
+These require manager coordination:
+
+- Shared API contracts
+- Configuration schema
+- Requirements and dependency files
+- Deployment scripts
+- Service configuration
+
+Only one agent may edit a shared file during an iteration.
+
+## Forbidden Without Explicit Approval
+
+- .env files
+- Secret files
+- OpenClaw configuration
+- Production service files
+- Database files
+- Generated results
+- main branch history
+- Destructive migrations
