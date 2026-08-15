@@ -1643,3 +1643,37 @@ agent/engplat-002a-project-context-contracts created from current main.
   Bootstrap (003A) complete. Registry persistence/activation is separate future
   work, not yet designed or implemented.
 - Next action: Josh reviews governance PR; do not merge automatically.
+
+
+## 2026-08-15T16:43:36Z — ENGSUP-001 STATE MACHINE GOVERNANCE AMENDMENT
+
+- Elapsed time: read-only code inspection + targeted governance amendment
+- Continuity: Continuous from ENGSUP-001 Phase 1 readiness review
+- Backlog item/objective: Resolve blocking contradiction between ENGSUP-001 design
+  state machine (15 states) and actual implementation (9 states)
+- Branch: `agent/engsup-001-state-machine-governance`
+- Status: `REVIEW` (stopped for Josh review before merge)
+- Files changed: `AGENT_BACKLOG.md`
+- Tests/backtests: git diff --check PASS; no runtime or test files modified
+- Exact governance contradiction resolved:
+  OLD (bytes 161092-166031, 4939 bytes): 15-state machine with non-existent
+  WorkflowState values (WAIT_FOR_APPROVAL, MERGE_PREPARATION, IMPLEMENTATION_COMPLETE,
+  QA_RUNNING, QA_PASSED, QA_FAILED, READ_ONLY_REVIEW, CHANGES_REQUESTED,
+  APPROVED_FOR_MERGE, MERGED, ARCHIVED)
+  NEW: Actual 9-state WorkflowState machine (DISCOVER through COMPLETE) with
+  verified transition table, state-to-evidence mapping, and WorkflowState +
+  evidence bundle â SupervisorDecision mapping for Phase 1
+- Secondary fix: Automatic Transition Matrix table (bytes 143101-144058):
+  Replaced non-existent stage names (IMPLEMENTATION, WAIT_FOR_APPROVAL,
+  MERGE_PREPARATION, TIMED_OUT, EVIDENCE_INCONSISTENT) with actual WorkflowState
+  values and clarified supervisor decisions vs. workflow state distinction
+- Key clarification added: SupervisorDecisionKind values are NOT WorkflowState values
+- Workflow invariants updated to reflect actual 9-state implementation
+- Removed invalid state definitions, transition rules, and invariants that
+  referenced non-existent states
+- Items NOT changed (correctly):
+  - ENGSUP-001 Phase 1 design unchanged (prompt generation, manual dispatch)
+  - ENGSUP-001 Phase 2+ design unchanged (auto-dispatch, inbox, multi-project)
+  - SupervisorDecisionKind enum values unchanged (still correct as Supervisor decisions)
+  - Actual workflow engine code unchanged
+- Next action: Josh reviews governance PR; do not merge automatically.
