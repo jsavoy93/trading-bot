@@ -1042,3 +1042,34 @@ Key design elements:
 
 See `AGENT_BACKLOG.md` ENGSUP-001 for the full backlog entry including schemas,
 matrices, acceptance criteria, planned tests, and risks.
+
+---
+
+## ENGPLAT-003A Bootstrap Capability
+
+ENGPLAT-003A adds a library-only bootstrap module in `engineering/bootstrap.py`.
+It plans and applies creation of a new managed-project skeleton at an explicit
+destination. It returns an in-memory `ProjectConfig` through bootstrap result
+objects and does not persist that config.
+
+Important boundaries:
+- API surface: `plan_bootstrap(...)` and `apply_bootstrap(...)`.
+- Destination is explicit; there is no `Path.cwd()` fallback or implicit repo discovery.
+- Successful apply creates exactly five files: `AGENTS.md`, `AGENT_BACKLOG.md`,
+  `AGENT_OPERATING_PLAN.md`, `OWNERS.md`, and `AUTONOMOUS_ENGINEERING_HANDOFF.md`.
+- Templates must stay generic. Do not add trading-bot identifiers, brokerage
+  assumptions, trading-specific policies, trading paths, Josh-specific defaults,
+  secrets, or fantasy-app content.
+- Known validation or conflict failures perform zero writes. Unexpected write
+  failures are fail-fast and may leave partial state; report written paths and
+  the failed target without claiming rollback.
+- Bootstrap preflight validates intrinsic `ProjectConfig` semantics before
+  managed artifact writes. Existing runtime-readiness validation still belongs
+  to runtime components; do not create `engineering/`, `reports/`, or other
+  runtime directories merely to satisfy readiness checks in 003A.
+- 003A deliberately does not implement registry persistence, activation, CLI,
+  overwrite/force behavior, Git initialization, reports directory creation,
+  `.agent-state`, `.gitignore`, `pyproject.toml`, `pytest.ini`, or QA execution.
+
+ENGPLAT-003B remains required before the manager can persist/register/activate
+new projects or route agents to them.
