@@ -1568,3 +1568,15 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests: `test_engineering_file_adapter.py` 33 passed; compatibility suite 105 passed; full safe suite 552 passed (1 pre-existing unrelated flaky dashboard test)
 - Important decisions: FileReadAdapterImpl replaces _DeferredFileReadAdapter in build_project_context(); engineering/adapters.py unchanged; engineering/models.py unchanged; ctx.git remains concrete; ctx.qa remains concrete; symlink loop caught as RuntimeError from pathlib.resolve(strict=False) and converted to bounded ValueError("files: path resolution failed")
 - Next action: Josh reviews PR #36; agent does not merge automatically.
+
+## 2026-08-15 01:16–01:22 UTC — ENGPLAT-003A validation-contract governance correction
+
+- Backlog item/objective: ENGPLAT-003A validation-contract correction.
+- Branch: `agent/engplat-003a-validation-governance`
+- Commit: pending final push at report-write time; final Telegram packet reports pushed commit.
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `REPORT.md`, `ITERATION_PROGRESS_LOG.md`, and `reports/2026-08-15_011822_engplat-003a-validation-contract-governance.md`.
+- Tests/backtests: governance consistency checks PASS; runtime/test file-change audit PASS; `git diff --check` PASS. No backtest applicable.
+- Important decisions: Replaced the impossible immediate full `validate_project_config()` requirement with structural parse plus intrinsic ProjectConfig semantic validation before writes. Runtime filesystem-readiness validation is deferred until later runtime components legitimately create lazily-created runtime paths. `validate_project_config()` itself remains unchanged.
+- Remaining risks: Josh must review/merge this governance PR before PR #38 can be judged against the corrected contract. ENGPLAT-003B remains unstarted.
+- Next action: Open governance PR targeting `main`; do not merge automatically.
