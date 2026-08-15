@@ -1,0 +1,21 @@
+name,position,nfl_team,bye_week,adp,source,source_id,active
+Christian McCaffrey,RB,SF,9,1.0,csv,cmc-2024,true
+CeeDee Lamb,WR,DAL,7,2.0,csv,ceedee-2024,true
+Ja'Marr Chase,WR,CIN,10,3.0,csv,jamar-2024,true
+Bijan Robinson,RB,ATL,5,4.0,csv,bijan-2024,true
+Breece Hall,RB,NYJ,9,5.0,csv,breece-2024,true
+Justin Jefferson,WR,MIN,6,6.0,csv,justin-j-2024,true
+Amon-Ra St. Brown,WR,DET,8,7.0,csv,amonra-2024,true
+Tyreek Hill,WR,MIA,12,8.0,csv,tyreek-2024,true
+Saquon Barkley,RB,PHI,9,9.0,csv,saquon-2024,true
+A.J. Brown,WR,PHI,9,10.0,csv,ajb-2024,true
+Jonathan Taylor,RB,IND,11,11.0,csv,jt-2024,true
+Puka Nacua,WR,LAR,8,12.0,csv,puka-2024,true
+Garrett Wilson,WR,NYJ,9,13.0,csv,garrett-w-2024,true
+Jahmyr Gibbs,RB,DET,8,14.0,csv,jahmyr-2024,true
+Travis Kelce,TE,KC,10,25.0,csv,kelce-2024,true
+Josh Allen,QB,BUF,7,30.0,csv,josh-allen-2024,true
+Derrick Henry,RB,BAL,7,31.0,csv,henry-2024,true
+Sam LaPorta,TE,DET,8,42.0,csv,saml-2024,true
+Lamar Jackson,QB,BAL,7,45.0,csv,lamar-2024,true
+DJ Moore,WR,CHI,5,46.0,csv,djmoore-2024,true

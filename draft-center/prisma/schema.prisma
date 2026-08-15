@@ -1,0 +1,63 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Player {
+  id             String    @id // Stable identifier - never changes for existing player
+  playerId       String    @unique // Normalized identity for matching
+  name           String
+  position       String    // QB, RB, WR, TE
+  nflTeam        String?
+  byeWeek        Int?
+  adp            Float?
+  active         Boolean   @default(true) // false = excluded from available players
+  source         String    @default("manual") // seed, csv, provider, manual
+  sourceId       String?   // Original ID from external source
+  sourceUpdatedAt DateTime?
+  draftedAt      DateTime? // When player was drafted
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  draftPicks     DraftPick[]
+
+  @@index([playerId])
+  @@index([active])
+  @@index([position])
+}
+
+model DraftPick {
+  id              Int       @id @default(autoincrement())
+  overallPick     Int       @unique // 1-170 for 10 team, 17 rounds
+  round           Int
+  roundPick       Int
+  originalTeamId  String
+  currentOwnerTeamId String
+  selectedPlayerId String?  @unique // One player per pick
+  selectedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  player          Player?   @relation(fields: [selectedPlayerId], references: [id])
+
+  @@index([selectedPlayerId])
+  @@index([currentOwnerTeamId])
+}
+
+model LeagueConfig {
+  id          String   @id
+  name        String
+  teamCount   Int
+  rounds      Int
+  scoring     String   @default("PPR")
+  myTeamId    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
