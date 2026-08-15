@@ -70,6 +70,213 @@ class Complexity(str, Enum):
 
 
 # ---------------------------------------------------------------------------
+# ENGSUP-001 Phase 1: Supervisor types
+# ---------------------------------------------------------------------------
+
+class Severity(str, Enum):
+    """Decision severity level."""
+    BLOCKING = "BLOCKING"
+    WARNING = "WARNING"
+    INFO = "INFO"
+
+
+class Confidence(str, Enum):
+    """Evidence confidence level based on source verification."""
+    VERIFIED = "VERIFIED"   # Independently confirmed by >= 2 sources
+    HIGH = "HIGH"          # Single authoritative source confirmed
+    MEDIUM = "MEDIUM"      # Corroborated but not independently verified
+    LOW = "LOW"            # Single uncorroborated source
+    UNKNOWN = "UNKNOWN"     # No evidence available
+
+
+class SupervisorDecisionKind(str, Enum):
+    """Advisory decisions produced by the supervisor.
+
+    These are NOT WorkflowState values. They are supervisor recommendations
+    that Josh evaluates for manual dispatch.
+    """
+    # Routine: next step is clear, no human gate required
+    CONTINUE = "CONTINUE"                   # Agent done; next step is QA
+    RUN_QA = "RUN_QA"                       # QA should be re-run
+    RUN_READ_ONLY_REVIEW = "RUN_READ_ONLY_REVIEW"
+    RETRY = "RETRY"                         # Bounded retry; same agent re-dispatch
+    REQUEST_CHANGES = "REQUEST_CHANGES"     # Routine rework; Josh dispatches
+
+    # Human approval required
+    WAIT_FOR_HUMAN_APPROVAL = "WAIT_FOR_HUMAN_APPROVAL"  # Human gate; cannot auto-dispatch
+    READY_FOR_MERGE_APPROVAL = "READY_FOR_MERGE_APPROVAL"  # Josh must approve PR merge
+
+    # Blocked / escalated
+    BLOCKED = "BLOCKED"                     # Missing predecessor or impossible condition
+    ESCALATE_POLICY_CONFLICT = "ESCALATE_POLICY_CONFLICT"  # Loop protection, scope drift, mismatch
+
+    # Terminal
+    COMPLETE = "COMPLETE"                   # All criteria met; task done
+
+
+@dataclass(frozen=True)
+class EvidenceConflict:
+    """A detected conflict between two evidence sources."""
+    field_label: str
+    source_a: str       # e.g. "git", "completion_packet", "report_md", "github_api"
+    value_a: str
+    source_b: str
+    value_b: str
+    resolution: str     # e.g. "used_verified", "used_priority_1", "flagged_blocking"
+
+
+@dataclass(frozen=True)
+class TestResultSummary:
+    """Summarised QA/test results for supervisor evaluation."""
+    exit_code: int
+    passed_count: int | None = None
+    failed_count: int | None = None
+    timed_out: bool = False
+    output_summary: str = ""
+
+    @property
+    def is_pass(self) -> bool:
+        return self.exit_code == 0 and not self.timed_out
+
+
+@dataclass(frozen=True)
+class EvidenceRef:
+    """Reference to a piece of evidence with content hash."""
+    source: str                        # "git", "completion_packet", "report_md", "github_api"
+    path: str | None = None            # File path if applicable
+    content_hash: str | None = None    # SHA-256 of content used
+    modified_at: str | None = None     # ISO-8601 timestamp
+    excerpt: str | None = None         # Bounded excerpt (≤200 lines)
+
+
+@dataclass(frozen=True)
+class CompletionPacket:
+    """Structured completion data from an agent run.
+
+    This is NOT trusted blindly — the supervisor verifies independently.
+    """
+    version: str = "1.0"
+    task_id: str = ""
+    task_title: str = ""
+    workflow_state: WorkflowState = WorkflowState.DISCOVER
+    feature_branch: str = ""
+    head_commit: str = ""
+    agent_name: str = ""
+    delegation_status: str = ""          # DelegationStatus value as string
+    delegation_exit_code: int | None = None
+    delegation_failure_reason: str = ""
+    qa_exit_code: int | None = None
+    qa_passed_count: int | None = None
+    qa_failed_count: int | None = None
+    qa_timed_out: bool = False
+    review_recommendation: str = ""     # ReviewRecommendation value as string
+    report_md_exists: bool = False
+    report_md_modified_at: str | None = None
+    report_md_content_hash: str | None = None
+    changed_files: tuple[str, ...] = ()
+    allowed_areas: tuple[str, ...] = ()
+    retry_count: int = 0
+    same_qa_failure_count: int = 0      # Repeated identical QA failure count
+    same_review_finding_count: int = 0  # Repeated identical review finding count
+    generated_at: str = ""
+
+
+@dataclass(frozen=True)
+class EvidenceBundle:
+    """Verified evidence assembled by the supervisor.
+
+    Built from authoritative evidence sources in priority order:
+    1. Repository verification (Git/GitHub — directly verified)
+    2. Structured completion packet
+    3. Structured QA/test evidence
+    4. REPORT.md (supporting narrative only)
+    5. Timestamped implementation reports
+    6. PR metadata
+
+    Priority-1 state always overrides lower-priority conflicting state.
+    """
+    # Verified Git state
+    git_branch: str | None = None
+    git_head: str | None = None
+    git_tree_clean: bool | None = None
+    git_verified: bool = False          # True when git state was independently read
+
+    # QA evidence
+    qa_result: TestResultSummary | None = None
+    qa_verified: bool = False
+
+    # Review evidence
+    review_recommendation: str | None = None   # "ACCEPT" or "REWORK"
+    review_verified: bool = False
+
+    # REPORT.md evidence
+    report_md_exists: bool = False
+    report_md_stale: bool = False      # True when report conflicts with verified state
+    report_md_content_hash: str | None = None
+    report_md_excerpt: str | None = None  # Bounded excerpt, max 200 lines
+    report_md_verified: bool = False
+
+    # Delegation evidence
+    delegation_status: str | None = None
+    delegation_verified: bool = False
+
+    # Completion packet (unverified input)
+    completion_packet: CompletionPacket | None = None
+
+    # All evidence references
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+
+    # Detected conflicts
+    conflicts: tuple[EvidenceConflict, ...] = ()
+
+    # Stale evidence flags
+    stale_evidence: tuple[str, ...] = ()   # Source labels flagged as stale
+
+    # Missing evidence (by source label)
+    missing_evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SupervisorDecision:
+    """Typed supervisor decision output.
+
+    Produced by the supervisor after evaluating an EvidenceBundle.
+    This is always advisory — Josh manually dispatches all actions.
+    Phase 1: no auto-dispatch; human_approval_required determines Josh gate.
+    """
+    # Core decision
+    decision: SupervisorDecisionKind
+    severity: Severity = Severity.INFO
+    confidence: Confidence = Confidence.UNKNOWN
+
+    # Evidence used
+    evidence_used: tuple[str, ...] = ()    # Source labels used in decision
+    missing_evidence: tuple[str, ...] = () # Evidence types that were unavailable
+
+    # Findings
+    blockers: tuple[str, ...] = ()        # Blocking issues requiring resolution
+    warnings: tuple[str, ...] = ()         # Non-blocking concerns
+
+    # Human action
+    human_approval_required: bool = False  # True when Josh must act before proceeding
+    josh_approval_kinds: tuple[str, ...] = ()  # Which approval kinds are relevant
+
+    # Bounded output
+    supervisor_note: str = ""             # ≤ 5 sentences; no chain-of-thought
+    generated_instruction: str = ""        # Bounded next-step instruction for Josh
+
+    # Evidence state
+    evidence_conflicts: tuple[EvidenceConflict, ...] = ()  # Any conflicts detected
+    stale_evidence: tuple[str, ...] = ()   # Evidence IDs flagged as stale
+
+    # Verification state
+    git_verified: bool = False
+    qa_verified: bool = False
+    review_verified: bool = False
+    report_md_verified: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Existing dataclasses (preserved)
 # ---------------------------------------------------------------------------
 
