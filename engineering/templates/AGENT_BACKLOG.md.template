@@ -1,0 +1,90 @@
+# {display_name} — Agent Backlog
+
+> **This file is the authoritative source of planned, in-progress, and completed
+> engineering work. All task state transitions must be reflected here before a
+> workflow advances.**
+
+---
+
+## Task Index
+
+| Task ID | Title | Status | Owner | Priority |
+|---|---|---|---|---|
+| {example_task_id} | {example_title} | {example_status} | {example_owner} | {example_priority} |
+
+---
+
+## Task Details
+
+{placeholder_for_task_entries}
+
+> Add task entries below using this format:
+>
+> ```markdown
+> ### <task_id> — <title>
+>
+> Status: TODO | IN_PROGRESS | BLOCKED | REVIEW | DONE
+> Owner: <owner>
+> Priority: P0 | P1 | P2 | P3 | P4
+>
+> #### Purpose
+>
+> <one-paragraph description>
+>
+> #### Acceptance Criteria
+>
+> 1. <criterion>
+> 2. <criterion>
+>
+> #### Allowed Areas
+>
+> - <path or file>
+> - <path or file>
+>
+> #### Risks
+>
+> - <risk>
+> - <risk>
+>
+> ---
+> ```
+
+---
+
+## Backlog Governance
+
+- Tasks are added to this file only with explicit approval.
+- Status transitions are tracked here in real time.
+- IN_PROGRESS tasks must have a branch, an owner, and a task start time.
+- BLOCKED tasks must document the blocker.
+- REVIEW tasks must have acceptance evidence attached.
+- DONE tasks must have a merged PR or explicit closure reason.
+- Never delete task entries; archive completed ones by moving to a done section.
+
+## Priority Definitions
+
+| Priority | Meaning |
+|---|---|
+| P0 | Critical — blocks all dependent work |
+| P1 | High — targeted for current iteration |
+| P2 | Medium — scheduled but not urgent |
+| P3 | Low — backing up for reference |
+| P4 | Deprioritized — may be removed |
+
+## Status Definitions
+
+| Status | Meaning |
+|---|---|
+| TODO | Approved and queued |
+| IN_PROGRESS | Active implementation |
+| BLOCKED | Waiting on external dependency |
+| REVIEW | Awaiting acceptance decision |
+| DONE | Completed and merged |
+
+## Owner Identities
+
+| Owner | Role |
+|---|---|
+| {manager_role} | Engineering manager |
+| {exec_role} | Implementation specialist |
+| {dashboard_role} | Dashboard and UI specialist |

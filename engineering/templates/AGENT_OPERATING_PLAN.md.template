@@ -1,0 +1,141 @@
+# Agent Operating Plan
+
+This repository uses OpenClaw agents as a controlled development system.
+
+## Roles
+
+### {manager_role}
+
+The manager plans and reviews one bounded task at a time.
+
+Responsibilities:
+
+- Verify that the repository is clean.
+- Select one approved backlog item.
+- Define measurable acceptance criteria.
+- Record task start time before beginning work.
+- Delegate implementation to the appropriate specialist.
+- Review the resulting diff.
+- Verify tests.
+- Accept or reject the work.
+- Record task end time and compute elapsed time.
+- Report continuity status in every report.
+- Report blocked or stale status if the task cannot complete in reasonable time.
+- Push or prepare a review branch.
+- Report through the configured channel.
+- Stop after one iteration.
+
+The manager must never merge into main.
+
+### {exec_role}
+
+The executor implements backend, strategy, execution, and testing tasks.
+
+Responsibilities:
+
+- Work only on the assigned branch and scope.
+- Make only the requested changes.
+- Add or update tests.
+- Run relevant checks.
+- Commit and push the assigned branch.
+- Report results to the manager.
+
+The executor must not expand scope, choose strategy direction, or merge work.
+
+### {dashboard_role}
+
+The dashboard agent owns dashboard, settings UI, observability, and explanations.
+
+Responsibilities:
+
+- Improve dashboard status and observability.
+- Build decision-funnel reporting.
+- Maintain the settings interface.
+- Verify displayed settings match engine settings.
+- Add dashboard and API tests.
+- Commit and push dashboard branches.
+
+The dashboard agent must not independently invent or tune strategy logic.
+
+## Hard Safety Rules
+
+- No agent may merge into main.
+- No agent may push directly to main.
+- No agent may enable live trading.
+- No agent may use live external-service credentials.
+- No agent may delete, move, or archive whole files without approval.
+- No agent may modify OpenClaw configuration or secrets without explicit approval.
+- No agent may run an endless autonomous loop.
+- Each iteration must contain only one bounded task.
+- The repository must be clean before an iteration begins.
+- Tests and acceptance criteria are required before changes.
+- Approval is required for all merges and deployments.
+- Agents must stop if the requested scope is unclear.
+- Agents must stop if changes extend beyond allowed files.
+- Agents must stop after three consecutive failed iterations.
+
+## Iteration Flow
+
+1. Verify safe environment.
+2. Verify clean repository.
+3. Select one approved backlog item.
+4. Define acceptance criteria.
+5. Record task start time.
+6. Create an agent branch.
+7. Delegate implementation.
+8. Run tests.
+9. Review the exact diff.
+10. Record task end time and elapsed time.
+11. Report continuity status.
+12. Report blocked or stale status if applicable.
+13. Commit and push the branch.
+14. Report through the configured channel.
+15. Stop.
+
+## Infrastructure-Dependent Verification States
+
+For work that depends on an external operational prerequisite, report these facts
+independently:
+
+- `IMPLEMENTATION COMPLETE` — the approved repository changes are finished.
+- `AUTOMATED VERIFICATION PASSED` — required deterministic safe tests pass.
+- `MANUAL OPERATIONAL VERIFICATION PENDING` — a real-environment check cannot
+  run because its external prerequisite is unavailable.
+
+When implementation and automated verification are complete and no software
+defect is known, an unavailable external prerequisite is not a failure. Keep
+the backlog status as `REVIEW` and record `Manual Operational Verification
+Pending` as review classification, not as failure.
+
+Use `FAIL`, `REWORK`, or an implementation blocker only when evidence
+identifies an actual software defect, failed automated requirement, unsafe
+configuration, or incomplete implementation.
+
+## Deterministic Reporting Location
+
+- Normal repository-modifying engineering tasks use implementation reporting
+  mode: overwrite ignored root `REPORT.md` and write the authoritative
+  timestamped archive under repository `reports/`.
+- Merge readiness, merge execution, audit, review, dependency gates,
+  preflight validation, verification-only work, documentation inspection, and
+  any task promising no repository modification use read-only reporting mode.
+- Tasks requiring `git diff --check`, clean `git status`, merge, push, or
+  merge-readiness verification also use read-only reporting mode.
+- Read-only reporting writes no repository artifact. Its only archive is
+  `/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md`.
+- If classification is uncertain, use read-only mode.
+
+## Approved Engineering-Platform Roadmap Priority
+
+The current approved platform priority order is maintained in `AGENT_BACKLOG.md`.
+Do not implement roadmap tasks without narrow allowed areas and explicit
+approval. Roadmap entries do not authorize broad allowed areas.
+
+Operational constraints:
+
+- Each implementation requires a separate narrow allowed-area remediation and
+  explicit approval before implementation begins.
+- Engineering platform work must follow the adapter-boundary architecture.
+- No engineering service may directly access repository-specific filesystem
+  paths, filenames, or repository names except through approved platform
+  adapters.

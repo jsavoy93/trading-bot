@@ -1,0 +1,304 @@
+# Autonomous Engineering Manager — Handoff Guide
+
+## Purpose
+
+This document gives a new AI coding agent enough context to continue
+development of the autonomous engineering manager without having to reconstruct
+the project history.
+
+The engineering manager executes a controlled development lifecycle:
+
+```text
+DISCOVER
+  ↓
+PLAN
+  ↓
+PREPARE_BRANCH
+  ↓
+DELEGATE
+  ↓
+WAIT_FOR_AGENT
+  ↓
+QA
+  ↓
+REVIEW
+  ↓
+REPORT
+  ↓
+COMPLETE
+```
+
+The manager remains deterministic. AI agents are used for implementation or
+review, but the manager controls orchestration, workflow persistence, safety
+gates, and final acceptance logic. The manager behaves like an engineering lead:
+
+1. Select the next valid backlog task.
+2. Understand the task and produce a concrete execution plan.
+3. Validate repository state.
+4. Create or resume a safe feature branch.
+5. Delegate the implementation with a tightly scoped prompt.
+6. Persist the delegated run and resume after interruptions.
+7. Run automated validation.
+8. Compare evidence against acceptance criteria.
+9. Produce a human-readable report.
+10. Mark the workflow complete and return to idle.
+
+---
+
+## Repository
+
+Repository path: `{repository_root}`
+
+Current working branch: depends on active workflow state.
+
+Important rule:
+
+```text
+Do not make live trades.
+Do not weaken safety checks.
+Do not modify secrets or .env files.
+Use small, tested commits.
+Avoid giant rewrites.
+```
+
+Before making changes, read:
+
+```text
+MENTOR.md
+```
+
+The existing MENTOR.md contains the project code map, known issues, health
+checks, and the current autonomous workflow architecture.
+
+---
+
+## Product Vision
+
+The engineering manager should eventually execute this lifecycle:
+
+```text
+DISCOVER
+  ↓
+PLAN
+  ↓
+PREPARE_BRANCH
+  ↓
+DELEGATE
+  ↓
+WAIT_FOR_AGENT
+  ↓
+QA
+  ↓
+REVIEW
+  ↓
+REPORT
+  ↓
+COMPLETE
+```
+
+The manager remains deterministic. AI agents may be used later for
+implementation or review, but AI must not control orchestration, workflow
+persistence, safety gates, or final acceptance logic. The manager should behave
+like an engineering lead:
+
+1. Select the next valid backlog task.
+2. Understand the task and produce a concrete execution plan.
+3. Validate repository state.
+4. Create or resume a safe feature branch.
+5. Delegate the implementation with a tightly scoped prompt.
+6. Persist the delegated run and resume after interruptions.
+7. Run automated validation.
+8. Compare evidence against acceptance criteria.
+9. Produce a human-readable report.
+10. Mark the workflow complete and return to idle.
+
+---
+
+## Current Architecture
+
+The intended architecture is:
+
+```text
+engineering/manager.py
+        ↓
+load or create StoredWorkflow
+        ↓
+engineering/workflow_engine.py
+        ↓
+engineering/workflow/<state>.py
+        ↓
+return a new immutable StoredWorkflow
+        ↓
+WorkflowStore.save()
+```
+
+Responsibilities are intentionally separated.
+
+### engineering/manager.py Responsibilities:
+
+- Load an existing persisted workflow or create a new one.
+- Dispatch exactly one workflow state per manager run.
+- Save the returned workflow.
+- Print useful status information.
+
+The manager should orchestrate only. It should not contain state-specific
+business logic.
+
+### engineering/workflow_engine.py Responsibilities:
+
+- Map each WorkflowState to the correct handler.
+- Call the handler.
+- Return the resulting workflow.
+
+The dispatcher should not contain planning, Git, QA, or reporting logic.
+
+### engineering/workflow/<state>.py
+
+Each state lives in its own independently testable module. Expected handler
+contract:
+
+```python
+def run(workflow: StoredWorkflow) -> StoredWorkflow:
+    # Validate preconditions.
+    # Perform this state's work.
+    # Decide the next state.
+    # Return a new workflow.
+```
+
+A state handler must not directly invoke the next state handler.
+
+### engineering/workflow_store.py Responsibilities:
+
+- Persist the active workflow.
+- Load it safely.
+- Reject malformed or unknown states.
+- Save atomically.
+- Clear completed workflow state.
+
+---
+
+## Important Model Behavior
+
+`StoredWorkflow` is a frozen dataclass. It must not be mutated directly.
+
+Incorrect:
+
+```python
+workflow.state = WorkflowState.PLAN
+```
+
+Correct:
+
+```python
+from dataclasses import replace
+
+return replace(
+    workflow,
+    state=WorkflowState.PLAN,
+)
+```
+
+Immutable transitions are deliberate. They make workflow changes explicit and
+reduce accidental state corruption.
+
+---
+
+## Current Workflow States
+
+```text
+DISCOVER
+  ↓
+PLAN
+  ↓
+PREPARE_BRANCH
+  ↓
+DELEGATE
+  ↓
+WAIT_FOR_AGENT
+  ↓
+QA
+  ↓
+REVIEW
+  ↓
+REPORT
+  ↓
+COMPLETE
+```
+
+---
+
+## Engineering Principles
+
+### Deterministic orchestration
+
+The manager controls:
+
+- task selection
+- allowed scope
+- state transitions
+- persistence
+- safety
+- acceptance gates
+
+### Narrow agent authority
+
+Agents may implement work only within the plan. They should not:
+
+- select arbitrary tasks
+- alter safety settings
+- switch to live trading
+- change secrets
+- rewrite unrelated architecture
+- mark themselves accepted
+
+### Evidence over confidence
+
+Every transition after delegation should be supported by stored evidence.
+
+### Resume-safe behavior
+
+A reboot or interrupted shell session should not:
+
+- lose the task
+- delegate twice
+- create duplicate branches
+- skip QA
+- forget review results
+
+### Small commits
+
+Use one focused commit per milestone.
+
+---
+
+## Recommended First Commands for a New Agent
+
+```bash
+cd {repository_root}
+cat MENTOR.md
+git status
+git branch --show-current
+git log --oneline -10
+cat AGENT_BACKLOG.md
+cat OWNERS.md
+cat AGENT_OPERATING_PLAN.md
+find engineering/workflow -maxdepth 2 -type f -print
+```
+
+---
+
+## Definition of Success
+
+The engineering manager is successful when it can safely take one backlog task
+from TODO to a final engineering report with:
+
+- deterministic task selection
+- explicit plan
+- safe branch
+- bounded delegation
+- persisted state
+- automated QA
+- criterion-level review
+- clear report
+- no live trading risk
+- no manual copy/paste required for routine operation.
