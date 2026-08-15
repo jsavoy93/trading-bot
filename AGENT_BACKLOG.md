@@ -3352,15 +3352,20 @@ for each transition kind.
 
 | From stage | Trigger | To stage | Conditions for auto-dispatch |
 |---|---|---|---|
-| IMPLEMENTATION | Implementation complete | QA | Tests not yet run; working tree clean; no blockers |
-| QA | All tests pass | REVIEW | Reviewer role authorized; no failures in evidence |
-| QA | Non-critical failures | IMPLEMENTATION (fix) | Failures are bounded, non-safety, retry count < 3 |
-| REVIEW | Changes requested | IMPLEMENTATION (fix) | Findings are bounded, specific, not safety-related |
-| REVIEW | All criteria met | REPORT | Recommendation is ACCEPT; no open blockers |
-| REPORT | Report complete | WAIT_FOR_APPROVAL | Human gate for merge |
-| WAIT_FOR_APPROVAL | Josh approved | MERGE_PREPARATION | Josh explicitly approved |
-| TIMED_OUT | Agent timed out | IMPLEMENTATION (retry) | Timeout is retryable; retry count < max |
-| EVIDENCE_INCONSISTENT | Evidence mismatch detected | EVIDENCE_CORRECTION | Mismatch is correctable without new implementation |
+| WAIT_FOR_AGENT | Agent delegation COMPLETE | QA | DelegationRecord.status = COMPLETE; supervisor verified tree clean |
+| QA | All tests pass | REVIEW | QARecord.exit_code = 0; not timed_out; supervisor verified evidence |
+| QA | Non-critical failure | QA (auto-retry) | Failure bounded; retry_count ≤ 2; supervisor verified scope not drifted |
+| REVIEW | ACCEPT recommendation | REPORT | ReviewRecord.recommendation = ACCEPT; supervisor verified criteria |
+| REVIEW | REWORK recommendation, first | WAIT_FOR_AGENT (re-dispatch) | ReviewRecord.recommendation = REWORK; findings bounded; retry_count ≤ 2 |
+| REVIEW | REWORK, repeated findings | SupervisorDecision ESCALATE_POLICY_CONFLICT | Same finding 2+ times; loop protection |
+| WAIT_FOR_AGENT | Agent FAILED/TIMED_OUT | SupervisorDecision ESCALATE_POLICY_CONFLICT | Retry exhausted or non-retryable |
+| Any | Evidence mismatch | SupervisorDecision ESCALATE_POLICY_CONFLICT | Verified state contradicts completion packet |
+| Any | BLOCKED by predecessor | SupervisorDecision BLOCKED | Human gate required |
+
+**Note:** "IMPLEMENTATION" maps to `WAIT_FOR_AGENT` in the actual implementation.
+"REVIEW" maps to the actual `REVIEW` state. The supervisor does not
+directly set workflow state; it produces SupervisorDecisionKind values.
+The workflow engine handles all state transitions autonomously.
 
 **Auto-dispatch conditions (all must be true):**
 
@@ -3753,117 +3758,101 @@ recommendation truth.
 The canonical workflow state machine governs every engineering task. All platform
 components derive state from the same immutable event history.
 
-**Workflow states** (in order):
+**Actual implemented WorkflowState values** (verified from `engineering/models.py`):
 
 ```
-TODO
-↓
-PLANNING
-↓
-APPROVED_FOR_IMPLEMENTATION
-↓
-IMPLEMENTING
-↓
-IMPLEMENTATION_COMPLETE
-↓
-QA_RUNNING
-↓
-QA_FAILED | QA_PASSED
-↓
-READ_ONLY_REVIEW
-↓
-CHANGES_REQUESTED | APPROVED_FOR_MERGE
-↓
-MERGED
-↓
-ARCHIVED
+DISCOVER
+↓ PLAN
+↓ PREPARE_BRANCH
+↓ DELEGATE
+↓ WAIT_FOR_AGENT
+↓ QA
+↓ REVIEW
+↓ REPORT
+↓ COMPLETE
 ```
 
-**State definitions and required evidence**:
+**Important distinction: SupervisorDecisionKind is NOT a WorkflowState.**
 
-| State | Entry Criteria | Exit Criteria | Required EvidenceBundle | DecisionResult |
-|---|---|---|---|---|
-| `TODO` | Task in backlog | Manager begins work | Backlog entry, ProjectContext | None |
-| `PLANNING` | Manager drafts plan | Josh approves plan | Plan draft, ProjectContext | `WAIT_FOR_APPROVAL` |
-| `APPROVED_FOR_IMPLEMENTATION` | Josh approves plan | Agent begins work | Approved plan, scope | `CONTINUE` |
-| `IMPLEMENTING` | Agent starts work | Implementation complete | Allowed-areas diff, git state | None |
-| `IMPLEMENTATION_COMPLETE` | Diff complete, tests pass locally | QA begins | Full diff, test results | `CONTINUE` |
-| `QA_RUNNING` | QA invoked | QA result available | QA execution record | None |
-| `QA_FAILED` | QA exit ≠ 0 | Agent fixes or scopes back | QA failure evidence | `WAIT_FOR_APPROVAL` |
-| `QA_PASSED` | QA exit = 0 | Review begins | QA pass evidence | `CONTINUE` |
-| `READ_ONLY_REVIEW` | Manager opens PR | Review complete | PR metadata, diff | `WAIT_FOR_APPROVAL` |
-| `CHANGES_REQUESTED` | Reviewer requests changes | Agent addresses | Review comments | `CONTINUE` (→ IMPLEMENTING) |
-| `APPROVED_FOR_MERGE` | Josh approves PR | Merge begins | Approval evidence | `CONTINUE` |
-| `MERGED` | Merge complete | Archive initiated | Merge commit, event | `CONTINUE` |
-| `ARCHIVED` | Workflow archived | Terminal | Archive path | None |
+Supervisor decisions (SupervisorDecisionKind values such as CONTINUE,
+WAIT_FOR_HUMAN_APPROVAL, READY_FOR_MERGE_APPROVAL, REQUEST_CHANGES,
+ESCALATE_POLICY_CONFLICT, BLOCKED) are typed outputs from the supervisor's
+evaluation of a workflow's current state plus verified evidence. They are NOT
+workflow states and do not appear in WorkflowState.
 
-**Transition rules**:
+The supervisor does not mutate the workflow state machine. The workflow engine
+handles all state transitions. The supervisor produces advisory decisions
+for human review.
 
-| From | To | Allowed? | Gate | Trigger |
-|---|---|---|---|---|
-| TODO | PLANNING | Yes | None | Manager picks task |
-| PLANNING | APPROVED_FOR_IMPLEMENTATION | Yes | Josh approval | `APPROVED_FOR_MERGE` DecisionResult |
-| PLANNING | TODO | Yes | None | Josh rejects plan |
-| APPROVED_FOR_IMPLEMENTATION | IMPLEMENTING | Yes | None | Agent starts work |
-| IMPLEMENTING | IMPLEMENTATION_COMPLETE | Yes | None | All changes complete |
-| IMPLEMENTATION_COMPLETE | QA_RUNNING | Yes | None | QA invoked |
-| QA_RUNNING | QA_PASSED | Yes | None | QA exit 0 |
-| QA_RUNNING | QA_FAILED | Yes | None | QA exit ≠ 0 |
-| QA_FAILED | IMPLEMENTING | Yes | None | Agent begins fixes |
-| QA_PASSED | READ_ONLY_REVIEW | Yes | None | PR opened |
-| READ_ONLY_REVIEW | APPROVED_FOR_MERGE | Yes | Josh approval | `APPROVED_FOR_MERGE` |
-| READ_ONLY_REVIEW | CHANGES_REQUESTED | Yes | None | Reviewer requests changes |
-| CHANGES_REQUESTED | IMPLEMENTING | Yes | None | Agent begins fixes |
-| CHANGES_REQUESTED | READ_ONLY_REVIEW | Yes | None | Agent re-submits |
-| APPROVED_FOR_MERGE | MERGED | Yes | None (future: auto or Josh) | Merge committed |
-| MERGED | ARCHIVED | Yes | None | Archive initiated |
-| Any | ARCHIVED | No | — | Invalid: no resurrection |
-| QA_PASSED | IMPLEMENTING | No | — | Invalid: cannot regress |
-| CHANGES_REQUESTED | APPROVED_FOR_MERGE | No | — | Invalid: must re-review |
+**Actual implemented transitions** (verified from `engineering/workflow/*.py`):
 
-**Workflow invariants** (enforced):
+| From State | To State | Trigger |
+|---|---|---|
+| DISCOVER | PLAN | discover.run |
+| PLAN | PREPARE_BRANCH | plan.run |
+| PREPARE_BRANCH | DELEGATE | prepare_branch.run |
+| DELEGATE | WAIT_FOR_AGENT | delegate.run |
+| WAIT_FOR_AGENT | QA | Agent delegation status = COMPLETE |
+| WAIT_FOR_AGENT | WAIT_FOR_AGENT | Agent delegation status = FAILED or TIMED_OUT |
+| QA | REVIEW | QA exit code = 0 and not timed out |
+| QA | QA | QA exit code != 0 or timed out (auto-retry) |
+| REVIEW | REPORT | ReviewRecommendation = ACCEPT |
+| REVIEW | REVIEW | ReviewRecommendation = REWORK (stays in REVIEW) |
+| REPORT | COMPLETE | report.run |
+| COMPLETE | (terminal) | No transitions out |
 
-- Exactly one active state per workflow at any time
-- Every transition is recorded in the event store with full audit fields
-- Every transition is attributable to an actor (manager, supervisor, Josh)
-- No approval gate may be skipped
-- No transition occurs without a corresponding DecisionResult (for state changes)
-- No hidden or undocumented transitions exist
-- All transitions are deterministic: same EvidenceBundle + state → same next state
-- `ARCHIVED` is terminal: no transitions out
-- `TODO` is the only valid initial state
+Note: The workflow engine stays in QA or REVIEW on failure/REWORK rather than
+transitioning to separate QA_FAILED or CHANGES_REQUESTED states.
 
-**Workflow event model**:
+**Implemented state-to-evidence mapping**:
 
-Each transition records:
+| WorkflowState | Exit Evidence |
+|---|---|
+| DISCOVER | Backlog entry, ProjectContext |
+| PLAN | BacklogTask with scope, feature_branch |
+| PREPARE_BRANCH | clean git state, branch exists |
+| DELEGATE | delegation record persisted with run_id |
+| WAIT_FOR_AGENT | delegation status (PENDING/ACTIVE/COMPLETE/FAILED/TIMED_OUT) |
+| QA | QARecord with exit_code, passed_count, failed_count |
+| REVIEW | ReviewRecord with criteria, recommendation |
+| REPORT | ReportRecord with rendered summary |
+| COMPLETE | ACCEPT recommendation, all criteria PASS |
 
-```python
-@dataclass(frozen=True)
-class WorkflowTransitionEvent:
-    event_id: str
-    workflow_id: str
-    previous_state: WorkflowState
-    new_state: WorkflowState
-    timestamp: datetime
-    actor: str                    # manager | supervisor | josh | system
-    trigger: str                  # e.g., "qa_passed", "josh_approved"
-    evidence_bundle_id: str        # reference to EvidenceBundle used
-    decision_result_id: str        # reference to DecisionResult (if applicable)
-    notes: str                     # human-readable note (bounded, no secrets)
-    allowed_areas_changed: bool    # True if scope expanded during this transition
-```
+**WorkflowState + evidence evidence bundle → SupervisorDecision mapping for Phase 1**:
 
-**Canonical state derivation**:
+| WorkflowState | Evidence Condition | SupervisorDecisionKind | Notes |
+|---|---|---|---|
+| WAIT_FOR_AGENT | delegation.status = COMPLETE | CONTINUE | Agent done; next step is QA |
+| WAIT_FOR_AGENT | delegation.status = FAILED/TIMED_OUT, retry_count ≤ 2 | RETRY | Bounded retry |
+| WAIT_FOR_AGENT | delegation.status = FAILED/TIMED_OUT, retry_count > 2 | ESCALATE_POLICY_CONFLICT | Loop protection triggered |
+| QA | qa.exit_code = 0 | CONTINUE | Tests pass; next is REVIEW |
+| QA | qa.exit_code ≠ 0, retry_count ≤ 2 | RETRY | Auto-retry in workflow |
+| QA | qa.exit_code ≠ 0, retry_count > 2 | ESCALATE_POLICY_CONFLICT | Loop protection |
+| QA | qa.timed_out | ESCALATE_POLICY_CONFLICT | Timeout escalation |
+| REVIEW | review.recommendation = ACCEPT | READY_FOR_MERGE_APPROVAL | Josh must approve merge |
+| REVIEW | review.recommendation = REWORK, same findings 2+ times | ESCALATE_POLICY_CONFLICT | Repeated rework |
+| REVIEW | review.recommendation = REWORK, first occurrence | REQUEST_CHANGES | Routine; Josh dispatches |
+| REPORT | report.recommendation = ACCEPT | COMPLETE | Task done |
+| WAIT_FOR_AGENT | tree dirty (verified) | ESCALATE_POLICY_CONFLICT | Cannot dispatch dirty |
+| WAIT_FOR_AGENT | branch/commit mismatch with packet | ESCALATE_POLICY_CONFLICT | Evidence mismatch |
+| Any | BLOCKED by missing predecessor | BLOCKED | Human required |
+| Any | Evidence unavailable or stale | WAIT_FOR_HUMAN_APPROVAL | Human gate |
 
-Manager, Supervisor, Dashboard, Telegram, and CLI all derive current workflow state
-from the same immutable event history. No component maintains its own state copy.
+**WAIT_FOR_HUMAN_APPROVAL is a SupervisorDecisionKind, not a WorkflowState.**
+It means the supervisor has reached a condition requiring human judgment and
+cannot safely generate a bounded next-step instruction without Josh's input.
+
+**Canonical state derivation** (unchanged):
+
+All interfaces derive current workflow state from the same immutable event history.
+No component maintains its own state copy.
 
 ```
 EventStore.query(workflow_id) → ordered transitions → current_state
 ```
 
-This guarantees that all interfaces show identical state because they read
-the same event history.
+This guarantees that dashboard, Telegram, CLI, and future interfaces all show
+identical state because they read the same event history.
 
 #### Phase 2 — Routine Auto-Dispatch
 
