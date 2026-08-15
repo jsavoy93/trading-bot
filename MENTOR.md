@@ -819,28 +819,33 @@ sequence. DASH-007, OPS-016, and CONFIG-001 remain unstarted.
 
 ENGDASH-004 is merged through PR #13 at merge commit
 `31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`. The next approved
-engineering-platform priority order is:
+engineering-platform priority order (revised to reflect merged state) is:
 
-1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration
-2. `ENGDASH-005` — Engineering Timeline and Historical Activity
-3. `ENGPLAT-002C1` — Git Adapter Implementation (Slice 1 of ENGPLAT-002C) ✅
-4. `ENGPLAT-002C2` — QAAdapter Implementation (Slice 2 of ENGPLAT-002C) ✅
-5. `ENGPLAT-002C3` — FileReadAdapter Implementation (Slice 3 of ENGPLAT-002C)
-6. `ENGPLAT-002` — Repository and Project Adapter Boundaries (002A ✅, 002B ✅, 002C in progress)
-6. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
-5. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-6. `ENGCTRL-001` — Safe Engineering Control Panel
-7. `CONFIG-002` — Dashboard-to-engine synchronization
-8. `ENGPLAT-003` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration ✅ DONE
+2. `ENGPLAT-002A` — ProjectContext Contracts and Composition Boundary ✅ DONE
+3. `ENGPLAT-002B` — Local Read Adapters and Manager Integration ✅ DONE
+4. `ENGDASH-005` — Engineering Timeline and Historical Activity ✅ DONE
+5. `ENGPLAT-002C1` — Git Adapter Implementation (Slice 1 of ENGPLAT-002C) ✅ DONE
+6. `ENGPLAT-002C2` — QAAdapter Implementation (Slice 2 of ENGPLAT-002C) ✅ DONE
+7. `ENGPLAT-002C3` — FileReadAdapter Implementation (Slice 3 of ENGPLAT-002C) ✅ DONE
+8. `ENGPLAT-003A` — Project Bootstrap Planning + Filesystem Creation ✅ DONE
+9. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
+   (design merged PRs #20–#23; Phase 1 implementation not started)
+10. `ENGDASH-006` — Live Agent Activity and Execution Visibility
+11. `ENGCTRL-001` — Safe Engineering Control Panel
+12. `CONFIG-002` — Dashboard-to-engine synchronization
+13. `ENGPLAT-003B` — Project Registry Persistence / Activation (deferred after 003A)
+14. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
 
 Important constraints:
 
 - `ENGPLAT-002` depends on `ENGPLAT-001`.
 - `ENGDASH-005` depends on `ENGPLAT-001` and `ENGDASH-004`; should consume the
   project boundary from `ENGPLAT-001` where practical.
-- `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002`; Phase 1 (prompt
+- `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002C`; Phase 1 (prompt
   generation) begins after adapters are proven; auto-dispatch requires separate
-  Phase 2 approval.
+  Phase 2 approval. ENGPLAT-002C (all slices) is now merged; Phase 1
+  prerequisites are satisfied; implementation may begin.
 - `ENGDASH-006` depends on `ENGDASH-004` and must avoid a competing
   workflow-state model.
 - `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`
@@ -991,7 +996,7 @@ The platform should not be extracted until all 16 readiness criteria are met
 - Adapter signatures stable through ≥3 normal workflow runs
 - At least one non-trading-bot managed project exists
 - Supervisor Phase 1 operational (ENGSUP-001 Phase 1)
-- Engineering timeline operational (ENGDASH-005)
+- Engineering timeline operational (ENGDASH-005) ✅ DONE
 - Versioning, authentication, migration plans approved
 - Josh separately approves cross-repository planning
 
