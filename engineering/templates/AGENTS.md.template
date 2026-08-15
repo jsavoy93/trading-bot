@@ -23,7 +23,7 @@ Hard rules:
   repository-specific filesystem paths, filenames, repository names, or workflow
   store locations except through approved platform adapters. All project access
   must flow through `ProjectContext`.
-- Do not use or request live brokerage credentials.
+- Do not use or request live external-service credentials.
 - Do not merge branches.
 - Do not push directly to main.
 - Do not delete, move, or archive whole files without explicit approval.
@@ -109,7 +109,7 @@ Hard restrictions:
 - Never merge into main.
 - Never push directly to main.
 - Never enable live trading.
-- Never use live brokerage credentials.
+- Never use live external-service credentials.
 - Never modify secrets or OpenClaw configuration without explicit authorization.
 - Never delete, move, or archive whole files without explicit approval.
 - Never expand the assigned scope.

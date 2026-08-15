@@ -1568,3 +1568,16 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests: `test_engineering_file_adapter.py` 33 passed; compatibility suite 105 passed; full safe suite 552 passed (1 pre-existing unrelated flaky dashboard test)
 - Important decisions: FileReadAdapterImpl replaces _DeferredFileReadAdapter in build_project_context(); engineering/adapters.py unchanged; engineering/models.py unchanged; ctx.git remains concrete; ctx.qa remains concrete; symlink loop caught as RuntimeError from pathlib.resolve(strict=False) and converted to bounded ValueError("files: path resolution failed")
 - Next action: Josh reviews PR #36; agent does not merge automatically.
+
+## 2026-08-15 00:36–00:53 UTC — ENGPLAT-003A bootstrap implementation
+
+- Elapsed time: Approximately 17 minutes.
+- Continuity: Continuous after creating a clean isolated worktree because the shared workspace preserves fantasy migration artifacts.
+- Backlog item/objective: `ENGPLAT-003A` — implement project bootstrap planning and filesystem creation only.
+- Branch: `agent/engplat-003a-bootstrap-implementation`
+- Commit: implementation commit `de7986e`; final PR head is current branch HEAD
+- Status: `DONE`
+- Files changed: `engineering/bootstrap.py`, five `engineering/templates/*.template` files, `tests/test_engineering_bootstrap.py`, `MENTOR.md`, `REPORT.md`, and `reports/2026-08-15_005049_engplat-003a-bootstrap-implementation.md`.
+- Tests/backtests: `git diff --check` PASS; focused bootstrap tests `46 passed, 1 warning`; ProjectConfig/ProjectContext regressions `93 passed, 1 warning`; full safe suite `599 passed, 2 warnings` with safe dummy paper Alpaca credentials. No backtest applicable.
+- Decisions/risks: Parent review found and fixed a generic-template brokerage assumption before finalizing. 003A intentionally does not include registry persistence, activation, CLI, Git initialization, overwrite behavior, or fantasy migration.
+- Next action: Josh performs read-only review of PR #38. Merge only with Josh approval; after merge, proceed to ENGPLAT-003B before using bootstrap for fantasy project migration.

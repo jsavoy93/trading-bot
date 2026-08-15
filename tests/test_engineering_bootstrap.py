@@ -494,6 +494,7 @@ def test_apply_bootstrap_no_trading_bot_specific_strings() -> None:
         assert "trading-bot" not in content.lower(), f"{fname} contains trading-bot"
         assert "trading_bot" not in content, f"{fname} contains trading_bot"
         assert "alpaca" not in content.lower(), f"{fname} contains alpaca"
+        assert "brokerage" not in content.lower(), f"{fname} contains brokerage assumption"
         assert "no_live_trading" not in content, f"{fname} contains no_live_trading"
         assert "no_brokerage_access" not in content, f"{fname} contains no_brokerage_access"
         assert "josh" not in content.lower(), f"{fname} contains josh"

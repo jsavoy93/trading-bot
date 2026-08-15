@@ -62,7 +62,7 @@ The dashboard agent must not independently invent or tune strategy logic.
 - No agent may merge into main.
 - No agent may push directly to main.
 - No agent may enable live trading.
-- No agent may use live brokerage credentials.
+- No agent may use live external-service credentials.
 - No agent may delete, move, or archive whole files without approval.
 - No agent may modify OpenClaw configuration or secrets without explicit approval.
 - No agent may run an endless autonomous loop.
