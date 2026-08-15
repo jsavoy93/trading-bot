@@ -2575,72 +2575,427 @@ Depends on: ENGPLAT-002C
 
 Purpose:
 
-Enable the engineering platform to create a new managed project from a template
-rather than only managing an existing project with a pre-existing `ProjectConfig`.
+Enable the engineering platform to create a new managed project from a generic
+bootstrap template instead of managing only repositories that already have
+ProjectConfig-compatible governance files.
 
-The platform currently manages repositories that already have governance files,
-backlog, and engineering infrastructure. Bootstrap closes that gap by generating
-the initial project structure for a brand-new repository.
+ENGPLAT-003 is split into two separately governed implementation slices:
 
-### Bootstrap scope
+- **ENGPLAT-003A — Project Bootstrap Planning + Filesystem Creation**
+- **ENGPLAT-003B — Project Registry Persistence / Activation**
 
-- Generate a `ProjectConfig` for a new repository (interactive prompts or
-  template-driven configuration)
-- Create governance files from templates: `AGENT_BACKLOG.md`, `OWNERS.md`,
-  `AGENT_OPERATING_PLAN.md`, handoff document
-- Create engineering defaults: `.agent-state/` directory structure, initial
-  `.gitignore` entries for `.agent-state/`, `reports/`
-- Create initial QA configuration: `pyproject.toml` or `pytest.ini` defaults
-- Register the new project in a `ProjectRegistry` or add to the existing
-  registry file
-- Validate generated `ProjectConfig` via `parse_project_config()` and
-  `validate_project_config()`
+ENGPLAT-003A is the only slice authorized by this section. ENGPLAT-003B remains
+unimplemented and requires separate design governance before any registry or
+activation work begins.
 
-### Bootstrap safety constraints
+### ENGPLAT-003A — Project Bootstrap Planning + Filesystem Creation
 
-Bootstrap is non-executable until Josh separately approves this task.
+Status: TODO
+Owner: trading-manager
+Priority: P1
 
-Safety constraints that must appear as explicit acceptance criteria:
+Depends on: ENGPLAT-002C
 
-- **Dry-run must be explicit, not inferred**: bootstrap must support a dry-run
-  mode that shows what would be created without writing any files.
-- **Validation alone does not guarantee files will not be overwritten**:
-  the tool must check for existing files and halt with explicit human approval
-  before overwriting any existing file, even if the file would pass validation.
-- **No existing file may be replaced without explicit human approval**:
-  this is a separate acceptance criterion, not implied by validation.
-- **No secrets or credentials are generated**: bootstrap generates configuration
-  and governance structure only; it does not create or request API keys,
-  tokens, passwords, or any secrets.
-- **No arbitrary shell commands are executed**: bootstrap performs only
-  structured file creation from templates and registry updates.
-- **Requires separate governance remediation and Josh approval** before
-  implementation begins.
+#### 003A purpose
 
-### ENGPLAT-003 is separated from ENGPLAT-002A/002B because
+Define and implement the narrow first bootstrap slice:
 
-1. 002A/002B are about adapting existing services to consume ProjectConfig
-2. 003 is about generating new `ProjectConfig` instances from templates
-3. 003 depends on the full adapter contract being stable (after 002C)
-4. They have different allowed-file sets, different safety considerations,
-   and different review boundaries
-5. Keeping them as separate roadmap items provides cleaner approval gates
+- deterministic bootstrap planning
+- explicit dry-run behavior
+- safe filesystem creation for a new managed project
+- returned in-memory `ProjectConfig` object
 
-Execution gate:
+ENGPLAT-003A does **not** provide:
 
-- Non-executable until ENGPLAT-002C is complete and Josh approves a separate
-  narrow implementation plan for this task.
+- persistent `ProjectRegistry` storage
+- project activation
+- CLI
+- overwrite or force behavior
+- QA execution
+- supervisor behavior
+- dashboard behavior
 
-### ENGPLAT-003 acceptance criteria
+#### 003A architecture
 
-- Generates a valid `ProjectConfig` that passes `parse_project_config()` and
-  `validate_project_config()`
-- Creates governance files from templates without overwriting existing files
-- Registers project in `ProjectRegistry`
-- Supports dry-run mode
-- Halts with explicit approval required before overwriting any existing file
-- Emits no secrets; performs no arbitrary shell execution
-- Passes integration tests
+ENGPLAT-003A is a library-only API. No CLI is authorized in this slice.
+
+The implementation must provide API behavior equivalent to:
+
+- `plan_bootstrap(...)`
+- `apply_bootstrap(...)`
+
+Bootstrap-specific structured input and result types may be frozen dataclasses
+local to `engineering/bootstrap.py`. Do not modify `engineering/models.py` just
+to host bootstrap-only types.
+
+The same planning logic must drive both dry-run and apply behavior so planning
+and execution cannot drift.
+
+#### 003A implementation allowed areas
+
+Runtime source:
+
+- `engineering/bootstrap.py`
+
+Template sources:
+
+- `engineering/templates/AGENTS.md.template`
+- `engineering/templates/AGENT_BACKLOG.md.template`
+- `engineering/templates/AGENT_OPERATING_PLAN.md.template`
+- `engineering/templates/OWNERS.md.template`
+- `engineering/templates/AUTONOMOUS_ENGINEERING_HANDOFF.md.template`
+
+Tests:
+
+- `tests/test_engineering_bootstrap.py`
+
+Do **not** authorize:
+
+- `engineering/models.py`
+- existing test-file modifications
+- broad `engineering/` modifications
+
+#### 003A destination artifacts
+
+A successful `apply_bootstrap(...)` creates exactly these destination-project
+files:
+
+- `AGENTS.md`
+- `AGENT_BACKLOG.md`
+- `AGENT_OPERATING_PLAN.md`
+- `OWNERS.md`
+- `AUTONOMOUS_ENGINEERING_HANDOFF.md`
+
+Do **not** create by default:
+
+- `.gitignore`
+- `.agent-state/`
+- `reports/`
+- `pyproject.toml`
+- `pytest.ini`
+- registry files
+- secret files
+- `.env` files
+
+`reports/` and `.agent-state/` remain lazily created by later runtime behavior
+when runtime services actually need them.
+
+#### 003A ProjectConfig behavior
+
+ENGPLAT-003A constructs and validates a `ProjectConfig` in memory.
+
+The generated `ProjectConfig` must pass:
+
+- `parse_project_config()`
+- `validate_project_config()`
+
+ENGPLAT-003A must not invent a persisted `ProjectConfig` serialization format.
+`BootstrapResult` must return the generated `ProjectConfig` object.
+
+#### 003A transaction model
+
+Use this transaction model:
+
+**PRE-FLIGHT + FAIL-FAST, PARTIAL STATE POSSIBLE**
+
+Do not describe ENGPLAT-003A as all-or-nothing.
+
+Before the first write, implementation must:
+
+- validate input
+- construct `ProjectConfig`
+- validate `ProjectConfig`
+- resolve destination
+- calculate the complete planned write set
+- validate containment
+- detect all planned-file conflicts
+- validate templates
+
+If any known validation or conflict fails, implementation must perform zero
+writes.
+
+During apply, implementation writes planned files directly. If an unexpected
+write failure occurs, implementation must:
+
+- stop immediately
+- not continue remaining writes
+- report successfully written paths
+- report the failed target
+- report the partial-state condition explicitly
+- not claim rollback
+
+No registry update exists in ENGPLAT-003A.
+
+#### 003A dry-run contract
+
+Planning performs zero persistent writes.
+
+The plan must be bounded and structured. For each planned artifact include:
+
+- relative destination path
+- action: `CREATE` or `CONFLICT`
+- template identifier
+- generated byte count
+- generated line count
+- SHA-256 digest
+- bounded summary
+
+The plan must also include:
+
+- warnings
+- validation errors
+- generated `ProjectConfig`
+
+Do not return unbounded full generated file contents by default.
+
+#### 003A conflict and overwrite policy
+
+Phase 1 has no overwrite support.
+
+If any planned destination file already exists:
+
+- classify it as `CONFLICT`
+- `apply_bootstrap(...)` performs zero writes
+- return/report the conflict
+
+No overwrite mechanisms are authorized:
+
+- no `--force`
+- no interactive overwrite prompt
+- no per-file approval
+- no replace-if-identical behavior
+
+Unplanned files already present in the destination directory may remain if they
+do not conflict with planned artifacts.
+
+#### 003A destination semantics
+
+Destination handling must be deterministic and bounded:
+
+- destination is explicit
+- no `Path.cwd()` fallback
+- no implicit repository discovery
+- missing destination root: bootstrap may create it
+- existing empty directory: allowed
+- existing non-empty directory with no planned-file conflicts: allowed
+- existing planned artifact: conflict and zero writes
+- destination root that is a symlink: reject
+- traversal or generated child escape: reject
+- every generated child path must remain inside the resolved destination root
+
+#### 003A template rules
+
+Templates must be project-agnostic.
+
+Do not include:
+
+- trading-bot-specific names
+- brokerage or trading assumptions
+- `no_live_trading` defaults
+- hard-coded trading-bot paths
+- API keys
+- tokens
+- passwords
+- secret values
+
+The generic handoff filename is:
+
+- `AUTONOMOUS_ENGINEERING_HANDOFF.md`
+
+Do not generate `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` for new
+projects.
+
+`TRADING_BOT_PROJECT` may be used only as a schema/reference example. Do not
+copy it as the bootstrap template.
+
+#### 003A generic defaults
+
+Use only safe generic defaults:
+
+- schema version matching the current `ProjectConfig` contract
+- `project_id` from caller
+- `display_name` from caller
+- `repository_root` from explicit destination
+- `authoritative_base_branch` configurable with safe default `main`
+- governance paths pointing to the five generated files
+- workflow/event/report paths project-local
+- `agents_may_merge = False`
+- generic `prohibited_operations` only
+
+Do not copy trading-specific prohibited operations such as `no_live_trading` or
+`no_brokerage_access`.
+
+QA configuration exists only as `ProjectConfig` values in this slice. Do not
+generate `pyproject.toml` or `pytest.ini`.
+
+#### 003A registry boundary
+
+ENGPLAT-003A must not persist or activate `ProjectRegistry` state.
+
+Do not:
+
+- create registry JSON/YAML
+- invent a registry serializer
+- invent a registry path
+- activate a project globally
+- modify existing platform registry behavior
+
+ENGPLAT-003B owns registry persistence and activation design.
+
+#### 003A secrets and shell boundary
+
+- No secret values are generated or requested.
+- Environment-variable names/placeholders are allowed and are not themselves
+  secrets.
+- Do not implement a broad secret scanner.
+- Do not perform arbitrary shell execution.
+- Do not call `subprocess.run()`.
+- Do not run `git init`, `git clone`, `gh`, or QA commands.
+- Use structured Python filesystem operations only.
+
+#### 003A planned behavioral tests
+
+`tests/test_engineering_bootstrap.py` must cover at minimum:
+
+Planning / dry-run:
+
+- explicit destination required
+- deterministic plan for identical input
+- dry-run creates zero files
+- dry-run creates zero directories
+- exactly five artifacts planned
+- bounded metadata/hash information
+- generated `ProjectConfig` returned
+- generated `ProjectConfig` passes `parse_project_config()`
+- generated `ProjectConfig` passes `validate_project_config()`
+
+Destination safety:
+
+- missing destination allowed
+- empty existing destination allowed
+- non-empty destination with unrelated file allowed
+- planned-file conflict detected
+- any conflict causes zero writes
+- symlink destination root rejected
+- traversal rejected
+- child escape rejected
+
+Apply:
+
+- successful apply creates exactly the five planned files
+- generated contents come from generic templates
+- no `.gitignore` created
+- no `.agent-state` created
+- no `reports` directory created
+- no QA project configuration file created
+- no registry persistence created
+
+Genericity:
+
+- generic handoff filename used
+- no trading-bot-specific strings/defaults
+- no `no_live_trading` default copied
+- no secrets generated
+
+Failure:
+
+- injected write failure stops remaining writes
+- result reports previously written paths
+- partial-state condition is explicit
+- no rollback claim
+
+Regression:
+
+- `TRADING_BOT_PROJECT` unchanged
+- existing `ProjectConfig` behavior unchanged
+- full safe suite passes
+
+#### 003A acceptance criteria
+
+1. Explicit destination is required.
+2. Exactly five managed files are planned.
+3. Dry-run performs zero persistent writes.
+4. Plan output is bounded and deterministic.
+5. Generated `ProjectConfig` passes structural validation.
+6. Generated `ProjectConfig` passes semantic validation.
+7. Any planned-file conflict prevents all writes.
+8. Destination/root containment is enforced.
+9. Symlink destination is rejected.
+10. Apply creates exactly planned artifacts.
+11. Unexpected write failure stops immediately.
+12. Partial-state written paths are reported.
+13. No overwrite mechanism exists.
+14. No registry persistence or activation exists.
+15. No CLI exists.
+16. No QA project files are created.
+17. No runtime-state directories are created.
+18. Templates are project-agnostic.
+19. No trading-specific defaults are copied.
+20. No secrets are generated.
+21. No arbitrary shell execution occurs.
+22. Existing `ProjectConfig` behavior remains unchanged.
+23. `git diff --check` passes.
+24. Full safe suite passes with the actual final count reported; do not hard-code
+    a test count.
+
+#### 003A explicitly not authorized
+
+Do not modify:
+
+- `engineering/models.py`
+- `engineering/context.py`
+- `engineering/adapters.py`
+- `engineering/manager.py`
+- `engineering/workflow_engine.py`
+- `engineering/workflow/*`
+- `dashboard_api/*`
+- `src/*`
+- existing `ProjectConfig` tests
+- existing adapter tests
+
+Do not implement:
+
+- registry persistence
+- registry activation
+- CLI
+- overwrite/force
+- supervisor
+- `EvidenceBundle`
+- Decision Pipeline
+- Recommendation Pipeline
+- auto-dispatch
+- dashboard changes
+- control panel
+- QA execution
+
+### ENGPLAT-003B — Project Registry Persistence / Activation
+
+Status: TODO
+Owner: trading-manager
+Priority: P1
+
+Depends on: ENGPLAT-003A
+
+ENGPLAT-003B is a separate future design and implementation slice. It owns the
+registry persistence and project activation questions intentionally excluded
+from ENGPLAT-003A.
+
+Before ENGPLAT-003B implementation, governance must decide:
+
+- registry persistence format
+- authoritative registry path
+- parser/serializer contract
+- duplicate project-ID handling across persisted state
+- activation/loading mechanism
+- migration behavior from existing single-project `TRADING_BOT_PROJECT`
+
+No ENGPLAT-003A implementation may create registry persistence or activation as
+an incidental side effect.
+
+### ENGDASH-005 stale-status remediation
+
+The stale ENGDASH-005 backlog status correction is a **SEPARATE TINY
+REMEDIATION**. Do not bundle it into ENGPLAT-003A implementation scope.
 
 ### ENGDASH-005 — Engineering Timeline and Historical Activity
 
