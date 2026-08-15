@@ -760,7 +760,7 @@ implementation.
 
 ### ENGPLAT-002A — ProjectContext Contracts and Composition Boundary
 
-Status: TODO
+Status: DONE  # merged PR #25 (068a102)
 Owner: trading-manager
 Priority: P1
 
@@ -1551,7 +1551,7 @@ The shim is the existing `main()` function in `manager.py`. It:
 
 ### ENGDASH-005 — Engineering Timeline and Historical Activity
 
-Status: GOVERNANCE_DRAFT
+Status: DONE  # merged PR #30 (d8f2d58)
 Owner: trading-manager
 Priority: P1
 
@@ -2053,7 +2053,7 @@ Requirements:
 
 ### ENGPLAT-002C1 — Git Adapter Implementation and Integration
 
-Status: IN_PROGRESS
+Status: DONE  # merged PR #32 (c866a8c)
 Owner: trading-manager
 Priority: P1
 
@@ -2192,7 +2192,7 @@ Stop and report if:
 
 ### ENGPLAT-002C2 — QAAdapter Implementation
 
-Status: IN_PROGRESS
+Status: DONE  # merged PR #34 (c4fd1b8)
 Owner: trading-manager
 Priority: P1
 
@@ -2346,7 +2346,7 @@ Stop and report if:
 
 ### ENGPLAT-002C3 — FileReadAdapter Implementation
 
-Status: IN_PROGRESS
+Status: DONE  # merged PR #36 (8d8d0c0)
 Owner: trading-manager
 Priority: P1
 
@@ -2590,7 +2590,7 @@ activation work begins.
 
 ### ENGPLAT-003A — Project Bootstrap Planning + Filesystem Creation
 
-Status: TODO
+Status: DONE  # merged PRs #37/#38/#39 (b91b6e2)
 Owner: trading-manager
 Priority: P1
 
@@ -3009,6 +3009,8 @@ Status: TODO
 Owner: trading-manager
 Priority: P1
 
+Note: ENGPLAT-003A bootstrap is complete. ENGPLAT-003B registry persistence is separate future work.
+
 Depends on: ENGPLAT-003A
 
 ENGPLAT-003B is a separate future design and implementation slice. It owns the
@@ -3034,7 +3036,7 @@ REMEDIATION**. Do not bundle it into ENGPLAT-003A implementation scope.
 
 ### ENGDASH-005 — Engineering Timeline and Historical Activity
 
-Status: TODO
+Status: DONE  # merged PR #30 (d8f2d58); duplicate entry resolved
 Owner: dashboard-agent
 Priority: P1
 

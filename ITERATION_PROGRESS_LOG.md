@@ -1605,3 +1605,41 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Important decisions: Replaced the impossible immediate full `validate_project_config()` requirement with structural parse plus intrinsic ProjectConfig semantic validation before writes. Runtime filesystem-readiness validation is deferred until later runtime components legitimately create lazily-created runtime paths. `validate_project_config()` itself remains unchanged.
 - Remaining risks: Josh must review/merge this governance PR before PR #38 can be judged against the corrected contract. ENGPLAT-003B remains unstarted.
 - Next action: Open governance PR targeting `main`; do not merge automatically.
+
+
+## 2026-08-15T15:29:29Z — PLATFORM STATUS RECONCILIATION
+
+- Elapsed time: read-only assessment + targeted governance edit
+- Continuity: Continuous from read-only reconciliation
+- Backlog item/objective: Governance-only status reconciliation to correct stale backlog
+  entries that conflicted with merged code. No runtime implementation.
+- Branch: `agent/platform-status-reconciliation`
+- Status: `REVIEW` (stopped for Josh review before merge)
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`
+- Tests/backtests: `git diff --check` PASS; no runtime or test files modified
+- Exact stale entries corrected in AGENT_BACKLOG.md:
+  - ENGPLAT-002A: TODO -> DONE (merged PR #25)
+  - ENGDASH-005 (1st entry): GOVERNANCE_DRAFT -> DONE (merged PR #30)
+  - ENGPLAT-002C1: IN_PROGRESS -> DONE (merged PR #32)
+  - ENGPLAT-002C2: IN_PROGRESS -> DONE (merged PR #34)
+  - ENGPLAT-002C3: IN_PROGRESS -> DONE (merged PR #36)
+  - ENGPLAT-003A: TODO -> DONE (merged PRs #37/#38/#39)
+  - ENGDASH-005 (2nd duplicate): TODO -> DONE (merged PR #30; duplicate resolved)
+- Exact stale entries corrected in MENTOR.md:
+  - Roadmap: corrected priority order, fixed duplicate numbering, added checkmarks
+    for all completed items (002A, 002B, 002C1/002C2/002C3, 003A, ENGDASH-005)
+  - ENGSUP-001 dependency note: updated from ENGPLAT-002 to ENGPLAT-002C; added
+    Phase 1 prerequisites-satisfied note
+  - Extraction readiness: ENGDASH-005 marked DONE
+- Items NOT changed (correctly):
+  - ENGSUP-001: design merged, runtime NOT implemented (correct)
+  - ENGPLAT-003B: TODO, registry persistence separate future work (correct)
+  - ENGPLAT-004: deferred (correct)
+  - ENGDASH-006, ENGCTRL-001, CONFIG-002: not started (correct)
+- ENGSUP-001 status after reconciliation:
+  Design docs (PRs #20-#23) merged. Runtime implementation NOT started.
+  Phase 1 (prompt generation, Josh manual dispatch) may now begin.
+- ENGPLAT-003B status after reconciliation:
+  Bootstrap (003A) complete. Registry persistence/activation is separate future
+  work, not yet designed or implemented.
+- Next action: Josh reviews governance PR; do not merge automatically.
