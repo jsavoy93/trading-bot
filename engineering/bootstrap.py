@@ -30,8 +30,8 @@ from engineering.models import (
     GovernanceFiles,
     ProjectConfig,
     WorkflowFiles,
+    _check_qa_command_safety,
     parse_project_config,
-    validate_project_config,
 )
 
 # ---------------------------------------------------------------------------
@@ -350,22 +350,35 @@ def _validate_destination(dest: Path) -> list[str]:
     return errors
 
 
-def _check_artifact_conflicts(
+def _mark_artifact_conflicts(
     artifacts: tuple[ArtifactPlan, ...],
     dest: Path,
-) -> list[tuple[Path, Path]]:
-    """Check for existing artifact conflicts.
+) -> tuple[tuple[ArtifactPlan, ...], list[tuple[Path, Path]]]:
+    """Mark existing planned artifacts as CONFLICT without writing.
 
-    Returns list of (relative_path, absolute_path) for existing files.
-    Only checks CREATE actions.
+    Returns the updated artifact plans and a list of (relative_path, absolute_path)
+    conflicts. Any conflict makes apply fail before writing any artifact.
     """
     conflicts: list[tuple[Path, Path]] = []
+    updated: list[ArtifactPlan] = []
     for artifact in artifacts:
-        if artifact.action == "CREATE":
-            abs_path = dest / artifact.relative_path
-            if abs_path.exists():
-                conflicts.append((artifact.relative_path, abs_path))
-    return conflicts
+        abs_path = dest / artifact.relative_path
+        if artifact.action == "CREATE" and abs_path.exists():
+            conflicts.append((artifact.relative_path, abs_path))
+            updated.append(
+                ArtifactPlan(
+                    relative_path=artifact.relative_path,
+                    action="CONFLICT",
+                    template_name=artifact.template_name,
+                    byte_count=artifact.byte_count,
+                    line_count=artifact.line_count,
+                    sha256_digest=artifact.sha256_digest,
+                    summary=artifact.summary,
+                )
+            )
+        else:
+            updated.append(artifact)
+    return tuple(updated), conflicts
 
 
 def _check_traversal(relative_path: Path, dest: Path) -> bool:
@@ -417,6 +430,113 @@ def _build_project_config(input: BootstrapInput) -> ProjectConfig:
         owner_ids=input.owner_ids,
         agent_owners=input.agent_owners,
     )
+
+
+def _project_config_mapping(config: ProjectConfig) -> dict[str, object]:
+    """Return a structural ProjectConfig mapping without persisting it."""
+    return {
+        "schema_version": config.schema_version,
+        "project_id": config.project_id,
+        "display_name": config.display_name,
+        "repository_root": str(config.repository_root),
+        "authoritative_base_branch": config.authoritative_base_branch,
+        "governance_files": {
+            "backlog_path": str(config.governance_files.backlog_path),
+            "operating_plan_path": str(config.governance_files.operating_plan_path),
+            "owners_path": str(config.governance_files.owners_path),
+            "handoff_path": str(config.governance_files.handoff_path),
+        },
+        "workflow_files": {
+            "workflow_store_path": str(config.workflow_files.workflow_store_path),
+            "event_store_path": str(config.workflow_files.event_store_path),
+            "report_dir": str(config.workflow_files.report_dir),
+        },
+        "qa_commands": config.qa_commands,
+        "qa_timeout_seconds": config.qa_timeout_seconds,
+        "prohibited_operations": config.prohibited_operations,
+        "agents_may_merge": config.agents_may_merge,
+        "owner_ids": config.owner_ids,
+        "agent_owners": config.agent_owners,
+    }
+
+
+def _validate_bootstrap_project_config_intrinsic(config: ProjectConfig) -> list[str]:
+    """Validate ProjectConfig semantics that are knowable before 003A writes.
+
+    ``validate_project_config()`` also checks runtime filesystem readiness
+    (governance file existence, workflow parent directories, report parent
+    directories). ENGPLAT-003A must not create those runtime directories merely
+    to satisfy readiness checks. This helper validates intrinsic configuration
+    semantics before the first artifact write while leaving runtime readiness to
+    later runtime components. It does not filter or weaken
+    ``validate_project_config()`` output; it avoids calling the runtime-readiness
+    validator in this bootstrap slice.
+    """
+    errors: list[str] = []
+
+    parse_result = parse_project_config(_project_config_mapping(config))
+    if parse_result.errors:
+        errors.extend(f"ProjectConfig structural error: {err}" for err in parse_result.errors)
+    if parse_result.config is None:
+        return errors
+
+    cfg = parse_result.config
+    if not cfg.project_id or not cfg.project_id.strip():
+        errors.append("project_id cannot be empty")
+    if not cfg.display_name or not cfg.display_name.strip():
+        errors.append("display_name cannot be empty")
+    if not cfg.repository_root.is_absolute():
+        errors.append(f"repository_root must be absolute; got: {cfg.repository_root}")
+
+    try:
+        repo_resolved = cfg.repository_root.resolve()
+    except OSError as exc:
+        errors.append(f"repository_root could not be resolved: {exc}")
+        return errors
+
+    def _check_path(path: Path, label: str) -> None:
+        if not path.is_absolute():
+            errors.append(f"{label}: must be absolute; got {path}")
+            return
+        try:
+            path.resolve().relative_to(repo_resolved)
+        except ValueError:
+            errors.append(
+                f"{label}: path escapes repository_root; "
+                f"path={path} root={cfg.repository_root}"
+            )
+        except OSError:
+            errors.append(f"{label}: could not resolve path: {path}")
+
+    gf = cfg.governance_files
+    _check_path(gf.backlog_path, "governance_files.backlog_path")
+    _check_path(gf.operating_plan_path, "governance_files.operating_plan_path")
+    _check_path(gf.owners_path, "governance_files.owners_path")
+    _check_path(gf.handoff_path, "governance_files.handoff_path")
+
+    wf = cfg.workflow_files
+    _check_path(wf.workflow_store_path, "workflow_files.workflow_store_path")
+    _check_path(wf.event_store_path, "workflow_files.event_store_path")
+    _check_path(wf.report_dir, "workflow_files.report_dir")
+
+    if not cfg.qa_commands:
+        errors.append("qa_commands cannot be empty")
+    else:
+        errors.extend(_check_qa_command_safety(cfg.qa_commands))
+    if cfg.qa_timeout_seconds <= 0:
+        errors.append(f"qa_timeout_seconds must be positive; got {cfg.qa_timeout_seconds}")
+    if not cfg.owner_ids:
+        errors.append("owner_ids cannot be empty; at least one human owner required")
+    elif len(set(cfg.owner_ids)) != len(cfg.owner_ids):
+        errors.append("owner_ids contains duplicate entries")
+    if not cfg.agent_owners:
+        errors.append("agent_owners cannot be empty")
+    elif len(set(cfg.agent_owners)) != len(cfg.agent_owners):
+        errors.append("agent_owners contains duplicate entries")
+    if cfg.agents_may_merge:
+        errors.append("agents_may_merge=True: bootstrap projects require approval-gated merging")
+
+    return sorted(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -529,62 +649,18 @@ def _preflight(
         errors.append(f"expected 5 artifacts, got {len(artifacts)}")
 
     # 7. Check for existing conflicts (only if destination exists)
+    artifact_tuple = tuple(artifacts)
     if input.destination.exists():
-        conflicts = _check_artifact_conflicts(tuple(artifacts), input.destination)
+        artifact_tuple, conflicts = _mark_artifact_conflicts(artifact_tuple, input.destination)
         if conflicts:
             for rel_path, _ in conflicts:
                 errors.append(f"planned artifact already exists (CONFLICT); {rel_path}")
 
-    # 8. Build and validate ProjectConfig
+    # 8. Build and validate ProjectConfig intrinsic semantics before writes.
     config = _build_project_config(input)
+    errors.extend(_validate_bootstrap_project_config_intrinsic(config))
 
-    # Structural parse
-    parse_result = parse_project_config(
-        {
-            "schema_version": config.schema_version,
-            "project_id": config.project_id,
-            "display_name": config.display_name,
-            "repository_root": str(config.repository_root),
-            "authoritative_base_branch": config.authoritative_base_branch,
-            "governance_files": {
-                "backlog_path": str(config.governance_files.backlog_path),
-                "operating_plan_path": str(config.governance_files.operating_plan_path),
-                "owners_path": str(config.governance_files.owners_path),
-                "handoff_path": str(config.governance_files.handoff_path),
-            },
-            "workflow_files": {
-                "workflow_store_path": str(config.workflow_files.workflow_store_path),
-                "event_store_path": str(config.workflow_files.event_store_path),
-                "report_dir": str(config.workflow_files.report_dir),
-            },
-            "qa_commands": config.qa_commands,
-            "qa_timeout_seconds": config.qa_timeout_seconds,
-            "prohibited_operations": config.prohibited_operations,
-            "agents_may_merge": config.agents_may_merge,
-            "owner_ids": config.owner_ids,
-            "agent_owners": config.agent_owners,
-        }
-    )
-
-    if parse_result.errors:
-        for err in parse_result.errors:
-            errors.append(f"ProjectConfig structural error: {err}")
-
-    if parse_result.config is None:
-        # Already covered by errors above, but guard
-        return errors, warnings, tuple(artifacts), ProjectConfig()
-
-    # NOTE: We do NOT run validate_project_config() during pre-flight here
-    # because bootstrap's purpose is to CREATE the governance files that
-    # validate_project_config() checks for existence. Running semantic
-    # validation at this stage would produce false negatives (requiring files
-    # that don't exist yet because bootstrap creates them).
-    #
-    # apply_bootstrap() creates the destination directory (create_destination=True),
-    # writes all files, then runs full semantic validation. The generated
-    # ProjectConfig passes semantic validation after successful apply.
-
-    return errors, warnings, tuple(artifacts), config
+    return errors, warnings, artifact_tuple, config
 
 
 # ---------------------------------------------------------------------------
@@ -734,66 +810,8 @@ def apply_bootstrap(input: BootstrapInput) -> BootstrapResult:
     write_failure = failed_target is not None
     write_success = all_written and not write_failure
 
-    # After successful writes, run full semantic validation
-    sem_validation_errors: list[str] = []
-    if write_success:
-        # Create the engineering/ parent directory for workflow files (but not
-        # the workflow_store.json or event_store.db files themselves). This is
-        # required infrastructure for validate_project_config() to pass. We do
-        # NOT create reports/ since that is a runtime-state directory that must
-        # be lazily created by runtime services per the spec.
-        try:
-            eng_parent = config.workflow_files.workflow_store_path.parent
-            eng_parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass  # Non-fatal; validation will catch it if it fails
-
-        # Re-parse to get a clean config object for validation
-        mapping = {
-            "schema_version": config.schema_version,
-            "project_id": config.project_id,
-            "display_name": config.display_name,
-            "repository_root": str(config.repository_root),
-            "authoritative_base_branch": config.authoritative_base_branch,
-            "governance_files": {
-                "backlog_path": str(config.governance_files.backlog_path),
-                "operating_plan_path": str(config.governance_files.operating_plan_path),
-                "owners_path": str(config.governance_files.owners_path),
-                "handoff_path": str(config.governance_files.handoff_path),
-            },
-            "workflow_files": {
-                "workflow_store_path": str(config.workflow_files.workflow_store_path),
-                "event_store_path": str(config.workflow_files.event_store_path),
-                "report_dir": str(config.workflow_files.report_dir),
-            },
-            "qa_commands": config.qa_commands,
-            "qa_timeout_seconds": config.qa_timeout_seconds,
-            "prohibited_operations": config.prohibited_operations,
-            "agents_may_merge": config.agents_may_merge,
-            "owner_ids": config.owner_ids,
-            "agent_owners": config.agent_owners,
-        }
-        parse_result = parse_project_config(mapping)
-        if parse_result.config is not None:
-            # Filter out reports/ parent dir error since bootstrap intentionally
-            # does not create runtime-state directories
-            sem_errors = validate_project_config(parse_result.config)
-            sem_validation_errors = [
-                e for e in sem_errors
-                if "report_dir" not in e.lower()
-            ]
-        else:
-            sem_validation_errors = list(parse_result.errors)
-
-    success = write_success and len(sem_validation_errors) == 0
+    success = write_success
     partial_state = (len(written) > 0) and not success
-
-    if sem_validation_errors:
-        error_message = (
-            f"semantic validation failed after writes; "
-            f"{' | '.join(sem_validation_errors[:3])}"
-        )
-        failed_target = None  # Not a write failure, but validation failure
 
     return BootstrapResult(
         input=input,

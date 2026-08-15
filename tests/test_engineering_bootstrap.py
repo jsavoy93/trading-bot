@@ -222,51 +222,30 @@ def test_plan_bootstrap_project_config_passes_structural_parse() -> None:
     assert result.errors == ()
 
 
-def test_plan_bootstrap_project_config_passes_semantic_validation() -> None:
+def test_plan_bootstrap_project_config_intrinsic_semantics_preflight() -> None:
     dest = _tmp_path()
     inp = _bootstrap_input(destination=dest)
     plan = plan_bootstrap(inp)
     cfg = plan.project_config
     assert cfg is not None
+    assert plan.validation_errors == ()
+    assert cfg.workflow_files.workflow_store_path == dest / "engineering" / "workflow_store.json"
+    assert cfg.workflow_files.event_store_path == dest / "engineering" / "event_store.db"
+    assert cfg.workflow_files.report_dir == dest / "reports"
 
-    # For validation to pass, the destination must exist and the governance
-    # files must exist (they won't since we haven't applied)
-    # So we use apply to create the files first
+
+def test_apply_bootstrap_returns_project_config_without_runtime_directories() -> None:
+    dest = _tmp_path()
+    inp = _bootstrap_input(destination=dest)
     result = apply_bootstrap(inp)
     assert result.success, f"apply failed: {result.error_message}"
-
-    # Re-parse and validate
-    cfg2 = result.project_config
-    assert cfg2 is not None
-    mapping = {
-        "schema_version": cfg2.schema_version,
-        "project_id": cfg2.project_id,
-        "display_name": cfg2.display_name,
-        "repository_root": str(cfg2.repository_root),
-        "authoritative_base_branch": cfg2.authoritative_base_branch,
-        "governance_files": {
-            "backlog_path": str(cfg2.governance_files.backlog_path),
-            "operating_plan_path": str(cfg2.governance_files.operating_plan_path),
-            "owners_path": str(cfg2.governance_files.owners_path),
-            "handoff_path": str(cfg2.governance_files.handoff_path),
-        },
-        "workflow_files": {
-            "workflow_store_path": str(cfg2.workflow_files.workflow_store_path),
-            "event_store_path": str(cfg2.workflow_files.event_store_path),
-            "report_dir": str(cfg2.workflow_files.report_dir),
-        },
-        "qa_commands": cfg2.qa_commands,
-        "qa_timeout_seconds": cfg2.qa_timeout_seconds,
-        "prohibited_operations": cfg2.prohibited_operations,
-        "agents_may_merge": cfg2.agents_may_merge,
-        "owner_ids": cfg2.owner_ids,
-        "agent_owners": cfg2.agent_owners,
-    }
-    result2 = parse_project_config(mapping)
-    assert result2.config is not None, f"structural parse failed: {result2.errors}"
-    sem_errors = validate_project_config(result2.config)
-    assert sem_errors == [], f"semantic validation failed: {sem_errors}"
-
+    cfg = result.project_config
+    assert cfg is not None
+    assert cfg.workflow_files.workflow_store_path == dest / "engineering" / "workflow_store.json"
+    assert cfg.workflow_files.event_store_path == dest / "engineering" / "event_store.db"
+    assert cfg.workflow_files.report_dir == dest / "reports"
+    assert not cfg.workflow_files.workflow_store_path.parent.exists()
+    assert not cfg.workflow_files.report_dir.exists()
 
 # ---------------------------------------------------------------------------
 # Test: destination safety
@@ -369,8 +348,10 @@ def test_planned_file_conflict_causes_zero_writes() -> None:
     assert result.written_paths == ()
     assert result.partial_state is False
 
-    # File still has original content
+    # File still has original content and no other planned files were written.
     assert conflict_file.read_text() == "already exists"
+    assert sorted(p.name for p in dest.iterdir()) == ["AGENTS.md"]
+    assert any(a.action == "CONFLICT" for a in result.plan.artifacts)
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +382,20 @@ def test_apply_bootstrap_creates_five_files() -> None:
         assert (dest / fname).stat().st_size > 0, f"empty: {fname}"
 
 
+def test_apply_bootstrap_creates_exactly_five_top_level_entries() -> None:
+    dest = _tmp_path()
+    inp = _bootstrap_input(destination=dest)
+    result = apply_bootstrap(inp)
+    assert result.success, f"apply failed: {result.error_message}"
+    assert sorted(p.name for p in dest.iterdir()) == [
+        "AGENTS.md",
+        "AGENT_BACKLOG.md",
+        "AGENT_OPERATING_PLAN.md",
+        "AUTONOMOUS_ENGINEERING_HANDOFF.md",
+        "OWNERS.md",
+    ]
+
+
 def test_apply_bootstrap_no_gitignore_created() -> None:
     dest = _tmp_path()
     inp = _bootstrap_input(destination=dest)
@@ -424,6 +419,14 @@ def test_apply_bootstrap_no_reports_dir_created() -> None:
     assert result.success
     # reports/ is NOT created by bootstrap (runtime creates it)
     assert not (dest / "reports").exists()
+
+
+def test_apply_bootstrap_no_engineering_dir_created() -> None:
+    dest = _tmp_path()
+    inp = _bootstrap_input(destination=dest)
+    result = apply_bootstrap(inp)
+    assert result.success
+    assert not (dest / "engineering").exists()
 
 
 def test_apply_bootstrap_no_pyproject_toml_created() -> None:
@@ -459,6 +462,16 @@ def test_apply_bootstrap_no_registry_file_created() -> None:
     assert not (dest / "project_registry.json").exists()
     assert not (dest / "project_registry.yaml").exists()
     assert not (dest / "registry.json").exists()
+
+
+def test_apply_bootstrap_has_no_post_write_validation_filtering() -> None:
+    import inspect
+    import engineering.bootstrap as bootstrap
+
+    source = inspect.getsource(bootstrap.apply_bootstrap)
+    assert "validate_project_config" not in source
+    assert "report_dir" not in source
+    assert "sem_validation" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +677,22 @@ def test_negative_qa_timeout_rejected() -> None:
     )
     plan = plan_bootstrap(inp)
     assert any("qa_timeout" in e.lower() for e in plan.validation_errors)
+
+
+def test_invalid_project_config_input_causes_zero_writes() -> None:
+    dest = _tmp_path()
+    inp = BootstrapInput(
+        project_id="test",
+        display_name="Test",
+        destination=dest,
+        qa_commands=("python deploy.py --production",),
+    )
+    result = apply_bootstrap(inp)
+    assert not result.success
+    assert result.written_paths == ()
+    assert result.partial_state is False
+    assert list(dest.iterdir()) == []
+    assert any("qa_commands" in e for e in result.plan.validation_errors)
 
 
 # ---------------------------------------------------------------------------

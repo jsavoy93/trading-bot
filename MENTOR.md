@@ -1063,6 +1063,10 @@ Important boundaries:
 - Known validation or conflict failures perform zero writes. Unexpected write
   failures are fail-fast and may leave partial state; report written paths and
   the failed target without claiming rollback.
+- Bootstrap preflight validates intrinsic `ProjectConfig` semantics before
+  managed artifact writes. Existing runtime-readiness validation still belongs
+  to runtime components; do not create `engineering/`, `reports/`, or other
+  runtime directories merely to satisfy readiness checks in 003A.
 - 003A deliberately does not implement registry persistence, activation, CLI,
   overwrite/force behavior, Git initialization, reports directory creation,
   `.agent-state`, `.gitignore`, `pyproject.toml`, `pytest.ini`, or QA execution.
