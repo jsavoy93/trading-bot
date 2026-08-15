@@ -2684,10 +2684,40 @@ when runtime services actually need them.
 
 ENGPLAT-003A constructs and validates a `ProjectConfig` in memory.
 
-The generated `ProjectConfig` must pass:
+The generated `ProjectConfig` must pass structural parsing via
+`parse_project_config()`. Before any write, ENGPLAT-003A preflight must validate
+all intrinsic `ProjectConfig` semantics that do not depend on runtime filesystem
+existence.
 
-- `parse_project_config()`
-- `validate_project_config()`
+Intrinsic preflight validation includes:
+
+- `project_id` validity
+- `display_name` validity
+- `repository_root` validity
+- absolute and contained configured governance, workflow, event, and report paths
+- governance path configuration for the five generated governance files
+- workflow/event/report path containment under the repository root
+- QA command validity and safety
+- positive QA timeout
+- owner presence and uniqueness
+- agent-owner presence and uniqueness
+- `agents_may_merge = False`
+- any other pure `ProjectConfig` semantic rule that does not depend on runtime
+  filesystem existence
+
+Runtime filesystem-readiness validation is deferred until the configured runtime
+directories/files are legitimately created by later runtime components. Deferred
+runtime-readiness checks include:
+
+- workflow-store parent existence
+- event-store parent existence
+- report directory existence/readiness
+- any other check whose only failure is that lazily-created runtime paths do not
+  yet exist
+
+This correction does not weaken `validate_project_config()` itself and does not
+authorize a second general ProjectConfig validator. The bootstrap preflight
+validation remains specific to the ENGPLAT-003A creation contract.
 
 ENGPLAT-003A must not invent a persisted `ProjectConfig` serialization format.
 `BootstrapResult` must return the generated `ProjectConfig` object.
@@ -2867,7 +2897,10 @@ Planning / dry-run:
 - bounded metadata/hash information
 - generated `ProjectConfig` returned
 - generated `ProjectConfig` passes `parse_project_config()`
-- generated `ProjectConfig` passes `validate_project_config()`
+- ENGPLAT-003A preflight validates intrinsic `ProjectConfig` semantics before
+  any write
+- runtime filesystem-readiness validation is deferred until later runtime
+  components legitimately create lazily-created runtime paths
 
 Destination safety:
 
@@ -2917,7 +2950,9 @@ Regression:
 3. Dry-run performs zero persistent writes.
 4. Plan output is bounded and deterministic.
 5. Generated `ProjectConfig` passes structural validation.
-6. Generated `ProjectConfig` passes semantic validation.
+6. ENGPLAT-003A preflight validates intrinsic `ProjectConfig` semantics before
+   any write; runtime filesystem-readiness validation remains deferred until
+   later runtime components legitimately create lazily-created runtime paths.
 7. Any planned-file conflict prevents all writes.
 8. Destination/root containment is enforced.
 9. Symlink destination is rejected.

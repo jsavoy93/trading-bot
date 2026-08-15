@@ -1593,3 +1593,15 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Important decisions: Did not modify `engineering/models.py`; existing `validate_project_config()` includes runtime filesystem readiness checks, so bootstrap now performs intrinsic ProjectConfig validation before writes without creating unauthorized runtime directories or filtering validation errors after writes.
 - Remaining risks: ENGPLAT-003B remains unstarted and required for registry persistence/activation. Josh re-review is required before merge.
 - Next action: Push fixes to the existing PR #38 branch and stop for Josh re-review; do not merge automatically.
+
+## 2026-08-15 01:16–01:22 UTC — ENGPLAT-003A validation-contract governance correction
+
+- Backlog item/objective: ENGPLAT-003A validation-contract correction.
+- Branch: `agent/engplat-003a-validation-governance`
+- Commit: pending final push at report-write time; final Telegram packet reports pushed commit.
+- Status: `DONE`
+- Files changed: `AGENT_BACKLOG.md`, `REPORT.md`, `ITERATION_PROGRESS_LOG.md`, and `reports/2026-08-15_011822_engplat-003a-validation-contract-governance.md`.
+- Tests/backtests: governance consistency checks PASS; runtime/test file-change audit PASS; `git diff --check` PASS. No backtest applicable.
+- Important decisions: Replaced the impossible immediate full `validate_project_config()` requirement with structural parse plus intrinsic ProjectConfig semantic validation before writes. Runtime filesystem-readiness validation is deferred until later runtime components legitimately create lazily-created runtime paths. `validate_project_config()` itself remains unchanged.
+- Remaining risks: Josh must review/merge this governance PR before PR #38 can be judged against the corrected contract. ENGPLAT-003B remains unstarted.
+- Next action: Open governance PR targeting `main`; do not merge automatically.
