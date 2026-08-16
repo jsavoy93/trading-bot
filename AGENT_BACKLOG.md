@@ -3377,6 +3377,26 @@ The workflow engine handles all state transitions autonomously.
 6. Working tree is clean (supervisor verifies independently).
 7. Head commit matches the completion packet's reported commit.
 
+**REVIEW + ACCEPT semantics (authoritative):**
+
+- `REVIEW → REPORT` is **engine-driven** (automatic when `ReviewRecommendation.ACCEPT`).
+  The workflow engine transitions state without requiring a supervisor decision or human
+  dispatch. See `engineering/workflow/review.py`.
+- `REPORT → COMPLETE` is also **engine-driven** (automatic). The report is generated
+  and the workflow reaches `COMPLETE` without human dispatch. See
+  `engineering/workflow/report.py`.
+- `READY_FOR_MERGE_APPROVAL` is a **concurrent advisory SupervisorDecision**. It
+  signals Josh that the PR is ready for GitHub merge approval. It does **not** block
+  workflow progression — the engine proceeds `REVIEW → REPORT → COMPLETE` in parallel.
+- `human_approval_required=True` on `READY_FOR_MERGE_APPROVAL` means Josh must act
+  (approve the merge on GitHub); it does not mean Josh must manually dispatch a
+  workflow step.
+- The workflow contains **no MERGE state** and performs **no merge operation**. Agents
+  may not merge (`agents_may_merge=False` enforced in `engineering/models.py`).
+  Josh merges manually on GitHub at any time.
+- `REVIEW + ACCEPT` should produce `READY_FOR_MERGE_APPROVAL` from the supervisor
+  (current implementation is correct).
+
 ---
 
 ### Loop Protection Rules
