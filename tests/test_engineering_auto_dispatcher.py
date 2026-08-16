@@ -57,6 +57,20 @@ from engineering.auto_dispatcher import (
 )
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _enable_auto_dispatch_env(monkeypatch):
+    """Enable auto-dispatch for all tests except the kill-switch tests.
+
+    The kill-switch tests explicitly unset or set ENGSUP_AUTO_DISPATCH_ENABLED
+    to test specific values. All other tests need the dispatch enabled so they
+    can test the whitelist, safety predicates, and dispatch behavior.
+    """
+    monkeypatch.setenv("ENGSUP_AUTO_DISPATCH_ENABLED", "1")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -181,9 +195,19 @@ def test_kill_switch_disabled_via_env(monkeypatch):
     importlib.reload(ad)  # restore
 
 
-def test_kill_switch_enabled_by_default(monkeypatch):
-    """Default (no env var) means auto-dispatch is enabled."""
+def test_kill_switch_disabled_by_default(monkeypatch):
+    """Default (no env var) means auto-dispatch is disabled."""
     monkeypatch.delenv("ENGSUP_AUTO_DISPATCH_ENABLED", raising=False)
+    import importlib
+    import engineering.auto_dispatcher as ad
+    importlib.reload(ad)
+    assert ad._is_auto_dispatch_enabled() is False
+    importlib.reload(ad)  # restore
+
+
+def test_kill_switch_explicit_enabled(monkeypatch):
+    """ENGSUP_AUTO_DISPATCH_ENABLED=1 enables auto-dispatch."""
+    monkeypatch.setenv("ENGSUP_AUTO_DISPATCH_ENABLED", "1")
     import importlib
     import engineering.auto_dispatcher as ad
     importlib.reload(ad)

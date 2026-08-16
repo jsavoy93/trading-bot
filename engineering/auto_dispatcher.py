@@ -46,8 +46,8 @@ from engineering.workflow_store import DelegationRecord, QARecord, StoredWorkflo
 # ---------------------------------------------------------------------------
 
 def _is_auto_dispatch_enabled() -> bool:
-    """True unless ENGSUP_AUTO_DISPATCH_ENABLED is explicitly set to '0'."""
-    return os.environ.get("ENGSUP_AUTO_DISPATCH_ENABLED", "1") != "0"
+    """True when ENGSUP_AUTO_DISPATCH_ENABLED is set to '1'. Defaults to False."""
+    return os.environ.get("ENGSUP_AUTO_DISPATCH_ENABLED", "0") == "1"
 
 
 # ---------------------------------------------------------------------------
