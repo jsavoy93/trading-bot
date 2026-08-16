@@ -28,6 +28,7 @@ class EventType(str, Enum):
     MANAGER_PAUSED = "manager.paused"
     MANAGER_RESUMED = "manager.resumed"
     TELEGRAM_ACCESS_DENIED = "telegram.access_denied"
+    SUPERVISOR_AUTO_DISPATCH_ATTEMPT = "supervisor.auto_dispatch_attempt"
 
 
 class EventSeverity(str, Enum):
