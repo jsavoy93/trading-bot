@@ -4,7 +4,7 @@ Covers:
 1. CompletionPacket: valid construction
 2. CompletionPacket: frozen immutability
 3. SupervisorDecision: WAIT_FOR_HUMAN_APPROVAL human_approval_required=True
-4. SupervisorDecision: CONTINUE human_approval_required=False
+4. SupervisorDecision: RUN_QA human_approval_required=False
 5. Evidence verification: clean tree
 6. Evidence verification: mismatch (agent claims clean, git dirty)
 7. Evidence verification: commit matches
@@ -124,15 +124,138 @@ def test_decision_wait_for_human_approval_requires_approval(supervisor, base_pac
 
 
 # ---------------------------------------------------------------------------
-# 4. SupervisorDecision: CONTINUE human_approval_required=False
+# 4. SupervisorDecision: RUN_QA human_approval_required=False
 # ---------------------------------------------------------------------------
 
-def test_decision_continue_no_human_approval(supervisor, base_packet):
-    """CONTINUE does not require human approval."""
+def test_decision_run_qa_no_human_approval(supervisor, base_packet):
+    """RUN_QA does not require human approval."""
     with _git_mock(branch="agent/adapter-boundary", head="abc1234", clean=True):
         decision = supervisor.supervise(base_packet)
 
-    assert decision.decision == SupervisorDecisionKind.CONTINUE
+    assert decision.decision == SupervisorDecisionKind.RUN_QA
+    assert decision.human_approval_required is False
+
+
+# ---------------------------------------------------------------------------
+# 4b. SupervisorDecision: RUN_READ_ONLY_REVIEW human_approval_required=False
+# ---------------------------------------------------------------------------
+
+def test_decision_run_read_only_review_no_human_approval(supervisor):
+    """QA + pass → RUN_READ_ONLY_REVIEW; does not require human approval."""
+    packet = CompletionPacket(
+        version="1.0",
+        task_id="ENGPLAT-002B",
+        task_title="Adapter boundary enforcement",
+        workflow_state=WorkflowState.QA,
+        feature_branch="agent/adapter-boundary",
+        head_commit="abc1234",
+        agent_name="test-agent",
+        delegation_status="COMPLETE",
+        delegation_exit_code=0,
+        delegation_failure_reason="",
+        qa_exit_code=0,
+        qa_passed_count=50,
+        qa_failed_count=0,
+        qa_timed_out=False,
+        review_recommendation="",
+        report_md_exists=False,
+        report_md_modified_at=None,
+        report_md_content_hash=None,
+        changed_files=(),
+        allowed_areas=("engineering",),
+        retry_count=0,
+        same_qa_failure_count=0,
+        same_review_finding_count=0,
+        generated_at="2026-08-15T10:00:00Z",
+    )
+
+    with _git_mock(branch="agent/adapter-boundary", head="abc1234", clean=True):
+        decision = supervisor.supervise(packet)
+
+    assert decision.decision == SupervisorDecisionKind.RUN_READ_ONLY_REVIEW
+    assert decision.human_approval_required is False
+
+
+# ---------------------------------------------------------------------------
+# 4c. SupervisorDecision: REVIEW + ACCEPT → READY_FOR_MERGE_APPROVAL
+# ---------------------------------------------------------------------------
+
+def test_decision_review_accept_ready_for_merge_approval(supervisor):
+    """REVIEW + ACCEPT → READY_FOR_MERGE_APPROVAL (human approval required)."""
+    packet = CompletionPacket(
+        version="1.0",
+        task_id="ENGPLAT-002B",
+        task_title="Adapter boundary enforcement",
+        workflow_state=WorkflowState.REVIEW,
+        feature_branch="agent/adapter-boundary",
+        head_commit="abc1234",
+        agent_name="test-agent",
+        delegation_status="COMPLETE",
+        delegation_exit_code=0,
+        delegation_failure_reason="",
+        qa_exit_code=0,
+        qa_passed_count=50,
+        qa_failed_count=0,
+        qa_timed_out=False,
+        review_recommendation="ACCEPT",
+        report_md_exists=True,
+        report_md_modified_at="2026-08-15T10:00:00Z",
+        report_md_content_hash=None,
+        changed_files=(),
+        allowed_areas=("engineering",),
+        retry_count=0,
+        same_qa_failure_count=0,
+        same_review_finding_count=0,
+        generated_at="2026-08-15T10:00:00Z",
+    )
+
+    with _git_mock(branch="agent/adapter-boundary", head="abc1234", clean=True):
+        decision = supervisor.supervise(packet)
+
+    assert decision.decision == SupervisorDecisionKind.READY_FOR_MERGE_APPROVAL
+    assert decision.human_approval_required is True
+
+
+# ---------------------------------------------------------------------------
+# 4d. SupervisorDecision: REVIEW + REWORK → REQUEST_CHANGES
+# ---------------------------------------------------------------------------
+
+def test_decision_review_rework_request_changes(supervisor):
+    """REVIEW + REWORK → REQUEST_CHANGES (human approval required)."""
+    packet = CompletionPacket(
+        version="1.0",
+        task_id="ENGPLAT-002B",
+        task_title="Adapter boundary enforcement",
+        workflow_state=WorkflowState.REVIEW,
+        feature_branch="agent/adapter-boundary",
+        head_commit="abc1234",
+        agent_name="test-agent",
+        delegation_status="COMPLETE",
+        delegation_exit_code=0,
+        delegation_failure_reason="",
+        qa_exit_code=0,
+        qa_passed_count=50,
+        qa_failed_count=0,
+        qa_timed_out=False,
+        review_recommendation="REWORK",
+        report_md_exists=True,
+        report_md_modified_at="2026-08-15T10:00:00Z",
+        report_md_content_hash=None,
+        changed_files=(),
+        allowed_areas=("engineering",),
+        retry_count=0,
+        same_qa_failure_count=0,
+        same_review_finding_count=0,
+        generated_at="2026-08-15T10:00:00Z",
+    )
+
+    with _git_mock(branch="agent/adapter-boundary", head="abc1234", clean=True):
+        decision = supervisor.supervise(packet)
+
+    # REQUEST_CHANGES is a bounded rework signal; human_approval_required=False
+    # because the supervisor already verified the finding is bounded.
+    # Auto-dispatch is possible in Phase 2 (bounded retry).
+    assert decision.decision == SupervisorDecisionKind.REQUEST_CHANGES
     assert decision.human_approval_required is False
 
 
@@ -363,7 +486,7 @@ def test_no_auto_dispatch_in_phase_1(supervisor, base_packet):
 
     # human_approval_required=True means Josh must dispatch manually
     # The supervisor never produces a dispatch instruction — Josh always gates
-    assert decision.human_approval_required is False  # CONTINUE doesn't need gate
+    assert decision.human_approval_required is False  # RUN_QA doesn't need gate
     # No auto-dispatch attribute exists — supervisor has no dispatch capability
     assert not hasattr(decision, "auto_dispatch")
 

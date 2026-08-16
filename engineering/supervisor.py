@@ -608,7 +608,7 @@ class Supervisor:
                 )
             # Agent finished; next step is QA
             return (
-                SupervisorDecisionKind.CONTINUE,
+                SupervisorDecisionKind.RUN_QA,
                 Severity.INFO,
                 "Agent delegation complete. QA step should run next.",
                 "Run QA against the completed implementation.",
@@ -662,7 +662,7 @@ class Supervisor:
 
         if qa.is_pass:
             return (
-                SupervisorDecisionKind.CONTINUE,
+                SupervisorDecisionKind.RUN_READ_ONLY_REVIEW,
                 Severity.INFO,
                 f"QA passed ({qa.passed_count} passed). Review step should run next.",
                 "Open a code review for the completed implementation.",
