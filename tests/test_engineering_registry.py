@@ -17,11 +17,8 @@ Key invariants verified
 
 Known limitations
 -----------------
-- Fantasy entry QA command ('npm test') is not in _QA_ALLOWED_PREFIXES
-  (ENGPLAT-002C will add npm/vitest support). Tests use skip_workflow_files=True
-  to bypass missing .engineering/ directory, but QA command safety still fails.
-- Fantasy .engineering/ directory does not exist yet. This is expected — the
-  ENGPLAT-003A bootstrap step will create it.
+- Fantasy .engineering/ directory does not exist yet. This is expected — runtime
+  state is created lazily when the fantasy project is first activated.
 """
 
 from __future__ import annotations
@@ -341,15 +338,30 @@ def test_unsafe_qa_command_rejected(tmp_path: Path):
 
 
 def test_non_approved_qa_command_rejected(tmp_path: Path):
-    """QA command not in approved prefixes raises MalformedRegistryError.
-
-    This documents that 'npm test' is not currently approved. ENGPLAT-002C
-    will add npm/vitest support to the allowed command list.
-    """
-    bad = {**_TRADING_BOT_ENTRY, "qa_commands": ["npm test -- --run"]}
+    """QA command not in approved prefixes raises MalformedRegistryError."""
+    bad = {**_TRADING_BOT_ENTRY, "qa_commands": ["arbitrary --run"]}
     path = _write_registry(tmp_path, [bad])
     with pytest.raises(MalformedRegistryError, match="not in approved list"):
         load_registry(path)
+
+
+def test_npm_commands_approved_in_qa_safety(tmp_path: Path):
+    """npm test, npm run <script>, and npx vitest are accepted by QA safety check.
+
+    These commands pass _check_qa_command_safety (Layer 1) and are accepted
+    by _configured_command (Layer 2, shape-based validation).
+    """
+    for qa_cmd in [
+        ["npm test"],
+        ["npm run test"],
+        ["npm run typecheck"],
+        ["npm run build"],
+        ["npx vitest run"],
+    ]:
+        entry = {**_TRADING_BOT_ENTRY, "qa_commands": qa_cmd}
+        path = _write_registry(tmp_path, [entry])
+        registry = load_registry(path)
+        assert registry.projects["trading-bot"].qa_commands == tuple(qa_cmd)
 
 
 def test_agents_may_merge_true_rejected(tmp_path: Path):
@@ -372,16 +384,17 @@ def test_valid_single_project_registry(tmp_path: Path):
     assert "trading-bot" in registry.projects
 
 
-def test_valid_trading_bot_and_fantasy_together_fails_due_to_qa_safety(tmp_path: Path):
-    """Two-project registry fails because fantasy's 'npm test' is not approved.
+def test_valid_trading_bot_and_fantasy_together(tmp_path: Path):
+    """Two-project registry with trading-bot and fantasy loads successfully.
 
-    This is a known ENGPLAT-002C blocker. The npm/vitest command is not in
-    _QA_ALLOWED_PREFIXES. Tests that need fantasy use skip_workflow_files=True
-    and handle the QA blocker separately.
+    Fantasy's 'npm test' is now accepted (ENGPLAT-002C generic QA support).
+    Fantasy's .engineering/ directory does not exist yet, so skip_workflow_files=True
+    is required to bypass the runtime-readiness check.
     """
     path = _write_registry(tmp_path, [_TRADING_BOT_ENTRY, _FANTASY_ENTRY])
-    with pytest.raises(MalformedRegistryError, match="not in approved list"):
-        load_registry(path)
+    registry = load_registry(path, skip_workflow_files=True)
+    assert set(registry.projects.keys()) == {"trading-bot", "fantasy-draft-command-center"}
+    assert registry.projects["fantasy-draft-command-center"].qa_commands == ("npm test",)
 
 
 def test_registry_preserves_all_fields(tmp_path: Path):
@@ -430,8 +443,9 @@ def test_get_project_fantasy_returns_fantasy_config(tmp_path: Path):
     """get_project returns fantasy config with fantasy's repository_root.
 
     Fantasy entry requires skip_workflow_files=True since .engineering/ does not
-    exist. The QA command 'npm test' fails safety check — ENGPLAT-002C will fix.
-    Path resolution (repository_root) is correct regardless of QA blocker.
+    yet exist (runtime state is created lazily on first activation). The QA
+    command 'npm test' is now accepted (ENGPLAT-002C). Path resolution is
+    correct regardless of runtime directory state.
     """
     fantasy_path = _write_registry(tmp_path, [_FANTASY_ENTRY])
     registry = load_registry(fantasy_path, skip_workflow_files=True)

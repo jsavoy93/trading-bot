@@ -33,16 +33,14 @@ def _configured_command(command: tuple[str, ...] | None) -> tuple[str, ...]:
         else tuple(shlex.split(os.environ.get("ENGINEERING_QA_COMMAND", "")))
     )
     if not configured:
+        raise RuntimeError("QA is not configured; set ENGINEERING_QA_COMMAND.")
+    if len(configured) < 2:
         raise RuntimeError(
-            "QA is not configured; set ENGINEERING_QA_COMMAND to a pytest command."
+            "QA command must have at least 2 tokens (executable + args)."
         )
     executable = Path(configured[0]).name
-    if (
-        len(configured) < 3
-        or not executable.startswith("python")
-        or configured[1:3] != ("-m", "pytest")
-    ):
-        raise RuntimeError("QA command must invoke Python with `-m pytest`.")
+    if not executable or executable in (".", ".."):
+        raise RuntimeError(f"Invalid QA executable name: {executable!r}.")
     return configured
 
 

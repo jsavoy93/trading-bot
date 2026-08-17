@@ -771,6 +771,9 @@ _QA_ALLOWED_PREFIXES = (
     "python -m pytest",
     "python -m unittest",
     "python -m nose",
+    "npm test",
+    "npm run",
+    "npx vitest",
 )
 
 
