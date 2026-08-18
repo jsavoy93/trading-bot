@@ -13,6 +13,7 @@ def test_dispatch_workflow_handles_every_state(
     state: WorkflowState,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pytest.Path,
 ) -> None:
     feature_branch = (
         "agent/test-001-prevent-live-brokerage-calls-from-tests"
@@ -25,8 +26,21 @@ def test_dispatch_workflow_handles_every_state(
         state=state,
     )
 
+    if state is WorkflowState.PLAN:
+        def plan_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
+            print("Executing workflow state: PLAN")
+            print("Execution plan")
+            print(f"Task: TEST-001 — Prevent live brokerage calls from tests")
+            return StoredWorkflow(
+                task_id=stored.task_id,
+                feature_branch=stored.feature_branch,
+                state=WorkflowState.PREPARE_BRANCH,
+            )
+
+        monkeypatch.setitem(_STATE_HANDLERS, state, plan_stub)
+
     if state is WorkflowState.PREPARE_BRANCH:
-        def prepare_stub(stored: StoredWorkflow) -> StoredWorkflow:
+        def prepare_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
             print("Executing workflow state: PREPARE_BRANCH")
             return StoredWorkflow(
                 task_id=stored.task_id,
@@ -37,7 +51,7 @@ def test_dispatch_workflow_handles_every_state(
         monkeypatch.setitem(_STATE_HANDLERS, state, prepare_stub)
 
     if state is WorkflowState.DELEGATE:
-        def delegate_stub(stored: StoredWorkflow) -> StoredWorkflow:
+        def delegate_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
             print("Executing workflow state: DELEGATE")
             return StoredWorkflow(
                 task_id=stored.task_id,
@@ -48,41 +62,41 @@ def test_dispatch_workflow_handles_every_state(
         monkeypatch.setitem(_STATE_HANDLERS, state, delegate_stub)
 
     if state is WorkflowState.WAIT_FOR_AGENT:
-        def wait_stub(stored: StoredWorkflow) -> StoredWorkflow:
+        def wait_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
             print("Executing workflow state: WAIT_FOR_AGENT")
             return stored
 
         monkeypatch.setitem(_STATE_HANDLERS, state, wait_stub)
 
     if state is WorkflowState.QA:
-        def qa_stub(stored: StoredWorkflow) -> StoredWorkflow:
+        def qa_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
             print("Executing workflow state: QA")
             return stored
 
         monkeypatch.setitem(_STATE_HANDLERS, state, qa_stub)
 
     if state is WorkflowState.REVIEW:
-        def review_stub(stored: StoredWorkflow) -> StoredWorkflow:
+        def review_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
             print("Executing workflow state: REVIEW")
             return stored
 
         monkeypatch.setitem(_STATE_HANDLERS, state, review_stub)
 
     if state is WorkflowState.REPORT:
-        def report_stub(stored: StoredWorkflow) -> StoredWorkflow:
+        def report_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
             print("Executing workflow state: REPORT")
             return stored
 
         monkeypatch.setitem(_STATE_HANDLERS, state, report_stub)
 
     if state is WorkflowState.COMPLETE:
-        def complete_stub(stored: StoredWorkflow) -> StoredWorkflow:
+        def complete_stub(stored: StoredWorkflow, **kwargs: object) -> StoredWorkflow:
             print("Executing workflow state: COMPLETE")
             return stored
 
         monkeypatch.setitem(_STATE_HANDLERS, state, complete_stub)
 
-    result = dispatch_workflow(workflow)
+    result = dispatch_workflow(workflow, repository_root=tmp_path)
 
     if state is WorkflowState.DISCOVER:
         expected_state = WorkflowState.PLAN

@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -101,7 +102,7 @@ def test_command_launcher_invokes_configured_wrapper_and_parses_run(
 
     monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
 
-    launched = CommandAgentLauncher(("agent-wrapper",)).launch(
+    launched = CommandAgentLauncher(("agent-wrapper",), repo_root=Path.cwd()).launch(
         "trading-exec",
         "agent/test-001",
         "bounded prompt",
@@ -138,6 +139,7 @@ def test_build_request_id_is_deterministic_and_task_scoped() -> None:
 
 def test_command_monitor_requests_and_parses_status(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     recorded: dict[str, object] = {}
 
@@ -148,7 +150,7 @@ def test_command_monitor_requests_and_parses_status(
 
     monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
 
-    status = CommandAgentLauncher(("agent-wrapper",)).status("run-123")
+    status = CommandAgentLauncher(("agent-wrapper",), repo_root=tmp_path).status("run-123")
 
     assert status.status is DelegationStatus.COMPLETE
     assert status.exit_code == 0
@@ -173,6 +175,7 @@ def test_command_monitor_requests_and_parses_status(
 def test_command_monitor_rejects_malformed_status_metadata(
     monkeypatch: pytest.MonkeyPatch,
     stdout: str,
+    tmp_path: Path,
 ) -> None:
     def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(stdout=stdout)
@@ -180,7 +183,7 @@ def test_command_monitor_rejects_malformed_status_metadata(
     monkeypatch.setattr("engineering.executor.subprocess.run", fake_run)
 
     with pytest.raises(RuntimeError, match="invalid (JSON|run metadata|lifecycle status)"):
-        CommandAgentLauncher(("agent-wrapper",)).status("run-123")
+        CommandAgentLauncher(("agent-wrapper",), repo_root=tmp_path).status("run-123")
 
 
 @pytest.mark.parametrize(
@@ -195,19 +198,21 @@ def test_command_monitor_rejects_malformed_status_metadata(
 def test_command_launcher_rejects_conflicting_or_incomplete_metadata(
     monkeypatch: pytest.MonkeyPatch,
     payload: str,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
         "engineering.executor.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(stdout=payload),
     )
     with pytest.raises(RuntimeError):
-        CommandAgentLauncher(("fake-wrapper",)).launch(
+        CommandAgentLauncher(("fake-wrapper",), repo_root=tmp_path).launch(
             "trading-exec", "agent/test-001", "prompt", "request-123"
         )
 
 
 def test_command_monitor_rejects_mismatched_run_id(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
         "engineering.executor.subprocess.run",
@@ -217,11 +222,12 @@ def test_command_monitor_rejects_mismatched_run_id(
     )
 
     with pytest.raises(RuntimeError, match="mismatched status run ID"):
-        CommandAgentLauncher(("fake-wrapper",)).status("run-123")
+        CommandAgentLauncher(("fake-wrapper",), repo_root=tmp_path).status("run-123")
 
 
 def test_command_wrapper_failure_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     def fail(*args: object, **kwargs: object) -> None:
         raise __import__("subprocess").CalledProcessError(
@@ -231,6 +237,6 @@ def test_command_wrapper_failure_is_bounded(
     monkeypatch.setattr("engineering.executor.subprocess.run", fail)
 
     with pytest.raises(RuntimeError) as error:
-        CommandAgentLauncher(("fake-wrapper",)).status("run-123")
+        CommandAgentLauncher(("fake-wrapper",), repo_root=tmp_path).status("run-123")
 
     assert len(str(error.value)) <= 2040

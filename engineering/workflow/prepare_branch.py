@@ -23,8 +23,7 @@ def run(
 
     print(f"Executing workflow state: {workflow.state.value}")
 
-    resolved_root = repo_root or Path.cwd()
-    git = git_service or GitService(resolved_root)
+    git = git_service or GitService(repo_root)
     repository = git.prepare_feature_branch(
         workflow.feature_branch,
         expected_source_branch,

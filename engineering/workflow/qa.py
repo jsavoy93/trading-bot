@@ -25,7 +25,7 @@ def run(
         return workflow
 
     print(f"Executing workflow state: {workflow.state.value}")
-    execution = (runner or run_qa)(repo_root or Path.cwd())
+    execution = (runner or run_qa)(repo_root)
     completed_at = (
         (clock or (lambda: datetime.now(UTC)))().astimezone(UTC).isoformat()
     )

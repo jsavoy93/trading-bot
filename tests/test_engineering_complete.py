@@ -28,10 +28,13 @@ def completed_workflow() -> StoredWorkflow:
     )
 
 
-def test_complete_validates_and_prints_persisted_report(capsys: pytest.CaptureFixture[str]) -> None:
+def test_complete_validates_and_prints_persisted_report(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: pytest.Path,
+) -> None:
     workflow = completed_workflow()
 
-    assert run(workflow) is workflow
+    assert run(workflow, repository_root=tmp_path) is workflow
     assert capsys.readouterr().out == (
         "Executing workflow state: COMPLETE\n"
         "Task: OPS-010\n"
@@ -55,7 +58,9 @@ def test_complete_validates_and_prints_persisted_report(capsys: pytest.CaptureFi
     ),
 )
 def test_complete_rejects_inconsistent_evidence(
-    workflow: StoredWorkflow, message: str
+    workflow: StoredWorkflow,
+    message: str,
+    tmp_path: pytest.Path,
 ) -> None:
     with pytest.raises(RuntimeError, match=message):
-        run(workflow)
+        run(workflow, repository_root=tmp_path)

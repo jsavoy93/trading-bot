@@ -298,9 +298,11 @@ def _save_workflow(
 
 def _dispatch(
     workflow: StoredWorkflow,
+    *,
+    repository_root: Path,
 ) -> StoredWorkflow:
     """Advance workflow by one step. Returns updated workflow."""
-    return dispatch_workflow(workflow)
+    return dispatch_workflow(workflow, repository_root=repository_root)
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +315,8 @@ def _do_run_qa(
     event_store: EngineeringEventStore | None,
     workflow_store_path: Path,
     clock: Callable[[], datetime],
+    *,
+    repository_root: Path,
 ) -> tuple[StoredWorkflow | None, str]:
     """Advance workflow from WAIT_FOR_AGENT through QA to REVIEW.
 
@@ -353,7 +357,7 @@ def _do_run_qa(
     _save_workflow(updated, workflow_store_path)
 
     # Advance one step — runs QA handler if qa is set, otherwise waits for agent
-    result = _dispatch(updated)
+    result = _dispatch(updated, repository_root=repository_root)
     return result, ""
 
 
@@ -363,6 +367,8 @@ def _do_run_read_only_review(
     event_store: EngineeringEventStore | None,
     workflow_store_path: Path,
     clock: Callable[[], datetime],
+    *,
+    repository_root: Path,
 ) -> tuple[StoredWorkflow | None, str]:
     """Advance workflow from QA through REVIEW to REPORT.
 
@@ -389,12 +395,12 @@ def _do_run_read_only_review(
     _save_workflow(updated, workflow_store_path)
 
     # Advance one step — QA → REVIEW
-    result = _dispatch(updated)
+    result = _dispatch(updated, repository_root=repository_root)
 
     # If review was generated in this step, advance to REPORT
     if result.state == WorkflowState.REVIEW and result.review is not None:
         _save_workflow(result, workflow_store_path)
-        result = _dispatch(result)
+        result = _dispatch(result, repository_root=repository_root)
 
     return result, ""
 
@@ -405,6 +411,8 @@ def _do_retry(
     event_store: EngineeringEventStore | None,
     workflow_store_path: Path,
     clock: Callable[[], datetime],
+    *,
+    repository_root: Path,
 ) -> tuple[StoredWorkflow | None, str]:
     """Re-dispatch the same task for a bounded retry.
 
@@ -436,7 +444,7 @@ def _do_retry(
     _save_workflow(updated, workflow_store_path)
 
     # Advance one step
-    result = _dispatch(updated)
+    result = _dispatch(updated, repository_root=repository_root)
     return result, ""
 
 
@@ -447,7 +455,7 @@ def _do_retry(
 def supervise_and_auto_dispatch(
     packet: CompletionPacket,
     *,
-    repo_root: Path | None = None,
+    repo_root: Path,
     event_store: EngineeringEventStore | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> SupervisorDecision:
@@ -463,7 +471,7 @@ def supervise_and_auto_dispatch(
 
     Does NOT raise on dispatch errors — returns decision with blockers set.
     """
-    repo = (repo_root or Path.cwd()).resolve()
+    repo = repo_root.resolve()
 
     # Produce supervisor decision (read-only)
     supervisor = Supervisor(repo_root=repo)
@@ -510,16 +518,19 @@ def supervise_and_auto_dispatch(
             result, dispatch_error = _do_run_qa(
                 packet, bundle, event_store, workflow_store_path,
                 clock or _default_clock,
+                repository_root=repo,
             )
         elif decision.decision == SupervisorDecisionKind.RUN_READ_ONLY_REVIEW:
             result, dispatch_error = _do_run_read_only_review(
                 packet, bundle, event_store, workflow_store_path,
                 clock or _default_clock,
+                repository_root=repo,
             )
         elif decision.decision == SupervisorDecisionKind.RETRY:
             result, dispatch_error = _do_retry(
                 packet, bundle, event_store, workflow_store_path,
                 clock or _default_clock,
+                repository_root=repo,
             )
         else:
             dispatch_error = f"unhandled whitelisted decision: {decision.decision.value}"

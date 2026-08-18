@@ -41,6 +41,7 @@ def test_report_persists_output_and_advances_to_complete(tmp_path: Path) -> None
 
     result = run(
         original,
+        repository_root=tmp_path,
         backlog_path=write_backlog(tmp_path),
         reporter=lambda stored, task, now: expected,
         clock=lambda: datetime(2026, 8, 2, 16, 5, tzinfo=UTC),
@@ -51,18 +52,18 @@ def test_report_persists_output_and_advances_to_complete(tmp_path: Path) -> None
     assert result.report == expected
 
 
-def test_existing_report_is_not_regenerated() -> None:
+def test_existing_report_is_not_regenerated(tmp_path: Path) -> None:
     stored = workflow()
     existing = ReportRecord("T", "t", "b", "a", 1, (), (), 0, 0, 0, (), (), stored.review.recommendation, "n", "now", "r")
     stored = StoredWorkflow(stored.task_id, stored.feature_branch, WorkflowState.REPORT, stored.delegation, stored.qa, stored.review, existing)
     calls: list[object] = []
-    assert run(stored, reporter=lambda *args: calls.append(args)) is stored
+    assert run(stored, repository_root=tmp_path, reporter=lambda *args: calls.append(args)) is stored
     assert calls == []
 
 
 def test_report_rejects_unknown_task_and_wrong_state(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="unknown backlog task"):
-        run(workflow(), backlog_path=write_backlog(tmp_path, "TEST-999"))
+        run(workflow(), repository_root=tmp_path, backlog_path=write_backlog(tmp_path, "TEST-999"))
     wrong = StoredWorkflow("TEST-001", "agent/test", WorkflowState.COMPLETE)
     with pytest.raises(RuntimeError, match="received workflow state: COMPLETE"):
-        run(wrong)
+        run(wrong, repository_root=tmp_path)

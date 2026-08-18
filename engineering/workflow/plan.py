@@ -39,6 +39,7 @@ def run(
     *,
     backlog_path: Path | None = None,
     repository: RepositoryState | None = None,
+    repository_root: Path,
 ) -> StoredWorkflow:
     if workflow.state is not WorkflowState.PLAN:
         raise RuntimeError(
@@ -47,8 +48,7 @@ def run(
 
     print(f"Executing workflow state: {workflow.state.value}")
 
-    repo_root = Path.cwd()
-    resolved_backlog_path = backlog_path or repo_root / "AGENT_BACKLOG.md"
+    resolved_backlog_path = backlog_path or repository_root / "AGENT_BACKLOG.md"
     task = _resolve_task(workflow.task_id, resolved_backlog_path)
     expected_branch = build_feature_branch(task)
 
@@ -58,7 +58,7 @@ def run(
             f"stored={workflow.feature_branch!r}, expected={expected_branch!r}"
         )
 
-    repository_state = repository or GitService(repo_root).repository_state()
+    repository_state = repository or GitService(repository_root).repository_state()
     execution_plan = build_execution_plan(task, repository_state)
 
     print("Execution plan")

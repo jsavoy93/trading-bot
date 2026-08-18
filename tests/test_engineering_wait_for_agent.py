@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -79,6 +80,7 @@ def make_workflow(
     ),
 )
 def test_noncomplete_status_is_persisted_without_advancing(
+    tmp_path: Path,
     status: DelegationStatus,
 ) -> None:
     workflow = make_workflow()
@@ -86,6 +88,7 @@ def test_noncomplete_status_is_persisted_without_advancing(
 
     result = run(
         workflow,
+        repository_root=tmp_path,
         monitor=monitor,
         clock=lambda: datetime(2026, 8, 2, 15, 5, tzinfo=UTC),
     )
@@ -104,11 +107,12 @@ def test_noncomplete_status_is_persisted_without_advancing(
     (DelegationStatus.FAILED, DelegationStatus.TIMED_OUT),
 )
 def test_new_terminal_status_is_persisted_without_advancing(
+    tmp_path: Path,
     status: DelegationStatus,
 ) -> None:
     workflow = make_workflow()
 
-    result = run(workflow, monitor=StubMonitor(status))
+    result = run(workflow, repository_root=tmp_path, monitor=StubMonitor(status))
 
     assert result.state is WorkflowState.WAIT_FOR_AGENT
     assert result.delegation is not None
@@ -120,21 +124,22 @@ def test_new_terminal_status_is_persisted_without_advancing(
     (DelegationStatus.FAILED, DelegationStatus.TIMED_OUT),
 )
 def test_persisted_terminal_status_stops_without_polling(
+    tmp_path: Path,
     status: DelegationStatus,
 ) -> None:
     monitor = StubMonitor(DelegationStatus.ACTIVE)
     workflow = make_workflow(status)
 
-    result = run(workflow, monitor=monitor)
+    result = run(workflow, repository_root=tmp_path, monitor=monitor)
 
     assert result is workflow
     assert monitor.calls == []
 
 
-def test_complete_status_advances_to_qa() -> None:
+def test_complete_status_advances_to_qa(tmp_path: Path) -> None:
     workflow = make_workflow()
 
-    result = run(workflow, monitor=StubMonitor(DelegationStatus.COMPLETE))
+    result = run(workflow, repository_root=tmp_path, monitor=StubMonitor(DelegationStatus.COMPLETE))
 
     assert workflow.state is WorkflowState.WAIT_FOR_AGENT
     assert result.state is WorkflowState.QA
@@ -142,7 +147,7 @@ def test_complete_status_advances_to_qa() -> None:
     assert result.delegation.status is DelegationStatus.COMPLETE
 
 
-def test_wait_requires_delegation_metadata() -> None:
+def test_wait_requires_delegation_metadata(tmp_path: Path) -> None:
     workflow = StoredWorkflow(
         task_id="TEST-001",
         feature_branch="agent/test-001",
@@ -150,10 +155,10 @@ def test_wait_requires_delegation_metadata() -> None:
     )
 
     with pytest.raises(RuntimeError, match="requires persisted delegation metadata"):
-        run(workflow, monitor=StubMonitor(DelegationStatus.ACTIVE))
+        run(workflow, repository_root=tmp_path, monitor=StubMonitor(DelegationStatus.ACTIVE))
 
 
-def test_wait_requires_complete_delegation_metadata() -> None:
+def test_wait_requires_complete_delegation_metadata(tmp_path: Path) -> None:
     workflow = make_workflow()
     incomplete = __import__("dataclasses").replace(
         workflow,
@@ -163,10 +168,10 @@ def test_wait_requires_complete_delegation_metadata() -> None:
         ),
     )
     with pytest.raises(RuntimeError, match="complete delegation metadata"):
-        run(incomplete, monitor=StubMonitor(DelegationStatus.ACTIVE))
+        run(incomplete, repository_root=tmp_path, monitor=StubMonitor(DelegationStatus.ACTIVE))
 
 
-def test_wait_rejects_mismatched_status_identity() -> None:
+def test_wait_rejects_mismatched_status_identity(tmp_path: Path) -> None:
     class MismatchedMonitor(StubMonitor):
         def status(self, run_id: str) -> AgentRun:
             return __import__("dataclasses").replace(
@@ -174,10 +179,10 @@ def test_wait_rejects_mismatched_status_identity() -> None:
             )
 
     with pytest.raises(RuntimeError, match="request identity"):
-        run(make_workflow(), monitor=MismatchedMonitor(DelegationStatus.ACTIVE))
+        run(make_workflow(), repository_root=tmp_path, monitor=MismatchedMonitor(DelegationStatus.ACTIVE))
 
 
-def test_wait_rejects_wrong_workflow_state() -> None:
+def test_wait_rejects_wrong_workflow_state(tmp_path: Path) -> None:
     workflow = make_workflow()
     wrong_state = StoredWorkflow(
         task_id=workflow.task_id,
@@ -187,4 +192,4 @@ def test_wait_rejects_wrong_workflow_state() -> None:
     )
 
     with pytest.raises(RuntimeError, match="received workflow state: QA"):
-        run(wrong_state, monitor=StubMonitor(DelegationStatus.ACTIVE))
+        run(wrong_state, repository_root=tmp_path, monitor=StubMonitor(DelegationStatus.ACTIVE))

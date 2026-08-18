@@ -218,7 +218,7 @@ class CommandAgentLauncher:
         self,
         command: tuple[str, ...] | None = None,
         *,
-        repo_root: Path | None = None,
+        repo_root: Path,
         timeout_seconds: int = WRAPPER_COMMAND_TIMEOUT_SECONDS,
     ):
         wrapper = Path(__file__).with_name("codex_cli_wrapper.py").resolve()
@@ -227,7 +227,7 @@ class CommandAgentLauncher:
         ):
             raise RuntimeError("Injected wrapper commands are allowed only in tests.")
         self.command = command or (sys.executable, str(wrapper))
-        self.repo_root = (repo_root or Path.cwd()).resolve()
+        self.repo_root = repo_root.resolve()
         self.timeout_seconds = timeout_seconds
 
     def _run(self, *args: str, input_text: str | None = None) -> dict[str, object]:

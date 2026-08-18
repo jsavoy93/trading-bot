@@ -56,6 +56,7 @@ def test_plan_presents_plan_and_advances_to_prepare_branch(
 
     result = run(
         workflow,
+        repository_root=tmp_path,
         backlog_path=write_backlog(tmp_path),
         repository=make_repository(tmp_path),
     )
@@ -79,6 +80,7 @@ def test_plan_rejects_unknown_task(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="unknown backlog task: OPS-999"):
         run(
             unknown_workflow,
+            repository_root=tmp_path,
             backlog_path=write_backlog(tmp_path),
             repository=make_repository(tmp_path),
         )
@@ -94,6 +96,7 @@ def test_plan_rejects_inconsistent_feature_branch(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="does not match the backlog task"):
         run(
             workflow,
+            repository_root=tmp_path,
             backlog_path=write_backlog(tmp_path),
             repository=make_repository(tmp_path),
         )
@@ -109,6 +112,7 @@ def test_plan_rejects_wrong_workflow_state(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="received workflow state: DISCOVER"):
         run(
             workflow,
+            repository_root=tmp_path,
             backlog_path=write_backlog(tmp_path),
             repository=make_repository(tmp_path),
         )

@@ -31,6 +31,7 @@ def run(
     backlog_path: Path | None = None,
     launcher: AgentLauncher | None = None,
     clock: Callable[[], datetime] | None = None,
+    repository_root: Path,
 ) -> StoredWorkflow:
     if workflow.state is not WorkflowState.DELEGATE:
         raise RuntimeError(
@@ -42,12 +43,12 @@ def run(
         )
 
     print(f"Executing workflow state: {workflow.state.value}")
-    resolved_backlog = backlog_path or Path.cwd() / "AGENT_BACKLOG.md"
+    resolved_backlog = backlog_path or repository_root / "AGENT_BACKLOG.md"
     task = _resolve_task(workflow.task_id, resolved_backlog)
     agent_name = select_specialist(task)
     prompt = build_agent_prompt(task, workflow.feature_branch)
     request_id = build_request_id(task.task_id, workflow.feature_branch)
-    launched = (launcher or CommandAgentLauncher()).launch(
+    launched = (launcher or CommandAgentLauncher(repo_root=repository_root)).launch(
         agent_name,
         workflow.feature_branch,
         prompt,

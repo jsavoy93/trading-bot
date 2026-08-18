@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from engineering.executor import AgentMonitor, CommandAgentLauncher, validate_run_identity
@@ -14,6 +15,7 @@ def run(
     *,
     monitor: AgentMonitor | None = None,
     clock: Callable[[], datetime] | None = None,
+    repository_root: Path,
 ) -> StoredWorkflow:
     if workflow.state is not WorkflowState.WAIT_FOR_AGENT:
         raise RuntimeError(

@@ -14,10 +14,10 @@ from engineering.workflow_store import ReviewRecord, StoredWorkflow
 def run(
     workflow: StoredWorkflow,
     *,
-    repo_root: Path | None = None,
     backlog_path: Path | None = None,
     reviewer: Callable[[Path, tuple[str, ...]], ReviewDecision] | None = None,
     clock: Callable[[], datetime] | None = None,
+    repository_root: Path,
 ) -> StoredWorkflow:
     if workflow.state is not WorkflowState.REVIEW:
         raise RuntimeError(
@@ -33,12 +33,11 @@ def run(
         return workflow
 
     print(f"Executing workflow state: {workflow.state.value}")
-    root = repo_root or Path.cwd()
-    tasks = load_backlog(backlog_path or root / "AGENT_BACKLOG.md")
+    tasks = load_backlog(backlog_path or repository_root / "AGENT_BACKLOG.md")
     task = next((item for item in tasks if item.task_id == workflow.task_id), None)
     if task is None:
         raise RuntimeError(f"Cannot review unknown backlog task: {workflow.task_id}")
-    decision = (reviewer or review_criteria)(root, task.acceptance_criteria)
+    decision = (reviewer or review_criteria)(repository_root, task.acceptance_criteria)
     completed_at = (
         (clock or (lambda: datetime.now(UTC)))().astimezone(UTC).isoformat()
     )
