@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import warnings
 from pathlib import Path
 
@@ -52,6 +53,7 @@ def _positive_float(value: str) -> float:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic engineering manager")
+    parser.add_argument("--project-id", type=str, default=None)
     parser.add_argument("--drive", action="store_true")
     parser.add_argument("--max-steps", type=_positive_int, default=8)
     parser.add_argument("--max-elapsed-seconds", type=_positive_float, default=900.0)
@@ -85,6 +87,74 @@ def _bounds(args: argparse.Namespace) -> DriverBounds:
     )
 
 
+def _resolve_project(args: argparse.Namespace) -> ProjectConfig:
+    """Resolve project_id from CLI flag or environment, then load from registry.
+
+    Fails closed if no project_id is provided or if lookup fails.
+    Does not fall back to TRADING_BOT_PROJECT.
+    """
+    from engineering.registry import MalformedRegistryError, get_project, load_registry
+    from engineering.runtime import RuntimeInitError, ensure_project_runtime_dirs
+
+    project_id = args.project_id or os.environ.get("ENGINEERING_PROJECT_ID")
+
+    if not project_id:
+        print("Engineering Manager")
+        print("====================")
+        print("Error: --project-id <id> or ENGINEERING_PROJECT_ID environment variable required.")
+        print()
+        print("Usage:")
+        print("  python -m engineering.manager --project-id <id>")
+        print("  ENGINEERING_PROJECT_ID=<id> python -m engineering.manager")
+        print()
+        print("Available project IDs are defined in the engineering registry.")
+        return None
+
+    # Load registry with skip_workflow_files=True so fantasy (and other projects
+    # without pre-existing .engineering/ directories) can still be selected.
+    try:
+        registry = load_registry(skip_workflow_files=True)
+    except MalformedRegistryError as exc:
+        print("Engineering Manager")
+        print("====================")
+        print(f"Registry error: {exc}")
+        return None
+
+    # Look up project
+    try:
+        config = get_project(registry, project_id)
+    except Exception:  # noqa: BLE001
+        # get_project raises ProjectNotFoundError; catch all to avoid leaking internals
+        available = sorted(registry.projects.keys())
+        print("Engineering Manager")
+        print("====================")
+        print(f"Unknown project: {project_id!r}")
+        if available:
+            print(f"Available projects: {', '.join(available)}")
+        return None
+
+    # Initialize runtime directories before workflow starts
+    try:
+        ensure_project_runtime_dirs(config)
+    except RuntimeInitError as exc:
+        print("Engineering Manager")
+        print("====================")
+        print(f"Runtime initialization error: {exc}")
+        return None
+
+    return config
+
+
+def _announce_project(config: ProjectConfig) -> None:
+    """Print project identity announcement before workflow begins."""
+    print("Engineering Manager")
+    print("===================")
+    print("Project:   " + config.display_name)
+    print("ID:        " + config.project_id)
+    print("Root:      " + str(config.repository_root))
+    print("Branch:    " + config.authoritative_base_branch)
+
+
 def _manager_main(config: ProjectConfig, args: argparse.Namespace) -> int:
     """ProjectContext-aware manager entry point.
 
@@ -116,8 +186,6 @@ def _manager_main(config: ProjectConfig, args: argparse.Namespace) -> int:
     tasks = governance_adapter.load_backlog()
     available_tasks = tuple(task for task in tasks if task.is_available)
 
-    print("Engineering Manager")
-    print("===================")
     print("Status:     READY")
     print(f"Repository: {state.root}")
     print(f"Branch:     {state.branch}")
@@ -195,19 +263,28 @@ def _manager_main(config: ProjectConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cli_main(args: argparse.Namespace) -> int:
+    """Multi-project CLI entry point: resolve project, announce, run manager."""
+    config = _resolve_project(args)
+    if config is None:
+        return 1
+    _announce_project(config)
+    return _manager_main(config, args)
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Legacy entry point — emits DeprecationWarning then delegates to _manager_main."""
+    """Legacy entry point — emits DeprecationWarning then delegates to _cli_main."""
     args = _parser().parse_args(argv)
 
     warnings.warn(
         "engineering.manager.main() is deprecated and will be removed after "
         "ENGPLAT-002C is complete and a second managed project has passed "
-        "integration testing. Use _manager_main(TRADING_BOT_PROJECT) directly.",
+        "integration testing. Use _cli_main(args) with explicit project selection.",
         DeprecationWarning,
         stacklevel=2,
     )
 
-    return _manager_main(TRADING_BOT_PROJECT, args)
+    return _cli_main(args)
 
 
 if __name__ == "__main__":
