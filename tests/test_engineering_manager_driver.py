@@ -42,11 +42,12 @@ def store_with(tmp_path: Path, workflow: StoredWorkflow) -> WorkflowStore:
     return store
 
 
-def run_fake(store: WorkflowStore, dispatcher, bounds: DriverBounds = DriverBounds()):
+def run_fake(store: WorkflowStore, dispatcher, bounds: DriverBounds = DriverBounds(), *, repository_root: Path):
     clock = FakeTime()
     result = drive_workflow(
         store,
         bounds,
+        repository_root=repository_root,
         dispatcher=dispatcher,
         utc_clock=clock.utc_clock,
         monotonic=clock.monotonic,
@@ -72,7 +73,7 @@ def test_advances_reloading_and_persisting_each_step_then_stops_after_report(tmp
         seen.append(workflow.state)
         return replace(workflow, state=transitions[workflow.state])
 
-    result, _ = run_fake(store, dispatch)
+    result, _ = run_fake(store, dispatch, repository_root=tmp_path)
 
     assert seen == list(transitions)
     assert result.workflow.state is WorkflowState.COMPLETE
@@ -85,7 +86,7 @@ def test_terminal_delegation_stops_without_dispatch(tmp_path: Path, status: Dele
     delegation = DelegationRecord("run", "trading-exec", "2026-08-03T11:00:00+00:00", status)
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.WAIT_FOR_AGENT, delegation))
 
-    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"))
+    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"), repository_root=tmp_path)
 
     assert result.steps == 0
     assert result.blocked
@@ -100,6 +101,7 @@ def test_wait_polling_is_finite_and_uses_injected_sleeper(tmp_path: Path) -> Non
         store,
         lambda workflow: workflow,
         DriverBounds(max_steps=8, max_elapsed_seconds=100, wait_poll_interval_seconds=7, max_wait_polls=3),
+        repository_root=tmp_path,
     )
 
     assert result.wait_polls == 3
@@ -115,6 +117,7 @@ def test_elapsed_bound_caps_last_sleep(tmp_path: Path) -> None:
         store,
         lambda workflow: workflow,
         DriverBounds(max_steps=8, max_elapsed_seconds=5, wait_poll_interval_seconds=30, max_wait_polls=8),
+        repository_root=tmp_path,
     )
 
     assert clock.sleeps == [5]
@@ -124,7 +127,7 @@ def test_elapsed_bound_caps_last_sleep(tmp_path: Path) -> None:
 def test_step_bound_prevents_endless_advancement(tmp_path: Path) -> None:
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.PLAN))
     states = iter((WorkflowState.PREPARE_BRANCH, WorkflowState.DELEGATE))
-    result, _ = run_fake(store, lambda workflow: replace(workflow, state=next(states)), DriverBounds(max_steps=2))
+    result, _ = run_fake(store, lambda workflow: replace(workflow, state=next(states)), DriverBounds(max_steps=2), repository_root=tmp_path)
     assert result.steps == 2
     assert result.stop_reason == "Maximum driver steps reached."
 
@@ -132,19 +135,19 @@ def test_step_bound_prevents_endless_advancement(tmp_path: Path) -> None:
 def test_qa_failure_and_review_rework_stop_without_rerun(tmp_path: Path) -> None:
     qa = QARecord(("python", "-m", "pytest"), 1, 1.0, "failed", (), "2026-08-03T11:00:00+00:00")
     qa_store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.QA, qa=qa))
-    qa_result, _ = run_fake(qa_store, lambda workflow: pytest.fail("must not dispatch"))
+    qa_result, _ = run_fake(qa_store, lambda workflow: pytest.fail("must not dispatch"), repository_root=tmp_path)
     assert qa_result.blocked and qa_result.steps == 0
 
     evidence = CriterionEvidence("criterion", "proof", "failed", CriterionStatus.FAIL)
     review = ReviewRecord((evidence,), ReviewRecommendation.REWORK, "2026-08-03T11:00:00+00:00")
     review_store = store_with(tmp_path / "review", StoredWorkflow("OPS-013", "agent/ops", WorkflowState.REVIEW, review=review))
-    review_result, _ = run_fake(review_store, lambda workflow: pytest.fail("must not dispatch"))
+    review_result, _ = run_fake(review_store, lambda workflow: pytest.fail("must not dispatch"), repository_root=tmp_path)
     assert review_result.blocked and review_result.steps == 0
 
 
 def test_complete_at_start_requires_one_state_handling(tmp_path: Path) -> None:
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.COMPLETE))
-    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"))
+    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"), repository_root=tmp_path)
     assert result.steps == 0
     assert result.stop_reason.startswith("COMPLETE requires explicit")
 
@@ -156,7 +159,7 @@ def test_restart_records_continuity_and_stale_workflow_stops(tmp_path: Path) -> 
         last_stop_reason="Maximum driver steps reached.",
     )
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.PLAN, driver=old))
-    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"))
+    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"), repository_root=tmp_path)
     assert result.stale and result.blocked
     assert result.workflow.driver.continuity == "RESUMED"
     assert "Maximum driver steps" in result.workflow.driver.resume_explanation
@@ -164,7 +167,7 @@ def test_restart_records_continuity_and_stale_workflow_stops(tmp_path: Path) -> 
 
 def test_handler_exception_is_persisted_as_blocked_stop(tmp_path: Path) -> None:
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.PLAN))
-    result, _ = run_fake(store, lambda workflow: (_ for _ in ()).throw(RuntimeError("boom")))
+    result, _ = run_fake(store, lambda workflow: (_ for _ in ()).throw(RuntimeError("boom")), repository_root=tmp_path)
     assert result.blocked
     assert "RuntimeError: boom" in store.load().driver.last_stop_reason
 
@@ -181,7 +184,7 @@ def test_handler_exception_is_persisted_as_blocked_stop(tmp_path: Path) -> None:
 def test_invalid_bounds_fail_before_dispatch(tmp_path: Path, bounds: DriverBounds) -> None:
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.PLAN))
     with pytest.raises(ValueError, match="finite positive"):
-        drive_workflow(store, bounds, dispatcher=lambda workflow: pytest.fail("must not dispatch"))
+        drive_workflow(store, bounds, repository_root=tmp_path, dispatcher=lambda workflow: pytest.fail("must not dispatch"))
 
 
 def test_no_external_service_boundaries_are_needed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,7 +194,7 @@ def test_no_external_service_boundaries_are_needed(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr("subprocess.run", forbidden)
     monkeypatch.setattr("socket.create_connection", forbidden)
     store = store_with(tmp_path, StoredWorkflow("OPS-013", "agent/ops", WorkflowState.PLAN))
-    result, _ = run_fake(store, lambda workflow: replace(workflow, state=WorkflowState.PREPARE_BRANCH), DriverBounds(max_steps=1))
+    result, _ = run_fake(store, lambda workflow: replace(workflow, state=WorkflowState.PREPARE_BRANCH), DriverBounds(max_steps=1), repository_root=tmp_path)
     assert result.steps == 1
 
 
@@ -201,7 +204,7 @@ def test_paused_manager_stops_before_dispatch(tmp_path: Path) -> None:
     store = WorkflowStore(tmp_path / "workflow.json", event_store=events)
     store.save(StoredWorkflow("OPS-014", "agent/ops-014", WorkflowState.PLAN))
 
-    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"))
+    result, _ = run_fake(store, lambda workflow: pytest.fail("must not dispatch"), repository_root=tmp_path)
 
     assert result.steps == 0
     assert result.blocked is True

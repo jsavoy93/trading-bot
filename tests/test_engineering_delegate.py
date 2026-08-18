@@ -75,6 +75,7 @@ def test_delegate_launches_once_records_run_and_advances(
 
     result = run(
         workflow,
+        repository_root=tmp_path,
         backlog_path=write_backlog(tmp_path),
         launcher=launcher,
         clock=lambda: datetime(2026, 8, 2, 15, 0, tzinfo=UTC),
@@ -120,7 +121,7 @@ def test_delegate_rejects_existing_run_without_launching(tmp_path: Path) -> None
     )
 
     with pytest.raises(RuntimeError, match="Refusing duplicate delegation"):
-        run(workflow, backlog_path=write_backlog(tmp_path), launcher=launcher)
+        run(workflow, repository_root=tmp_path, backlog_path=write_backlog(tmp_path), launcher=launcher)
 
     assert launcher.calls == []
 
@@ -130,8 +131,8 @@ def test_delegate_retries_use_the_same_idempotent_request_id(tmp_path: Path) -> 
     second_launcher = StubLauncher()
     workflow = make_workflow()
 
-    run(workflow, backlog_path=write_backlog(tmp_path), launcher=first_launcher)
-    run(workflow, backlog_path=write_backlog(tmp_path), launcher=second_launcher)
+    run(workflow, repository_root=tmp_path, backlog_path=write_backlog(tmp_path), launcher=first_launcher)
+    run(workflow, repository_root=tmp_path, backlog_path=write_backlog(tmp_path), launcher=second_launcher)
 
     assert first_launcher.calls[0][3] == second_launcher.calls[0][3]
 
@@ -145,6 +146,7 @@ def test_delegate_rejects_mismatched_wrapper_identity(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="request identity"):
         run(
             make_workflow(),
+            repository_root=tmp_path,
             backlog_path=write_backlog(tmp_path),
             launcher=MismatchedLauncher(),
         )
@@ -158,7 +160,7 @@ def test_delegate_rejects_unknown_task(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="unknown backlog task: TEST-999"):
-        run(workflow, backlog_path=write_backlog(tmp_path), launcher=StubLauncher())
+        run(workflow, repository_root=tmp_path, backlog_path=write_backlog(tmp_path), launcher=StubLauncher())
 
 
 def test_delegate_rejects_wrong_workflow_state(tmp_path: Path) -> None:
@@ -169,4 +171,4 @@ def test_delegate_rejects_wrong_workflow_state(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="received workflow state: PLAN"):
-        run(workflow, backlog_path=write_backlog(tmp_path), launcher=StubLauncher())
+        run(workflow, repository_root=tmp_path, backlog_path=write_backlog(tmp_path), launcher=StubLauncher())

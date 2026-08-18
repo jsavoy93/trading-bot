@@ -77,7 +77,7 @@ def test_accept_records_criteria_and_advances_to_report(tmp_path: Path) -> None:
 
     result = run(
         original,
-        repo_root=tmp_path,
+        repository_root=tmp_path,
         backlog_path=write_backlog(tmp_path),
         reviewer=lambda root, criteria: decision(CriterionStatus.PASS),
         clock=lambda: datetime(2026, 8, 2, 16, 25, tzinfo=UTC),
@@ -93,7 +93,7 @@ def test_accept_records_criteria_and_advances_to_report(tmp_path: Path) -> None:
 def test_failure_records_rework_and_stays_in_review(tmp_path: Path) -> None:
     result = run(
         workflow(qa=qa_record()),
-        repo_root=tmp_path,
+        repository_root=tmp_path,
         backlog_path=write_backlog(tmp_path),
         reviewer=lambda root, criteria: decision(CriterionStatus.FAIL),
     )
@@ -103,7 +103,7 @@ def test_failure_records_rework_and_stays_in_review(tmp_path: Path) -> None:
     assert result.review.recommendation is ReviewRecommendation.REWORK
 
 
-def test_existing_review_stops_without_regeneration() -> None:
+def test_existing_review_stops_without_regeneration(tmp_path: Path) -> None:
     existing = ReviewRecord(
         decision(CriterionStatus.FAIL).criteria,
         ReviewRecommendation.REWORK,
@@ -112,16 +112,16 @@ def test_existing_review_stops_without_regeneration() -> None:
     calls: list[Path] = []
     original = workflow(qa=qa_record(), review=existing)
 
-    result = run(original, reviewer=lambda root, criteria: calls.append(root))
+    result = run(original, repository_root=tmp_path, reviewer=lambda root, criteria: calls.append(root))
 
     assert result is original
     assert calls == []
 
 
 @pytest.mark.parametrize("qa", (None, qa_record(1), qa_record(124, True)))
-def test_review_requires_successful_qa(qa: QARecord | None) -> None:
+def test_review_requires_successful_qa(qa: QARecord | None, tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="requires successful persisted QA"):
-        run(workflow(qa=qa), reviewer=lambda root, criteria: decision(CriterionStatus.PASS))
+        run(workflow(qa=qa), repository_root=tmp_path, reviewer=lambda root, criteria: decision(CriterionStatus.PASS))
 
 
 def test_review_rejects_unknown_task(tmp_path: Path) -> None:
@@ -133,13 +133,13 @@ def test_review_rejects_unknown_task(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="unknown backlog task"):
         run(
             workflow(qa=qa_record()),
-            repo_root=tmp_path,
+            repository_root=tmp_path,
             backlog_path=backlog_path,
         )
 
 
-def test_review_rejects_wrong_state() -> None:
+def test_review_rejects_wrong_state(tmp_path: Path) -> None:
     original = workflow(qa=qa_record())
     wrong = StoredWorkflow(original.task_id, original.feature_branch, WorkflowState.REPORT, qa=original.qa)
     with pytest.raises(RuntimeError, match="received workflow state: REPORT"):
-        run(wrong)
+        run(wrong, repository_root=tmp_path)

@@ -17,6 +17,7 @@ def run(
     backlog_path: Path | None = None,
     reporter: Callable[[StoredWorkflow, BacklogTask, datetime], ReportRecord] | None = None,
     clock: Callable[[], datetime] | None = None,
+    repository_root: Path,
 ) -> StoredWorkflow:
     if workflow.state is not WorkflowState.REPORT:
         raise RuntimeError(
@@ -26,7 +27,7 @@ def run(
         return workflow
 
     print(f"Executing workflow state: {workflow.state.value}")
-    tasks = load_backlog(backlog_path or Path.cwd() / "AGENT_BACKLOG.md")
+    tasks = load_backlog(backlog_path or repository_root / "AGENT_BACKLOG.md")
     task = next((item for item in tasks if item.task_id == workflow.task_id), None)
     if task is None:
         raise RuntimeError(f"Cannot report unknown backlog task: {workflow.task_id}")

@@ -197,11 +197,11 @@ def _manager_main(config: ProjectConfig, args: argparse.Namespace) -> int:
 
     if workflow_store.exists():
         if args.drive:
-            result = drive_workflow(workflow_store, _bounds(args))
+            result = drive_workflow(workflow_store, _bounds(args), repository_root=repo_root)
             _print_driver_result(result)
             return 0
         workflow = workflow_store.load()
-        workflow = dispatch_workflow(workflow)
+        workflow = dispatch_workflow(workflow, repository_root=repo_root)
         archive_path = persist_workflow_result(workflow_adapter, workflow)
 
         print()
@@ -242,10 +242,10 @@ def _manager_main(config: ProjectConfig, args: argparse.Namespace) -> int:
     )
     workflow_store.save(workflow)
     if args.drive:
-        result = drive_workflow(workflow_store, _bounds(args))
+        result = drive_workflow(workflow_store, _bounds(args), repository_root=repo_root)
         _print_driver_result(result)
         return 0
-    workflow = dispatch_workflow(workflow)
+    workflow = dispatch_workflow(workflow, repository_root=repo_root)
     archive_path = persist_workflow_result(workflow_adapter, workflow)
 
     print()

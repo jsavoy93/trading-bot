@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 import time
+from pathlib import Path
 from typing import Callable
 
 from engineering.models import DelegationStatus, ReviewRecommendation, WorkflowState
@@ -83,7 +85,8 @@ def drive_workflow(
     store: WorkflowStore,
     bounds: DriverBounds,
     *,
-    dispatcher: Callable[[StoredWorkflow], StoredWorkflow] = dispatch_workflow,
+    repository_root: Path,
+    dispatcher: Callable[..., StoredWorkflow] | None = None,
     utc_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     monotonic: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
@@ -122,6 +125,13 @@ def drive_workflow(
     )
     workflow = replace(workflow, driver=driver)
     store.save(workflow)
+    # Resolve dispatcher: default to dispatch_workflow bound to the selected repository root.
+    # Custom dispatchers (test mocks) do not receive repository_root.
+    if dispatcher is None:
+        _dispatch = partial(dispatch_workflow, repository_root=repository_root)
+    else:
+        _dispatch = dispatcher
+
     steps = 0
     polls = 0
 
@@ -168,7 +178,7 @@ def drive_workflow(
 
         prior = workflow
         try:
-            updated = dispatcher(workflow)
+            updated = _dispatch(workflow)
         except Exception as exc:
             workflow = prior
             return finish(f"Workflow handler failed: {type(exc).__name__}: {exc}", blocked=True)

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from engineering.models import CriterionStatus, ReviewRecommendation, WorkflowState
 from engineering.workflow_store import StoredWorkflow
 
 
-def run(workflow: StoredWorkflow) -> StoredWorkflow:
+def run(
+    workflow: StoredWorkflow,
+    *,
+    repository_root: Path,
+) -> StoredWorkflow:
     if workflow.state is not WorkflowState.COMPLETE:
         raise RuntimeError(
             f"COMPLETE handler received workflow state: {workflow.state.value}"
