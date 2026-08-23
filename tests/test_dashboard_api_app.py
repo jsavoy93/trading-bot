@@ -266,8 +266,8 @@ def test_html_rendering_with_populated_snapshot_escapes_values():
 
     assert "Engineering Dashboard" in html
     assert "Engineering health" in html
-    assert "Current agent activity" in html
-    assert "Blockers and approvals needed" in html
+    assert "Overview" in html
+    assert "Blockers" in html
     assert "Testing status" in html
     assert "ENGDASH-002&lt;script&gt;" in html
     assert "Read-only &lt;dashboard&gt;" in html
@@ -319,8 +319,8 @@ def test_live_activity_and_recent_execution_html_escapes_values():
 
     html = render_dashboard(snapshot)
 
-    assert "Live agent activity" in html
-    assert "Recent executions" in html
+    assert "Live Agent Activity" in html
+    assert "Recent Executions" in html
     assert "ENGDASH-006&lt;script&gt;" in html
     assert "agent/&lt;branch&gt;" in html
     assert "Use &lt;safe&gt; data" in html
@@ -432,13 +432,13 @@ def _public_snapshot(snapshot: DashboardSnapshot) -> dict[str, object]:
 
 
 def _run_dashboard_script_case(script: str, body: str) -> None:
-    subprocess.run(
+    result = subprocess.run(
         ["node", "-e", body],
         input=script,
         text=True,
-        check=True,
         capture_output=True,
     )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_dashboard_shell_uses_client_side_snapshot_polling_instead_of_meta_refresh():
@@ -477,7 +477,7 @@ def test_successful_poll_updates_displayed_values_and_preserves_scroll():
         const assert = require('assert');
         const fs = require('fs');
         const script = fs.readFileSync(0, 'utf8');
-        let content = {{innerHTML: 'INITIAL SNAPSHOT'}};
+        let content = {{innerHTML: 'INITIAL SNAPSHOT', addEventListener: () => {{}}, contains: () => true, querySelectorAll: () => []}};
         let warning = {{textContent: '', style: {{display: 'none'}}}};
         let intervalMs = null;
         let scrollCalls = [];
@@ -516,7 +516,7 @@ def test_failed_poll_preserves_last_known_data_and_shows_bounded_warning():
         const assert = require('assert');
         const fs = require('fs');
         const script = fs.readFileSync(0, 'utf8');
-        let content = {innerHTML: 'LAST KNOWN SNAPSHOT'};
+        let content = {innerHTML: 'LAST KNOWN SNAPSHOT', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
         let warning = {textContent: '', style: {display: 'none'}};
         global.window = {scrollX: 0, scrollY: 42, setInterval: () => 1, scrollTo: () => {}};
         global.document = {getElementById: (id) => id === 'dashboard-content' ? content : warning};
@@ -555,7 +555,7 @@ def test_poll_warning_clears_after_recovery_and_safe_rendering_is_preserved():
         const assert = require('assert');
         const fs = require('fs');
         const script = fs.readFileSync(0, 'utf8');
-        let content = {{innerHTML: 'LAST GOOD'}};
+        let content = {{innerHTML: 'LAST GOOD', addEventListener: () => {{}}, contains: () => true, querySelectorAll: () => []}};
         let warning = {{textContent: '', style: {{display: 'none'}}}};
         let attempts = 0;
         global.window = {{scrollX: 0, scrollY: 99, setInterval: () => 1, scrollTo: () => {{}}}};
@@ -582,3 +582,170 @@ def test_poll_warning_clears_after_recovery_and_safe_rendering_is_preserved():
     )
 
     _run_dashboard_script_case(script, body)
+
+
+def test_mobile_command_center_overview_is_default_and_all_tabs_exist():
+    html = render_dashboard(populated_snapshot())
+
+    assert "id='tab-overview'" in html
+    assert "data-tab='overview'" in html
+    assert "aria-selected='true'>Overview" in html
+    for tab in ("overview", "activity", "backlog", "timeline", "reports", "health"):
+        assert f"data-tab='{tab}'" in html
+        assert f"data-tab-panel='{tab}'" in html
+    assert "id='tab-activity' class='tab-panel' role='tabpanel' data-tab-panel='activity' hidden" in html
+    assert "http-equiv='refresh'" not in html
+
+
+def test_overview_contains_high_value_command_center_fields():
+    html = render_dashboard(populated_snapshot())
+
+    for label in (
+        "Health",
+        "Project",
+        "Branch",
+        "Repo safe",
+        "Current task",
+        "Agent",
+        "Execution",
+        "Phase",
+        "Elapsed",
+        "Latest activity",
+        "Last completed",
+        "Blockers",
+        "DONE",
+        "REVIEW",
+        "TODO",
+        "BLOCKED",
+    ):
+        assert label in html
+    assert "trading-bot" in html
+    assert "agent/engdash-002-read-only-api-ui" in html
+    assert "ENGDASH-002" in html
+    assert "None" in html
+
+
+def test_activity_backlog_timeline_reports_and_health_tabs_render_expected_data():
+    html = render_dashboard(
+        populated_snapshot(
+            live_activity=(
+                AgentActivitySummary(
+                    project_id="trading-bot",
+                    task_id="SCORE-001",
+                    task_title="Normalize indicator scores",
+                    agent_name="trading-exec",
+                    agent_role="trading-exec",
+                    workflow_id="SCORE-001:agent/x",
+                    run_id="run-score-001",
+                    branch="agent/score-001-normalize-indicator-scores",
+                    phase="QA",
+                    status="running",
+                    started_at="2026-08-23T21:30:00+00:00",
+                    updated_at="2026-08-23T21:40:00+00:00",
+                    elapsed_seconds=600.0,
+                    latest_activity_at="2026-08-23T21:40:00+00:00",
+                    latest_activity="QA running",
+                    last_completed_action="Implementation complete",
+                    blocker=None,
+                    timeout_state="none",
+                    recovery_state="continuous",
+                    safe_detail="safe",
+                ),
+            ),
+            recent_executions=(
+                RecentExecutionSummary(
+                    project_id="trading-bot",
+                    task_id="ENGDASH-006",
+                    agent_name="dashboard-agent",
+                    run_id="run-done",
+                    branch="agent/engdash-006",
+                    final_status="completed",
+                    started_at="2026-08-23T14:00:00+00:00",
+                    completed_at="2026-08-23T14:10:00+00:00",
+                    elapsed_seconds=600.0,
+                    last_completed_action="Report generated",
+                    result_summary="ok",
+                ),
+            ),
+        )
+    )
+
+    assert "Live Agent Activity" in html
+    assert "Recent Executions" in html
+    assert "run-score-001" in html
+    assert "agent/score-001-normalize-indicator-scores" in html
+    assert "Prioritized task list" in html
+    assert "Recent timeline/events" not in html
+    assert "Timeline" in html
+    assert "workflow.transition" in html
+    assert "Reports" in html
+    assert "Report 0" in html
+    assert "Health" in html
+    assert "Testing status" in html
+    assert "Freshness" in html
+
+
+def test_tab_switching_preserves_selected_tab_across_polling_updates_without_navigation():
+    initial = populated_snapshot()
+    updated = populated_snapshot(data_freshness_timestamp="2026-08-23T21:55:00+00:00")
+    script = _dashboard_script(render_dashboard(initial))
+    snapshot_json = json.dumps(_public_snapshot(updated))
+    body = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let navigations = 0;
+        const storage = {{value: null, getItem: () => storage.value, setItem: (key, value) => {{ storage.value = value; }}}};
+        function fakeNode(tab) {{
+          return {{
+            dataset: {{tab, tabPanel: tab}},
+            hidden: false,
+            attrs: {{}},
+            setAttribute: function(name, value) {{ this.attrs[name] = value; }},
+            addEventListener: () => {{}},
+          }};
+        }}
+        const buttons = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health'].map(fakeNode);
+        const panels = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health'].map(fakeNode);
+        let content = {{
+          innerHTML: 'INITIAL',
+          addEventListener: () => {{}},
+          contains: () => true,
+          querySelectorAll: (selector) => selector === '[data-tab]' ? buttons : selector === '[data-tab-panel]' ? panels : [],
+        }};
+        let warning = {{textContent: '', style: {{display: 'none'}}}};
+        global.window = {{
+          scrollX: 5,
+          scrollY: 500,
+          setInterval: () => 1,
+          scrollTo: () => {{}},
+          localStorage: storage,
+          location: {{assign: () => {{ navigations += 1; }}}},
+        }};
+        global.document = {{getElementById: (id) => id === 'dashboard-content' ? content : warning}};
+        global.fetch = async () => {{ return {{ok: true, json: async () => ({snapshot_json})}}; }};
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {{
+          window.engineeringDashboard.switchTab('activity');
+          assert.strictEqual(storage.value, 'activity');
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(window.engineeringDashboard.selectedTab(), 'activity');
+          assert(content.innerHTML.includes('2026-08-23T21:55:00+00:00'));
+          assert.strictEqual(navigations, 0);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_mobile_css_prioritizes_narrow_screens_and_avoids_normal_horizontal_overflow():
+    html = render_dashboard(populated_snapshot())
+
+    assert "overflow-x:hidden" in html
+    assert "@media(max-width:700px)" in html
+    assert "position:sticky" in html
+    assert "min-height:44px" in html
+    assert "text-overflow:ellipsis" in html
+    assert "<table" not in html.lower()

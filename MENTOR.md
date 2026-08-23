@@ -1095,3 +1095,9 @@ Important boundaries:
   `.agent-state`, `.gitignore`, `pyproject.toml`, `pytest.ini`, or QA execution.
 
 ENGPLAT-003B is now complete for registry loading, project activation, runtime directory initialization, manager `--project-id` selection, and repository-root propagation. Bootstrap still has no authorized CLI or registry mutation/update command.
+
+### Mobile-first Engineering Dashboard command center
+
+The `/engineering` page is a mobile-first read-only command center. It renders a compact Overview by default and organizes deeper data into six client-side tabs: Overview, Activity, Backlog, Timeline, Reports, and Health. The tab bar is sticky on narrow screens. The page still uses the existing smooth-refresh polling model: `GET /api/engineering/snapshot` every 15 seconds, no full-page meta refresh, no WebSockets, no server push, and no write/control actions.
+
+The Overview tab intentionally contains only high-value status fields: health, project, branch, repository safety, current task/agent/execution/phase, elapsed/latest activity/last completed action, blocker summary, and DONE/REVIEW/TODO/BLOCKED backlog counts. Detail tabs render activity, backlog, events, reports, and health as compact cards/lists rather than wide tables. Selected tab state is preserved during polling and stored in browser `localStorage` across ordinary reloads. Dashboard rendering must continue to escape all snapshot values and must not expose raw stdout/stderr, prompts, private reasoning, secrets, unbounded logs, process inspection, or write controls.
