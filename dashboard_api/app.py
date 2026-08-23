@@ -93,51 +93,247 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             "<meta name='viewport' content='width=device-width, initial-scale=1'>",
             "<title>Engineering Dashboard</title>",
             "<style>",
-            "body{font-family:system-ui,-apple-system,sans-serif;margin:2rem;background:#0f172a;color:#e2e8f0}",
-            "section{border:1px solid #334155;border-radius:12px;padding:1rem;margin:1rem 0;background:#111827}",
-            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}",
-            ".card{border:1px solid #475569;border-radius:10px;padding:.75rem;background:#1e293b}",
-            ".healthy{color:#86efac}.degraded{color:#fbbf24}.warning{border-left:4px solid #f59e0b;padding-left:.75rem}",
-            "#update-warning{display:none;border-left:4px solid #f59e0b;padding:.75rem;margin:1rem 0;background:#292524;color:#fde68a}",
-            "dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0}code{color:#bae6fd}",
-            "</style></head><body>",
-            f"<h1>{_html(payload.get('project_identity'))} Engineering Dashboard</h1>",
+            "*{box-sizing:border-box}html{overflow-x:hidden}body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#0f172a;color:#e2e8f0;overflow-x:hidden}",
+            ".shell{width:min(100%,1120px);margin:0 auto;padding:1rem}.dashboard-title{font-size:1.25rem;margin:.25rem 0 .75rem}",
+            "section{border:1px solid #334155;border-radius:14px;padding:1rem;margin:.75rem 0;background:#111827;max-width:100%}",
+            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem}.overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem}",
+            ".card{border:1px solid #475569;border-radius:12px;padding:.75rem;background:#1e293b;min-width:0}.mini-card{border:1px solid #334155;border-radius:12px;padding:.65rem;background:#172033;min-width:0}",
+            ".label{font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;color:#93c5fd}.value{font-weight:700;margin-top:.15rem;overflow-wrap:anywhere}.muted{color:#94a3b8}.truncate{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+            ".badge{display:inline-flex;align-items:center;min-height:1.75rem;padding:.2rem .55rem;border-radius:999px;background:#334155;color:#e2e8f0;font-weight:700;font-size:.82rem}.healthy{color:#86efac}.degraded{color:#fbbf24}.error{color:#fca5a5}.warning{border-left:4px solid #f59e0b;padding-left:.75rem}",
+            ".tabs{position:sticky;top:0;z-index:2;display:flex;gap:.35rem;overflow-x:auto;padding:.5rem 0;margin:0 0 .5rem;background:#0f172a}.tab-button{appearance:none;border:1px solid #334155;border-radius:999px;background:#1e293b;color:#e2e8f0;padding:.65rem .8rem;min-height:44px;font-weight:700;white-space:nowrap}.tab-button[aria-selected='true']{background:#2563eb;border-color:#60a5fa;color:#fff}.tab-panel[hidden]{display:none}",
+            ".list{display:grid;gap:.65rem}.activity-card,.report-card,.event-card,.task-card{border:1px solid #334155;border-radius:12px;padding:.75rem;background:#172033;min-width:0}.kv{display:grid;grid-template-columns:minmax(6rem,.45fr) minmax(0,1fr);gap:.25rem .6rem;margin-top:.5rem}.kv dt{font-weight:700;color:#bfdbfe}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}",
+            "#update-warning{display:none;border-left:4px solid #f59e0b;padding:.75rem;margin:.75rem 0;background:#292524;color:#fde68a;border-radius:10px}",
+            "dl{margin:.5rem 0 0}dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0;overflow-wrap:anywhere}code{color:#bae6fd;white-space:normal;overflow-wrap:anywhere}ul{padding-left:1.1rem;margin:.5rem 0}li{margin:.3rem 0}",
+            "@media(max-width:700px){.shell{padding:.75rem}.overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.grid{grid-template-columns:1fr}.dashboard-title{font-size:1.1rem}.card,.mini-card,section{padding:.65rem}.kv{grid-template-columns:1fr}.tabs{margin-left:-.75rem;margin-right:-.75rem;padding:.45rem .75rem}.tab-button{font-size:.9rem;padding:.6rem .75rem}}",
+            "</style></head><body><div class='shell'>",
+            f"<h1 class='dashboard-title'>{_html(payload.get('project_identity'))} Engineering Dashboard</h1>",
             "<div id='update-warning' role='status' aria-live='polite'></div>",
             f"<main id='dashboard-content'>{_dashboard_content(snapshot)}</main>",
             _refresh_script(),
-            "</body></html>",
+            "</div></body></html>",
         ]
     )
+
+
+TAB_ORDER = ("overview", "activity", "backlog", "timeline", "reports", "health")
+TAB_LABELS = {
+    "overview": "Overview",
+    "activity": "Activity",
+    "backlog": "Backlog",
+    "timeline": "Timeline",
+    "reports": "Reports",
+    "health": "Health",
+}
 
 
 def _dashboard_content(snapshot: DashboardSnapshot) -> str:
-    payload = snapshot.to_dict()
-    warnings = tuple(snapshot.health_warnings)
-    health = snapshot.engineering_health
-    health_status = health.overall_status if health else ("DEGRADED" if warnings else "HEALTHY")
-    health_class = "healthy" if health_status == "HEALTHY" else "degraded"
     return "".join(
         [
-            f"<p>Status: <strong class='{health_class}'>{_html(health_status.title())}</strong> · Freshness: <code>{_html(payload.get('data_freshness_timestamp'))}</code></p>",
-            _engineering_health_section(health, warnings),
-            _warnings_section(warnings),
-            "<div class='grid'>",
-            _repository_section(snapshot.repository),
-            _workflow_section(snapshot.workflow),
-            _approval_section(snapshot.approval),
-            _test_section(snapshot.latest_execution_result, snapshot.latest_test_result),
-            _pull_request_section(snapshot.pull_request),
-            "</div>",
-            _current_tasks_section(snapshot.current_tasks),
-            _blockers_section(snapshot.blockers),
-            _live_activity_section(snapshot.live_activity),
-            _recent_executions_section(snapshot.recent_executions),
-            _testing_section(snapshot.testing),
-            _backlog_section(snapshot.backlog),
-            _reports_section(snapshot.recent_reports),
-            _events_section(snapshot.recent_events),
+            _tab_nav(),
+            _tab_panel("overview", _overview_tab(snapshot), selected=True),
+            _tab_panel("activity", _activity_tab(snapshot)),
+            _tab_panel("backlog", _backlog_tab(snapshot)),
+            _tab_panel("timeline", _timeline_tab(snapshot)),
+            _tab_panel("reports", _reports_tab(snapshot)),
+            _tab_panel("health", _health_tab(snapshot)),
         ]
     )
+
+
+def _tab_nav() -> str:
+    buttons = "".join(
+        f"<button class='tab-button' type='button' role='tab' data-tab='{_html(tab)}' aria-controls='tab-{_html(tab)}' aria-selected='{'true' if tab == 'overview' else 'false'}'>{_html(TAB_LABELS[tab])}</button>"
+        for tab in TAB_ORDER
+    )
+    return f"<nav class='tabs' role='tablist' aria-label='Engineering dashboard sections'>{buttons}</nav>"
+
+
+def _tab_panel(tab: str, body: str, *, selected: bool = False) -> str:
+    hidden = "" if selected else " hidden"
+    return f"<section id='tab-{_html(tab)}' class='tab-panel' role='tabpanel' data-tab-panel='{_html(tab)}'{hidden}>{body}</section>"
+
+
+def _overview_tab(snapshot: DashboardSnapshot) -> str:
+    health = snapshot.engineering_health
+    warnings = tuple(snapshot.health_warnings)
+    status = health.overall_status if health else ("DEGRADED" if warnings else "HEALTHY")
+    status_class = _status_class(status)
+    workflow = snapshot.workflow
+    activity = snapshot.live_activity[0] if snapshot.live_activity else None
+    blockers = tuple(snapshot.blockers)
+    backlog_counts = snapshot.backlog.counts_by_status
+    latest_activity = activity.latest_activity if activity else snapshot.latest_execution_result
+    last_completed = activity.last_completed_action if activity else None
+    elapsed = activity.elapsed_seconds if activity else None
+    overview_values = [
+        ("Health", f"<span class='badge {status_class}'>{_html(status.title())}</span>"),
+        ("Project", _html(snapshot.project_identity)),
+        ("Branch", f"<code class='truncate'>{_html(snapshot.repository.branch)}</code>"),
+        ("Repo safe", _html(health.repository_safe if health else snapshot.repository.is_clean)),
+        ("Current task", _html(workflow.task_id or snapshot.backlog.active_task_id)),
+        ("Agent", _html(workflow.owner_agent or (activity.agent_name if activity else None))),
+        ("Execution", _html(workflow.execution_status or (activity.status if activity else None))),
+        ("Phase", _html(workflow.stage or (activity.phase if activity else None))),
+        ("Elapsed", _html(elapsed)),
+        ("Latest activity", _html(latest_activity)),
+        ("Last completed", _html(last_completed)),
+        ("Blockers", _html("None" if not blockers else f"{len(blockers)} recorded")),
+        ("DONE", _html(backlog_counts.get("DONE", 0))),
+        ("REVIEW", _html(backlog_counts.get("REVIEW", 0))),
+        ("TODO", _html(backlog_counts.get("TODO", 0))),
+        ("BLOCKED", _html(backlog_counts.get("BLOCKED", 0))),
+    ]
+    cards = "".join(
+        f"<article class='mini-card'><div class='label'>{label}</div><div class='value'>{value}</div></article>"
+        for label, value in overview_values
+    )
+    return f"<h2>Overview</h2><div class='overview-grid'>{cards}</div><p class='muted'>Freshness: <code>{_html(snapshot.data_freshness_timestamp)}</code></p>"
+
+
+def _activity_tab(snapshot: DashboardSnapshot) -> str:
+    live = "".join(_activity_card(item) for item in snapshot.live_activity) or "<p class='muted'>No active engineering-agent activity.</p>"
+    recent = "".join(_recent_execution_card(item) for item in snapshot.recent_executions) or "<p class='muted'>No recent executions.</p>"
+    return f"<h2>Activity</h2><h3>Live Agent Activity</h3><div class='list'>{live}</div><h3>Recent Executions</h3><div class='list'>{recent}</div>"
+
+
+def _activity_card(item: AgentActivitySummary) -> str:
+    return _detail_card(
+        "activity-card",
+        f"{_html(item.status)} · {_html(item.agent_name)}",
+        {
+            "Task": f"{item.task_id} {item.task_title}",
+            "Phase": item.phase,
+            "Branch": item.branch,
+            "Run ID": item.run_id,
+            "Started": item.started_at,
+            "Elapsed": item.elapsed_seconds,
+            "Latest activity": item.latest_activity,
+            "Last completed": item.last_completed_action,
+            "Blocker": item.blocker,
+            "Timeout / recovery": f"{item.timeout_state} / {item.recovery_state}",
+        },
+    )
+
+
+def _recent_execution_card(item: RecentExecutionSummary) -> str:
+    return _detail_card(
+        "activity-card",
+        f"{_html(item.final_status)} · {_html(item.agent_name)}",
+        {
+            "Task": item.task_id,
+            "Branch": item.branch,
+            "Run ID": item.run_id,
+            "Completed": item.completed_at,
+            "Duration": item.elapsed_seconds,
+            "Result": item.result_summary,
+        },
+    )
+
+
+def _backlog_tab(snapshot: DashboardSnapshot) -> str:
+    counts = _mapping_list(snapshot.backlog.counts_by_status)
+    active = _definition_list(
+        {
+            "Active task": snapshot.backlog.active_task_id,
+            "Title": snapshot.backlog.active_task_title,
+            "Status": snapshot.backlog.status,
+            "Owner": snapshot.backlog.owner,
+            "Priority": snapshot.backlog.priority,
+        }
+    )
+    task_cards = "".join(_task_card(task) for task in snapshot.current_tasks) or "<p class='muted'>No active prioritized task is currently recorded.</p>"
+    return f"<h2>Backlog</h2><h3>Counts</h3>{counts}<h3>Active/current task</h3>{active}<h3>Prioritized task list</h3><div class='list'>{task_cards}</div>"
+
+
+def _task_card(task: TaskStatusSummary) -> str:
+    return _detail_card(
+        "task-card",
+        f"{_html(task.task_id)} · {_html(task.status)}",
+        {
+            "Title": task.title,
+            "Priority": task.priority,
+            "Owner": task.assigned_agent,
+            "Phase": task.current_phase,
+            "Updated": task.last_updated,
+            "Blocker": task.blocking_reason,
+        },
+    )
+
+
+def _timeline_tab(snapshot: DashboardSnapshot) -> str:
+    events = "".join(_event_card(event) for event in snapshot.recent_events) or "<p class='muted'>No recent structured events.</p>"
+    return f"<h2>Timeline</h2><div class='list'>{events}</div>"
+
+
+def _event_card(event: Mapping[str, object]) -> str:
+    label = event.get("event_type") or event.get("type") or event.get("message") or "event"
+    return _detail_card(
+        "event-card",
+        _html(label),
+        {
+            "Task": event.get("task_id"),
+            "Occurred": event.get("occurred_at"),
+            "Payload": event.get("payload"),
+        },
+    )
+
+
+def _reports_tab(snapshot: DashboardSnapshot) -> str:
+    reports = "".join(_report_card(report) for report in snapshot.recent_reports) or "<p class='muted'>No recent reports.</p>"
+    return f"<h2>Reports</h2><div class='list'>{reports}</div>"
+
+
+def _report_card(report: object) -> str:
+    data = report.__dict__ if hasattr(report, "__dict__") else report
+    if not isinstance(data, Mapping):
+        return ""
+    return _detail_card(
+        "report-card",
+        _html(data.get("title")),
+        {
+            "Task": data.get("task_id"),
+            "Outcome": data.get("outcome") or data.get("kind"),
+            "Generated": data.get("generated_at"),
+            "Path": data.get("path"),
+        },
+    )
+
+
+def _health_tab(snapshot: DashboardSnapshot) -> str:
+    return "".join(
+        [
+            "<h2>Health</h2>",
+            _engineering_health_section(snapshot.engineering_health, tuple(snapshot.health_warnings)),
+            _warnings_section(tuple(snapshot.health_warnings)),
+            "<div class='grid'>",
+            _repository_section(snapshot.repository),
+            _test_section(snapshot.latest_execution_result, snapshot.latest_test_result),
+            _testing_section(snapshot.testing),
+            _pull_request_section(snapshot.pull_request),
+            "</div>",
+            f"<p class='muted'>Freshness: <code>{_html(snapshot.data_freshness_timestamp)}</code></p>",
+        ]
+    )
+
+
+def _detail_card(class_name: str, title: str, values: Mapping[str, object]) -> str:
+    return f"<article class='{class_name}'><strong class='truncate'>{title}</strong>{_compact_definition_list(values)}</article>"
+
+
+def _compact_definition_list(values: Mapping[str, object]) -> str:
+    entries = []
+    for key, value in values.items():
+        entries.append(f"<dt>{_html(key)}</dt><dd><span class='truncate' title='{_html(value)}'>{_html(_display(value))}</span></dd>")
+    return f"<dl class='kv'>{''.join(entries)}</dl>"
+
+
+def _status_class(status: object) -> str:
+    normalized = str(status or "").upper()
+    if normalized == "HEALTHY":
+        return "healthy"
+    if normalized == "ERROR":
+        return "error"
+    return "degraded"
 
 
 def _refresh_script() -> str:
@@ -147,75 +343,75 @@ def _refresh_script() -> str:
   'use strict';
   const SNAPSHOT_URL = '__SNAPSHOT_ROUTE__';
   const POLL_INTERVAL_MS = 15000;
+  const TAB_KEY = 'engineeringDashboard.selectedTab';
+  const TABS = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health'];
   const content = document.getElementById('dashboard-content');
   const warning = document.getElementById('update-warning');
   const display = (value) => value === null || value === undefined || value === '' ? 'Unavailable' : value === true ? 'Yes' : value === false ? 'No' : String(value);
   const esc = (value) => display(value).replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#x27;'}[char]));
+  const statusClass = (status) => String(status || '').toUpperCase() === 'HEALTHY' ? 'healthy' : String(status || '').toUpperCase() === 'ERROR' ? 'error' : 'degraded';
   const dl = (values) => '<dl>' + Object.entries(values).map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join('') + '</dl>';
+  const kv = (values) => '<dl class="kv">' + Object.entries(values).map(([key, value]) => `<dt>${esc(key)}</dt><dd><span class="truncate" title="${esc(value)}">${esc(value)}</span></dd>`).join('') + '</dl>';
   const card = (title, body) => `<section class="card"><h2>${esc(title)}</h2>${body}</section>`;
   const mappingList = (values) => '<ul>' + Object.keys(values || {}).sort().slice(0, 50).map((key) => `<li>${esc(key)}: ${esc(values[key])}</li>`).join('') + '</ul>';
-  const healthSection = (health) => health ? card('Engineering health', dl({
-    'Overall status': health.overall_status,
-    'Repository safe': health.repository_safe,
-    'Branch': health.current_branch,
-    'Commit': health.current_commit,
-    'Last successful regression': health.last_successful_regression_run,
-    'Degraded sources': (health.degraded_sources || []).join(', '),
-    'Warnings': health.warning_count,
-  })) : card('Engineering health', dl({'Overall status': 'Unavailable', 'Warnings': 0}));
+  const detailCard = (className, title, values) => `<article class="${className}"><strong class="truncate">${title}</strong>${kv(values)}</article>`;
+  const tabNav = () => `<nav class="tabs" role="tablist" aria-label="Engineering dashboard sections">${TABS.map((tab) => `<button class="tab-button" type="button" role="tab" data-tab="${tab}" aria-controls="tab-${tab}" aria-selected="${tab === 'overview'}">${esc(tab.charAt(0).toUpperCase() + tab.slice(1))}</button>`).join('')}</nav>`;
+  const panel = (tab, body, selected) => `<section id="tab-${tab}" class="tab-panel" role="tabpanel" data-tab-panel="${tab}"${selected ? '' : ' hidden'}>${body}</section>`;
+  const healthSection = (health) => health ? card('Engineering health', dl({'Overall status': health.overall_status, 'Repository safe': health.repository_safe, 'Branch': health.current_branch, 'Commit': health.current_commit, 'Last successful regression': health.last_successful_regression_run, 'Degraded sources': (health.degraded_sources || []).join(', '), 'Warnings': health.warning_count})) : card('Engineering health', dl({'Overall status': 'Unavailable', 'Warnings': 0}));
   const warningsSection = (warnings) => (warnings || []).length ? `<section><h2>Degradation warnings</h2><ul>${warnings.map((w) => `<li class="warning"><strong>${esc(w.source)}</strong> ${esc(w.severity)} — ${esc(w.message)}</li>`).join('')}</ul></section>` : "<section><h2>Health</h2><p class='healthy'>All configured sources are healthy.</p></section>";
   const repositorySection = (repo) => card('Repository', dl({'Root': repo.root, 'Branch': repo.branch, 'Clean': repo.is_clean, 'Sync': repo.sync_state, 'Ahead': repo.ahead_count, 'Behind': repo.behind_count, 'Latest commit': repo.latest_commit, 'Subject': repo.latest_commit_subject}));
-  const workflowSection = (workflow) => card('Workflow', dl({'Active': workflow.active, 'Task': workflow.task_id, 'Stage': workflow.stage, 'Owner/agent': workflow.owner_agent, 'Branch': workflow.feature_branch, 'Execution': workflow.execution_status, 'Blocker': workflow.blocker, 'Updated': workflow.updated_at}));
-  const approvalSection = (approval) => card('Approval', dl({'Pending': approval.pending, 'Reason': approval.reason, 'Task': approval.task_id, 'Requested': approval.requested_at, 'Next action': approval.next_action}));
-  const testSection = (snapshot) => {
-    const test = snapshot.latest_test_result || {};
-    return card('Execution and tests', dl({'Latest execution': snapshot.latest_execution_result, 'Command': (test.command || []).join(' '), 'Exit code': test.exit_code, 'Passed': test.passed_count, 'Failed': test.failed_count, 'Summary': test.summary}));
-  };
-  const pullRequestSection = (pr) => card('Pull request', dl(pr ? {'Available': pr.available, 'URL': pr.url, 'Number': pr.number, 'State': pr.state, 'Target': pr.target_branch, 'Head': pr.head_branch, 'Mergeable': pr.mergeable} : {'Available': false}));
-  const currentTasksSection = (tasks) => `<section><h2>Current agent activity</h2><ul>${(tasks || []).map((task) => `<li><strong>${esc(task.task_id)}</strong> ${esc(task.title)} — ${esc(task.status)} (${esc(task.completion_percent)}%)<br>Agent: ${esc(task.assigned_agent)} · Phase: ${esc(task.current_phase)}</li>`).join('') || '<li>No active engineering task.</li>'}</ul></section>`;
-  const blockersSection = (blockers) => `<section><h2>Blockers and approvals needed</h2><ul>${(blockers || []).map((blocker) => `<li>${esc(blocker)}</li>`).join('') || '<li>None currently recorded.</li>'}</ul></section>`;
-  const liveActivitySection = (activity) => {
-    const header = '<tr><th>Status</th><th>Agent</th><th>Task</th><th>Phase</th><th>Branch</th><th>Run ID</th><th>Started</th><th>Elapsed seconds</th><th>Latest activity</th><th>Last completed action</th><th>Blocker</th><th>Timeout / recovery</th></tr>';
-    const rows = (activity || []).map((item) => `<tr><td>${esc(item.status)}</td><td>${esc(item.agent_name)}</td><td>${esc(item.task_id)} ${esc(item.task_title)}</td><td>${esc(item.phase)}</td><td><code>${esc(item.branch)}</code></td><td><code>${esc(item.run_id)}</code></td><td>${esc(item.started_at)}</td><td>${esc(item.elapsed_seconds)}</td><td>${esc(item.latest_activity)}</td><td>${esc(item.last_completed_action)}</td><td>${esc(item.blocker)}</td><td>${esc(item.timeout_state)} / ${esc(item.recovery_state)}</td></tr>`).join('') || "<tr><td colspan='12'>No active engineering-agent activity.</td></tr>";
-    return `<section><h2>Live agent activity</h2><table>${header}${rows}</table></section>`;
-  };
-  const recentExecutionsSection = (executions) => {
-    const header = '<tr><th>Status</th><th>Agent</th><th>Task</th><th>Branch</th><th>Run ID</th><th>Completed</th><th>Duration seconds</th><th>Result</th></tr>';
-    const rows = (executions || []).map((item) => `<tr><td>${esc(item.final_status)}</td><td>${esc(item.agent_name)}</td><td>${esc(item.task_id)}</td><td><code>${esc(item.branch)}</code></td><td><code>${esc(item.run_id)}</code></td><td>${esc(item.completed_at)}</td><td>${esc(item.elapsed_seconds)}</td><td>${esc(item.result_summary)}</td></tr>`).join('') || "<tr><td colspan='8'>No recent executions.</td></tr>";
-    return `<section><h2>Recent executions</h2><table>${header}${rows}</table></section>`;
-  };
+  const testSection = (snapshot) => { const test = snapshot.latest_test_result || {}; return card('Execution and tests', dl({'Latest execution': snapshot.latest_execution_result, 'Command': (test.command || []).join(' '), 'Exit code': test.exit_code, 'Passed': test.passed_count, 'Failed': test.failed_count, 'Summary': test.summary})); };
   const testingSection = (testing) => card('Testing status', dl(testing ? {'Latest status': testing.latest_status, 'Warnings': testing.warning_count, 'Full suite completed': testing.full_suite && testing.full_suite.completed_at, 'Regression completed': testing.regression && testing.regression.completed_at} : {'Latest status': 'Unavailable'}));
-  const backlogSection = (backlog) => `<section><h2>Backlog</h2>${dl({'Active task': backlog.active_task_id, 'Title': backlog.active_task_title, 'Status': backlog.status, 'Owner': backlog.owner, 'Priority': backlog.priority})}<h3>Counts by status</h3>${mappingList(backlog.counts_by_status)}<h3>Counts by priority</h3>${mappingList(backlog.counts_by_priority)}</section>`;
-  const reportsSection = (reports) => `<section><h2>Recent reports</h2><ul>${(reports || []).map((report) => `<li><strong>${esc(report.kind)}</strong>: ${esc(report.title)} <code>${esc(report.path)}</code> ${esc(report.generated_at)} ${esc(report.outcome)}</li>`).join('') || '<li>None</li>'}</ul></section>`;
-  const eventsSection = (events) => `<section><h2>Recent timeline/events</h2><ul>${(events || []).map((event) => `<li><strong>${esc(event.event_type || event.type || event.message || 'event')}</strong> ${esc(event.task_id)} <code>${esc(event.occurred_at)}</code>${event.payload ? ` <span>${esc(JSON.stringify(event.payload))}</span>` : ''}</li>`).join('') || '<li>None</li>'}</ul></section>`;
-  const renderSnapshot = (snapshot) => {
+  const pullRequestSection = (pr) => card('Pull request', dl(pr ? {'Available': pr.available, 'URL': pr.url, 'Number': pr.number, 'State': pr.state, 'Target': pr.target_branch, 'Head': pr.head_branch, 'Mergeable': pr.mergeable} : {'Available': false}));
+  const overviewTab = (snapshot) => {
     const health = snapshot.engineering_health;
     const status = health ? health.overall_status : ((snapshot.health_warnings || []).length ? 'DEGRADED' : 'HEALTHY');
-    const healthClass = status === 'HEALTHY' ? 'healthy' : 'degraded';
-    return `<p>Status: <strong class="${healthClass}">${esc(status.charAt(0) + status.slice(1).toLowerCase())}</strong> · Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>` +
-      healthSection(health) + warningsSection(snapshot.health_warnings) + '<div class="grid">' +
-      repositorySection(snapshot.repository) + workflowSection(snapshot.workflow) + approvalSection(snapshot.approval) + testSection(snapshot) + pullRequestSection(snapshot.pull_request) + '</div>' +
-      currentTasksSection(snapshot.current_tasks) + blockersSection(snapshot.blockers) + liveActivitySection(snapshot.live_activity) + recentExecutionsSection(snapshot.recent_executions) + testingSection(snapshot.testing) + backlogSection(snapshot.backlog) + reportsSection(snapshot.recent_reports) + eventsSection(snapshot.recent_events);
+    const workflow = snapshot.workflow || {};
+    const activity = (snapshot.live_activity || [])[0] || {};
+    const counts = (snapshot.backlog && snapshot.backlog.counts_by_status) || {};
+    const values = [['Health', `<span class="badge ${statusClass(status)}">${esc(status.charAt(0) + status.slice(1).toLowerCase())}</span>`], ['Project', esc(snapshot.project_identity)], ['Branch', `<code class="truncate">${esc(snapshot.repository && snapshot.repository.branch)}</code>`], ['Repo safe', esc(health ? health.repository_safe : snapshot.repository && snapshot.repository.is_clean)], ['Current task', esc(workflow.task_id || (snapshot.backlog && snapshot.backlog.active_task_id))], ['Agent', esc(workflow.owner_agent || activity.agent_name)], ['Execution', esc(workflow.execution_status || activity.status)], ['Phase', esc(workflow.stage || activity.phase)], ['Elapsed', esc(activity.elapsed_seconds)], ['Latest activity', esc(activity.latest_activity || snapshot.latest_execution_result)], ['Last completed', esc(activity.last_completed_action)], ['Blockers', esc((snapshot.blockers || []).length ? `${snapshot.blockers.length} recorded` : 'None')], ['DONE', esc(counts.DONE || 0)], ['REVIEW', esc(counts.REVIEW || 0)], ['TODO', esc(counts.TODO || 0)], ['BLOCKED', esc(counts.BLOCKED || 0)]];
+    return `<h2>Overview</h2><div class="overview-grid">${values.map(([label, value]) => `<article class="mini-card"><div class="label">${label}</div><div class="value">${value}</div></article>`).join('')}</div><p class="muted">Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>`;
   };
-  const setWarning = (message) => {
-    warning.textContent = message;
-    warning.style.display = message ? 'block' : 'none';
+  const activityCard = (item) => detailCard('activity-card', `${esc(item.status)} · ${esc(item.agent_name)}`, {'Task': `${item.task_id || ''} ${item.task_title || ''}`, 'Phase': item.phase, 'Branch': item.branch, 'Run ID': item.run_id, 'Started': item.started_at, 'Elapsed': item.elapsed_seconds, 'Latest activity': item.latest_activity, 'Last completed': item.last_completed_action, 'Blocker': item.blocker, 'Timeout / recovery': `${item.timeout_state || ''} / ${item.recovery_state || ''}`});
+  const recentCard = (item) => detailCard('activity-card', `${esc(item.final_status)} · ${esc(item.agent_name)}`, {'Task': item.task_id, 'Branch': item.branch, 'Run ID': item.run_id, 'Completed': item.completed_at, 'Duration': item.elapsed_seconds, 'Result': item.result_summary});
+  const activityTab = (snapshot) => `<h2>Activity</h2><h3>Live Agent Activity</h3><div class="list">${(snapshot.live_activity || []).map(activityCard).join('') || '<p class="muted">No active engineering-agent activity.</p>'}</div><h3>Recent Executions</h3><div class="list">${(snapshot.recent_executions || []).map(recentCard).join('') || '<p class="muted">No recent executions.</p>'}</div>`;
+  const taskCard = (task) => detailCard('task-card', `${esc(task.task_id)} · ${esc(task.status)}`, {'Title': task.title, 'Priority': task.priority, 'Owner': task.assigned_agent, 'Phase': task.current_phase, 'Updated': task.last_updated, 'Blocker': task.blocking_reason});
+  const backlogTab = (snapshot) => `<h2>Backlog</h2><h3>Counts</h3>${mappingList(snapshot.backlog.counts_by_status)}<h3>Active/current task</h3>${dl({'Active task': snapshot.backlog.active_task_id, 'Title': snapshot.backlog.active_task_title, 'Status': snapshot.backlog.status, 'Owner': snapshot.backlog.owner, 'Priority': snapshot.backlog.priority})}<h3>Prioritized task list</h3><div class="list">${(snapshot.current_tasks || []).map(taskCard).join('') || '<p class="muted">No active prioritized task is currently recorded.</p>'}</div>`;
+  const eventCard = (event) => detailCard('event-card', esc(event.event_type || event.type || event.message || 'event'), {'Task': event.task_id, 'Occurred': event.occurred_at, 'Payload': event.payload ? JSON.stringify(event.payload) : undefined});
+  const timelineTab = (snapshot) => `<h2>Timeline</h2><div class="list">${(snapshot.recent_events || []).map(eventCard).join('') || '<p class="muted">No recent structured events.</p>'}</div>`;
+  const reportCard = (report) => detailCard('report-card', esc(report.title), {'Task': report.task_id, 'Outcome': report.outcome || report.kind, 'Generated': report.generated_at, 'Path': report.path});
+  const reportsTab = (snapshot) => `<h2>Reports</h2><div class="list">${(snapshot.recent_reports || []).map(reportCard).join('') || '<p class="muted">No recent reports.</p>'}</div>`;
+  const healthTab = (snapshot) => `<h2>Health</h2>${healthSection(snapshot.engineering_health)}${warningsSection(snapshot.health_warnings)}<div class="grid">${repositorySection(snapshot.repository)}${testSection(snapshot)}${testingSection(snapshot.testing)}${pullRequestSection(snapshot.pull_request)}</div><p class="muted">Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>`;
+  const renderSnapshot = (snapshot) => tabNav() + panel('overview', overviewTab(snapshot), true) + panel('activity', activityTab(snapshot), false) + panel('backlog', backlogTab(snapshot), false) + panel('timeline', timelineTab(snapshot), false) + panel('reports', reportsTab(snapshot), false) + panel('health', healthTab(snapshot), false);
+  const selectedTab = () => { try { const stored = window.localStorage && window.localStorage.getItem(TAB_KEY); return TABS.includes(stored) ? stored : 'overview'; } catch (error) { return 'overview'; } };
+  const switchTab = (tab) => {
+    const selected = TABS.includes(tab) ? tab : 'overview';
+    content.querySelectorAll('[data-tab]').forEach((button) => button.setAttribute('aria-selected', String(button.dataset.tab === selected)));
+    content.querySelectorAll('[data-tab-panel]').forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== selected; });
+    try { window.localStorage && window.localStorage.setItem(TAB_KEY, selected); } catch (error) {}
   };
+  const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); };
+  const setWarning = (message) => { warning.textContent = message; warning.style.display = message ? 'block' : 'none'; };
   const refreshDashboard = async () => {
     try {
       const previousX = window.scrollX;
       const previousY = window.scrollY;
+      const activeTab = selectedTab();
       const response = await fetch(SNAPSHOT_URL, {method: 'GET', headers: {'Accept': 'application/json'}, cache: 'no-store'});
       if (!response.ok) { throw new Error('snapshot request failed: ' + response.status); }
       const snapshot = await response.json();
       content.innerHTML = renderSnapshot(snapshot);
+      switchTab(activeTab);
+      bindTabs();
       window.scrollTo(previousX, previousY);
       setWarning('');
     } catch (error) {
       setWarning('Dashboard update failed; showing the last known snapshot. Retrying every 15 seconds.');
     }
   };
-  window.engineeringDashboard = {refreshDashboard, renderSnapshot, POLL_INTERVAL_MS, SNAPSHOT_URL};
+  content.addEventListener('click', (event) => { const button = event.target.closest && event.target.closest('[data-tab]'); if (button && content.contains(button)) { event.preventDefault(); switchTab(button.dataset.tab); } });
+  bindTabs();
+  window.engineeringDashboard = {refreshDashboard, renderSnapshot, switchTab, selectedTab, POLL_INTERVAL_MS, SNAPSHOT_URL};
   window.setInterval(refreshDashboard, POLL_INTERVAL_MS);
 })();
 </script>
