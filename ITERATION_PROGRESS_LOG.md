@@ -1734,3 +1734,14 @@ agent/engplat-002a-project-context-contracts created from current main.
   registry-selected hosted project routing as a v1.1 item.
 - Next action: Open PR for Josh review. After PR merge, Engineering Platform v1
   can be declared complete unless review finds a defect.
+
+## 2026-08-23 15:42 UTC — Dashboard health governance cleanup
+
+- Backlog item/objective: Clean up Engineering Dashboard data-source health issues for `--project-id trading-bot`.
+- Branch: `agent/dashboard-health-governance-cleanup`
+- Commit: `3d6609b66692c6e286a5b9e877d8512cf58b168d`
+- Status: DONE
+- Files changed: `AGENT_BACKLOG.md`, `REPORT.md`, `reports/2026-08-23_154200_dashboard-health-governance-cleanup.md`, `ITERATION_PROGRESS_LOG.md`
+- Tests/backtests run: focused dashboard/query validation `.venv/bin/python -m pytest tests/test_engineering_query_service.py tests/test_dashboard_api_provider.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py -q` → `46 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `774 passed, 81 warnings`; `git diff --check` → PASS; manual snapshot/dashboard checks → PASS with repository_safe=true and only GitHub PR metadata INFO remaining.
+- Decisions/discoveries: Backlog parser failed because inline merge comments were attached to parser-controlled `Status:` enum values. Historical merge evidence was preserved on separate `Merge note:` lines. Duplicate `GOV-001` and `ENGDASH-005` IDs were detected but preserved because they do not currently break parsing and deleting historical sections would be higher risk.
+- Next action: Josh reviews PR. Josh approval is required before merge.
