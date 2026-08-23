@@ -1677,3 +1677,32 @@ agent/engplat-002a-project-context-contracts created from current main.
   - SupervisorDecisionKind enum values unchanged (still correct as Supervisor decisions)
   - Actual workflow engine code unchanged
 - Next action: Josh reviews governance PR; do not merge automatically.
+
+## 2026-08-23T14:30Z — Repository hygiene and platform governance reconciliation
+
+- Elapsed time: approximately 20 minutes.
+- Continuity: Continuous from read-only recovery/status audit.
+- Backlog item/objective: `GOV-001` — classify and preserve untracked artifacts,
+  clean the trading-bot working tree, and reconcile stale engineering-platform
+  governance/status files against merged PRs #43-#51.
+- Branch: `agent/repo-hygiene-governance-reconciliation`
+- Commit: pending final commit at log update time; final report records the pushed commit.
+- Status: REVIEW pending Josh PR review.
+- Files changed: `.gitignore`, `AGENT_BACKLOG.md`, `MENTOR.md`,
+  `ITERATION_PROGRESS_LOG.md`.
+- Tests/backtests: initial focused command had a command error because `tests/test_engineering_backlog.py` does not exist and collected 0 tests; corrected focused platform/dashboard suite passed (`290 passed, 2 warnings`); full safe suite passed (`762 passed, 4 warnings`); `git diff --check` PASS. No backtest applicable.
+- Important decisions/discoveries:
+  - Untracked `AUTONOMOUS_ENGINEERING_HANDOFF.md` was a 10-byte stale generic
+    artifact and was moved to external quarantine.
+  - Untracked `draft-center/` was an accidental preserved fantasy app/runtime
+    tree inside trading-bot, including local runtime/build/dependency content and
+    an `.env`; it was moved to external quarantine without reading or printing
+    secret contents.
+  - Untracked root `node_modules/` was generated dependency content and was moved
+    to external quarantine.
+  - Four untracked repo-local report archives were historical evidence and were
+    moved to the external audit archive.
+  - Current `main` includes merged platform/supervisor work through PR #51:
+    ENGSUP-001 Phase 1/2, ENGPLAT-003B registry/runtime/project-selection/root
+    propagation, and generic npm/vitest QA support.
+- Next action: Push governance PR and stop for Josh review. Do not merge.

@@ -128,3 +128,10 @@ USER.md
 
 # Current rolling agent report (timestamped reports/ archives remain reviewable)
 REPORT.md
+# Node/Next generated dependencies and build artifacts
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Preserved fantasy app split-out/runtime copy must not live in trading-bot
+/draft-center/
