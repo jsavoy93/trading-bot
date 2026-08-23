@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import ast
+import json
+import subprocess
+import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -268,7 +271,7 @@ def test_html_rendering_with_populated_snapshot_escapes_values():
     assert "Testing status" in html
     assert "ENGDASH-002&lt;script&gt;" in html
     assert "Read-only &lt;dashboard&gt;" in html
-    assert "<script>" not in html
+    assert "ENGDASH-002<script>" not in html
 
 
 def test_live_activity_and_recent_execution_html_escapes_values():
@@ -321,7 +324,8 @@ def test_live_activity_and_recent_execution_html_escapes_values():
     assert "ENGDASH-006&lt;script&gt;" in html
     assert "agent/&lt;branch&gt;" in html
     assert "Use &lt;safe&gt; data" in html
-    assert "<script>" not in html
+    assert "ENGDASH-006<script>" not in html
+    assert "run-1<script>" not in html
     assert "<branch>" not in html
 
 
@@ -415,3 +419,166 @@ def test_launch_command_documented_and_no_route_exposes_controls():
     assert "python -m dashboard_api.app --host 127.0.0.1 --port 8010" in docs
     forbidden_controls = ("pause", "resume", "retry", "approve", "merge", "execute")
     assert all(control not in route_text.lower() for control in forbidden_controls)
+
+
+def _dashboard_script(html: str) -> str:
+    start = html.index("<script>")
+    end = html.index("</script>", start) + len("</script>")
+    return html[start:end]
+
+
+def _public_snapshot(snapshot: DashboardSnapshot) -> dict[str, object]:
+    return TestClient(create_app(StaticProvider(snapshot))).get(SNAPSHOT_ROUTE).json()
+
+
+def _run_dashboard_script_case(script: str, body: str) -> None:
+    subprocess.run(
+        ["node", "-e", body],
+        input=script,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_dashboard_shell_uses_client_side_snapshot_polling_instead_of_meta_refresh():
+    html = render_dashboard(populated_snapshot())
+
+    assert "http-equiv='refresh'" not in html
+    assert "<meta http-equiv='refresh'" not in html
+    assert "const SNAPSHOT_URL = '/api/engineering/snapshot';" in html
+    assert "const POLL_INTERVAL_MS = 15000;" in html
+    assert "window.setInterval(refreshDashboard, POLL_INTERVAL_MS);" in html
+    assert "fetch(SNAPSHOT_URL" in html
+    assert "<main id='dashboard-content'>" in html
+    assert "id='update-warning'" in html
+
+
+def test_successful_poll_updates_displayed_values_and_preserves_scroll():
+    initial = populated_snapshot()
+    updated = populated_snapshot(
+        repository=RepositorySummary(
+            root="/repo",
+            branch="agent/smooth-refresh-updated",
+            is_clean=True,
+            dirty_paths=(),
+            sync_state="up_to_date",
+            ahead_count=0,
+            behind_count=0,
+            latest_commit="def456",
+            latest_commit_subject="Updated without reload",
+        ),
+        data_freshness_timestamp="2026-08-23T16:30:00+00:00",
+    )
+    script = _dashboard_script(render_dashboard(initial))
+    snapshot_json = json.dumps(_public_snapshot(updated))
+    body = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let content = {{innerHTML: 'INITIAL SNAPSHOT'}};
+        let warning = {{textContent: '', style: {{display: 'none'}}}};
+        let intervalMs = null;
+        let scrollCalls = [];
+        global.window = {{
+          scrollX: 13,
+          scrollY: 377,
+          setInterval: (fn, ms) => {{ intervalMs = ms; return 1; }},
+          scrollTo: (x, y) => scrollCalls.push([x, y]),
+        }};
+        global.document = {{getElementById: (id) => id === 'dashboard-content' ? content : warning}};
+        global.fetch = async (url, options) => {{
+          assert.strictEqual(url, '/api/engineering/snapshot');
+          assert.strictEqual(options.method, 'GET');
+          return {{ok: true, json: async () => ({snapshot_json})}};
+        }};
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {{
+          assert.strictEqual(intervalMs, 15000);
+          await window.engineeringDashboard.refreshDashboard();
+          assert(content.innerHTML.includes('agent/smooth-refresh-updated'));
+          assert(content.innerHTML.includes('2026-08-23T16:30:00+00:00'));
+          assert.strictEqual(warning.textContent, '');
+          assert.strictEqual(warning.style.display, 'none');
+          assert.deepStrictEqual(scrollCalls, [[13, 377]]);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_failed_poll_preserves_last_known_data_and_shows_bounded_warning():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let content = {innerHTML: 'LAST KNOWN SNAPSHOT'};
+        let warning = {textContent: '', style: {display: 'none'}};
+        global.window = {scrollX: 0, scrollY: 42, setInterval: () => 1, scrollTo: () => {}};
+        global.document = {getElementById: (id) => id === 'dashboard-content' ? content : warning};
+        global.fetch = async () => { throw new Error('network down'); };
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(content.innerHTML, 'LAST KNOWN SNAPSHOT');
+          assert(warning.textContent.includes('showing the last known snapshot'));
+          assert.strictEqual(warning.style.display, 'block');
+          assert(warning.textContent.length < 120);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_poll_warning_clears_after_recovery_and_safe_rendering_is_preserved():
+    recovered = populated_snapshot(
+        backlog=BacklogSummary(
+            active_task_id="SAFE-001<script>",
+            active_task_title="Smooth <refresh>",
+            status="REVIEW",
+            owner="dashboard-agent",
+            priority="P1",
+            counts_by_status={"REVIEW": 1},
+            counts_by_priority={"P1": 1},
+        ),
+        data_freshness_timestamp="2026-08-23T16:45:00+00:00",
+    )
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_json = json.dumps(_public_snapshot(recovered))
+    body = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let content = {{innerHTML: 'LAST GOOD'}};
+        let warning = {{textContent: '', style: {{display: 'none'}}}};
+        let attempts = 0;
+        global.window = {{scrollX: 0, scrollY: 99, setInterval: () => 1, scrollTo: () => {{}}}};
+        global.document = {{getElementById: (id) => id === 'dashboard-content' ? content : warning}};
+        global.fetch = async () => {{
+          attempts += 1;
+          if (attempts === 1) {{ throw new Error('temporary outage'); }}
+          return {{ok: true, json: async () => ({snapshot_json})}};
+        }};
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {{
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(content.innerHTML, 'LAST GOOD');
+          assert.strictEqual(warning.style.display, 'block');
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(warning.textContent, '');
+          assert.strictEqual(warning.style.display, 'none');
+          assert(content.innerHTML.includes('SAFE-001&lt;script&gt;'));
+          assert(content.innerHTML.includes('Smooth &lt;refresh&gt;'));
+          assert(!content.innerHTML.includes('SAFE-001<script>'));
+          assert(!content.innerHTML.includes('Smooth <refresh>'));
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+
+    _run_dashboard_script_case(script, body)

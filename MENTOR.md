@@ -866,8 +866,10 @@ represents the current workflow/delegation/driver-derived activity, and
 `RecentExecutionSummary` represents bounded recent completed, failed, or timed-out
 executions. The existing `/api/engineering/snapshot` payload now carries
 `live_activity` and `recent_executions`; the HTML dashboard renders "Live agent
-activity" and "Recent executions" sections and refreshes via a 15-second meta
-refresh.
+activity" and "Recent executions" sections. The initial `GET /engineering` response
+renders the dashboard shell and current snapshot, then a bounded client-side poll
+updates the visible sections from `GET /api/engineering/snapshot` every 15
+seconds without full-page navigation or reload.
 
 Safety boundary: activity status is derived at read time from existing
 `StoredWorkflow`, `DelegationRecord`, `DriverRecord`, query-service snapshot
