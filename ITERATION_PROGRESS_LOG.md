@@ -1101,7 +1101,7 @@ explicitly.
 - Backlog item/objective: `CONFIG-001` — implement one authoritative typed
   strategy settings schema used by the bot, dashboard, tests, and startup logs.
 - Branch: `agent/trading-config-001-authoritative-strategy-config`.
-- Commit: pending at log-write time; implementation follows governance commit
+- Commit: `final branch commit at PR creation` at log-write time; implementation follows governance commit
   `0ef60a1`.
 - Status: `DONE` implementation, pending commit/push/PR review.
 - Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
@@ -1132,7 +1132,7 @@ explicitly.
 - Backlog item/objective: `CONFIG-001` — address blocking read-only review
   findings on PR #9 without broadening approved scope.
 - Branch: `agent/trading-config-001-authoritative-strategy-config`.
-- Commit: pending at log-write time; previous branch tip was `75cbec9`.
+- Commit: `final branch commit at PR creation` at log-write time; previous branch tip was `75cbec9`.
 - Status: `DONE` implementation fixes, pending commit/push and human rereview.
 - Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
   `dashboard.py`, `tests/test_settings_service.py`, `AGENT_BACKLOG.md`,
@@ -1166,7 +1166,7 @@ explicitly.
   finding on invalid legacy-value warning sanitization and define explicit
   loop-delay input behavior.
 - Branch: `agent/trading-config-001-authoritative-strategy-config`.
-- Commit: pending at log-write time; previous branch tip was `0d9e105`.
+- Commit: `final branch commit at PR creation` at log-write time; previous branch tip was `0d9e105`.
 - Status: `DONE` implementation fixes, pending commit/push and human rereview.
 - Files changed: `src/core/settings_service.py`, `src/core/smart_bot.py`,
   `tests/test_settings_service.py`, `AGENT_BACKLOG.md`, `MENTOR.md`,
@@ -1198,7 +1198,7 @@ explicitly.
 
 - Backlog item/objective: `ENGDASH-002` — final review of PR #11 for Josh's merge decision, including repository/PR state, architecture/security review, route inventory, and verification.
 - Branch: `agent/engdash-002-read-only-api-ui`.
-- Commit: pending at log-write time; previous branch tip was `017a6324e3ff36b0ab782ce2e2e58c49952a9791`.
+- Commit: `final branch commit at PR creation` at log-write time; previous branch tip was `017a6324e3ff36b0ab782ce2e2e58c49952a9791`.
 - Status: `DONE` implementation fix, pending commit/push and human merge decision.
 - Files changed: `dashboard_api/app.py`, `tests/test_dashboard_api_app.py`, `AGENT_BACKLOG.md`, `docs/2026-08-04_232153_ENGDASH-002-implementation-audit.md`, `ITERATION_PROGRESS_LOG.md`, plus required report artifacts.
 - Tests/evidence: route inventory smoke test showed only `/api/engineering/snapshot` GET and `/engineering` GET, with `/openapi.json` returning 404; `git diff --check` passed with no output; `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py` passed `23 passed, 2 warnings in 1.72s`; `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py tests/test_settings_service.py -k 'dashboard or engineering_read_model' tests/test_engineering_query_service.py tests/test_engineering_event_projection.py` passed `33 passed, 33 deselected, 2 warnings in 3.57s`; `git diff --check && .venv/bin/python -m pytest tests` passed `366 passed, 82 warnings in 35.97s`.
@@ -1210,7 +1210,7 @@ explicitly.
 
 - Backlog item/objective: `ENGDASH-003` — wire the separate read-only engineering dashboard app to a real `EngineeringQueryService`-backed provider after PR #11 merged.
 - Branch: `agent/engdash-003-query-service-provider`.
-- Commit: pending at log-write time; base was merged `main` commit `d78c198492309d5d3a0bc19ca66bf3c27c4e4dff`.
+- Commit: `final branch commit at PR creation` at log-write time; base was merged `main` commit `d78c198492309d5d3a0bc19ca66bf3c27c4e4dff`.
 - Status: `DONE` implementation, pending commit/push/PR creation and Josh review.
 - Files changed: `AGENT_BACKLOG.md`, `dashboard_api/__init__.py`, `dashboard_api/app.py`, `dashboard_api/engineering_read_model.py`, `dashboard_api/providers.py`, `docs/ENGDASH-002.md`, `docs/ENGDASH-003.md`, `docs/2026-08-04_235331_ENGDASH-003-implementation-audit.md`, `tests/test_dashboard_api_app.py`, `tests/test_dashboard_api_provider.py`, `ITERATION_PROGRESS_LOG.md`, plus required report artifacts.
 - Tests/evidence: route/startup smoke showed only `/api/engineering/snapshot` GET and `/engineering` GET registered, with `/openapi.json`, `/docs`, and `/redoc` returning 404; `git diff --check && .venv/bin/python -m pytest tests/test_dashboard_api_provider.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py` passed `30 passed, 2 warnings in 2.18s`; `git diff --check && .venv/bin/python -m pytest tests/test_dashboard_api_provider.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py tests/test_settings_service.py -k 'dashboard or engineering_read_model' tests/test_engineering_query_service.py tests/test_engineering_event_projection.py tests/test_engineering_event_store.py tests/test_engineering_workflow_store.py` passed `40 passed, 61 deselected, 2 warnings in 4.15s`; `git diff --check && .venv/bin/python -m pytest tests` passed `373 passed, 83 warnings in 33.96s`.
@@ -1268,7 +1268,7 @@ explicitly.
 - Backlog item/objective: Update the approved roadmap priority order, explicitly
   defer ENGPLAT-003, and create the Engineering Platform Vision document.
 - Branch: `agent/engplat-roadmap-priorities`
-- Commit: pending (governance-only update)
+- Commit: `final branch commit at PR creation` (governance-only update)
 - Status: `DONE` governance-only changes; pending validation, commit, push, PR.
 - Files changed: `AGENT_BACKLOG.md`, `AGENT_OPERATING_PLAN.md`, `MENTOR.md`,
   `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md`, `ENGINEERING_PLATFORM_VISION.md`
@@ -1290,7 +1290,7 @@ explicitly.
 
 - Backlog item/objective: Strengthen ENGINEERING_PLATFORM_VISION.md with new sections; fix MENTOR.md dependency inconsistency; perform read-only governance review.
 - Branch: `agent/engplat-roadmap-priorities`
-- Commit: pending
+- Commit: `final branch commit at PR creation`
 - Status: `DONE` governance-only changes; pending validation, commit, push, PR update.
 - Files changed: `MENTOR.md` (add missing dependency notes), `ENGINEERING_PLATFORM_VISION.md` (major revision: +10KB, new sections for Safety Philosophy, Dashboard Philosophy, Engineering Culture, Platform Architecture, Managed Project Contract, Project Lifecycle, Repository Extraction Strategy, non-executable Future Managed-Project Configuration note), plus this progress log.
 - Tests/backtests run: to be run post-edit.
@@ -1301,7 +1301,7 @@ explicitly.
 
 - Backlog item/objective: ENGPLAT-001 governance remediation — define narrow allowed areas, implementation boundaries, project registration contract, acceptance criteria, test strategy, and risks.
 - Branch: `agent/engplat-roadmap-priorities`
-- Commit: pending
+- Commit: `final branch commit at PR creation`
 - Status: `DONE` governance remediation; pending validation, commit, push, PR update.
 - Files changed: `AGENT_BACKLOG.md` (ENGPLAT-001 governance remediation block added), `MENTOR.md` (project configuration contract architecture note), `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` (same architecture note), plus this progress log.
 - Tests/backtests run: to be run post-edit.
@@ -1312,7 +1312,7 @@ explicitly.
 
 - Backlog item/objective: Design ENGSUP-001 (Automated Engineering Supervisor and Structured Handoff Protocol) as a governance-only backlog entry; insert into roadmap priority order; update all governance documents.
 - Branch: `agent/engplat-roadmap-priorities`
-- Commit: pending
+- Commit: `final branch commit at PR creation`
 - Status: `DONE` governance-only design; pending validation, commit, push, PR update.
 - Files changed: `AGENT_BACKLOG.md` (ENGSUP-001 backlog entry inserted ~25KB; priority order updated to 8 items), `MENTOR.md` (priority order + ENGSUP-001 section + supervisor maturity path), `AGENT_OPERATING_PLAN.md` (priority order + operational constraints), `TRADING_BOT_AUTONOMOUS_ENGINEERING_HANDOFF.md` (priority order + dependency notes + ENGSUP-001 section), `ENGINEERING_PLATFORM_VISION.md` (supervisor future capability + supervisor maturity path table), plus this progress log.
 - Tests/backtests run: to be run post-edit.
@@ -1586,7 +1586,7 @@ agent/engplat-002a-project-context-contracts created from current main.
 
 - Backlog item/objective: ENGPLAT-003A — fix only the three blocking findings from Josh's PR #38 read-only review.
 - Branch: `agent/engplat-003a-bootstrap-implementation`
-- Commit: pending final push at report-write time; final Telegram packet reports pushed head.
+- Commit: `final branch commit at PR creation` final push at report-write time; final Telegram packet reports pushed head.
 - Status: `DONE`
 - Files changed: `engineering/bootstrap.py`, `tests/test_engineering_bootstrap.py`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`, and `reports/2026-08-15_010906_engplat-003a-pr38-blocker-fixes.md`.
 - Tests/backtests: focused bootstrap tests `51 passed, 1 warning`; ProjectConfig/Context regressions `93 passed, 1 warning`; full safe suite `604 passed, 2 warnings`; `git diff --check` PASS. No backtest applicable.
@@ -1598,7 +1598,7 @@ agent/engplat-002a-project-context-contracts created from current main.
 
 - Backlog item/objective: ENGPLAT-003A validation-contract correction.
 - Branch: `agent/engplat-003a-validation-governance`
-- Commit: pending final push at report-write time; final Telegram packet reports pushed commit.
+- Commit: `final branch commit at PR creation` final push at report-write time; final Telegram packet reports pushed commit.
 - Status: `DONE`
 - Files changed: `AGENT_BACKLOG.md`, `REPORT.md`, `ITERATION_PROGRESS_LOG.md`, and `reports/2026-08-15_011822_engplat-003a-validation-contract-governance.md`.
 - Tests/backtests: governance consistency checks PASS; runtime/test file-change audit PASS; `git diff --check` PASS. No backtest applicable.
@@ -1686,7 +1686,7 @@ agent/engplat-002a-project-context-contracts created from current main.
   clean the trading-bot working tree, and reconcile stale engineering-platform
   governance/status files against merged PRs #43-#51.
 - Branch: `agent/repo-hygiene-governance-reconciliation`
-- Commit: pending final commit at log update time; final report records the pushed commit.
+- Commit: `final branch commit at PR creation` final commit at log update time; final report records the pushed commit.
 - Status: REVIEW pending Josh PR review.
 - Files changed: `.gitignore`, `AGENT_BACKLOG.md`, `MENTOR.md`,
   `ITERATION_PROGRESS_LOG.md`.
@@ -1706,3 +1706,31 @@ agent/engplat-002a-project-context-contracts created from current main.
     ENGSUP-001 Phase 1/2, ENGPLAT-003B registry/runtime/project-selection/root
     propagation, and generic npm/vitest QA support.
 - Next action: Push governance PR and stop for Josh review. Do not merge.
+
+## 2026-08-23 14:55–15:05 UTC — ENGDASH-006 live agent activity
+
+- Elapsed time: Approximately 10 minutes.
+- Continuity: Continuous after Josh approved the read-only ENGDASH-006 design.
+- Backlog item/objective: `ENGDASH-006` — implement one bounded read-only
+  dashboard slice for current and recent engineering-agent activity using
+  existing workflow/delegation/driver/event/query/runtime state only.
+- Branch: `agent/engdash-006-live-agent-activity`
+- Commit: `final branch commit at PR creation`
+- Status: `DONE` pending PR review/merge.
+- Files changed: `AGENT_BACKLOG.md`, `MENTOR.md`, `dashboard_api/app.py`,
+  `dashboard_api/engineering_read_model.py`, `engineering/query_service.py`,
+  `tests/test_dashboard_api_app.py`, `tests/test_dashboard_engineering_read_model.py`,
+  `tests/test_engineering_query_service.py`, `reports/2026-08-23_150500_engdash-006-live-agent-activity.md`.
+- Tests/backtests: Focused dashboard/query tests
+  `.venv/bin/python -m pytest tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py tests/test_dashboard_api_provider.py tests/test_engineering_query_service.py tests/test_dashboard_timeline.py -q`
+  passed: `68 passed, 2 warnings`. Full safe suite `.venv/bin/python -m pytest`
+  passed: `774 passed, 81 warnings`. Manual persisted workflow/dashboard
+  exercise passed. `git diff --check` passed. No trading backtest applicable.
+- Decisions/risks: Activity status is derived at read time from existing
+  authoritative workflow/delegation/driver/query/event evidence; no second
+  activity-state store, write controls, process inspection, raw stdout/stderr,
+  prompts, secrets, private reasoning, or trading behavior changes were added.
+  Default dashboard routing still uses `TRADING_BOT_PROJECT`; keep true
+  registry-selected hosted project routing as a v1.1 item.
+- Next action: Open PR for Josh review. After PR merge, Engineering Platform v1
+  can be declared complete unless review finds a defect.

@@ -8,12 +8,14 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from dashboard_api.engineering_read_model import (
+    AgentActivitySummary,
     ApprovalSummary,
     BacklogSummary,
     DashboardSnapshot,
     EngineeringHealthSummary,
     HealthWarning,
     PullRequestSummary,
+    RecentExecutionSummary,
     RepositorySummary,
     TaskStatusSummary,
     TestingSummary,
@@ -93,6 +95,7 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
         [
             "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
             "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+            "<meta http-equiv='refresh' content='15'>",
             "<title>Engineering Dashboard</title>",
             "<style>",
             "body{font-family:system-ui,-apple-system,sans-serif;margin:2rem;background:#0f172a;color:#e2e8f0}",
@@ -115,6 +118,8 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             "</div>",
             _current_tasks_section(snapshot.current_tasks),
             _blockers_section(snapshot.blockers),
+            _live_activity_section(snapshot.live_activity),
+            _recent_executions_section(snapshot.recent_executions),
             _testing_section(snapshot.testing),
             _backlog_section(snapshot.backlog),
             _reports_section(snapshot.recent_reports),
@@ -228,6 +233,54 @@ def _current_tasks_section(tasks: tuple[TaskStatusSummary, ...]) -> str:
 def _blockers_section(blockers: tuple[str, ...]) -> str:
     items = "".join(f"<li>{_html(blocker)}</li>" for blocker in blockers)
     return f"<section><h2>Blockers and approvals needed</h2><ul>{items or '<li>None currently recorded.</li>'}</ul></section>"
+
+
+def _live_activity_section(activity: tuple[AgentActivitySummary, ...]) -> str:
+    rows = []
+    for item in activity:
+        rows.append(
+            "<tr>"
+            f"<td>{_html(item.status)}</td>"
+            f"<td>{_html(item.agent_name)}</td>"
+            f"<td>{_html(item.task_id)} {_html(item.task_title)}</td>"
+            f"<td>{_html(item.phase)}</td>"
+            f"<td><code>{_html(item.branch)}</code></td>"
+            f"<td><code>{_html(item.run_id)}</code></td>"
+            f"<td>{_html(item.started_at)}</td>"
+            f"<td>{_html(item.elapsed_seconds)}</td>"
+            f"<td>{_html(item.latest_activity)}</td>"
+            f"<td>{_html(item.last_completed_action)}</td>"
+            f"<td>{_html(item.blocker)}</td>"
+            f"<td>{_html(item.timeout_state)} / {_html(item.recovery_state)}</td>"
+            "</tr>"
+        )
+    header = (
+        "<tr><th>Status</th><th>Agent</th><th>Task</th><th>Phase</th><th>Branch</th>"
+        "<th>Run ID</th><th>Started</th><th>Elapsed seconds</th><th>Latest activity</th>"
+        "<th>Last completed action</th><th>Blocker</th><th>Timeout / recovery</th></tr>"
+    )
+    body = "".join(rows) or "<tr><td colspan='12'>No active engineering-agent activity.</td></tr>"
+    return f"<section><h2>Live agent activity</h2><table>{header}{body}</table></section>"
+
+
+def _recent_executions_section(executions: tuple[RecentExecutionSummary, ...]) -> str:
+    rows = []
+    for item in executions:
+        rows.append(
+            "<tr>"
+            f"<td>{_html(item.final_status)}</td>"
+            f"<td>{_html(item.agent_name)}</td>"
+            f"<td>{_html(item.task_id)}</td>"
+            f"<td><code>{_html(item.branch)}</code></td>"
+            f"<td><code>{_html(item.run_id)}</code></td>"
+            f"<td>{_html(item.completed_at)}</td>"
+            f"<td>{_html(item.elapsed_seconds)}</td>"
+            f"<td>{_html(item.result_summary)}</td>"
+            "</tr>"
+        )
+    header = "<tr><th>Status</th><th>Agent</th><th>Task</th><th>Branch</th><th>Run ID</th><th>Completed</th><th>Duration seconds</th><th>Result</th></tr>"
+    body = "".join(rows) or "<tr><td colspan='8'>No recent executions.</td></tr>"
+    return f"<section><h2>Recent executions</h2><table>{header}{body}</table></section>"
 
 
 def _testing_section(testing: TestingSummary | None) -> str:

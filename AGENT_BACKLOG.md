@@ -29,7 +29,7 @@ Current priority order:
 6. `ENGPLAT-003A` — Project Bootstrap Planning + Filesystem Creation ✅ DONE
 7. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol, Phase 1/2 ✅ DONE
 8. `ENGPLAT-003B` — Project Registry Persistence / Activation ✅ DONE
-9. `ENGDASH-006` — Live Agent Activity and Execution Visibility ⏭️ NEXT
+9. `ENGDASH-006` — Live Agent Activity and Execution Visibility 🟡 REVIEW
 10. `ENGCTRL-001` — Safe Engineering Control Panel
 11. `CONFIG-002` — Dashboard-to-engine synchronization
 12. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (deferred)
@@ -4023,7 +4023,7 @@ multi-project supervisor work still require separate Josh approval.
 
 ### ENGDASH-006 — Live Agent Activity and Execution Visibility
 
-Status: TODO
+Status: REVIEW
 Owner: dashboard-agent
 Priority: P1
 
@@ -4051,6 +4051,13 @@ Acceptance criteria:
 - Missing or stale activity is clearly labeled.
 - No arbitrary process inspection or shell access is exposed through the UI.
 - The dashboard remains usable when no agent is active.
+
+Implementation note (2026-08-23): PR pending for a read-only normalized
+`AgentActivitySummary` / `RecentExecutionSummary` dashboard slice derived from
+existing workflow, delegation, driver, query-service, event, and persisted
+runtime records. No write controls, trading behavior changes, raw stdout/stderr,
+prompts, secrets, process inspection, or second activity-state store are part of
+this implementation.
 
 ### ENGCTRL-001 — Safe Engineering Control Panel
 

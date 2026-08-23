@@ -9,12 +9,14 @@ from fastapi.testclient import TestClient
 from dashboard_api.app import DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
 from dashboard_api.providers import EngineeringDashboardProviderConfig, create_engineering_dashboard_provider
 from dashboard_api.engineering_read_model import (
+    AgentActivitySummary,
     ApprovalSummary,
     BacklogSummary,
     DashboardSnapshot,
     EngineeringHealthSummary,
     HealthWarning,
     PullRequestSummary,
+    RecentExecutionSummary,
     ReportSummary,
     RepositorySummary,
     TaskStatusSummary,
@@ -193,6 +195,8 @@ def test_snapshot_endpoint_returns_stable_typed_json_shape():
         "current_tasks",
         "blockers",
         "testing",
+        "live_activity",
+        "recent_executions",
     ]
     assert body["project_identity"] == "trading-bot"
     assert body["repository"]["branch"] == "agent/engdash-002-read-only-api-ui"
@@ -200,6 +204,8 @@ def test_snapshot_endpoint_returns_stable_typed_json_shape():
     assert body["engineering_health"]["overall_status"] == "HEALTHY"
     assert body["current_tasks"][0]["assigned_agent"] == "dashboard-agent"
     assert body["testing"]["latest_status"] == "PASS"
+    assert body["live_activity"] == []
+    assert body["recent_executions"] == []
     assert provider.calls == 1
 
 
@@ -246,6 +252,60 @@ def test_html_rendering_with_populated_snapshot_escapes_values():
     assert "ENGDASH-002&lt;script&gt;" in html
     assert "Read-only &lt;dashboard&gt;" in html
     assert "<script>" not in html
+
+
+def test_live_activity_and_recent_execution_html_escapes_values():
+    snapshot = populated_snapshot(
+        live_activity=(
+            AgentActivitySummary(
+                project_id="trading-bot",
+                task_id="ENGDASH-006<script>",
+                task_title="Live <activity>",
+                agent_name="dashboard-agent",
+                agent_role="dashboard-agent",
+                workflow_id="ENGDASH-006:agent/x",
+                run_id="run-1<script>",
+                branch="agent/<branch>",
+                phase="QA",
+                status="testing",
+                started_at="2026-08-23T14:00:00+00:00",
+                updated_at="2026-08-23T14:01:00+00:00",
+                elapsed_seconds=60.0,
+                latest_activity_at="2026-08-23T14:01:00+00:00",
+                latest_activity="Use <safe> data",
+                last_completed_action="QA <completed>",
+                blocker="blocked <reason>",
+                timeout_state="none",
+                recovery_state="continuous",
+                safe_detail="detail <escaped>",
+            ),
+        ),
+        recent_executions=(
+            RecentExecutionSummary(
+                project_id="trading-bot",
+                task_id="ENGDASH-006<script>",
+                agent_name="dashboard-agent",
+                run_id="run-2<script>",
+                branch="agent/<branch>",
+                final_status="completed",
+                started_at="2026-08-23T14:00:00+00:00",
+                completed_at="2026-08-23T14:02:00+00:00",
+                elapsed_seconds=120.0,
+                last_completed_action="Report <generated>",
+                result_summary="ok <safe>",
+            ),
+        ),
+    )
+
+    html = render_dashboard(snapshot)
+
+    assert "Live agent activity" in html
+    assert "Recent executions" in html
+    assert "ENGDASH-006&lt;script&gt;" in html
+    assert "agent/&lt;branch&gt;" in html
+    assert "Use &lt;safe&gt; data" in html
+    assert "<script>" not in html
+    assert "<branch>" not in html
 
 
 def test_html_rendering_with_empty_snapshot_has_degradation_warning_without_detail():
