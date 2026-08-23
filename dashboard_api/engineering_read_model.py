@@ -426,7 +426,11 @@ def _workflow_summary(query_data: Mapping[str, Any], backlog: BacklogSummary) ->
             execution_status=_text(agent.get("status")) if isinstance(agent, Mapping) else None,
             updated_at=_text(agent.get("updated_at")) if isinstance(agent, Mapping) else None,
         )
-    return WorkflowSummary(False, None, None, None, None, gaps[0] if gaps else None, None, None)
+    idle_blocker = next(
+        (gap for gap in gaps if "blocked" in gap.lower() or "gap" in gap.lower() or "missing" in gap.lower()),
+        None,
+    )
+    return WorkflowSummary(False, None, None, None, None, idle_blocker, None, None)
 
 
 def _approval_summary(
@@ -838,10 +842,13 @@ def _engineering_health(
     warnings: list[HealthWarning],
     blockers: tuple[str, ...],
 ) -> EngineeringHealthSummary:
-    degraded_sources = tuple(sorted({warning.source for warning in warnings}))
+    degraded_warnings = tuple(
+        warning for warning in warnings if warning.severity != "INFO"
+    )
+    degraded_sources = tuple(sorted({warning.source for warning in degraded_warnings}))
     if any(warning.severity == "ERROR" for warning in warnings):
         status = "ERROR"
-    elif blockers or warnings or repository.is_clean is False or (latest_test and latest_test.exit_code not in (None, 0)):
+    elif blockers or degraded_warnings or repository.is_clean is False or (latest_test and latest_test.exit_code not in (None, 0)):
         status = "DEGRADED"
     else:
         status = "HEALTHY"

@@ -1745,3 +1745,14 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests/backtests run: focused dashboard/query validation `.venv/bin/python -m pytest tests/test_engineering_query_service.py tests/test_dashboard_api_provider.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_app.py -q` → `46 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `774 passed, 81 warnings`; `git diff --check` → PASS; manual snapshot/dashboard checks → PASS with repository_safe=true and only GitHub PR metadata INFO remaining.
 - Decisions/discoveries: Backlog parser failed because inline merge comments were attached to parser-controlled `Status:` enum values. Historical merge evidence was preserved on separate `Merge note:` lines. Duplicate `GOV-001` and `ENGDASH-005` IDs were detected but preserved because they do not currently break parsing and deleting historical sections would be higher risk.
 - Next action: Josh reviews PR. Josh approval is required before merge.
+
+## 2026-08-23 15:58 UTC — Dashboard health severity classification
+
+- Backlog item/objective: Fix Engineering Dashboard health severity classification for `--project-id trading-bot`.
+- Branch: `agent/dashboard-health-severity-classification`
+- Commit: pending
+- Status: IN_PROGRESS
+- Files changed: `dashboard_api/engineering_read_model.py`, `tests/test_dashboard_engineering_read_model.py`, `tests/test_dashboard_api_app.py`, `REPORT.md`, `reports/2026-08-23_155859_dashboard-health-severity-classification.md`, `ITERATION_PROGRESS_LOG.md`
+- Tests/backtests run: focused dashboard health/read-model/provider tests → `48 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `779 passed, 80 warnings`; `git diff --check` → PASS.
+- Decisions/discoveries: `_engineering_health()` treated all warnings as degrading, including INFO-only optional GitHub PR metadata. Fix keeps INFO visible while excluding it from degradation sources/status downgrade. Manual verification also exposed that idle `No active workflow is recorded.` was being treated as a blocker; `_workflow_summary()` now treats only blocked/gap/missing idle gaps as blockers. WARNING, ERROR, repository unsafe, query-service failures, blockers, and failed tests still degrade/error according to existing architecture.
+- Next action: commit, run clean-branch manual snapshot verification, push branch, and open PR for Josh review. Josh approval is required before merge.
