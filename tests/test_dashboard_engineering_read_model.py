@@ -213,13 +213,16 @@ def test_no_active_workflow_degrades_cleanly():
             agent_run=None,
             tests=None,
             remaining_gaps=["No active workflow is recorded."],
+            timeline=[],
         )
     ).snapshot()
 
     assert snapshot.workflow.active is False
     assert snapshot.workflow.stage is None
+    assert snapshot.workflow.blocker is None
     assert snapshot.backlog.active_task_id is None
     assert snapshot.latest_test_result is None
+    assert snapshot.engineering_health.overall_status == "HEALTHY"
 
 
 def test_active_workflow_with_blocker_is_exposed():
@@ -288,12 +291,62 @@ def test_limited_events_and_reports(tmp_path: Path):
     assert len(snapshot.recent_reports) == 5
 
 
-def test_missing_github_metadata_is_warning_not_failure():
-    snapshot = build_model(pr_reader=EmptyPullRequestMetadataReader()).snapshot()
+def test_missing_github_metadata_is_info_and_does_not_degrade_health():
+    snapshot = build_model(base_payload(timeline=[]), pr_reader=EmptyPullRequestMetadataReader()).snapshot()
 
     assert snapshot.pull_request is not None
     assert snapshot.pull_request.available is False
-    assert any(warning.source == "github" for warning in snapshot.health_warnings)
+    assert snapshot.engineering_health.overall_status == "HEALTHY"
+    assert snapshot.engineering_health.degraded_sources == ()
+    assert any(
+        warning.source == "github" and warning.severity == "INFO"
+        for warning in snapshot.health_warnings
+    )
+
+
+def test_no_warnings_produces_healthy_status():
+    snapshot = build_model(base_payload(timeline=[]), pr_reader=StaticPrReader()).snapshot()
+
+    assert snapshot.health_warnings == ()
+    assert snapshot.engineering_health.overall_status == "HEALTHY"
+    assert snapshot.engineering_health.degraded_sources == ()
+
+
+def test_warning_severity_degrades_health():
+    snapshot = build_model(repo=repository(False, ("changed.py",))).snapshot()
+
+    assert any(
+        warning.source == "repository" and warning.severity == "WARNING"
+        for warning in snapshot.health_warnings
+    )
+    assert snapshot.engineering_health.overall_status == "DEGRADED"
+    assert "repository" in snapshot.engineering_health.degraded_sources
+
+
+def test_repository_unsafe_still_degrades_health():
+    snapshot = build_model(repo=repository(False, ("changed.py",)), pr_reader=StaticPrReader()).snapshot()
+
+    assert snapshot.repository.is_clean is False
+    assert snapshot.engineering_health.repository_safe is False
+    assert snapshot.engineering_health.overall_status == "DEGRADED"
+
+
+def test_query_service_failure_still_degrades_health():
+    model = EngineeringDashboardReadModel(
+        query_service=FailingQueryService(),
+        repository_reader=StaticRepositorySummaryReader(repository()),
+        pr_reader=StaticPrReader(),
+        clock=fixed_clock,
+    )
+
+    snapshot = model.snapshot()
+
+    assert any(
+        warning.source == "query_service" and warning.severity == "WARNING"
+        for warning in snapshot.health_warnings
+    )
+    assert snapshot.engineering_health.overall_status == "DEGRADED"
+    assert "query_service" in snapshot.engineering_health.degraded_sources
 
 
 def test_partial_source_failure_converts_to_warning():

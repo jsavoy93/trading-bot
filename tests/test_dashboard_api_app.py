@@ -229,6 +229,23 @@ def test_missing_pr_metadata_is_rendered_as_unavailable():
     assert "No" in response.text
 
 
+def test_info_warning_remains_visible_when_overall_status_is_healthy():
+    snapshot = populated_snapshot(
+        health_warnings=(HealthWarning("github", "INFO", "Pull-request metadata is unavailable.", None),)
+    )
+
+    json_response = TestClient(create_app(StaticProvider(snapshot))).get(SNAPSHOT_ROUTE)
+    html_response = TestClient(create_app(StaticProvider(snapshot))).get(DASHBOARD_ROUTE)
+
+    assert json_response.status_code == 200
+    assert json_response.json()["engineering_health"]["overall_status"] == "HEALTHY"
+    assert json_response.json()["health_warnings"][0]["severity"] == "INFO"
+    assert html_response.status_code == 200
+    assert "Healthy" in html_response.text
+    assert "github" in html_response.text
+    assert "Pull-request metadata is unavailable." in html_response.text
+
+
 def test_html_rendering_with_populated_snapshot_escapes_values():
     snapshot = populated_snapshot(
         backlog=BacklogSummary(
