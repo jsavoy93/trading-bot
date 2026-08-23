@@ -246,7 +246,7 @@ def test_timeline_html_escaping() -> None:
     assert "ENGDASH-005&amp;bad" in html
     assert "&lt;safe&gt; &amp; escaped text" in html
     assert "<safe>" not in html
-    assert "<script>" not in html
+    assert "workflow.transition<script>" not in html
 
 
 def test_timeline_out_of_order_occurred_at(tmp_path: Path) -> None:

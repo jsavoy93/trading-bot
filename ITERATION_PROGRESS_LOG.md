@@ -623,7 +623,7 @@ explicitly.
 - Starting HEAD: `94260b985a19dd70498f87dbef36296d72208719`
 - Status: `DONE`
 - Files changed in this resumed iteration: `AGENT_BACKLOG.md`,
-  `ITERATION_PROGRESS_LOG.md`, `REPORT.md`, and the timestamped report archive.
+  `ITERATION_PROGRESS_LOG.md`, and the timestamped report archive.
 - Focused tests: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest
   tests/test_engineering_codex_cli_wrapper.py -q` passed `13 passed, 1 warning
   in 5.17s`.
@@ -1756,3 +1756,14 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests/backtests run: focused dashboard health/read-model/provider tests → `48 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `779 passed, 80 warnings`; `git diff --check` → PASS.
 - Decisions/discoveries: `_engineering_health()` treated all warnings as degrading, including INFO-only optional GitHub PR metadata. Fix keeps INFO visible while excluding it from degradation sources/status downgrade. Manual verification also exposed that idle `No active workflow is recorded.` was being treated as a blocker; `_workflow_summary()` now treats only blocked/gap/missing idle gaps as blockers. WARNING, ERROR, repository unsafe, query-service failures, blockers, and failed tests still degrade/error according to existing architecture.
 - Next action: commit, run clean-branch manual snapshot verification, push branch, and open PR for Josh review. Josh approval is required before merge.
+
+## 2026-08-23 16:19 UTC — Engineering Dashboard smooth refresh
+
+- Backlog item/objective: Engineering Dashboard smooth-refresh improvement for `--project-id trading-bot`; replace full-page 15-second meta refresh with bounded read-only in-place snapshot polling.
+- Branch: `agent/dashboard-smooth-refresh`
+- Commit: pending final commit at PR creation
+- Status: DONE pending Josh PR review/merge
+- Files changed: `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`, `dashboard_api/app.py`, `tests/test_dashboard_api_app.py`, `tests/test_dashboard_timeline.py`, `REPORT.md`, `reports/2026-08-23_161900_dashboard-smooth-refresh.md`
+- Tests/backtests run: focused dashboard tests `.venv/bin/python -m pytest tests/test_dashboard_api_app.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_provider.py tests/test_dashboard_timeline.py -q` → `74 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `783 passed, 86 warnings`; `git diff --check` → PASS; manual local ASGI/browser-harness verification → PASS, with actual mobile Safari/Termius device unavailable in this environment.
+- Decisions/discoveries: Current `/engineering` rendered all dashboard sections server-side and used `<meta http-equiv='refresh' content='15'>`, causing full-page reload/flicker despite healthy backend latency. The bounded fix keeps the initial shell/server-rendered snapshot, uses existing `/api/engineering/snapshot` as the single refresh source, preserves scroll position during DOM replacement, keeps last-known content on polling failure, and shows a small bounded stale warning until recovery. No WebSockets, server push, write controls, trading logic changes, workflow semantic changes, process inspection, raw stdout/stderr, prompts, secrets, or caching were added.
+- Next action: run full validation, manual smooth-refresh checks, commit, push, and open PR for Josh review. Josh approval is required before merge.
