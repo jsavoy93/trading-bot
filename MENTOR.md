@@ -819,7 +819,7 @@ sequence. DASH-007, OPS-016, and CONFIG-001 remain unstarted.
 
 ENGDASH-004 is merged through PR #13 at merge commit
 `31f455fb04a6ffff7adbec2bfbf743bc4b1ac1ed`. The next approved
-engineering-platform priority order (revised to reflect merged state) is:
+engineering-platform priority order (reconciled to current `main` `cb30809`) is:
 
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration ✅ DONE
 2. `ENGPLAT-002A` — ProjectContext Contracts and Composition Boundary ✅ DONE
@@ -828,14 +828,14 @@ engineering-platform priority order (revised to reflect merged state) is:
 5. `ENGPLAT-002C1` — Git Adapter Implementation (Slice 1 of ENGPLAT-002C) ✅ DONE
 6. `ENGPLAT-002C2` — QAAdapter Implementation (Slice 2 of ENGPLAT-002C) ✅ DONE
 7. `ENGPLAT-002C3` — FileReadAdapter Implementation (Slice 3 of ENGPLAT-002C) ✅ DONE
-8. `ENGPLAT-003A` — Project Bootstrap Planning + Filesystem Creation ✅ DONE
-9. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
-   (design merged PRs #20–#23; Phase 1 implementation not started)
-10. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-11. `ENGCTRL-001` — Safe Engineering Control Panel
-12. `CONFIG-002` — Dashboard-to-engine synchronization
-13. `ENGPLAT-003B` — Project Registry Persistence / Activation (deferred after 003A)
-14. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
+8. `ENGPLAT-002C Generic QA` — npm/vitest-safe QA execution ✅ DONE
+9. `ENGPLAT-003A` — Project Bootstrap Planning + Filesystem Creation ✅ DONE
+10. `ENGSUP-001` — Automated Engineering Supervisor Phase 1/2 ✅ DONE
+11. `ENGPLAT-003B` — Project Registry Persistence / Activation ✅ DONE
+12. `ENGDASH-006` — Live Agent Activity and Execution Visibility ⏭️ NEXT
+13. `ENGCTRL-001` — Safe Engineering Control Panel
+14. `CONFIG-002` — Dashboard-to-engine synchronization
+15. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
 
 Important constraints:
 
@@ -844,16 +844,13 @@ Important constraints:
   project boundary from `ENGPLAT-001` where practical.
 - `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002C`; Phase 1 (prompt
   generation) begins after adapters are proven; auto-dispatch requires separate
-  Phase 2 approval. ENGPLAT-002C (all slices) is now merged; Phase 1
-  prerequisites are satisfied; implementation may begin.
-- `ENGDASH-006` depends on `ENGDASH-004` and must avoid a competing
-  workflow-state model.
+  Phase 2 approval. ENGPLAT-002C is merged; ENGSUP-001 Phase 1 and Phase 2 are merged through PRs #43-#46, with auto-dispatch disabled by default.
+- `ENGDASH-006` is the next platform task after this reconciliation; it depends on `ENGDASH-004` and must avoid a competing workflow-state model.
 - `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`
   and `ENGDASH-006`, and requires separate Josh approval after read-only design
   review.
-- `ENGPLAT-003` extraction is only a deferred placeholder; do not start
-  extraction until configuration and adapter boundaries have been proven in
-  normal use and Josh approves separate cross-repository planning.
+- `ENGPLAT-003B` is complete through PRs #47, #49, #50, and #51. Bootstrap still has no authorized CLI or registry mutation command.
+- `ENGPLAT-004` extraction remains deferred; do not start extraction until configuration and adapter boundaries have been proven in normal use and Josh approves separate cross-repository planning.
 - `CONFIG-002` stays queued behind the platform work unless Josh changes the
   priority.
 - New roadmap tasks are non-executable until each receives narrow allowed areas
@@ -1041,9 +1038,9 @@ Key design elements:
 - **Privacy**: supervisor does not expose chain-of-thought; note capped at
   5 sentences; evidence blobs sanitized and truncated at 50 lines.
 
-- **Phased implementation**: Phase 1 (prompt generation, Josh manual dispatch),
-  Phase 2 (routine auto-dispatch), Phase 3 (dashboard approval inbox),
-  Phase 4 (multi-project supervisor).
+- **Phased implementation**: Phase 1 (prompt generation / typed supervisor) and
+  Phase 2 (routine auto-dispatcher with default kill switch) are merged. Phase 3
+  dashboard approval inbox and Phase 4 multi-project supervisor remain future work.
 
 See `AGENT_BACKLOG.md` ENGSUP-001 for the full backlog entry including schemas,
 matrices, acceptance criteria, planned tests, and risks.
@@ -1076,5 +1073,4 @@ Important boundaries:
   overwrite/force behavior, Git initialization, reports directory creation,
   `.agent-state`, `.gitignore`, `pyproject.toml`, `pytest.ini`, or QA execution.
 
-ENGPLAT-003B remains required before the manager can persist/register/activate
-new projects or route agents to them.
+ENGPLAT-003B is now complete for registry loading, project activation, runtime directory initialization, manager `--project-id` selection, and repository-root propagation. Bootstrap still has no authorized CLI or registry mutation/update command.

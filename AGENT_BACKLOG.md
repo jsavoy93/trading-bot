@@ -12,27 +12,27 @@ Agents may work only on items listed here or explicitly approved by Josh.
 
 ---
 
-## Approved Engineering Platform Priority Order (Revised 2026-08-06)
+## Approved Engineering Platform Priority Order (Reconciled 2026-08-23)
 
-ENGPLAT-001 (ProjectConfig contract) is complete and merged. The typed project
-configuration contract exists but is not yet consumed by any engineering service.
-The platform has the vocabulary but not yet the grammar of project-agnostic design.
+Repository history through current `main` (`cb30809`, PR #51) is authoritative.
+The platform now has project configuration, ProjectContext/adapters, timeline,
+supervisor Phase 1/2, persistent registry loading, generic QA, runtime directory
+initialization, manager `--project-id` selection, and repository-root propagation.
 
-Josh approved the revised engineering-platform priorities on 2026-08-06.
-
-Priority order:
+Current priority order:
 
 1. `ENGPLAT-001` — Project Registration and Managed-Project Configuration ✅ DONE
-2. `ENGPLAT-002A` — ProjectContext Contracts and Composition Boundary
-3. `ENGPLAT-002B` — Local Read Adapters and Manager Integration
-4. `ENGDASH-005` — Engineering Timeline and Historical Activity
-5. `ENGPLAT-002C` — Remaining Adapters and Service Migration
-6. `ENGPLAT-003` — Project Bootstrap
-7. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol
-8. `ENGDASH-006` — Live Agent Activity and Execution Visibility
-9. `ENGCTRL-001` — Safe Engineering Control Panel
-10. `CONFIG-002` — Dashboard-to-engine synchronization
-11. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (deferred)
+2. `ENGPLAT-002A` — ProjectContext Contracts and Composition Boundary ✅ DONE
+3. `ENGPLAT-002B` — Local Read Adapters and Manager Integration ✅ DONE
+4. `ENGDASH-005` — Engineering Timeline and Historical Activity ✅ DONE
+5. `ENGPLAT-002C` — Remaining Adapters and Service Migration ✅ DONE
+6. `ENGPLAT-003A` — Project Bootstrap Planning + Filesystem Creation ✅ DONE
+7. `ENGSUP-001` — Automated Engineering Supervisor and Structured Handoff Protocol, Phase 1/2 ✅ DONE
+8. `ENGPLAT-003B` — Project Registry Persistence / Activation ✅ DONE
+9. `ENGDASH-006` — Live Agent Activity and Execution Visibility ⏭️ NEXT
+10. `ENGCTRL-001` — Safe Engineering Control Panel
+11. `CONFIG-002` — Dashboard-to-engine synchronization
+12. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (deferred)
 
 **Rationale for ordering:**
 
@@ -67,6 +67,28 @@ Roadmap constraints:
 ---
 
 ## Phase O — Governance
+
+### GOV-001 — Repository hygiene and platform status reconciliation
+
+Status: REVIEW
+Owner: trading-manager
+Priority: P1
+
+Purpose:
+
+Reconcile the trading-bot repository working tree and governance files after the
+fantasy project was split out and platform PRs #43-#51 merged. This is a
+documentation/status-only task; it must not change runtime code, trading
+strategy, engineering behavior, or project registry content.
+
+Acceptance criteria:
+
+- Classify and preserve/dispose of untracked `AUTONOMOUS_ENGINEERING_HANDOFF.md`,
+  `draft-center/`, `node_modules/`, and four repo-local report archives.
+- Restore a clean working tree except for the focused governance diff.
+- Update stale engineering-platform statuses to match current `main` history.
+- Keep all behavior/code paths unchanged.
+- Governance/platform tests and full safe suite pass.
 
 ### OPS-017 — Add bounded OPS-015 launcher and manual smoke setup
 
@@ -2014,9 +2036,16 @@ New behavioral tests in `tests/test_dashboard_timeline.py`:
 
 ### ENGPLAT-002C — Remaining Adapters and Service Migration
 
-Status: TODO
+Status: DONE
 Owner: trading-manager
 Priority: P1
+
+Completion evidence:
+
+- PR #32 (`c866a8c`) completed GitAdapterImpl integration.
+- PR #34 (`c4fd1b8`) completed QAAdapterImpl configuration integration.
+- PR #36 (`8d8d0c0`) completed FileReadAdapterImpl.
+- PR #48 (`d7843cd`) completed generic QA execution support for Python/pytest and npm/vitest commands without project-ID special casing.
 
 Depends on: ENGPLAT-002B
 
@@ -2567,7 +2596,7 @@ extraction-cleanliness criteria remain separate.
 
 ### ENGPLAT-003 — Project Bootstrap
 
-Status: TODO
+Status: DONE
 Owner: trading-manager
 Priority: P1
 
@@ -2584,9 +2613,9 @@ ENGPLAT-003 is split into two separately governed implementation slices:
 - **ENGPLAT-003A — Project Bootstrap Planning + Filesystem Creation**
 - **ENGPLAT-003B — Project Registry Persistence / Activation**
 
-ENGPLAT-003A is the only slice authorized by this section. ENGPLAT-003B remains
-unimplemented and requires separate design governance before any registry or
-activation work begins.
+ENGPLAT-003A was the only slice authorized by the original 003A section.
+ENGPLAT-003B later received separate governance and is now complete through
+PRs #47, #49, #50, and #51.
 
 ### ENGPLAT-003A — Project Bootstrap Planning + Filesystem Creation
 
@@ -3005,29 +3034,22 @@ Do not implement:
 
 ### ENGPLAT-003B — Project Registry Persistence / Activation
 
-Status: TODO
+Status: DONE
 Owner: trading-manager
 Priority: P1
 
-Note: ENGPLAT-003A bootstrap is complete. ENGPLAT-003B registry persistence is separate future work.
+Note: ENGPLAT-003B is complete through merged PRs #47, #49, #50, and #51. Registry persistence/loading, runtime activation, manager project selection, and repository-root propagation are implemented and covered by tests.
 
 Depends on: ENGPLAT-003A
 
-ENGPLAT-003B is a separate future design and implementation slice. It owns the
-registry persistence and project activation questions intentionally excluded
-from ENGPLAT-003A.
+Completed evidence:
 
-Before ENGPLAT-003B implementation, governance must decide:
+- PR #47 (`511a6d9`) added the persistent project registry loader at `~/.openclaw/engineering-registry.json` with duplicate-ID and structural validation.
+- PR #49 (`35bb19c`) added generic runtime directory initialization for project workflow/event/report paths.
+- PR #50 (`68e7402`) added manager `--project-id` selection from the registry and fail-closed activation.
+- PR #51 (`cb30809`) propagated `repository_root` through the workflow chain.
 
-- registry persistence format
-- authoritative registry path
-- parser/serializer contract
-- duplicate project-ID handling across persisted state
-- activation/loading mechanism
-- migration behavior from existing single-project `TRADING_BOT_PROJECT`
-
-No ENGPLAT-003A implementation may create registry persistence or activation as
-an incidental side effect.
+Remaining limitation: bootstrap remains a library API, not an authorized CLI; registry mutation/update commands are not implemented.
 
 ### ENGDASH-005 stale-status remediation
 
@@ -3067,13 +3089,15 @@ Acceptance criteria:
 
 ### ENGSUP-001 — Automated Engineering Supervisor and Structured Handoff Protocol
 
-Status: TODO
+Status: DONE
 Owner: trading-manager
 Priority: P1
 
 Depends on: ENGPLAT-001, ENGPLAT-002C
 
-Phase: 1 of 3
+Phase: Phase 1/2 merged; future dashboard approval inbox and multi-project supervisor remain separate future roadmap work.
+
+Completion evidence (2026-08-16): PR #43 implemented Phase 1 typed supervisor; PR #44 clarified REVIEW/REPORT/merge-approval semantics; PR #45 aligned decision kinds with Phase 2 design; PR #46 implemented the Phase 2 auto-dispatcher with the default kill switch preserving human gates.
 
 Purpose:
 
@@ -3988,17 +4012,13 @@ Individual phases have their own entry criteria.
 
 ---
 
-### Execution Gate (Repeat)
+### Execution Gate Status
 
-ENGSUP-001 remains non-executable until:
-
-1. Josh approves this design and the roadmap placement.
-2. A feature branch is created for the implementation.
-3. The implementation plan includes exactly the files listed in the Allowed Areas for the current phase.
-4. Josh explicitly approves the Phase 1 implementation plan.
-5. Separate Josh approval is obtained before Phase 2 auto-dispatch begins.
-
-No automatic dispatch begins without explicit Phase 2 approval.
+This original ENGSUP-001 gate has been satisfied for Phase 1 and Phase 2:
+PR #43 implemented Phase 1, PR #45 aligned Phase 2 decision kinds, and PR #46
+implemented the Phase 2 auto-dispatcher. Automatic dispatch remains disabled by
+default and governed by the kill switch; future dashboard approval inbox and
+multi-project supervisor work still require separate Josh approval.
 
 
 ### ENGDASH-006 — Live Agent Activity and Execution Visibility
