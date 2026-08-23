@@ -72,6 +72,45 @@ class TaskStatusSummary:
 
 
 @dataclass(frozen=True)
+class AgentActivitySummary:
+    project_id: str
+    task_id: str | None
+    task_title: str | None
+    agent_name: str | None
+    agent_role: str | None
+    workflow_id: str | None
+    run_id: str | None
+    branch: str | None
+    phase: str | None
+    status: str
+    started_at: str | None
+    updated_at: str | None
+    elapsed_seconds: float | None
+    latest_activity_at: str | None
+    latest_activity: str | None
+    last_completed_action: str | None
+    blocker: str | None
+    timeout_state: str
+    recovery_state: str
+    safe_detail: str | None
+
+
+@dataclass(frozen=True)
+class RecentExecutionSummary:
+    project_id: str
+    task_id: str | None
+    agent_name: str | None
+    run_id: str | None
+    branch: str | None
+    final_status: str
+    started_at: str | None
+    completed_at: str | None
+    elapsed_seconds: float | None
+    last_completed_action: str | None
+    result_summary: str | None
+
+
+@dataclass(frozen=True)
 class ApprovalSummary:
     pending: bool
     reason: str | None
@@ -152,6 +191,8 @@ class DashboardSnapshot:
     current_tasks: tuple[TaskStatusSummary, ...] = ()
     blockers: tuple[str, ...] = ()
     testing: TestingSummary | None = None
+    live_activity: tuple[AgentActivitySummary, ...] = ()
+    recent_executions: tuple[RecentExecutionSummary, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return _to_plain(self)
@@ -280,6 +321,13 @@ class EngineeringDashboardReadModel:
         current_tasks = _current_tasks(query_data, backlog, workflow, blockers)
         testing = _testing_summary(latest_test, recent_reports)
         engineering_health = _engineering_health(repository, latest_test, warnings, blockers)
+        live_activity = _live_activity(
+            query_data, backlog, workflow, blockers, recent_events,
+            project_id=self.project_identity, now=self.clock(),
+        )
+        recent_executions = _recent_executions(
+            query_data, workflow, recent_events, project_id=self.project_identity, now=self.clock()
+        )
 
         return DashboardSnapshot(
             project_identity=self.project_identity,
@@ -298,6 +346,8 @@ class EngineeringDashboardReadModel:
             current_tasks=current_tasks,
             blockers=blockers,
             testing=testing,
+            live_activity=live_activity,
+            recent_executions=recent_executions,
             data_freshness_timestamp=freshness,
         )
 
@@ -441,6 +491,285 @@ def _latest_execution_result(
     if latest_test is not None and latest_test.exit_code is not None:
         return f"tests exit={latest_test.exit_code}"
     return workflow.execution_status
+
+
+def _live_activity(
+    query_data: Mapping[str, Any],
+    backlog: BacklogSummary,
+    workflow: WorkflowSummary,
+    blockers: tuple[str, ...],
+    events: tuple[Mapping[str, Any], ...],
+    *,
+    project_id: str,
+    now: datetime,
+) -> tuple[AgentActivitySummary, ...]:
+    task = query_data.get("current_task")
+    if not isinstance(task, Mapping):
+        return ()
+    agent = query_data.get("agent_run")
+    driver = query_data.get("driver")
+    phase = workflow.stage or _text(task.get("state"))
+    status = _activity_status(phase, agent, driver, workflow.blocker, blockers)
+    started_at = (
+        _text(agent.get("started_at")) if isinstance(agent, Mapping) else
+        _text(driver.get("started_at")) if isinstance(driver, Mapping) else None
+    )
+    updated_at = (
+        _text(agent.get("updated_at")) if isinstance(agent, Mapping) and _text(agent.get("updated_at")) else
+        _text(driver.get("updated_at")) if isinstance(driver, Mapping) else workflow.updated_at
+    )
+    latest_event = _latest_event(events)
+    latest_activity_at = _text(latest_event.get("occurred_at")) if latest_event else updated_at
+    latest_activity = _event_label(latest_event) if latest_event else _phase_activity(phase, status)
+    last_completed = _last_completed_action(query_data, events, phase, status)
+    blocker = blockers[0] if blockers else _driver_stop_reason(driver)
+    deadline_at = _text(agent.get("deadline_at")) if isinstance(agent, Mapping) else None
+    safe_detail = _safe_activity_detail(agent, driver, workflow, latest_activity)
+    return (
+        AgentActivitySummary(
+            project_id=project_id,
+            task_id=_text(task.get("id")) or backlog.active_task_id,
+            task_title=_text(task.get("title")) or backlog.active_task_title,
+            agent_name=_text(agent.get("agent_name")) if isinstance(agent, Mapping) else workflow.owner_agent,
+            agent_role=workflow.owner_agent or backlog.owner,
+            workflow_id=_workflow_id(_text(task.get("id")) or backlog.active_task_id, workflow.feature_branch),
+            run_id=_text(agent.get("run_id")) if isinstance(agent, Mapping) else None,
+            branch=workflow.feature_branch,
+            phase=phase,
+            status=status,
+            started_at=started_at,
+            updated_at=updated_at,
+            elapsed_seconds=_elapsed_seconds(started_at, updated_at, now, agent),
+            latest_activity_at=latest_activity_at,
+            latest_activity=latest_activity,
+            last_completed_action=last_completed,
+            blocker=_bounded_text(blocker),
+            timeout_state=_timeout_state(agent, deadline_at, now),
+            recovery_state=_recovery_state(driver, agent),
+            safe_detail=safe_detail,
+        ),
+    )
+
+
+def _recent_executions(
+    query_data: Mapping[str, Any],
+    workflow: WorkflowSummary,
+    events: tuple[Mapping[str, Any], ...],
+    *,
+    project_id: str,
+    now: datetime,
+    limit: int = 10,
+) -> tuple[RecentExecutionSummary, ...]:
+    executions: list[RecentExecutionSummary] = []
+    agent = query_data.get("agent_run")
+    task = query_data.get("current_task")
+    if isinstance(agent, Mapping):
+        status = _text(agent.get("status"))
+        if status in {"COMPLETE", "FAILED", "TIMED_OUT"}:
+            started_at = _text(agent.get("started_at"))
+            completed_at = _text(agent.get("completed_at")) or _text(agent.get("updated_at"))
+            executions.append(
+                RecentExecutionSummary(
+                    project_id=project_id,
+                    task_id=workflow.task_id or (_text(task.get("id")) if isinstance(task, Mapping) else None),
+                    agent_name=_text(agent.get("agent_name")),
+                    run_id=_text(agent.get("run_id")),
+                    branch=workflow.feature_branch,
+                    final_status=_status_to_activity(status),
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    elapsed_seconds=_elapsed_seconds(started_at, completed_at, now, agent),
+                    last_completed_action=_last_completed_action(query_data, events, workflow.stage, _status_to_activity(status)),
+                    result_summary=_execution_result_summary(agent),
+                )
+            )
+    seen = {item.run_id for item in executions if item.run_id}
+    for event in sorted(events, key=lambda item: str(item.get("occurred_at") or ""), reverse=True):
+        event_type = _text(event.get("type")) or _text(event.get("event_type"))
+        if event_type not in {"task.completed", "task.failed", "delegation.status"}:
+            continue
+        run_id = _text(event.get("run_id"))
+        if run_id and run_id in seen:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+        delegation_status = _text(payload.get("delegation_status")) if isinstance(payload, Mapping) else None
+        if event_type == "delegation.status" and delegation_status not in {"COMPLETE", "FAILED", "TIMED_OUT"}:
+            continue
+        final_status = _status_to_activity(delegation_status or ("COMPLETE" if event_type == "task.completed" else "FAILED"))
+        executions.append(
+            RecentExecutionSummary(
+                project_id=project_id,
+                task_id=_text(event.get("task_id")),
+                agent_name=_text(payload.get("agent_name")) if isinstance(payload, Mapping) else None,
+                run_id=run_id,
+                branch=_text(payload.get("feature_branch")) if isinstance(payload, Mapping) else None,
+                final_status=final_status,
+                started_at=None,
+                completed_at=_text(event.get("occurred_at")),
+                elapsed_seconds=None,
+                last_completed_action=_event_label(event),
+                result_summary=_bounded_text(_text(payload.get("failure_reason")) if isinstance(payload, Mapping) else None) or final_status,
+            )
+        )
+        if len(executions) >= limit:
+            break
+    executions.sort(key=lambda item: item.completed_at or item.started_at or "", reverse=True)
+    return tuple(executions[:limit])
+
+
+def _activity_status(
+    phase: str | None,
+    agent: object,
+    driver: object,
+    workflow_blocker: str | None,
+    blockers: tuple[str, ...],
+) -> str:
+    if isinstance(agent, Mapping):
+        status = _text(agent.get("status"))
+        if status in {"FAILED", "TIMED_OUT", "COMPLETE"}:
+            return _status_to_activity(status)
+        if status in {"ACTIVE", "RUNNING"}:
+            return "running"
+        if status in {"PENDING", "CLAIMED"}:
+            return "delegated"
+    if isinstance(driver, Mapping) and (driver.get("blocked") is True or driver.get("stale") is True):
+        return "blocked"
+    if workflow_blocker or blockers:
+        return "blocked"
+    return {
+        "PLAN": "planning",
+        "PREPARE_BRANCH": "preparing_branch",
+        "DELEGATE": "delegated",
+        "WAIT_FOR_AGENT": "waiting",
+        "QA": "testing",
+        "REVIEW": "reviewing",
+        "REPORT": "reporting",
+        "COMPLETE": "completed",
+    }.get(phase, "idle")
+
+
+def _status_to_activity(status: str | None) -> str:
+    return {"COMPLETE": "completed", "FAILED": "failed", "TIMED_OUT": "timed_out"}.get(status or "", (status or "idle").lower())
+
+
+def _latest_event(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, Any] | None:
+    if not events:
+        return None
+    return max(events, key=lambda item: str(item.get("occurred_at") or ""))
+
+
+def _event_label(event: Mapping[str, Any] | None) -> str | None:
+    if event is None:
+        return None
+    event_type = _text(event.get("type")) or _text(event.get("event_type")) or _text(event.get("message"))
+    payload = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    state = _text(payload.get("state")) if isinstance(payload, Mapping) else None
+    status = _text(payload.get("delegation_status")) if isinstance(payload, Mapping) else None
+    if status:
+        return f"{event_type}: {status}"
+    if state:
+        return f"{event_type}: {state}"
+    return event_type
+
+
+def _phase_activity(phase: str | None, status: str) -> str | None:
+    if phase:
+        return f"Workflow phase {phase} is {status}."
+    return "No active workflow is recorded." if status == "idle" else status
+
+
+def _last_completed_action(query_data: Mapping[str, Any], events: tuple[Mapping[str, Any], ...], phase: str | None, status: str) -> str | None:
+    if query_data.get("report") is not None:
+        return "Workflow report generated."
+    if query_data.get("tests") is not None:
+        return "QA completed."
+    for event in sorted(events, key=lambda item: str(item.get("occurred_at") or ""), reverse=True):
+        event_type = _text(event.get("type")) or _text(event.get("event_type"))
+        if event_type in {"task.completed", "task.failed", "qa.result", "report.generated", "workflow.transition", "delegation.status"}:
+            return _event_label(event)
+    if status == "completed":
+        return "Workflow completed."
+    if phase:
+        return f"Entered {phase}."
+    return None
+
+
+def _driver_stop_reason(driver: object) -> str | None:
+    return _text(driver.get("last_stop_reason")) if isinstance(driver, Mapping) else None
+
+
+def _timeout_state(agent: object, deadline_at: str | None, now: datetime) -> str:
+    if isinstance(agent, Mapping) and _text(agent.get("status")) == "TIMED_OUT":
+        return "timed_out"
+    deadline = _parse_iso(deadline_at)
+    if deadline is not None and now.astimezone(UTC) > deadline and (not isinstance(agent, Mapping) or _text(agent.get("completed_at")) is None):
+        return "deadline_elapsed"
+    return "none"
+
+
+def _recovery_state(driver: object, agent: object) -> str:
+    if isinstance(driver, Mapping):
+        if driver.get("stale") is True:
+            return "stale"
+        if _text(driver.get("continuity")) == "RESUMED":
+            return "resumed"
+    if isinstance(agent, Mapping) and _text(agent.get("failure_reason")) == "Recorded worker is no longer running.":
+        return "interrupted_worker"
+    return "continuous"
+
+
+def _safe_activity_detail(agent: object, driver: object, workflow: WorkflowSummary, latest_activity: str | None) -> str | None:
+    for value in (
+        _text(agent.get("failure_reason")) if isinstance(agent, Mapping) else None,
+        _text(driver.get("last_stop_reason")) if isinstance(driver, Mapping) else None,
+        workflow.blocker,
+        latest_activity,
+    ):
+        bounded = _bounded_text(value)
+        if bounded:
+            return bounded
+    return None
+
+
+def _execution_result_summary(agent: Mapping[str, Any]) -> str | None:
+    failure = _bounded_text(_text(agent.get("failure_reason")))
+    if failure:
+        return failure
+    exit_code = _int_or_none(agent.get("exit_code"))
+    status = _text(agent.get("status"))
+    return f"{status} exit={exit_code}" if exit_code is not None else status
+
+
+def _workflow_id(task_id: str | None, branch: str | None) -> str | None:
+    return f"{task_id}:{branch}" if task_id and branch else None
+
+
+def _elapsed_seconds(started_at: str | None, ended_at: str | None, now: datetime, agent: object) -> float | None:
+    started = _parse_iso(started_at)
+    if started is None:
+        return None
+    ended = _parse_iso(ended_at)
+    if ended is None or (isinstance(agent, Mapping) and _text(agent.get("completed_at")) is None):
+        ended = now.astimezone(UTC)
+    return max(0.0, round((ended - started).total_seconds(), 3))
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _bounded_text(value: str | None, limit: int = 2_000) -> str | None:
+    if not value:
+        return None
+    return value[:limit]
 
 
 def _current_tasks(

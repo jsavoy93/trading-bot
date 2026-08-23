@@ -90,14 +90,32 @@ class EngineeringQueryService:
                 {
                     "agent_name": delegation.agent_name,
                     "run_id": delegation.run_id,
+                    "request_id": delegation.request_id,
                     "started_at": delegation.started_at,
                     "status": delegation.status.value,
                     "updated_at": delegation.updated_at,
+                    "deadline_at": delegation.deadline_at,
                     "completed_at": delegation.completed_at,
                     "exit_code": delegation.exit_code,
                     "failure_reason": delegation.failure_reason[:2_000],
                 }
                 if delegation
+                else None
+            ),
+            "driver": (
+                {
+                    "started_at": workflow.driver.started_at,
+                    "updated_at": workflow.driver.updated_at,
+                    "accumulated_elapsed_seconds": workflow.driver.accumulated_elapsed_seconds,
+                    "total_steps": workflow.driver.total_steps,
+                    "wait_polls": workflow.driver.wait_polls,
+                    "continuity": workflow.driver.continuity,
+                    "last_stop_reason": workflow.driver.last_stop_reason[:2_000],
+                    "blocked": workflow.driver.blocked,
+                    "stale": workflow.driver.stale,
+                    "resume_explanation": workflow.driver.resume_explanation[:2_000],
+                }
+                if workflow and workflow.driver
                 else None
             ),
             "backlog": [

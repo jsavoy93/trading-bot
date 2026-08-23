@@ -4,6 +4,8 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from dashboard_api.engineering_read_model import (
     DashboardSnapshot,
     EmptyPullRequestMetadataReader,
@@ -329,3 +331,192 @@ def test_deterministic_typed_output():
 
     assert first == second
     assert asdict(build_model().snapshot())["project_identity"] == "trading-bot"
+
+
+def test_active_delegated_run_renders_live_activity_without_raw_outputs():
+    snapshot = build_model(
+        base_payload(
+            current_task={
+                "id": "ENGDASH-006",
+                "title": "Live Agent Activity",
+                "priority": "P1",
+                "owner": "dashboard-agent",
+                "state": "WAIT_FOR_AGENT",
+                "feature_branch": "agent/engdash-006",
+            },
+            agent_run={
+                "agent_name": "dashboard-agent",
+                "run_id": "run-006",
+                "request_id": "delegation-006",
+                "status": "ACTIVE",
+                "started_at": "2026-08-04T22:00:00+00:00",
+                "updated_at": "2026-08-04T22:10:00+00:00",
+                "deadline_at": "2026-08-04T23:30:00+00:00",
+                "exit_code": None,
+                "failure_reason": "",
+                "stdout_path": "/secret/stdout.log",
+                "stderr_path": "/secret/stderr.log",
+                "prompt": "private prompt",
+            },
+        )
+    ).snapshot()
+
+    activity = snapshot.live_activity[0]
+    assert activity.project_id == "trading-bot"
+    assert activity.task_id == "ENGDASH-006"
+    assert activity.agent_name == "dashboard-agent"
+    assert activity.workflow_id == "ENGDASH-006:agent/engdash-006"
+    assert activity.run_id == "run-006"
+    assert activity.phase == "WAIT_FOR_AGENT"
+    assert activity.status == "running"
+    assert activity.timeout_state == "none"
+    assert activity.recovery_state == "continuous"
+    payload = snapshot.to_dict()
+    assert "stdout_path" not in str(payload)
+    assert "stderr_path" not in str(payload)
+    assert "private prompt" not in str(payload)
+
+
+def test_idle_state_produces_safe_empty_activity():
+    snapshot = build_model(base_payload(current_task=None, agent_run=None, tests=None)).snapshot()
+
+    assert snapshot.live_activity == ()
+    assert snapshot.recent_executions == ()
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    (
+        ("QA", "testing"),
+        ("REVIEW", "reviewing"),
+        ("REPORT", "reporting"),
+    ),
+)
+def test_workflow_phase_maps_to_activity_status(phase: str, expected: str):
+    snapshot = build_model(
+        base_payload(
+            current_task={
+                "id": "ENGDASH-006",
+                "title": "Live Agent Activity",
+                "priority": "P1",
+                "owner": "dashboard-agent",
+                "state": phase,
+                "feature_branch": "agent/engdash-006",
+            },
+            agent_run=None,
+            remaining_gaps=[],
+            timeline=[{"event_type": "workflow.transition", "occurred_at": "2026-08-04T22:00:00+00:00", "task_id": "ENGDASH-006"}],
+        )
+    ).snapshot()
+
+    assert snapshot.live_activity[0].status == expected
+
+
+def test_failed_delegation_shows_bounded_blocker_and_recent_execution():
+    reason = "x" * 2500
+    snapshot = build_model(
+        base_payload(
+            agent_run={
+                "agent_name": "dashboard-agent",
+                "run_id": "run-failed",
+                "status": "FAILED",
+                "started_at": "2026-08-04T22:00:00+00:00",
+                "updated_at": "2026-08-04T22:02:00+00:00",
+                "completed_at": "2026-08-04T22:02:00+00:00",
+                "deadline_at": "2026-08-04T23:30:00+00:00",
+                "exit_code": 1,
+                "failure_reason": reason,
+            }
+        )
+    ).snapshot()
+
+    assert snapshot.live_activity[0].status == "failed"
+    assert snapshot.live_activity[0].blocker == reason[:2000]
+    assert snapshot.recent_executions[0].final_status == "failed"
+    assert snapshot.recent_executions[0].result_summary == reason[:2000]
+
+
+def test_timed_out_delegation_shows_timeout_state():
+    snapshot = build_model(
+        base_payload(
+            agent_run={
+                "agent_name": "dashboard-agent",
+                "run_id": "run-timeout",
+                "status": "TIMED_OUT",
+                "started_at": "2026-08-04T21:00:00+00:00",
+                "updated_at": "2026-08-04T22:00:00+00:00",
+                "completed_at": "2026-08-04T22:00:00+00:00",
+                "deadline_at": "2026-08-04T22:00:00+00:00",
+                "exit_code": 124,
+                "failure_reason": "deadline elapsed",
+            }
+        )
+    ).snapshot()
+
+    assert snapshot.live_activity[0].status == "timed_out"
+    assert snapshot.live_activity[0].timeout_state == "timed_out"
+    assert snapshot.recent_executions[0].final_status == "timed_out"
+
+
+def test_stale_and_resumed_driver_state_appears():
+    snapshot = build_model(
+        base_payload(
+            agent_run=None,
+            driver={
+                "started_at": "2026-08-01T00:00:00+00:00",
+                "updated_at": "2026-08-04T22:00:00+00:00",
+                "accumulated_elapsed_seconds": 300.0,
+                "total_steps": 3,
+                "wait_polls": 2,
+                "continuity": "RESUMED",
+                "last_stop_reason": "Workflow is stale after more than 48 hours; Josh review required.",
+                "blocked": True,
+                "stale": True,
+                "resume_explanation": "Explicit drive invocation resumed after stop.",
+            },
+        )
+    ).snapshot()
+
+    activity = snapshot.live_activity[0]
+    assert activity.status == "blocked"
+    assert activity.recovery_state == "stale"
+    assert "stale" in (activity.safe_detail or "")
+
+
+def test_recent_executions_are_bounded_and_sorted_newest_first():
+    events = tuple(
+        {
+            "type": "task.completed",
+            "occurred_at": f"2026-08-04T22:{index:02d}:00+00:00",
+            "task_id": f"TASK-{index}",
+            "payload": {"feature_branch": f"agent/task-{index}"},
+        }
+        for index in range(15)
+    )
+    snapshot = build_model(base_payload(agent_run=None, timeline=events)).snapshot()
+
+    assert len(snapshot.recent_executions) == 10
+    assert snapshot.recent_executions[0].task_id == "TASK-14"
+    assert snapshot.recent_executions[-1].task_id == "TASK-5"
+
+
+def test_completed_execution_appears_in_recent_executions():
+    snapshot = build_model(
+        base_payload(
+            agent_run={
+                "agent_name": "dashboard-agent",
+                "run_id": "run-complete",
+                "status": "COMPLETE",
+                "started_at": "2026-08-04T22:00:00+00:00",
+                "updated_at": "2026-08-04T22:05:00+00:00",
+                "completed_at": "2026-08-04T22:05:00+00:00",
+                "deadline_at": "2026-08-04T23:30:00+00:00",
+                "exit_code": 0,
+                "failure_reason": "",
+            }
+        )
+    ).snapshot()
+
+    assert snapshot.live_activity[0].status == "completed"
+    assert snapshot.recent_executions[0].final_status == "completed"
+    assert snapshot.recent_executions[0].elapsed_seconds == 300.0

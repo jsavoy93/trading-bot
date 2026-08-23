@@ -832,7 +832,7 @@ engineering-platform priority order (reconciled to current `main` `cb30809`) is:
 9. `ENGPLAT-003A` — Project Bootstrap Planning + Filesystem Creation ✅ DONE
 10. `ENGSUP-001` — Automated Engineering Supervisor Phase 1/2 ✅ DONE
 11. `ENGPLAT-003B` — Project Registry Persistence / Activation ✅ DONE
-12. `ENGDASH-006` — Live Agent Activity and Execution Visibility ⏭️ NEXT
+12. `ENGDASH-006` — Live Agent Activity and Execution Visibility 🟡 REVIEW
 13. `ENGCTRL-001` — Safe Engineering Control Panel
 14. `CONFIG-002` — Dashboard-to-engine synchronization
 15. `ENGPLAT-004` — Reusable Engineering Platform Repository Extraction (explicitly deferred)
@@ -845,7 +845,7 @@ Important constraints:
 - `ENGSUP-001` depends on `ENGPLAT-001` and `ENGPLAT-002C`; Phase 1 (prompt
   generation) begins after adapters are proven; auto-dispatch requires separate
   Phase 2 approval. ENGPLAT-002C is merged; ENGSUP-001 Phase 1 and Phase 2 are merged through PRs #43-#46, with auto-dispatch disabled by default.
-- `ENGDASH-006` is the next platform task after this reconciliation; it depends on `ENGDASH-004` and must avoid a competing workflow-state model.
+- `ENGDASH-006` is implemented in the pending review branch as a read-only dashboard/query slice. It depends on `ENGDASH-004`, avoids a competing workflow-state model, and derives live/recent activity from existing workflow, delegation, driver, event, query-service, and persisted runtime records.
 - `ENGCTRL-001` follows stable dashboard/query boundaries after `ENGDASH-005`
   and `ENGDASH-006`, and requires separate Josh approval after read-only design
   review.
@@ -857,6 +857,25 @@ Important constraints:
   and explicit Josh approval. Do not use the roadmap as authorization for broad
   rewrites, runtime migration, API controls, deployment changes, secrets work,
   trading behavior changes, or repository extraction.
+
+### Live Agent Activity Dashboard (ENGDASH-006)
+
+ENGDASH-006 adds normalized read-only dashboard activity summaries without a new
+activity-state store. `dashboard_api.engineering_read_model.AgentActivitySummary`
+represents the current workflow/delegation/driver-derived activity, and
+`RecentExecutionSummary` represents bounded recent completed, failed, or timed-out
+executions. The existing `/api/engineering/snapshot` payload now carries
+`live_activity` and `recent_executions`; the HTML dashboard renders "Live agent
+activity" and "Recent executions" sections and refreshes via a 15-second meta
+refresh.
+
+Safety boundary: activity status is derived at read time from existing
+`StoredWorkflow`, `DelegationRecord`, `DriverRecord`, query-service snapshot
+fields, and bounded event projections. The dashboard must not expose prompts,
+private reasoning, raw stdout/stderr paths/content, secrets, credentials,
+arbitrary shell output, live process inspection, or write controls. Default
+`TRADING_BOT_PROJECT` dashboard routing remains a v1.1 limitation; explicit
+provider configuration continues to preserve project isolation.
 
 ### Project Configuration Contract (ENGPLAT-001)
 
