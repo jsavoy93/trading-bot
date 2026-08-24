@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from dashboard_api.app import CHAT_HISTORY_ROUTE, DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
+from dashboard_api.app import CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
 from dashboard_api.providers import EngineeringDashboardProviderConfig, create_engineering_dashboard_provider
 from dashboard_api.engineering_read_model import (
     AgentActivitySummary,
@@ -343,11 +343,13 @@ def test_no_mutation_http_methods_or_routes():
     app = create_app(StaticProvider(populated_snapshot()))
     routes = {route.path: route.methods for route in app.routes if hasattr(route, "methods")}
 
-    assert routes == {SNAPSHOT_ROUTE: {"GET"}, CHAT_HISTORY_ROUTE: {"GET"}, DASHBOARD_ROUTE: {"GET"}}
+    assert routes == {SNAPSHOT_ROUTE: {"GET"}, CHAT_HISTORY_ROUTE: {"GET"}, CHAT_SEND_ROUTE: {"POST"}, DASHBOARD_ROUTE: {"GET"}}
     client = TestClient(app)
     for method in (client.post, client.put, client.patch, client.delete):
         assert method(SNAPSHOT_ROUTE).status_code == 405
         assert method(CHAT_HISTORY_ROUTE).status_code == 405
+        expected_send_status = 400 if method.__name__ == "post" else 405
+        assert method(CHAT_SEND_ROUTE).status_code == expected_send_status
         assert method(DASHBOARD_ROUTE).status_code == 405
 
 
@@ -408,8 +410,8 @@ def test_no_import_filename_or_route_collision_with_legacy_dashboard_py():
     assert Path(dashboard_api.__file__).parent.name == "dashboard_api"
     assert not Path("dashboard-api").exists()
     app = create_app(StaticProvider(populated_snapshot()))
-    assert {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, DASHBOARD_ROUTE}.issubset({route.path for route in app.routes})
-    assert {route.path for route in app.routes} == {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, DASHBOARD_ROUTE}
+    assert {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE}.issubset({route.path for route in app.routes})
+    assert {route.path for route in app.routes} == {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE}
 
 
 def test_launch_command_documented_and_no_route_exposes_controls():
@@ -761,6 +763,19 @@ class StaticChatHistoryProvider:
         self.calls += 1
         return self.payload
 
+    def send(self, message: object) -> dict[str, object]:
+        self.last_message = message
+        if not isinstance(message, str) or not message.strip():
+            return {"ok": False, "status": "rejected", "error": "message must be non-empty text"}
+        if len(message.strip()) > 4000:
+            return {"ok": False, "status": "rejected", "error": "message exceeds 4000 characters"}
+        return {
+            "ok": True,
+            "status": "sent",
+            "run_id": "run-test",
+            "audit": {"timestamp": "2026-08-24T00:00:00+00:00", "actor": "dashboard", "source": "dashboard", "target": "trading-manager", "delivery_status": "sent", "run_id": "run-test"},
+        }
+
 
 def test_chat_history_endpoint_uses_fixed_provider_and_ignores_client_routing_params():
     chat_provider = StaticChatHistoryProvider(
@@ -780,19 +795,27 @@ def test_chat_history_endpoint_uses_fixed_provider_and_ignores_client_routing_pa
     assert "gatewayUrl" not in response.text
 
 
-def test_chat_history_endpoint_has_no_slice_one_send_or_control_routes():
+def test_chat_send_endpoint_accepts_only_bounded_message_and_no_control_routes():
     client = TestClient(create_app(StaticProvider(populated_snapshot()), StaticChatHistoryProvider({"session": {"agent": "trading-manager", "status": "available"}, "messages": []})))
 
-    assert client.post("/api/engineering/chat/send", json={"message": "hello"}).status_code == 404
+    assert client.post("/api/engineering/chat/send", json={"message": "hello"}).status_code == 200
+    assert client.post("/api/engineering/chat/send", json={"message": ""}).status_code == 400
+    assert client.post("/api/engineering/chat/send", json={"message": "   "}).status_code == 400
+    assert client.post("/api/engineering/chat/send", json={"message": "x" * 4001}).status_code == 400
+    assert client.post("/api/engineering/chat/send", json={"message": {"text": "hello"}}).status_code == 400
+    assert client.post("/api/engineering/chat/send", json={"message": "hello", "agentId": "evil"}).status_code == 400
+    assert client.post("/api/engineering/chat/send", json={"message": "hello", "sessionKey": "evil"}).status_code == 400
     assert client.post("/api/engineering/chat/abort", json={}).status_code == 404
+    assert client.post("/api/engineering/rpc", json={"method": "chat.send"}).status_code == 404
     assert client.post("/api/engineering/chat/history", json={}).status_code == 405
     route_methods = {(route.path, tuple(sorted(route.methods or ()))) for route in client.app.routes}
     assert ("/api/engineering/chat/history", ("GET",)) in route_methods
-    assert all("/api/engineering/chat/send" != path for path, _methods in route_methods)
+    assert ("/api/engineering/chat/send", ("POST",)) in route_methods
     assert all("/api/engineering/chat/abort" != path for path, _methods in route_methods)
+    assert all("/api/engineering/rpc" != path for path, _methods in route_methods)
 
 
-def test_dashboard_chat_tab_exists_without_send_box_and_existing_tabs_remain():
+def test_dashboard_chat_tab_has_bounded_send_form_and_existing_tabs_remain():
     html = render_dashboard(populated_snapshot())
 
     for tab in ("overview", "activity", "backlog", "timeline", "reports", "health", "chat"):
@@ -800,10 +823,11 @@ def test_dashboard_chat_tab_exists_without_send_box_and_existing_tabs_remain():
         assert f"data-tab-panel='{tab}'" in html
     assert "aria-selected='true'>Overview" in html
     assert "id='tab-chat' class='tab-panel' role='tabpanel' data-tab-panel='chat' hidden" in html
-    assert "Read-only view of the existing OpenClaw trading-manager conversation" in html
-    assert "<textarea" not in html.lower()
-    assert "type='submit'" not in html.lower()
-    assert "/api/engineering/chat/send" not in html
+    assert "Conversation with the existing OpenClaw trading-manager session" in html
+    assert "<textarea" in html.lower()
+    assert "maxlength='4000'" in html
+    assert "type='submit'" in html.lower()
+    assert "/api/engineering/chat/send" in html
     assert "chat.abort" not in html
 
 
@@ -874,10 +898,60 @@ def test_chat_history_client_script_shows_bounded_unavailable_state():
           await window.engineeringDashboard.refreshChatHistory();
           assert(chatState.textContent.includes('unavailable'));
           assert.strictEqual(chatState.style.display, 'block');
-          assert.strictEqual(chatHistory.innerHTML, '');
+          assert.strictEqual(chatHistory.innerHTML, 'OLD');
           assert(chatState.textContent.length < 80);
         })().catch((error) => { console.error(error); process.exit(1); });
         """
     )
 
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_send_client_script_shows_states_refreshes_history_and_preserves_on_failure():
+    html = render_dashboard(populated_snapshot())
+    script = _dashboard_script(html)
+    body = """
+const assert = require('assert');
+const fs = require('fs');
+const script = fs.readFileSync(0, 'utf8');
+let chatState = {textContent: '', style: {display: 'none'}, dataset: {}};
+let chatHistory = {innerHTML: '<div>OLD</div>', scrollTop: 0, scrollHeight: 77};
+let input = {value: '  hello dashboard  '};
+let button = {disabled: false, textContent: 'Send'};
+let content = {innerHTML: 'INITIAL', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+let warning = {textContent: '', style: {display: 'none'}};
+let calls = [];
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}};
+global.document = {getElementById: (id) => id === 'dashboard-content' ? content : id === 'update-warning' ? warning : id === 'chat-state' ? chatState : id === 'chat-history' ? chatHistory : id === 'chat-message' ? input : id === 'chat-send' ? button : null};
+global.fetch = async (url, options) => {
+  calls.push([url, options]);
+  if (url === '/api/engineering/chat/send') {
+    assert.strictEqual(options.method, 'POST');
+    assert.strictEqual(JSON.parse(options.body).message, 'hello dashboard');
+    return {ok: true, json: async () => ({ok: true, status: 'sent', run_id: 'run-ui'})};
+  }
+  if (url === '/api/engineering/chat/history') {
+    return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available'}, messages: [{role: 'user', text: 'hello dashboard', timestamp: 't1'}, {role: 'assistant', text: 'response available', timestamp: 't2'}]})};
+  }
+  throw new Error('unexpected url ' + url);
+};
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.sendChatMessage(input.value);
+  assert.strictEqual(input.value, '');
+  assert.strictEqual(button.disabled, false);
+  assert.strictEqual(button.textContent, 'Send');
+  assert(chatHistory.innerHTML.includes('hello dashboard'));
+  assert(chatHistory.innerHTML.includes('response available'));
+  assert.strictEqual(chatHistory.scrollTop, 77);
+  assert.strictEqual(calls[0][0], '/api/engineering/chat/send');
+  assert.strictEqual(calls[1][0], '/api/engineering/chat/history');
+  global.fetch = async () => ({ok: false, json: async () => ({ok: false, error: 'bounded fail'})});
+  const before = chatHistory.innerHTML;
+  input.value = 'will fail';
+  await window.engineeringDashboard.sendChatMessage(input.value);
+  assert(chatState.textContent.includes('failed'));
+  assert.strictEqual(chatHistory.innerHTML, before);
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
     _run_dashboard_script_case(script, body)

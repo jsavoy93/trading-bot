@@ -1789,3 +1789,17 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests run so far: `.venv/bin/pytest tests/test_dashboard_chat_gateway.py tests/test_dashboard_api_app.py -q` → `32 passed, 2 warnings`.
 - Decisions/discoveries: fixed server-side routing to `trading-manager`; preferred session `agent:trading-manager:telegram:direct:8455029949` still exists with session id `e31c5f61-2d71-4078-bc59-eab62ef92067`; Gateway `chat.history` can read it without creating a new session; projection drops thinking/tool/prompt/raw-output fields and deduplicates delivery-mirror assistant rows.
 - Next action: run full validation, manual local Gateway verification, write reports, commit, push, and open PR for Josh review. Josh approval required before merge or Slice 2 send work.
+
+## 2026-08-24 00:06–00:22 UTC — Engineering Dashboard Chat Slice 2 bounded send
+
+- Elapsed time: Approximately 16 minutes.
+- Continuity: Continuous after PR #58 merged and Slice 1 read-only history became the baseline.
+- Backlog item/objective: Engineering Dashboard Chat Slice 2 — add a narrow bounded send path from `/engineering` into the existing shared OpenClaw `trading-manager` session for `--project-id trading-bot`.
+- Branch: `agent/dashboard-chat-send`
+- Commit: pending final commit at PR creation.
+- Status: DONE pending Josh PR review/merge.
+- Files changed: `dashboard_api/app.py`, `dashboard_api/chat_gateway.py`, `tests/test_dashboard_api_app.py`, `tests/test_dashboard_api_provider.py`, `tests/test_dashboard_chat_gateway.py`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`, `reports/2026-08-24_002200_engineering-dashboard-chat-send.md`.
+- Tests/backtests run: focused chat/dashboard tests `.venv/bin/pytest tests/test_dashboard_chat_gateway.py tests/test_dashboard_api_app.py tests/test_dashboard_api_provider.py -q` → `43 passed, 2 warnings`; full safe suite `.venv/bin/pytest -q` → `802 passed, 83 warnings`; `git diff --check` → PASS. No trading backtest applicable.
+- Decisions/discoveries: The current configured `trading-manager` model is `minimax-portal/MiniMax-M3`; the old Slice 1 `MiniMax-M2.7` / `e31c5f61-2d71-4078-bc59-eab62ef92067` metadata was stale. Real Gateway `chat.send` updated the same authoritative session key `agent:trading-manager:telegram:direct:8455029949` to session id `fc12bb64-f6f9-458b-84a7-d7414e0a7196`; no duplicate `trading-manager` session was created. Added only `POST /api/engineering/chat/send` with exact `{message}` body, trim/non-empty/text-only/4,000-character bounds, server-side fixed routing, safe bounded response, and audit metadata. No abort/interrupt, arbitrary routing, generic RPC, workflow controls, Git/deploy controls, brokerage/trading controls, browser Gateway credentials, or second conversation database were added.
+- Manual verification: Real dashboard endpoint send returned run id `5f66d986-2605-439e-84a2-03fdb67aaac3`; dashboard history showed the verification user message and manager reply `dashboard slice 2 endpoint received.`; `trading-manager` session count stayed `1`; Telegram manager channel probe remained connected/running/works. Dashboard-originated messages/replies appeared in the shared OpenClaw Telegram-named session history; no separate Telegram outbound mirror/push was observed during channel probe.
+- Next action: Commit, push, and open PR for Josh review. Josh approval is required before merge or any future chat abort/control slice.

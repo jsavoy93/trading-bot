@@ -140,3 +140,54 @@ def test_wrong_agent_resolution_is_rejected_as_unavailable():
 
     assert payload["session"]["agent"] == TRADING_MANAGER_AGENT_ID
     assert payload["session"]["status"] == "unavailable"
+
+
+def test_send_adapter_accepts_bounded_text_and_uses_fixed_trading_manager_session():
+    calls = []
+
+    def runner(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _completed({"ok": True, "agentId": TRADING_MANAGER_AGENT_ID, "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY}, "runId": "run-123"})
+
+    result = GatewayChatHistoryClient(runner=runner).send("  hello manager  ").to_public_dict()
+
+    assert result["ok"] is True
+    assert result["status"] == "sent"
+    assert result["run_id"] == "run-123"
+    assert result["audit"]["actor"] == "dashboard"
+    assert result["audit"]["target"] == TRADING_MANAGER_AGENT_ID
+    script = calls[0][1]["input"]
+    assert "sendChat" in script
+    assert "chat.abort" not in script
+    assert f"const AGENT_ID = \"{TRADING_MANAGER_AGENT_ID}\"" in script
+    assert f"const PREFERRED_SESSION_KEY = \"{PREFERRED_TRADING_MANAGER_SESSION_KEY}\"" in script
+    assert "sessionKey: selected.key" in script
+    assert "agentId: AGENT_ID" in script
+    assert 'const MESSAGE = "hello manager"' in script
+
+
+def test_send_adapter_rejects_empty_non_text_and_over_limit_without_gateway_call():
+    calls = []
+    client = GatewayChatHistoryClient(runner=lambda *args, **kwargs: calls.append((args, kwargs)) or _completed({"ok": True, "runId": "bad"}))
+
+    for value in ("", "   ", {"message": "hello"}, ["hello"], None):
+        payload = client.send(value).to_public_dict()
+        assert payload["ok"] is False
+        assert payload["status"] == "rejected"
+    too_long = "x" * 4001
+    payload = client.send(too_long).to_public_dict()
+    assert payload["ok"] is False
+    assert payload["status"] == "rejected"
+    assert calls == []
+
+
+def test_send_gateway_failure_returns_bounded_safe_error():
+    def runner(*args, **kwargs):
+        return subprocess.CompletedProcess(["node"], 1, stdout="", stderr="secret traceback token")
+
+    payload = GatewayChatHistoryClient(runner=runner).send("hello").to_public_dict()
+
+    assert payload["ok"] is False
+    assert payload["status"] == "failed"
+    assert payload["error"] == "Gateway chat send unavailable"
+    assert "secret" not in json.dumps(payload)
