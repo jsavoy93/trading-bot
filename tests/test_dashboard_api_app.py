@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from dashboard_api.app import DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
+from dashboard_api.app import CHAT_HISTORY_ROUTE, DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
 from dashboard_api.providers import EngineeringDashboardProviderConfig, create_engineering_dashboard_provider
 from dashboard_api.engineering_read_model import (
     AgentActivitySummary,
@@ -343,10 +343,11 @@ def test_no_mutation_http_methods_or_routes():
     app = create_app(StaticProvider(populated_snapshot()))
     routes = {route.path: route.methods for route in app.routes if hasattr(route, "methods")}
 
-    assert routes == {SNAPSHOT_ROUTE: {"GET"}, DASHBOARD_ROUTE: {"GET"}}
+    assert routes == {SNAPSHOT_ROUTE: {"GET"}, CHAT_HISTORY_ROUTE: {"GET"}, DASHBOARD_ROUTE: {"GET"}}
     client = TestClient(app)
     for method in (client.post, client.put, client.patch, client.delete):
         assert method(SNAPSHOT_ROUTE).status_code == 405
+        assert method(CHAT_HISTORY_ROUTE).status_code == 405
         assert method(DASHBOARD_ROUTE).status_code == 405
 
 
@@ -407,8 +408,8 @@ def test_no_import_filename_or_route_collision_with_legacy_dashboard_py():
     assert Path(dashboard_api.__file__).parent.name == "dashboard_api"
     assert not Path("dashboard-api").exists()
     app = create_app(StaticProvider(populated_snapshot()))
-    assert {SNAPSHOT_ROUTE, DASHBOARD_ROUTE}.issubset({route.path for route in app.routes})
-    assert {route.path for route in app.routes} == {SNAPSHOT_ROUTE, DASHBOARD_ROUTE}
+    assert {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, DASHBOARD_ROUTE}.issubset({route.path for route in app.routes})
+    assert {route.path for route in app.routes} == {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, DASHBOARD_ROUTE}
 
 
 def test_launch_command_documented_and_no_route_exposes_controls():
@@ -749,3 +750,134 @@ def test_mobile_css_prioritizes_narrow_screens_and_avoids_normal_horizontal_over
     assert "min-height:44px" in html
     assert "text-overflow:ellipsis" in html
     assert "<table" not in html.lower()
+
+
+class StaticChatHistoryProvider:
+    def __init__(self, payload: dict[str, object]):
+        self.payload = payload
+        self.calls = 0
+
+    def history(self) -> dict[str, object]:
+        self.calls += 1
+        return self.payload
+
+
+def test_chat_history_endpoint_uses_fixed_provider_and_ignores_client_routing_params():
+    chat_provider = StaticChatHistoryProvider(
+        {
+            "session": {"agent": "trading-manager", "status": "available"},
+            "messages": [{"role": "user", "text": "hi", "timestamp": "2026-08-23T23:49:00+00:00"}],
+        }
+    )
+    client = TestClient(create_app(StaticProvider(populated_snapshot()), chat_provider))
+
+    response = client.get("/api/engineering/chat/history?agentId=evil&sessionKey=agent:other&gatewayUrl=https://evil.example&method=chat.send")
+
+    assert response.status_code == 200
+    assert response.json() == chat_provider.payload
+    assert chat_provider.calls == 1
+    assert "evil" not in response.text
+    assert "gatewayUrl" not in response.text
+
+
+def test_chat_history_endpoint_has_no_slice_one_send_or_control_routes():
+    client = TestClient(create_app(StaticProvider(populated_snapshot()), StaticChatHistoryProvider({"session": {"agent": "trading-manager", "status": "available"}, "messages": []})))
+
+    assert client.post("/api/engineering/chat/send", json={"message": "hello"}).status_code == 404
+    assert client.post("/api/engineering/chat/abort", json={}).status_code == 404
+    assert client.post("/api/engineering/chat/history", json={}).status_code == 405
+    route_methods = {(route.path, tuple(sorted(route.methods or ()))) for route in client.app.routes}
+    assert ("/api/engineering/chat/history", ("GET",)) in route_methods
+    assert all("/api/engineering/chat/send" != path for path, _methods in route_methods)
+    assert all("/api/engineering/chat/abort" != path for path, _methods in route_methods)
+
+
+def test_dashboard_chat_tab_exists_without_send_box_and_existing_tabs_remain():
+    html = render_dashboard(populated_snapshot())
+
+    for tab in ("overview", "activity", "backlog", "timeline", "reports", "health", "chat"):
+        assert f"data-tab='{tab}'" in html
+        assert f"data-tab-panel='{tab}'" in html
+    assert "aria-selected='true'>Overview" in html
+    assert "id='tab-chat' class='tab-panel' role='tabpanel' data-tab-panel='chat' hidden" in html
+    assert "Read-only view of the existing OpenClaw trading-manager conversation" in html
+    assert "<textarea" not in html.lower()
+    assert "type='submit'" not in html.lower()
+    assert "/api/engineering/chat/send" not in html
+    assert "chat.abort" not in html
+
+
+def test_chat_history_client_script_polls_bounded_read_endpoint_and_safely_renders_content():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    chat_payload = json.dumps(
+        {
+            "session": {"agent": "trading-manager", "status": "available"},
+            "messages": [
+                {"role": "user", "text": "hello <img src=x onerror=alert(1)>", "timestamp": "2026-08-23T23:49:00+00:00"},
+                {"role": "assistant", "text": "manager & safe", "timestamp": "2026-08-23T23:49:05+00:00"},
+            ],
+        }
+    )
+    body = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let intervals = [];
+        let chatState = {{textContent: '', style: {{display: 'block'}}}};
+        let chatHistory = {{innerHTML: '', scrollTop: 0, scrollHeight: 99}};
+        let content = {{innerHTML: 'INITIAL', addEventListener: () => {{}}, contains: () => true, querySelectorAll: () => []}};
+        let warning = {{textContent: '', style: {{display: 'none'}}}};
+        global.window = {{scrollX: 0, scrollY: 0, setInterval: (fn, ms) => {{ intervals.push([fn, ms]); return intervals.length; }}, scrollTo: () => {{}}}};
+        global.document = {{getElementById: (id) => id === 'dashboard-content' ? content : id === 'update-warning' ? warning : id === 'chat-state' ? chatState : id === 'chat-history' ? chatHistory : null}};
+        global.fetch = async (url, options) => {{
+          assert.strictEqual(options.method, 'GET');
+          if (url === '/api/engineering/chat/history') {{ return {{ok: true, json: async () => ({chat_payload})}}; }}
+          if (url === '/api/engineering/snapshot') {{ return {{ok: true, json: async () => ({{}})}}; }}
+          throw new Error('unexpected url ' + url);
+        }};
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {{
+          assert.strictEqual(window.engineeringDashboard.CHAT_HISTORY_URL, '/api/engineering/chat/history');
+          assert(intervals.some((entry) => entry[1] === 15000));
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(chatState.style.display, 'none');
+          assert(chatHistory.innerHTML.includes('Josh'));
+          assert(chatHistory.innerHTML.includes('Trading manager'));
+          assert(chatHistory.innerHTML.includes('&lt;img src=x onerror=alert(1)&gt;'));
+          assert(!chatHistory.innerHTML.includes('<img src=x'));
+          assert(chatHistory.innerHTML.includes('manager &amp; safe'));
+          assert.strictEqual(chatHistory.scrollTop, 99);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_history_client_script_shows_bounded_unavailable_state():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let chatState = {textContent: '', style: {display: 'none'}};
+        let chatHistory = {innerHTML: 'OLD'};
+        let content = {innerHTML: 'INITIAL', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+        let warning = {textContent: '', style: {display: 'none'}};
+        global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}};
+        global.document = {getElementById: (id) => id === 'dashboard-content' ? content : id === 'update-warning' ? warning : id === 'chat-state' ? chatState : id === 'chat-history' ? chatHistory : null};
+        global.fetch = async () => { throw new Error('gateway down'); };
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshChatHistory();
+          assert(chatState.textContent.includes('unavailable'));
+          assert.strictEqual(chatState.style.display, 'block');
+          assert.strictEqual(chatHistory.innerHTML, '');
+          assert(chatState.textContent.length < 80);
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
