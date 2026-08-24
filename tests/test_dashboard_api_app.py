@@ -955,3 +955,113 @@ eval(script.replace('<script>', '').replace('</script>', ''));
 })().catch((error) => { console.error(error); process.exit(1); });
 """
     _run_dashboard_script_case(script, body)
+
+
+def test_chat_state_survives_snapshot_poll_without_loading_reset_or_draft_loss():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot(data_freshness_timestamp="2026-08-24T00:45:00+00:00")))
+    history_one = json.dumps(
+        {
+            "session": {"agent": "trading-manager", "status": "available"},
+            "messages": [
+                {"role": "user", "text": "loaded message", "timestamp": "t1"},
+                {"role": "assistant", "text": "loaded reply", "timestamp": "t2"},
+            ],
+        }
+    )
+    history_two = json.dumps(
+        {
+            "session": {"agent": "trading-manager", "status": "available"},
+            "messages": [
+                {"role": "user", "text": "loaded message", "timestamp": "t1"},
+                {"role": "assistant", "text": "loaded reply", "timestamp": "t2"},
+                {"role": "assistant", "text": "new reply", "timestamp": "t3"},
+            ],
+        }
+    )
+    body = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let storage = {{value: 'chat', getItem: () => storage.value, setItem: (key, value) => {{ storage.value = value; }}}};
+        let scrollCalls = [];
+        function parseContent(html) {{
+          const elements = {{}};
+          const panels = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health', 'chat'].map((tab) => ({{
+            dataset: {{tabPanel: tab}},
+            hidden: tab !== storage.value,
+            setAttribute: () => {{}},
+          }}));
+          const buttons = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health', 'chat'].map((tab) => ({{
+            dataset: {{tab}},
+            addEventListener: () => {{}},
+            setAttribute: function(name, value) {{ this[name] = value; }},
+          }}));
+          elements['dashboard-content'] = content;
+          elements['update-warning'] = warning;
+          elements['chat-state'] = {{textContent: html.includes('Loading trading-manager history') ? 'Loading trading-manager history…' : '', style: {{display: 'block'}}, dataset: {{}}}};
+          elements['chat-history'] = {{innerHTML: '', scrollTop: 0, scrollHeight: 200}};
+          elements['chat-message'] = {{value: ''}};
+          elements['chat-send'] = {{disabled: false, textContent: 'Send'}};
+          return {{elements, panels, buttons}};
+        }}
+        let dom;
+        let content = {{
+          _html: '',
+          addEventListener: () => {{}},
+          contains: () => true,
+          querySelectorAll: (selector) => selector === '[data-tab]' ? dom.buttons : selector === '[data-tab-panel]' ? dom.panels : [],
+        }};
+        Object.defineProperty(content, 'innerHTML', {{
+          get() {{ return this._html; }},
+          set(value) {{ this._html = value; dom = parseContent(value); }}
+        }});
+        let warning = {{textContent: '', style: {{display: 'none'}}}};
+        dom = parseContent('');
+        global.window = {{scrollX: 0, scrollY: 0, localStorage: storage, setInterval: () => 1, scrollTo: (x, y) => scrollCalls.push([x, y])}};
+        global.document = {{getElementById: (id) => dom.elements[id] || null}};
+        let historyCalls = 0;
+        let snapshotFails = false;
+        global.fetch = async (url, options) => {{
+          if (url === '/api/engineering/chat/history') {{
+            historyCalls += 1;
+            return {{ok: true, json: async () => historyCalls === 1 ? ({history_one}) : ({history_two})}};
+          }}
+          if (url === '/api/engineering/snapshot') {{
+            if (snapshotFails) {{ throw new Error('snapshot down'); }}
+            return {{ok: true, json: async () => ({snapshot_payload})}};
+          }}
+          throw new Error('unexpected url ' + url);
+        }};
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {{
+          window.engineeringDashboard.switchTab('chat');
+          await window.engineeringDashboard.refreshChatHistory();
+          assert(dom.elements['chat-history'].innerHTML.includes('loaded message'));
+          dom.elements['chat-message'].value = 'draft survives';
+          dom.elements['chat-send'].disabled = true;
+          dom.elements['chat-send'].textContent = 'Sending…';
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(storage.value, 'chat');
+          assert(dom.elements['chat-history'].innerHTML.includes('loaded message'));
+          assert(!dom.elements['chat-state'].textContent.includes('Loading trading-manager history'));
+          assert.strictEqual(dom.elements['chat-message'].value, 'draft survives');
+          assert.strictEqual(dom.elements['chat-send'].disabled, true);
+          assert.strictEqual(dom.elements['chat-send'].textContent, 'Sending…');
+          await window.engineeringDashboard.refreshDashboard();
+          assert(dom.elements['chat-history'].innerHTML.includes('loaded message'));
+          assert.strictEqual((dom.elements['chat-history'].innerHTML.match(/loaded message/g) || []).length, 1);
+          snapshotFails = true;
+          await window.engineeringDashboard.refreshDashboard();
+          assert(dom.elements['chat-history'].innerHTML.includes('loaded message'));
+          assert.strictEqual(dom.elements['chat-message'].value, 'draft survives');
+          assert(warning.textContent.includes('last known snapshot'));
+          snapshotFails = false;
+          await window.engineeringDashboard.refreshChatHistory();
+          assert(dom.elements['chat-history'].innerHTML.includes('new reply'));
+          assert.strictEqual((dom.elements['chat-history'].innerHTML.match(/loaded message/g) || []).length, 1);
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
+    _run_dashboard_script_case(script, body)

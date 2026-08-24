@@ -1129,3 +1129,11 @@ direct browser Gateway access, private model/tool data exposure, or a second
 conversation database without a separate approved slice. The Chat tab must not
 expose private reasoning/thinking blocks, hidden prompts, tool arguments/results,
 raw stdout/stderr, secrets, credentials, or unbounded transcript content.
+
+Chat UI state is intentionally client-persistent across ordinary dashboard
+snapshot polling. `/api/engineering/snapshot` polling still replaces the broader
+`#dashboard-content` shell, so the refresh script must capture and restore Chat
+history/status/textarea/send-button/scroll state around `renderSnapshot()` when
+Chat is selected. Do not reintroduce a design where `renderSnapshot()` exposes
+`chatTab()`'s initial `Loading trading-manager history…` markup over already
+loaded messages during background polling.

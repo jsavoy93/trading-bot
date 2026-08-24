@@ -450,12 +450,37 @@ def _refresh_script() -> str:
   };
   const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); bindChatForm(); };
   const setWarning = (message) => { warning.textContent = message; warning.style.display = message ? 'block' : 'none'; };
+  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', buttonDisabled: false, buttonText: 'Send', scrollTop: 0, wasNearBottom: true};
+  const isNearBottom = (target) => !target || (target.scrollHeight - target.scrollTop <= target.clientHeight + 48);
+  const captureChatUiState = () => {
+    const state = document.getElementById('chat-state');
+    const target = document.getElementById('chat-history');
+    const input = document.getElementById('chat-message');
+    const button = document.getElementById('chat-send');
+    if (state) { chatStateCache.statusText = state.textContent || ''; chatStateCache.statusDisplay = state.style.display || ''; chatStateCache.statusKind = state.dataset && state.dataset.status ? state.dataset.status : chatStateCache.statusKind; }
+    if (target) { chatStateCache.historyHtml = target.innerHTML || chatStateCache.historyHtml; chatStateCache.scrollTop = target.scrollTop || 0; chatStateCache.wasNearBottom = isNearBottom(target); }
+    if (input) { chatStateCache.draft = input.value || ''; }
+    if (button) { chatStateCache.buttonDisabled = !!button.disabled; chatStateCache.buttonText = button.textContent || 'Send'; }
+  };
+  const restoreChatUiState = () => {
+    const state = document.getElementById('chat-state');
+    const target = document.getElementById('chat-history');
+    const input = document.getElementById('chat-message');
+    const button = document.getElementById('chat-send');
+    if (state) { state.textContent = chatStateCache.statusText || ''; state.style.display = chatStateCache.statusDisplay || (state.textContent ? 'block' : 'none'); if (state.dataset) { state.dataset.status = chatStateCache.statusKind || 'available'; } }
+    if (target && chatStateCache.historyHtml) { target.innerHTML = chatStateCache.historyHtml; target.scrollTop = chatStateCache.scrollTop || 0; }
+    if (input) { input.value = chatStateCache.draft || ''; }
+    if (button) { button.disabled = !!chatStateCache.buttonDisabled; button.textContent = chatStateCache.buttonText || 'Send'; }
+  };
   const setChatState = (message, failed) => {
     const state = document.getElementById('chat-state');
+    chatStateCache.statusText = message || '';
+    chatStateCache.statusDisplay = message ? 'block' : 'none';
+    chatStateCache.statusKind = failed ? 'failed' : (message ? 'working' : 'available');
     if (!state) { return; }
-    state.textContent = message || '';
-    state.style.display = message ? 'block' : 'none';
-    if (state.dataset) { state.dataset.status = failed ? 'failed' : (message ? 'working' : 'available'); }
+    state.textContent = chatStateCache.statusText;
+    state.style.display = chatStateCache.statusDisplay;
+    if (state.dataset) { state.dataset.status = chatStateCache.statusKind; }
   };
   const renderChatHistory = (history) => {
     const target = document.getElementById('chat-history');
@@ -471,13 +496,18 @@ def _refresh_script() -> str:
       target.innerHTML = '';
       return;
     }
+    const shouldStickToBottom = isNearBottom(target) || chatStateCache.wasNearBottom;
     setChatState('', false);
-    target.innerHTML = messages.map((message) => {
+    const html = messages.map((message) => {
       const role = message && message.role === 'user' ? 'user' : 'assistant';
       const label = role === 'user' ? 'Josh' : 'Trading manager';
       return `<article class="chat-message ${role}"><span class="chat-meta">${esc(label)} · ${esc(message && message.timestamp)}</span>${esc(message && message.text)}</article>`;
     }).join('');
-    target.scrollTop = target.scrollHeight;
+    target.innerHTML = html;
+    chatStateCache.historyHtml = html;
+    if (shouldStickToBottom) { target.scrollTop = target.scrollHeight; } else { target.scrollTop = chatStateCache.scrollTop || target.scrollTop; }
+    chatStateCache.scrollTop = target.scrollTop || 0;
+    chatStateCache.wasNearBottom = isNearBottom(target);
   };
   const refreshChatHistory = async () => {
     try {
@@ -522,12 +552,15 @@ def _refresh_script() -> str:
       const previousX = window.scrollX;
       const previousY = window.scrollY;
       const activeTab = selectedTab();
+      captureChatUiState();
       const response = await fetch(SNAPSHOT_URL, {method: 'GET', headers: {'Accept': 'application/json'}, cache: 'no-store'});
       if (!response.ok) { throw new Error('snapshot request failed: ' + response.status); }
       const snapshot = await response.json();
       content.innerHTML = renderSnapshot(snapshot);
+      if (activeTab === 'chat') { restoreChatUiState(); }
       switchTab(activeTab);
       bindTabs();
+      if (activeTab === 'chat') { restoreChatUiState(); }
       window.scrollTo(previousX, previousY);
       bindChatForm();
       setWarning('');
