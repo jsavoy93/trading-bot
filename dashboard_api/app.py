@@ -136,7 +136,7 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             ".badge{display:inline-flex;align-items:center;min-height:1.75rem;padding:.2rem .55rem;border-radius:999px;background:#334155;color:#e2e8f0;font-weight:700;font-size:.82rem}.healthy{color:#86efac}.degraded{color:#fbbf24}.error{color:#fca5a5}.warning{border-left:4px solid #f59e0b;padding-left:.75rem}",
             ".tabs{position:sticky;top:0;z-index:2;display:flex;gap:.35rem;overflow-x:auto;padding:.5rem 0;margin:0 0 .5rem;background:#0f172a}.tab-button{appearance:none;border:1px solid #334155;border-radius:999px;background:#1e293b;color:#e2e8f0;padding:.65rem .8rem;min-height:44px;font-weight:700;white-space:nowrap}.tab-button[aria-selected='true']{background:#2563eb;border-color:#60a5fa;color:#fff}.tab-panel[hidden]{display:none}",
             ".list{display:grid;gap:.65rem}.activity-card,.report-card,.event-card,.task-card{border:1px solid #334155;border-radius:12px;padding:.75rem;background:#172033;min-width:0}.kv{display:grid;grid-template-columns:minmax(6rem,.45fr) minmax(0,1fr);gap:.25rem .6rem;margin-top:.5rem}.kv dt{font-weight:700;color:#bfdbfe}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}",
-            ".chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}",
+            ".chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-status{display:flex;align-items:center;gap:.5rem;border:1px solid #334155;border-radius:999px;padding:.4rem .75rem;background:#172033;font-size:.85rem;min-height:36px;margin:0 0 .65rem;width:fit-content;max-width:100%}.chat-status .dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;background:#94a3b8;flex:none}.chat-status[data-agent-status='working'] .dot{background:#fbbf24;animation:chat-status-pulse 1.05s ease-in-out infinite}@keyframes chat-status-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}.chat-status[data-agent-status='failed'] .dot{background:#fca5a5}.chat-status[data-agent-status='stale'] .dot{background:#f59e0b}.chat-status[data-agent-status='unavailable'] .dot{background:#94a3b8}.chat-status[data-agent-status='loading'] .dot{background:#94a3b8}.chat-status .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}",
             "#update-warning{display:none;border-left:4px solid #f59e0b;padding:.75rem;margin:.75rem 0;background:#292524;color:#fde68a;border-radius:10px}",
             "dl{margin:.5rem 0 0}dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0;overflow-wrap:anywhere}code{color:#bae6fd;white-space:normal;overflow-wrap:anywhere}ul{padding-left:1.1rem;margin:.5rem 0}li{margin:.3rem 0}",
             "@media(max-width:700px){.shell{padding:.75rem}.overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.grid{grid-template-columns:1fr}.dashboard-title{font-size:1.1rem}.card,.mini-card,section{padding:.65rem}.kv{grid-template-columns:1fr}.tabs{margin-left:-.75rem;margin-right:-.75rem;padding:.45rem .75rem}.tab-button{font-size:.9rem;padding:.6rem .75rem}}",
@@ -342,6 +342,7 @@ def _chat_tab() -> str:
             "<h2>Chat</h2>",
             "<p class='muted'>Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p>",
             "<div id='chat-state' class='chat-state' role='status' aria-live='polite'>Loading trading-manager history…</div>",
+            "<div id='chat-status' class='chat-status' data-agent-status='loading' role='status' aria-live='polite' aria-label='Trading manager agent status'><span class='dot' aria-hidden='true'></span><span class='label'>Trading manager · Loading…</span></div>",
             "<div id='chat-history' class='chat-history' aria-label='Trading manager conversation history'></div>",
             "<form id='chat-form' class='chat-form'>",
             "<label class='label' for='chat-message'>Message trading-manager</label>",
@@ -438,7 +439,7 @@ def _refresh_script() -> str:
   const reportCard = (report) => detailCard('report-card', esc(report.title), {'Task': report.task_id, 'Outcome': report.outcome || report.kind, 'Generated': report.generated_at, 'Path': report.path});
   const reportsTab = (snapshot) => `<h2>Reports</h2><div class="list">${(snapshot.recent_reports || []).map(reportCard).join('') || '<p class="muted">No recent reports.</p>'}</div>`;
   const healthTab = (snapshot) => `<h2>Health</h2>${healthSection(snapshot.engineering_health)}${warningsSection(snapshot.health_warnings)}<div class="grid">${repositorySection(snapshot.repository)}${testSection(snapshot)}${testingSection(snapshot.testing)}${pullRequestSection(snapshot.pull_request)}</div><p class="muted">Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>`;
-  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading trading-manager history…</div><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
+  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading trading-manager history…</div><div id="chat-status" class="chat-status" data-agent-status="loading" role="status" aria-live="polite" aria-label="Trading manager agent status"><span class="dot" aria-hidden="true"></span><span class="label">Trading manager \u00b7 Loading\u2026</span></div><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
   const renderSnapshot = (snapshot) => tabNav() + panel('overview', overviewTab(snapshot), true) + panel('activity', activityTab(snapshot), false) + panel('backlog', backlogTab(snapshot), false) + panel('timeline', timelineTab(snapshot), false) + panel('reports', reportsTab(snapshot), false) + panel('health', healthTab(snapshot), false) + panel('chat', chatTab(), false);
   const selectedTab = () => { try { const stored = window.localStorage && window.localStorage.getItem(TAB_KEY); return TABS.includes(stored) ? stored : 'overview'; } catch (error) { return 'overview'; } };
   const switchTab = (tab) => {
@@ -450,7 +451,7 @@ def _refresh_script() -> str:
   };
   const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); bindChatForm(); };
   const setWarning = (message) => { warning.textContent = message; warning.style.display = message ? 'block' : 'none'; };
-  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', composeStatus: 'idle', scrollTop: 0, wasNearBottom: true};
+  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', composeStatus: 'idle', scrollTop: 0, wasNearBottom: true, agentStatus: 'loading', runStatus: null};
   const isNearBottom = (target) => !target || (target.scrollHeight - target.scrollTop <= target.clientHeight + 48);
   const applyComposeState = () => {
     const input = document.getElementById('chat-message');
@@ -469,19 +470,22 @@ def _refresh_script() -> str:
     const target = document.getElementById('chat-history');
     const input = document.getElementById('chat-message');
     const button = document.getElementById('chat-send');
+    const status = document.getElementById('chat-status');
     if (state) { chatStateCache.statusText = state.textContent || ''; chatStateCache.statusDisplay = state.style.display || ''; chatStateCache.statusKind = state.dataset && state.dataset.status ? state.dataset.status : chatStateCache.statusKind; }
     if (target) { chatStateCache.historyHtml = target.innerHTML || chatStateCache.historyHtml; chatStateCache.scrollTop = target.scrollTop || 0; chatStateCache.wasNearBottom = isNearBottom(target); }
     if (input) { chatStateCache.draft = input.value || ''; }
     if (button && button.disabled && button.textContent === 'Sending…') { chatStateCache.composeStatus = 'sending'; }
+    if (status && status.dataset && status.dataset.agentStatus) { chatStateCache.agentStatus = status.dataset.agentStatus; }
   };
   const restoreChatUiState = () => {
     const state = document.getElementById('chat-state');
     const target = document.getElementById('chat-history');
     const input = document.getElementById('chat-message');
     const button = document.getElementById('chat-send');
+    applyComposeState();
+    renderAgentStatus();
     if (state) { state.textContent = chatStateCache.statusText || ''; state.style.display = chatStateCache.statusDisplay || (state.textContent ? 'block' : 'none'); if (state.dataset) { state.dataset.status = chatStateCache.statusKind || 'available'; } }
     if (target && chatStateCache.historyHtml) { target.innerHTML = chatStateCache.historyHtml; target.scrollTop = chatStateCache.scrollTop || 0; }
-    applyComposeState();
   };
   const setChatState = (message, failed) => {
     const state = document.getElementById('chat-state');
@@ -493,15 +497,55 @@ def _refresh_script() -> str:
     state.style.display = chatStateCache.statusDisplay;
     if (state.dataset) { state.dataset.status = chatStateCache.statusKind; }
   };
+  // Authoritative mapping from OpenClaw sessionInfo into the bounded agent
+  // indicator state. Source of truth is the cached chat-status DOM attribute
+  // so the indicator survives snapshot-poll DOM replacement.
+  const AGENT_STATUS_LABELS = {
+    idle: 'Trading manager · Idle',
+    working: 'Trading manager · Working…',
+    failed: 'Trading manager · Failed',
+    loading: 'Trading manager · Loading…',
+  };
+  const TERMINAL_RUN_STATUSES = {failed: true, killed: true, timeout: true};
+  const projectAgentStatus = (hasActiveRun, runStatus) => {
+    const terminal = runStatus && TERMINAL_RUN_STATUSES[runStatus];
+    if (terminal) { return 'failed'; }
+    if (hasActiveRun) { return 'working'; }
+    return 'idle';
+  };
+  const renderAgentStatus = () => {
+    const status = document.getElementById('chat-status');
+    const labelNode = status && status.querySelector ? status.querySelector('.label') : null;
+    const cached = chatStateCache.agentStatus;
+    const label = AGENT_STATUS_LABELS[cached] || AGENT_STATUS_LABELS.idle;
+    if (!status) { return; }
+    if (status.dataset) { status.dataset.agentStatus = cached; }
+    if (labelNode) { labelNode.textContent = label; } else if (status.lastChild) { status.lastChild.textContent = label; }
+  };
+  const setAgentStatus = (next) => {
+    const allowed = {'idle': true, 'working': true, 'failed': true, 'loading': true};
+    chatStateCache.agentStatus = allowed[next] ? next : 'idle';
+    renderAgentStatus();
+  };
   const renderChatHistory = (history) => {
     const target = document.getElementById('chat-history');
     if (!target) { return; }
     const session = history && history.session ? history.session : {status: 'unavailable', agent: 'trading-manager'};
     const messages = Array.isArray(history && history.messages) ? history.messages : [];
     if (session.status !== 'available') {
+      // Gateway is unavailable (genuine OR temporary poll failure). Per spec:
+      // preserve last-known chat history, surface bounded stale message,
+      // and DO NOT falsely switch Working -> Idle. The agent indicator
+      // cache (`chatStateCache.agentStatus`) is intentionally not touched here.
       setChatState('Chat history unavailable; keeping last known messages.', true);
       return;
     }
+    const hasActiveRun = session.has_active_run === true;
+    const allowedRunStatuses = {running: true, idle: true, done: true, failed: true, killed: true, timeout: true};
+    const rawRunStatus = typeof session.run_status === 'string' ? session.run_status : null;
+    const runStatus = rawRunStatus && allowedRunStatuses[rawRunStatus] ? rawRunStatus : null;
+    chatStateCache.runStatus = runStatus;
+    setAgentStatus(projectAgentStatus(hasActiveRun, runStatus));
     if (!messages.length) {
       setChatState('No visible trading-manager messages are available yet.', false);
       target.innerHTML = '';
@@ -526,6 +570,9 @@ def _refresh_script() -> str:
       if (!response.ok) { throw new Error('chat history request failed: ' + response.status); }
       renderChatHistory(await response.json());
     } catch (error) {
+      // Poll failure. Preserve all caches (chat-history HTML, agent indicator,
+      // scroll position). The chat-state banner shows the existing bounded stale
+      // message; the agent indicator does NOT flip Working -> Idle.
       renderChatHistory({session: {agent: 'trading-manager', status: 'unavailable'}, messages: []});
     }
   };
