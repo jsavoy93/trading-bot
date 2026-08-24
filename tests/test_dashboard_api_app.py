@@ -946,6 +946,17 @@ eval(script.replace('<script>', '').replace('</script>', ''));
   assert.strictEqual(chatHistory.scrollTop, 77);
   assert.strictEqual(calls[0][0], '/api/engineering/chat/send');
   assert.strictEqual(calls[1][0], '/api/engineering/chat/history');
+  global.fetch = async (url) => {
+    if (url === '/api/engineering/chat/send') { return {ok: true, json: async () => ({ok: true, status: 'sent', run_id: 'run-history-fail'})}; }
+    if (url === '/api/engineering/chat/history') { throw new Error('history unavailable after send'); }
+    throw new Error('unexpected url ' + url);
+  };
+  input.value = 'history fails after success';
+  await window.engineeringDashboard.sendChatMessage(input.value);
+  assert.strictEqual(input.value, '');
+  assert.strictEqual(button.disabled, false);
+  assert.strictEqual(button.textContent, 'Send');
+  assert(chatState.textContent.includes('unavailable'));
   global.fetch = async () => ({ok: false, json: async () => ({ok: false, error: 'bounded fail'})});
   const before = chatHistory.innerHTML;
   input.value = 'will fail';
@@ -954,6 +965,95 @@ eval(script.replace('<script>', '').replace('</script>', ''));
   assert.strictEqual(chatHistory.innerHTML, before);
 })().catch((error) => { console.error(error); process.exit(1); });
 """
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_send_state_recovers_when_snapshot_poll_replaces_dom_during_send():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot(data_freshness_timestamp="2026-08-24T01:00:00+00:00")))
+    history_payload = json.dumps(
+        {
+            "session": {"agent": "trading-manager", "status": "available"},
+            "messages": [
+                {"role": "user", "text": "how are you", "timestamp": "t1"},
+                {"role": "assistant", "text": "manager response", "timestamp": "t2"},
+            ],
+        }
+    )
+    body = textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let storage = {{value: 'chat', getItem: () => storage.value, setItem: (key, value) => {{ storage.value = value; }}}};
+        let sendResolve;
+        const sendPromise = new Promise((resolve) => {{ sendResolve = resolve; }});
+        function parseContent(html) {{
+          const panels = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health', 'chat'].map((tab) => ({{dataset: {{tabPanel: tab}}, hidden: tab !== storage.value, setAttribute: () => {{}}}}));
+          const buttons = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health', 'chat'].map((tab) => ({{dataset: {{tab}}, addEventListener: () => {{}}, setAttribute: function(name, value) {{ this[name] = value; }}}}));
+          return {{
+            elements: {{
+              'dashboard-content': content,
+              'update-warning': warning,
+              'chat-state': {{textContent: html.includes('Loading trading-manager history') ? 'Loading trading-manager history…' : '', style: {{display: 'block'}}, dataset: {{}}}},
+              'chat-history': {{innerHTML: '', scrollTop: 0, scrollHeight: 88, clientHeight: 40}},
+              'chat-message': {{value: '', disabled: false}},
+              'chat-send': {{disabled: false, textContent: 'Send'}},
+            }},
+            panels,
+            buttons,
+          }};
+        }}
+        let dom;
+        let content = {{
+          _html: '',
+          addEventListener: () => {{}},
+          contains: () => true,
+          querySelectorAll: (selector) => selector === '[data-tab]' ? dom.buttons : selector === '[data-tab-panel]' ? dom.panels : [],
+        }};
+        Object.defineProperty(content, 'innerHTML', {{get() {{ return this._html; }}, set(value) {{ this._html = value; dom = parseContent(value); }}}});
+        let warning = {{textContent: '', style: {{display: 'none'}}}};
+        dom = parseContent('');
+        global.window = {{scrollX: 0, scrollY: 0, localStorage: storage, setInterval: () => 1, scrollTo: () => {{}}}};
+        global.document = {{getElementById: (id) => dom.elements[id] || null}};
+        let sends = 0;
+        let holdFirstSend = true;
+        global.fetch = async (url, options) => {{
+          if (url === '/api/engineering/chat/send') {{
+            sends += 1;
+            assert.strictEqual(JSON.parse(options.body).message, sends === 1 ? 'how are you' : 'second message');
+            if (holdFirstSend) {{ await sendPromise; holdFirstSend = false; }}
+            return {{ok: true, json: async () => ({{ok: true, status: 'sent', run_id: 'run-' + sends}})}};
+          }}
+          if (url === '/api/engineering/snapshot') {{ return {{ok: true, json: async () => ({snapshot_payload})}}; }}
+          if (url === '/api/engineering/chat/history') {{ return {{ok: true, json: async () => ({history_payload})}}; }}
+          throw new Error('unexpected url ' + url);
+        }};
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {{
+          window.engineeringDashboard.switchTab('chat');
+          dom.elements['chat-message'].value = 'how are you';
+          const sendTask = window.engineeringDashboard.sendChatMessage(dom.elements['chat-message'].value);
+          assert.strictEqual(dom.elements['chat-send'].textContent, 'Sending…');
+          assert.strictEqual(dom.elements['chat-send'].disabled, true);
+          assert.strictEqual(dom.elements['chat-message'].disabled, true);
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(dom.elements['chat-message'].value, 'how are you');
+          assert.strictEqual(dom.elements['chat-send'].textContent, 'Sending…');
+          sendResolve();
+          await sendTask;
+          assert.strictEqual(dom.elements['chat-message'].value, '');
+          assert.strictEqual(dom.elements['chat-message'].disabled, false);
+          assert.strictEqual(dom.elements['chat-send'].textContent, 'Send');
+          assert.strictEqual(dom.elements['chat-send'].disabled, false);
+          assert(dom.elements['chat-history'].innerHTML.includes('manager response'));
+          dom.elements['chat-message'].value = 'second message';
+          await window.engineeringDashboard.sendChatMessage(dom.elements['chat-message'].value);
+          assert.strictEqual(sends, 2);
+          assert.strictEqual(dom.elements['chat-message'].value, '');
+        }})().catch((error) => {{ console.error(error); process.exit(1); }});
+        """
+    )
     _run_dashboard_script_case(script, body)
 
 
