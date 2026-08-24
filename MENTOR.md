@@ -1102,22 +1102,30 @@ The `/engineering` page is a mobile-first read-only command center. It renders a
 
 The Overview tab intentionally contains only high-value status fields: health, project, branch, repository safety, current task/agent/execution/phase, elapsed/latest activity/last completed action, blocker summary, and DONE/REVIEW/TODO/BLOCKED backlog counts. Detail tabs render activity, backlog, events, reports, and health as compact cards/lists rather than wide tables. Selected tab state is preserved during polling and stored in browser `localStorage` across ordinary reloads. Dashboard rendering must continue to escape all snapshot values and must not expose raw stdout/stderr, prompts, private reasoning, secrets, unbounded logs, process inspection, or write controls.
 
-### Engineering Dashboard Chat history tab
+### Engineering Dashboard Chat tab
 
-The `/engineering` dashboard now includes a seventh read-only tab, Chat. Slice 1
-is history-only: it reads the existing OpenClaw `trading-manager` conversation
-through `dashboard_api.chat_gateway.GatewayChatHistoryClient`, which calls
-Gateway `chat.history` server-side for a fixed/resolved `trading-manager` session
-and exposes only bounded visible fields to the browser (`role`, `text`,
-`timestamp`, plus session `agent`/`status`). The preferred shared Telegram session
-is `agent:trading-manager:telegram:direct:8455029949`; if that exact key moves,
-the adapter resolves the current `trading-manager` session server-side and never
-allows browser-supplied agent IDs, session keys, Gateway URLs, tokens, or RPC
-methods.
+The `/engineering` dashboard includes a seventh tab, Chat. Slice 1 added bounded
+history reading through `dashboard_api.chat_gateway.GatewayChatHistoryClient`,
+which calls Gateway `chat.history` server-side for a fixed/resolved OpenClaw
+`trading-manager` session and exposes only bounded visible fields to the browser
+(`role`, `text`, `timestamp`, plus session `agent`/`status`). Slice 2 adds the
+only dashboard chat write path: `POST /api/engineering/chat/send`, which accepts
+exactly `{ "message": "..." }`, trims text, rejects empty/non-text/over-4,000
+character payloads, and calls Gateway `chat.send` server-side.
 
-Do not add send, abort, interrupt, arbitrary agent/session selection, or direct
-browser Gateway access without a separate approved slice. The Chat tab must not
+The shared manager target is fixed to `trading-manager`; the preferred shared
+Telegram-named session key is `agent:trading-manager:telegram:direct:8455029949`.
+As of Slice 2 verification the current authoritative session id is
+`fc12bb64-f6f9-458b-84a7-d7414e0a7196` and the configured/session model is
+`minimax-portal/MiniMax-M3`. Earlier Slice 1 metadata (`MiniMax-M2.7` and session
+id `e31c5f61-2d71-4078-bc59-eab62ef92067`) was stale; do not hardcode stale
+session ids. If the exact key moves, the adapter resolves the current
+`trading-manager` session server-side and never allows browser-supplied agent
+IDs, session keys/session ids, Gateway URLs, tokens, or RPC methods.
+
+Do not add abort, interrupt, arbitrary agent/session selection, generic Gateway
+RPC, workflow controls, Git/merge/deploy controls, brokerage/trading controls,
+direct browser Gateway access, private model/tool data exposure, or a second
+conversation database without a separate approved slice. The Chat tab must not
 expose private reasoning/thinking blocks, hidden prompts, tool arguments/results,
-raw stdout/stderr, secrets, credentials, unbounded transcript content, or a second
-conversation database. Slice 2, if approved, should add only bounded text send via
-a narrow server-side `chat.send` proxy to the same fixed manager target.
+raw stdout/stderr, secrets, credentials, or unbounded transcript content.

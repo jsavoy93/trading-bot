@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from html import escape
 from typing import Mapping, Protocol
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from dashboard_api.chat_gateway import GatewayChatHistoryClient
@@ -32,6 +32,7 @@ from dashboard_api.providers import (
 
 SNAPSHOT_ROUTE = "/api/engineering/snapshot"
 CHAT_HISTORY_ROUTE = "/api/engineering/chat/history"
+CHAT_SEND_ROUTE = "/api/engineering/chat/send"
 DASHBOARD_ROUTE = "/engineering"
 MAX_RENDERED_MAP_ITEMS = 50
 
@@ -42,6 +43,8 @@ class SnapshotProvider(Protocol):
 
 class ChatHistoryProvider(Protocol):
     def history(self) -> object: ...
+
+    def send(self, message: object) -> object: ...
 
 
 def create_default_read_model() -> SnapshotProvider:
@@ -91,6 +94,23 @@ def create_app(snapshot_provider: SnapshotProvider | None = None, chat_history_p
             return JSONResponse(history.to_public_dict())
         return JSONResponse(history)
 
+    @app.post(CHAT_SEND_ROUTE, name="engineering_chat_send")
+    async def engineering_chat_send(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001 - return bounded public error only.
+            return JSONResponse({"ok": False, "status": "rejected", "error": "invalid JSON"}, status_code=400)
+        if not isinstance(payload, Mapping):
+            return JSONResponse({"ok": False, "status": "rejected", "error": "JSON object required"}, status_code=400)
+        if set(payload) != {"message"}:
+            return JSONResponse({"ok": False, "status": "rejected", "error": "only message is allowed"}, status_code=400)
+        result = chat_provider.send(payload.get("message"))
+        body = result.to_public_dict() if hasattr(result, "to_public_dict") else result
+        if isinstance(body, Mapping) and body.get("ok") is True:
+            return JSONResponse(body)
+        status = body.get("status") if isinstance(body, Mapping) else None
+        return JSONResponse(body, status_code=400 if status == "rejected" else 503)
+
     @app.get(DASHBOARD_ROUTE, response_class=HTMLResponse, name="engineering_dashboard")
     def engineering_dashboard() -> HTMLResponse:
         snapshot = provider.snapshot()
@@ -116,7 +136,7 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             ".badge{display:inline-flex;align-items:center;min-height:1.75rem;padding:.2rem .55rem;border-radius:999px;background:#334155;color:#e2e8f0;font-weight:700;font-size:.82rem}.healthy{color:#86efac}.degraded{color:#fbbf24}.error{color:#fca5a5}.warning{border-left:4px solid #f59e0b;padding-left:.75rem}",
             ".tabs{position:sticky;top:0;z-index:2;display:flex;gap:.35rem;overflow-x:auto;padding:.5rem 0;margin:0 0 .5rem;background:#0f172a}.tab-button{appearance:none;border:1px solid #334155;border-radius:999px;background:#1e293b;color:#e2e8f0;padding:.65rem .8rem;min-height:44px;font-weight:700;white-space:nowrap}.tab-button[aria-selected='true']{background:#2563eb;border-color:#60a5fa;color:#fff}.tab-panel[hidden]{display:none}",
             ".list{display:grid;gap:.65rem}.activity-card,.report-card,.event-card,.task-card{border:1px solid #334155;border-radius:12px;padding:.75rem;background:#172033;min-width:0}.kv{display:grid;grid-template-columns:minmax(6rem,.45fr) minmax(0,1fr);gap:.25rem .6rem;margin-top:.5rem}.kv dt{font-weight:700;color:#bfdbfe}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}",
-            ".chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}",
+            ".chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}",
             "#update-warning{display:none;border-left:4px solid #f59e0b;padding:.75rem;margin:.75rem 0;background:#292524;color:#fde68a;border-radius:10px}",
             "dl{margin:.5rem 0 0}dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0;overflow-wrap:anywhere}code{color:#bae6fd;white-space:normal;overflow-wrap:anywhere}ul{padding-left:1.1rem;margin:.5rem 0}li{margin:.3rem 0}",
             "@media(max-width:700px){.shell{padding:.75rem}.overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.grid{grid-template-columns:1fr}.dashboard-title{font-size:1.1rem}.card,.mini-card,section{padding:.65rem}.kv{grid-template-columns:1fr}.tabs{margin-left:-.75rem;margin-right:-.75rem;padding:.45rem .75rem}.tab-button{font-size:.9rem;padding:.6rem .75rem}}",
@@ -320,9 +340,14 @@ def _chat_tab() -> str:
     return "".join(
         [
             "<h2>Chat</h2>",
-            "<p class='muted'>Read-only view of the existing OpenClaw trading-manager conversation. Sending is intentionally not available in this slice.</p>",
+            "<p class='muted'>Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p>",
             "<div id='chat-state' class='chat-state' role='status' aria-live='polite'>Loading trading-manager history…</div>",
             "<div id='chat-history' class='chat-history' aria-label='Trading manager conversation history'></div>",
+            "<form id='chat-form' class='chat-form'>",
+            "<label class='label' for='chat-message'>Message trading-manager</label>",
+            "<textarea id='chat-message' class='chat-input' name='message' maxlength='4000' required placeholder='Send a bounded text message to trading-manager…'></textarea>",
+            "<button id='chat-send' class='chat-send' type='submit'>Send</button>",
+            "</form>",
         ]
     )
 
@@ -371,6 +396,7 @@ def _refresh_script() -> str:
   'use strict';
   const SNAPSHOT_URL = '__SNAPSHOT_ROUTE__';
   const CHAT_HISTORY_URL = '__CHAT_HISTORY_ROUTE__';
+  const CHAT_SEND_URL = '__CHAT_SEND_ROUTE__';
   const POLL_INTERVAL_MS = 15000;
   const CHAT_POLL_INTERVAL_MS = 15000;
   const TAB_KEY = 'engineeringDashboard.selectedTab';
@@ -412,7 +438,7 @@ def _refresh_script() -> str:
   const reportCard = (report) => detailCard('report-card', esc(report.title), {'Task': report.task_id, 'Outcome': report.outcome || report.kind, 'Generated': report.generated_at, 'Path': report.path});
   const reportsTab = (snapshot) => `<h2>Reports</h2><div class="list">${(snapshot.recent_reports || []).map(reportCard).join('') || '<p class="muted">No recent reports.</p>'}</div>`;
   const healthTab = (snapshot) => `<h2>Health</h2>${healthSection(snapshot.engineering_health)}${warningsSection(snapshot.health_warnings)}<div class="grid">${repositorySection(snapshot.repository)}${testSection(snapshot)}${testingSection(snapshot.testing)}${pullRequestSection(snapshot.pull_request)}</div><p class="muted">Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>`;
-  const chatTab = () => `<h2>Chat</h2><p class="muted">Read-only view of the existing OpenClaw trading-manager conversation. Sending is intentionally not available in this slice.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading trading-manager history…</div><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div>`;
+  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading trading-manager history…</div><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
   const renderSnapshot = (snapshot) => tabNav() + panel('overview', overviewTab(snapshot), true) + panel('activity', activityTab(snapshot), false) + panel('backlog', backlogTab(snapshot), false) + panel('timeline', timelineTab(snapshot), false) + panel('reports', reportsTab(snapshot), false) + panel('health', healthTab(snapshot), false) + panel('chat', chatTab(), false);
   const selectedTab = () => { try { const stored = window.localStorage && window.localStorage.getItem(TAB_KEY); return TABS.includes(stored) ? stored : 'overview'; } catch (error) { return 'overview'; } };
   const switchTab = (tab) => {
@@ -422,28 +448,30 @@ def _refresh_script() -> str:
     try { window.localStorage && window.localStorage.setItem(TAB_KEY, selected); } catch (error) {}
     if (selected === 'chat') { refreshChatHistory(); }
   };
-  const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); };
+  const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); bindChatForm(); };
   const setWarning = (message) => { warning.textContent = message; warning.style.display = message ? 'block' : 'none'; };
-  const renderChatHistory = (history) => {
+  const setChatState = (message, failed) => {
     const state = document.getElementById('chat-state');
+    if (!state) { return; }
+    state.textContent = message || '';
+    state.style.display = message ? 'block' : 'none';
+    if (state.dataset) { state.dataset.status = failed ? 'failed' : (message ? 'working' : 'available'); }
+  };
+  const renderChatHistory = (history) => {
     const target = document.getElementById('chat-history');
-    if (!state || !target) { return; }
+    if (!target) { return; }
     const session = history && history.session ? history.session : {status: 'unavailable', agent: 'trading-manager'};
     const messages = Array.isArray(history && history.messages) ? history.messages : [];
     if (session.status !== 'available') {
-      state.textContent = 'Trading-manager chat history is unavailable.';
-      state.style.display = 'block';
-      target.innerHTML = '';
+      setChatState('Chat history unavailable; keeping last known messages.', true);
       return;
     }
     if (!messages.length) {
-      state.textContent = 'No visible trading-manager messages are available yet.';
-      state.style.display = 'block';
+      setChatState('No visible trading-manager messages are available yet.', false);
       target.innerHTML = '';
       return;
     }
-    state.textContent = '';
-    state.style.display = 'none';
+    setChatState('', false);
     target.innerHTML = messages.map((message) => {
       const role = message && message.role === 'user' ? 'user' : 'assistant';
       const label = role === 'user' ? 'Josh' : 'Trading manager';
@@ -460,6 +488,35 @@ def _refresh_script() -> str:
       renderChatHistory({session: {agent: 'trading-manager', status: 'unavailable'}, messages: []});
     }
   };
+  const sendChatMessage = async (message) => {
+    const trimmed = String(message || '').trim();
+    const input = document.getElementById('chat-message');
+    const button = document.getElementById('chat-send');
+    if (!trimmed) { setChatState('Enter a message before sending.', true); return; }
+    if (trimmed.length > 4000) { setChatState('Message is too long; maximum is 4000 characters.', true); return; }
+    try {
+      if (button) { button.disabled = true; button.textContent = 'Sending…'; }
+      setChatState('Sending message to trading-manager…', false);
+      const response = await fetch(CHAT_SEND_URL, {method: 'POST', headers: {'Accept': 'application/json', 'Content-Type': 'application/json'}, cache: 'no-store', body: JSON.stringify({message: trimmed})});
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok !== true) { throw new Error(result.error || 'chat send failed'); }
+      if (input) { input.value = ''; }
+      setChatState('Message sent. Trading-manager is working; waiting for response…', false);
+      await refreshChatHistory();
+    } catch (error) {
+      setChatState('Message send failed; existing chat history is preserved.', true);
+    } finally {
+      if (button) { button.disabled = false; button.textContent = 'Send'; }
+    }
+  };
+  const bindChatForm = () => {
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('chat-message');
+    if (!form || typeof form.addEventListener !== 'function') { return; }
+    if (form.dataset && form.dataset.bound === 'true') { return; }
+    if (form.dataset) { form.dataset.bound = 'true'; }
+    form.addEventListener('submit', (event) => { event.preventDefault(); sendChatMessage(input && input.value); });
+  };
   const refreshDashboard = async () => {
     try {
       const previousX = window.scrollX;
@@ -472,6 +529,7 @@ def _refresh_script() -> str:
       switchTab(activeTab);
       bindTabs();
       window.scrollTo(previousX, previousY);
+      bindChatForm();
       setWarning('');
     } catch (error) {
       setWarning('Dashboard update failed; showing the last known snapshot. Retrying every 15 seconds.');
@@ -479,13 +537,13 @@ def _refresh_script() -> str:
   };
   content.addEventListener('click', (event) => { const button = event.target.closest && event.target.closest('[data-tab]'); if (button && content.contains(button)) { event.preventDefault(); switchTab(button.dataset.tab); } });
   bindTabs();
-  window.engineeringDashboard = {refreshDashboard, renderSnapshot, switchTab, selectedTab, refreshChatHistory, renderChatHistory, POLL_INTERVAL_MS, CHAT_POLL_INTERVAL_MS, SNAPSHOT_URL, CHAT_HISTORY_URL};
+  window.engineeringDashboard = {refreshDashboard, renderSnapshot, switchTab, selectedTab, refreshChatHistory, renderChatHistory, sendChatMessage, POLL_INTERVAL_MS, CHAT_POLL_INTERVAL_MS, SNAPSHOT_URL, CHAT_HISTORY_URL, CHAT_SEND_URL};
   window.setInterval(refreshDashboard, POLL_INTERVAL_MS);
   window.setInterval(refreshChatHistory, CHAT_POLL_INTERVAL_MS);
 })();
 </script>
 '''
-    return script.replace("__SNAPSHOT_ROUTE__", SNAPSHOT_ROUTE).replace("__CHAT_HISTORY_ROUTE__", CHAT_HISTORY_ROUTE)
+    return script.replace("__SNAPSHOT_ROUTE__", SNAPSHOT_ROUTE).replace("__CHAT_HISTORY_ROUTE__", CHAT_HISTORY_ROUTE).replace("__CHAT_SEND_ROUTE__", CHAT_SEND_ROUTE)
 
 
 def _engineering_health_section(health: EngineeringHealthSummary | None, warnings: tuple[HealthWarning, ...]) -> str:
