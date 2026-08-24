@@ -14,6 +14,10 @@ CHAT_SEND_MAX_CHARS = 4_000
 GATEWAY_HISTORY_TIMEOUT_SECONDS = 15
 GATEWAY_SEND_TIMEOUT_SECONDS = 180
 
+# Terminal run-state values from OpenClaw Gateway sessionInfo.status.
+# Anything outside this set is surfaced as None (the dashboard treats it as Idle).
+ALLOWED_RUN_STATUSES = frozenset({"running", "idle", "done", "failed", "killed", "timeout"})
+
 
 @dataclass(frozen=True)
 class ChatMessage:
@@ -33,9 +37,21 @@ class ChatHistory:
     unavailable_reason: str | None = None
     resolved_session_key: str | None = None
     resolved_session_id: str | None = None
+    # Authoritative run-state fields sourced from OpenClaw Gateway chat.history
+    # (`sessionInfo.hasActiveRun` and `sessionInfo.status`). Surface only the
+    # minimum bounded fields needed by the dashboard's working-indicator:
+    # a boolean for in-flight, and the bounded enum for terminal state. The
+    # raw streamed text under `inFlightRun.text` is intentionally NOT exposed.
+    has_active_run: bool = False
+    run_status: str | None = None
 
     def to_public_dict(self) -> dict[str, object]:
-        session: dict[str, object] = {"agent": self.agent, "status": self.status}
+        session: dict[str, object] = {
+            "agent": self.agent,
+            "status": self.status,
+            "has_active_run": bool(self.has_active_run),
+            "run_status": self.run_status,
+        }
         if self.unavailable_reason:
             session["reason"] = _bounded_text(self.unavailable_reason, 160)
         return {"session": session, "messages": [message.to_dict() for message in self.messages]}
@@ -251,12 +267,20 @@ def _project_gateway_history(payload: Mapping[str, Any]) -> ChatHistory:
 
     raw_messages = history.get("messages") if isinstance(history.get("messages"), Sequence) else ()
     messages = tuple(_dedupe_messages(_project_message(message) for message in raw_messages))[-CHAT_HISTORY_LIMIT:]
+    session_info = history.get("sessionInfo") if isinstance(history.get("sessionInfo"), Mapping) else {}
+    # Authoritative in-flight indicator from the Gateway's chatAbortControllers
+    # registry. `in_flight_run` and the streamed text under it are intentionally
+    # NOT projected here; the indicator only needs the on/off state.
+    has_active_run = _bounded_bool(session_info.get("hasActiveRun"))
+    run_status = _allowed_run_status(session_info.get("status"))
     return ChatHistory(
         agent=TRADING_MANAGER_AGENT_ID,
         status="available",
         messages=messages,
         resolved_session_key=session_key,
         resolved_session_id=session_id,
+        has_active_run=has_active_run,
+        run_status=run_status,
     )
 
 
@@ -328,6 +352,19 @@ def _bounded_text(value: object, limit: int) -> str:
 
 def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _bounded_bool(value: object) -> bool:
+    return value is True
+
+
+def _allowed_run_status(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    return text if text in ALLOWED_RUN_STATUSES else None
 
 
 def _normalize_send_message(value: object) -> str | None:

@@ -1831,3 +1831,29 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests/backtests: DOM harness regression `.venv/bin/python -m pytest tests/test_dashboard_api_app.py::test_chat_send_state_recovers_when_snapshot_poll_replaces_dom_during_send -q` → `1 passed, 1 warning`; focused dashboard/chat `.venv/bin/python -m pytest tests/test_dashboard_api_app.py tests/test_dashboard_api_provider.py tests/test_dashboard_chat_gateway.py -q` → `45 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `804 passed, 82 warnings`; `git diff --check` → PASS. No trading backtest applicable.
 - Decisions/risks: Root cause was stale compose state in the persistent Chat cache when snapshot polling replaced the DOM during an in-flight send. The fix separates compose state (`idle`/`sending`) from history/manager-response state and applies send completion to the current DOM. Manual real Gateway double-send returned run ids `c080cbea-f11c-4202-81f7-f28228c4d515` and `095c4a1f-2436-46e9-b5d0-d33cfeee66a7`; session count stayed one for `agent:trading-manager:telegram:direct:8455029949`. Live mobile Safari observation was not available; Node DOM harness covers the race.
 - Next action: Commit, push branch, open PR, and wait for Josh review/approval before merge.
+
+## 2026-08-24 21:55:00–present UTC — Engineering Dashboard Chat agent working indicator
+
+- Elapsed time: in progress
+- Continuity: Continuous (read-only trace immediately prior at `2026-08-24_215235_engineering-dashboard-chat-run-state-trace.md`)
+- Backlog item/objective: Add a clear mobile-friendly working/idle/failed indicator in the Chat tab showing whether `trading-manager` is actively working on a request, using only existing OpenClaw Gateway signals surfaced through the existing `/api/engineering/chat/history` polling.
+- Branch: `agent/dashboard-chat-agent-working-indicator`
+- Commit: Pending at log creation.
+- Status: `IN_PROGRESS` awaiting real-Gateway manual verification, then PR for Josh review.
+- Files changed: `dashboard_api/chat_gateway.py`, `dashboard_api/app.py`, `tests/test_dashboard_chat_gateway.py`, `tests/test_dashboard_api_app.py` (+ MENTOR.md, ITERATION_PROGRESS_LOG.md, REPORT.md, reports/).
+- Authoritative run-state source: `chat.history` response already carries `sessionInfo.hasActiveRun` (boolean set by the Gateway from its `chatAbortControllers` registry) and `sessionInfo.status` (enum `"running"|"idle"|"done"|"failed"|"killed"|"timeout"`). Polling alone is sufficient — no WebSocket, no new session, no new database.
+- Surface policy: project only `has_active_run: bool` and `run_status: str|None` onto `ChatHistory`. `in_flight_run` (and its streamed text under `inFlightRun.text`) is intentionally NOT projected to the browser.
+- State model on the client (separate from compose state):
+  - `idle` when `hasActiveRun=false` AND `runStatus` not in `{failed,killed,timeout}`.
+  - `working` when `hasActiveRun=true`.
+  - `failed` when `runStatus` ∈ `{failed,killed,timeout}` (terminal projection).
+  - `loading` first-load placeholder; never inferred from a Client-side timer.
+- Authoritative mapping (per Josh):
+  - `sessionInfo.hasActiveRun == true` → Working
+  - `sessionInfo.hasActiveRun == false` and no terminal failure → Idle
+  - `sessionInfo.status ∈ {failed, killed, timeout}` → Failed
+  - **No client-side timer for "Interrupted"**. Polling failure preserves last-known agent indicator (Working is not falsely flipped to Idle); chat-state banner shows the existing bounded stale message.
+- UI: `<div id="chat-status">` placed in the Chat tab above the message list, near the header — visible above the fold on mobile. Subtle CSS `@keyframes chat-status-pulse` animation only while `data-agent-status="working"`. No overlay, no spinner blocking messages.
+- Tests: focused dashboard/chat/provider `.venv/bin/pytest tests/test_dashboard_api_app.py tests/test_dashboard_chat_gateway.py tests/test_dashboard_api_provider.py -q` → `56 passed, 2 warnings`; full safe suite `.venv/bin/pytest -q` → `815 passed, 86 warnings`; `git diff --check` → PASS. New coverage: Idle/Working/Failed rendering from session payload, terminal projection for failed/killed/timeout, completion returns to Idle, Working survives ≥3 snapshot polls, send failure does NOT set Working, temp history failure preserves last-known Working, no in-flight text leakage. PR #61 send-state behavior remains green.
+- Risks/notes: PR #61 send-state must remain green (verified above). Live mobile Safari observation still not available; Node DOM harness covers state preservation. Real-Gateway send test pending before PR.
+- Next action: real-Gateway send to verify Send → Working… → manager reply → Idle transition; commit; open PR; STOP for Josh review.

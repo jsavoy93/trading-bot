@@ -4,6 +4,7 @@ import json
 import subprocess
 
 from dashboard_api.chat_gateway import (
+    ALLOWED_RUN_STATUSES,
     CHAT_HISTORY_LIMIT,
     CHAT_MESSAGE_MAX_CHARS,
     PREFERRED_TRADING_MANAGER_SESSION_KEY,
@@ -79,7 +80,12 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
     payload = history.to_public_dict()
 
     assert payload == {
-        "session": {"agent": TRADING_MANAGER_AGENT_ID, "status": "available"},
+        "session": {
+            "agent": TRADING_MANAGER_AGENT_ID,
+            "status": "available",
+            "has_active_run": False,
+            "run_status": None,
+        },
         "messages": [
             {"role": "user", "text": "hello <script>", "timestamp": "2026-08-17T12:28:31+00:00"},
             {
@@ -90,7 +96,7 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
         ],
     }
     serialized = json.dumps(payload)
-    for forbidden in ("private reasoning", "hidden prompt", "tool_use", "tool_calls", "raw output", "raw error", "secret"):
+    for forbidden in ("private reasoning", "hidden prompt", "tool_use", "tool_calls", "raw output", "raw error", "secret", "in_flight_run", "inFlightRun", "textContent"):
         assert forbidden not in serialized
 
 
@@ -122,7 +128,16 @@ def test_gateway_failure_returns_bounded_unavailable_state():
 
     payload = GatewayChatHistoryClient(runner=runner).history().to_public_dict()
 
-    assert payload == {"session": {"agent": TRADING_MANAGER_AGENT_ID, "status": "unavailable", "reason": "RuntimeError"}, "messages": []}
+    assert payload == {
+        "session": {
+            "agent": TRADING_MANAGER_AGENT_ID,
+            "status": "unavailable",
+            "has_active_run": False,
+            "run_status": None,
+            "reason": "RuntimeError",
+        },
+        "messages": [],
+    }
     assert "super secret" not in json.dumps(payload)
 
 
@@ -191,3 +206,159 @@ def test_send_gateway_failure_returns_bounded_safe_error():
     assert payload["status"] == "failed"
     assert payload["error"] == "Gateway chat send unavailable"
     assert "secret" not in json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# Agent working-indicator run-state projection (Engineering dashboard).
+# Authoritative source: chat.history sessionInfo.hasActiveRun (bool) and
+# sessionInfo.status (enum). inFlightRun and the streamed text under it are
+# intentionally NOT projected.
+# ---------------------------------------------------------------------------
+
+
+def test_history_projection_exposes_idle_when_no_active_run_and_no_terminal_status():
+    history = GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed(
+            {
+                "ok": True,
+                "agentId": TRADING_MANAGER_AGENT_ID,
+                "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+                "history": {
+                    "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                    "sessionId": "session-123",
+                    "messages": [],
+                    "sessionInfo": {"hasActiveRun": False, "status": "idle"},
+                },
+            }
+        )
+    ).history()
+
+    payload = history.to_public_dict()
+
+    assert payload["session"]["has_active_run"] is False
+    assert payload["session"]["run_status"] == "idle"
+
+
+def test_history_projection_exposes_working_when_has_active_run_true():
+    history = GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed(
+            {
+                "ok": True,
+                "agentId": TRADING_MANAGER_AGENT_ID,
+                "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+                "history": {
+                    "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                    "sessionId": "session-123",
+                    "messages": [],
+                    "sessionInfo": {"hasActiveRun": True, "status": "running"},
+                    "inFlightRun": {"runId": "abc-123", "text": "private streamed text fragment"},
+                },
+            }
+        )
+    ).history()
+
+    payload = history.to_public_dict()
+
+    assert payload["session"]["has_active_run"] is True
+    assert payload["session"]["run_status"] == "running"
+    serialized = json.dumps(payload)
+    assert "in_flight_run" not in serialized
+    assert "inFlightRun" not in serialized
+    assert "private streamed text fragment" not in serialized
+    assert "abc-123" not in serialized
+
+
+def test_history_projection_exposes_failed_for_terminal_run_statuses():
+    for terminal in ("failed", "killed", "timeout"):
+        history = GatewayChatHistoryClient(
+            runner=lambda *a, _terminal=terminal, **kw: _completed(
+                {
+                    "ok": True,
+                    "agentId": TRADING_MANAGER_AGENT_ID,
+                    "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+                    "history": {
+                        "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                        "sessionId": "session-123",
+                        "messages": [],
+                        "sessionInfo": {"hasActiveRun": False, "status": _terminal},
+                    },
+                }
+            )
+        ).history()
+        payload = history.to_public_dict()
+        assert payload["session"]["has_active_run"] is False
+        assert payload["session"]["run_status"] == terminal, f"expected {terminal}"
+
+
+def test_history_projection_clamps_unknown_run_status_to_none_and_treats_non_bool_as_false():
+    history = GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed(
+            {
+                "ok": True,
+                "agentId": TRADING_MANAGER_AGENT_ID,
+                "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+                "history": {
+                    "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                    "sessionId": "session-123",
+                    "messages": [],
+                    "sessionInfo": {
+                        "hasActiveRun": "true",  # not a real bool — defensive clamp
+                        "status": "wibble",  # not in ALLOWED_RUN_STATUSES — bounded to None
+                    },
+                },
+            }
+        )
+    ).history()
+
+    payload = history.to_public_dict()
+
+    assert payload["session"]["has_active_run"] is False
+    assert payload["session"]["run_status"] is None
+
+
+def test_history_projection_tolerates_missing_sessionInfo_gracefully():
+    history = GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed(
+            {
+                "ok": True,
+                "agentId": TRADING_MANAGER_AGENT_ID,
+                "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+                "history": {
+                    "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                    "sessionId": "session-123",
+                    "messages": [],
+                    # sessionInfo intentionally absent
+                },
+            }
+        )
+    ).history()
+
+    payload = history.to_public_dict()
+
+    assert payload["session"]["status"] == "available"
+    assert payload["session"]["has_active_run"] is False
+    assert payload["session"]["run_status"] is None
+
+
+def test_history_projection_does_not_expose_in_flight_run_object_or_streamed_text():
+    history = GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed(
+            {
+                "ok": True,
+                "agentId": TRADING_MANAGER_AGENT_ID,
+                "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+                "history": {
+                    "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                    "sessionId": "session-123",
+                    "messages": [],
+                    "sessionInfo": {"hasActiveRun": True, "status": "running"},
+                    "inFlightRun": {"runId": "uuid-9", "text": "leaked-model-reasoning-trace"},
+                },
+            }
+        )
+    ).history()
+
+    serialized = json.dumps(history.to_public_dict())
+
+    for forbidden in ("inFlightRun", "in_flight_run", "uuid-9", "leaked-model-reasoning-trace"):
+        assert forbidden not in serialized

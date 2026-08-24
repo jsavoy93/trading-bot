@@ -1144,3 +1144,26 @@ Gateway accepts the message; it must not wait for `chat.history`, manager reply
 arrival, or a later polling cycle. If snapshot polling replaces the Chat DOM
 while a send is in flight, send completion must update the current DOM from the
 persistent compose cache, not stale detached textarea/button references.
+
+### Chat agent working indicator (live run-state)
+
+The Chat tab renders a compact `<div id="chat-status" data-agent-status="...">` pill directly under the existing chat-state banner and above the message list, so it stays visible above the fold on mobile. The label is one of:
+
+- `Trading manager · Idle` (gray dot) — chat-history returned `sessionInfo.hasActiveRun=false` and `sessionInfo.status` is not in `{failed,killed,timeout}`.
+- `Trading manager · Working…` (amber dot, 1.05s pulse animation) — `sessionInfo.hasActiveRun=true`.
+- `Trading manager · Failed` (red dot) — `sessionInfo.status ∈ {failed, killed, timeout}`.
+- `Trading manager · Loading…` (gray dot) — first-load placeholder before the first successful poll.
+
+Authoritative source is the existing `/api/engineering/chat/history` JSON which already carries `session.has_active_run` and `session.run_status` (projected from `chat.history`'s `sessionInfo.hasActiveRun` and `sessionInfo.status` in `dashboard_api.chat_gateway._project_gateway_history`). The polling cadence is the existing 15-second `setInterval(refreshChatHistory, CHAT_POLL_INTERVAL_MS)`. No WebSocket, no new RPC, no new OpenClaw session, no new database.
+
+Compose state (PR #61) and run state are strictly separated:
+
+- Compose state (`idle`/`sending`): driven by `setComposeState()` only.
+- Run state (`idle`/`working`/`failed`/`loading`): driven by `setAgentStatus()` only, projected from authoritative Gateway data.
+- A failed `chat.send` (or a send that returns `ok=false`) NEVER sets Working. Only a successful `chat.send` followed by a subsequent poll showing `has_active_run=true` projects Working.
+
+Snapshot-poll survival: `chatStateCache.agentStatus` is captured by `captureChatUiState()` before `#dashboard-content.innerHTML` is replaced and re-applied by `renderAgentStatus()` inside `restoreChatUiState()`. The `data-agent-status` attribute on `#chat-status` is the DOM source of truth that survives snapshot replacement.
+
+Temporary poll failure: `refreshChatHistory()` catches and re-routes through `renderChatHistory({session: status: "unavailable"})`. This branches into `setChatState('Chat history unavailable; keeping last known messages.', true)` which updates ONLY the chat-state banner. `setAgentStatus()` is NOT called in this branch — Working is preserved across temporary poll failure. There is no client-side timer. "Interrupted" is not projected from elapsed time; only terminal `sessionInfo.status` values produce the Failed indicator.
+
+Hard privacy rules (re-stated): the run-state indicator must never expose `inFlightRun.text` (streamed model reasoning), raw `chat.history` keys, raw Gateway internals, prompts, tool arguments, raw stdout/stderr, secrets, or `run_id`. `dashboard_api.chat_gateway._project_gateway_history` intentionally reads only `sessionInfo.hasActiveRun` (bounded to literal `True`) and `sessionInfo.status` (clamped to `ALLOWED_RUN_STATUSES = {"running","idle","done","failed","killed","timeout"}`). Unknown values become `False`/`None`; the browser only ever sees `has_active_run: bool` and `run_status: string|null`.

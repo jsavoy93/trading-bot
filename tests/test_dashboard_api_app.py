@@ -1165,3 +1165,275 @@ def test_chat_state_survives_snapshot_poll_without_loading_reset_or_draft_loss()
         """
     )
     _run_dashboard_script_case(script, body)
+
+
+# ---------------------------------------------------------------------------
+# Agent working-indicator (live OpenClaw run-state).
+# Authoritative source: chat.history sessionInfo.hasActiveRun + sessionInfo.status.
+# No WebSocket, no new RPC, no in-flight-run text exposed.
+# ---------------------------------------------------------------------------
+
+
+def _shared_chat_dom_script_boilerplate(snapshot_payload):
+    """Return a JS harness prelude that wires up the chat DOM with chat-status."""
+
+    return textwrap.dedent(
+        f"""
+        const assert = require('assert');
+        const fs = require('fs');
+        const script = fs.readFileSync(0, 'utf8');
+        let storage = {{value: 'chat', getItem: () => storage.value, setItem: () => {{}}}};
+        function parseContent(html) {{
+          const panels = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health', 'chat'].map((tab) => ({{dataset: {{tabPanel: tab}}, hidden: tab !== storage.value, setAttribute: () => {{}}}}));
+          const buttons = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health', 'chat'].map((tab) => ({{dataset: {{tab}}, addEventListener: () => {{}}, setAttribute: function(name, value) {{ this[name] = value; }}}}));
+          const statusLabel = {{textContent: ''}};
+          const chatStatus = {{
+            dataset: {{agentStatus: 'idle'}},
+            querySelector: (selector) => selector === '.label' ? statusLabel : null,
+          }};
+          return {{
+            elements: {{
+              'dashboard-content': content,
+              'update-warning': warning,
+              'chat-state': {{textContent: '', style: {{display: 'block'}}, dataset: {{}}}},
+              'chat-history': {{innerHTML: '', scrollTop: 0, scrollHeight: 88, clientHeight: 40}},
+              'chat-message': {{value: '', disabled: false}},
+              'chat-send': {{disabled: false, textContent: 'Send'}},
+              'chat-status': chatStatus,
+            }},
+            panels,
+            buttons,
+            statusLabel,
+            chatStatus,
+          }};
+        }}
+        let dom;
+        let content = {{
+          _html: '',
+          addEventListener: () => {{}},
+          contains: () => true,
+          querySelectorAll: (selector) => selector === '[data-tab]' ? dom.buttons : selector === '[data-tab-panel]' ? dom.panels : [],
+        }};
+        Object.defineProperty(content, 'innerHTML', {{
+          get() {{ return this._html; }},
+          set(value) {{ this._html = value; dom = parseContent(value); }}
+        }});
+        let warning = {{textContent: '', style: {{display: 'none'}}}};
+        dom = parseContent('');
+        global.window = {{scrollX: 0, scrollY: 0, localStorage: storage, setInterval: () => 1, scrollTo: () => {{}}}};
+        global.document = {{getElementById: (id) => dom.elements[id] || null}};
+        global.fetch = async (url) => {{
+          if (url === '/api/engineering/chat/history') {{ return {{ok: true, json: async () => ({{session: {{agent: 'trading-manager', status: 'available'}}, messages: []}}) }}; }}
+          if (url === '/api/engineering/snapshot') {{ return {{ok: true, json: async () => ({snapshot_payload}) }}; }}
+          throw new Error('unexpected url ' + url);
+        }};
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        """
+    )
+
+
+def test_chat_status_indicator_renders_idle_working_and_failed_from_session_payload():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+          // Idle (initial)
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'idle');
+          assert(dom.statusLabel.textContent.includes('Idle'));
+
+          // Working — has_active_run true
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: true, run_status: 'running'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'working');
+          assert(dom.statusLabel.textContent.includes('Working'));
+
+          // Failed terminal — run_status failed
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'failed'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'failed');
+          assert(dom.statusLabel.textContent.includes('Failed'));
+
+          // Killed terminal
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'killed'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'failed');
+
+          // Timeout terminal
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'timeout'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'failed');
+
+          // Completion returns to Idle
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'done'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'idle');
+          assert(dom.statusLabel.textContent.includes('Idle'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_status_indicator_working_survives_snapshot_polls():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+          // Send a message; chat.history will report has_active_run:true
+          global.fetch = async (url, options) => {
+            if (url === '/api/engineering/chat/send') {
+              return {ok: true, json: async () => ({ok: true, status: 'sent', run_id: 'run-survive'})};
+            }
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: true, run_status: 'running'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          dom.elements['chat-message'].value = 'trigger working';
+          await window.engineeringDashboard.sendChatMessage(dom.elements['chat-message'].value);
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'working');
+
+          // Three more snapshot polls while still working
+          for (let index = 0; index < 3; index += 1) {
+            await window.engineeringDashboard.refreshDashboard();
+            assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'working');
+          }
+
+          // Run completes -> Idle
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'done'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'idle');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_status_indicator_send_failure_does_not_set_working():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'idle');
+
+          // Send fails
+          global.fetch = async (url, options) => {
+            if (url === '/api/engineering/chat/send') {
+              return {ok: false, status: 503, json: async () => ({ok: false, status: 'unavailable', error: 'gateway unavailable'})};
+            }
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          dom.elements['chat-message'].value = 'this should not become working';
+          await window.engineeringDashboard.sendChatMessage(dom.elements['chat-message'].value);
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'idle');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_status_indicator_temp_history_failure_preserves_last_known_working():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+          // Drive indicator to Working first.
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: true, run_status: 'running'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'working');
+
+          // Now poll fails (no live session change)
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              throw new Error('temporary network error');
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          // Must preserve Working across temporary poll failure; only the chat-state banner switches to "unavailable".
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'working');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_status_indicator_does_not_render_in_flight_streamed_text():
+    """The bundled JS must not surface inFlightRun.text or any streaming
+    payload anywhere in the renderAgentStatus / setAgentStatus path."""
+
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: true, run_status: 'running'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          // Check the rendered HTML and the existing label
+          const rendered = (dom.statusLabel.textContent || '');
+          assert(!rendered.includes('private streamed text fragment'));
+          assert(!rendered.includes('inFlightRun'));
+          assert(!rendered.includes('leaked'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+
+    _run_dashboard_script_case(script, body)
