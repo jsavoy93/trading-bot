@@ -1818,3 +1818,16 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Implementation: added client-side Chat UI state cache with capture/restore around snapshot DOM replacement. The cache preserves history HTML, bounded status text, textarea draft, send button state/text, scroll position, and near-bottom behavior. Chat-history polling still updates messages in place; temporary snapshot/history failures preserve last-known Chat state.
 - Manual/DOM cycling: permanent Node DOM regression simulates Chat selected, loaded messages, repeated snapshot polls, snapshot failure, draft/send-state preservation, and history recovery without duplicate messages or loading reset.
 - Next action: Commit, push, and open PR for Josh review. Josh approval is required before merge.
+
+## 2026-08-24 20:01:00–20:10:51 UTC — Engineering Dashboard Chat send-state reset fix
+
+- Elapsed time: 9 minutes 51 seconds
+- Continuity: Continuous
+- Backlog item/objective: Fix the mobile Engineering Dashboard Chat bug where, after a successful dashboard send, the textarea retained the sent message and the Send button stayed disabled as `Sending…`.
+- Branch: `agent/dashboard-chat-send-state-fix`
+- Commit: Pending at log creation.
+- Status: `DONE`
+- Files changed: `dashboard_api/app.py`, `tests/test_dashboard_api_app.py`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`, `REPORT.md`, `reports/2026-08-24_201051_engineering-dashboard-chat-send-state-fix.md`
+- Tests/backtests: DOM harness regression `.venv/bin/python -m pytest tests/test_dashboard_api_app.py::test_chat_send_state_recovers_when_snapshot_poll_replaces_dom_during_send -q` → `1 passed, 1 warning`; focused dashboard/chat `.venv/bin/python -m pytest tests/test_dashboard_api_app.py tests/test_dashboard_api_provider.py tests/test_dashboard_chat_gateway.py -q` → `45 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `804 passed, 82 warnings`; `git diff --check` → PASS. No trading backtest applicable.
+- Decisions/risks: Root cause was stale compose state in the persistent Chat cache when snapshot polling replaced the DOM during an in-flight send. The fix separates compose state (`idle`/`sending`) from history/manager-response state and applies send completion to the current DOM. Manual real Gateway double-send returned run ids `c080cbea-f11c-4202-81f7-f28228c4d515` and `095c4a1f-2436-46e9-b5d0-d33cfeee66a7`; session count stayed one for `agent:trading-manager:telegram:direct:8455029949`. Live mobile Safari observation was not available; Node DOM harness covers the race.
+- Next action: Commit, push branch, open PR, and wait for Josh review/approval before merge.

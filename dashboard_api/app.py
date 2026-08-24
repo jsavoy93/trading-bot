@@ -450,8 +450,20 @@ def _refresh_script() -> str:
   };
   const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); bindChatForm(); };
   const setWarning = (message) => { warning.textContent = message; warning.style.display = message ? 'block' : 'none'; };
-  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', buttonDisabled: false, buttonText: 'Send', scrollTop: 0, wasNearBottom: true};
+  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', composeStatus: 'idle', scrollTop: 0, wasNearBottom: true};
   const isNearBottom = (target) => !target || (target.scrollHeight - target.scrollTop <= target.clientHeight + 48);
+  const applyComposeState = () => {
+    const input = document.getElementById('chat-message');
+    const button = document.getElementById('chat-send');
+    const sending = chatStateCache.composeStatus === 'sending';
+    if (input) { input.value = chatStateCache.draft || ''; input.disabled = sending; }
+    if (button) { button.disabled = sending; button.textContent = sending ? 'Sending…' : 'Send'; }
+  };
+  const setComposeState = (draft, status) => {
+    chatStateCache.draft = draft || '';
+    chatStateCache.composeStatus = status || 'idle';
+    applyComposeState();
+  };
   const captureChatUiState = () => {
     const state = document.getElementById('chat-state');
     const target = document.getElementById('chat-history');
@@ -460,7 +472,7 @@ def _refresh_script() -> str:
     if (state) { chatStateCache.statusText = state.textContent || ''; chatStateCache.statusDisplay = state.style.display || ''; chatStateCache.statusKind = state.dataset && state.dataset.status ? state.dataset.status : chatStateCache.statusKind; }
     if (target) { chatStateCache.historyHtml = target.innerHTML || chatStateCache.historyHtml; chatStateCache.scrollTop = target.scrollTop || 0; chatStateCache.wasNearBottom = isNearBottom(target); }
     if (input) { chatStateCache.draft = input.value || ''; }
-    if (button) { chatStateCache.buttonDisabled = !!button.disabled; chatStateCache.buttonText = button.textContent || 'Send'; }
+    if (button && button.disabled && button.textContent === 'Sending…') { chatStateCache.composeStatus = 'sending'; }
   };
   const restoreChatUiState = () => {
     const state = document.getElementById('chat-state');
@@ -469,8 +481,7 @@ def _refresh_script() -> str:
     const button = document.getElementById('chat-send');
     if (state) { state.textContent = chatStateCache.statusText || ''; state.style.display = chatStateCache.statusDisplay || (state.textContent ? 'block' : 'none'); if (state.dataset) { state.dataset.status = chatStateCache.statusKind || 'available'; } }
     if (target && chatStateCache.historyHtml) { target.innerHTML = chatStateCache.historyHtml; target.scrollTop = chatStateCache.scrollTop || 0; }
-    if (input) { input.value = chatStateCache.draft || ''; }
-    if (button) { button.disabled = !!chatStateCache.buttonDisabled; button.textContent = chatStateCache.buttonText || 'Send'; }
+    applyComposeState();
   };
   const setChatState = (message, failed) => {
     const state = document.getElementById('chat-state');
@@ -519,24 +530,23 @@ def _refresh_script() -> str:
     }
   };
   const sendChatMessage = async (message) => {
-    const trimmed = String(message || '').trim();
     const input = document.getElementById('chat-message');
-    const button = document.getElementById('chat-send');
+    const original = input ? input.value : String(message || '');
+    const trimmed = String(original || '').trim();
     if (!trimmed) { setChatState('Enter a message before sending.', true); return; }
     if (trimmed.length > 4000) { setChatState('Message is too long; maximum is 4000 characters.', true); return; }
+    setComposeState(original, 'sending');
+    setChatState('Sending message to trading-manager…', false);
     try {
-      if (button) { button.disabled = true; button.textContent = 'Sending…'; }
-      setChatState('Sending message to trading-manager…', false);
       const response = await fetch(CHAT_SEND_URL, {method: 'POST', headers: {'Accept': 'application/json', 'Content-Type': 'application/json'}, cache: 'no-store', body: JSON.stringify({message: trimmed})});
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.ok !== true) { throw new Error(result.error || 'chat send failed'); }
-      if (input) { input.value = ''; }
+      setComposeState('', 'idle');
       setChatState('Message sent. Trading-manager is working; waiting for response…', false);
       await refreshChatHistory();
     } catch (error) {
+      setComposeState(original, 'idle');
       setChatState('Message send failed; existing chat history is preserved.', true);
-    } finally {
-      if (button) { button.disabled = false; button.textContent = 'Send'; }
     }
   };
   const bindChatForm = () => {

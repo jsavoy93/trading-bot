@@ -1137,3 +1137,10 @@ history/status/textarea/send-button/scroll state around `renderSnapshot()` when
 Chat is selected. Do not reintroduce a design where `renderSnapshot()` exposes
 `chatTab()`'s initial `Loading trading-manager history…` markup over already
 loaded messages during background polling.
+
+Chat compose state is separate from history/manager-response state. `chat.send`
+success must clear the textarea and return controls to idle as soon as the
+Gateway accepts the message; it must not wait for `chat.history`, manager reply
+arrival, or a later polling cycle. If snapshot polling replaces the Chat DOM
+while a send is in flight, send completion must update the current DOM from the
+persistent compose cache, not stale detached textarea/button references.
