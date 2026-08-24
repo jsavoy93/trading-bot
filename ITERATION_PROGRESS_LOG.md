@@ -1778,3 +1778,14 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Tests/backtests run: focused dashboard tests `.venv/bin/python -m pytest tests/test_dashboard_api_app.py tests/test_dashboard_timeline.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_api_provider.py -q` → `79 passed, 2 warnings`; full safe suite `.venv/bin/python -m pytest -q` → `788 passed, 85 warnings`; `git diff --check` → PASS; manual local ASGI/mobile-structure harness → PASS, with actual mobile Safari/Termius device unavailable in this environment.
 - Decisions/discoveries: Current dashboard rendered roughly 25 sections and 4 tables into one long scrolling page. Existing polling used `#dashboard-content` plus `#update-warning`; the redesign preserves that polling contract while adding Overview/Activity/Backlog/Timeline/Reports/Health tabs, sticky mobile tab navigation, compact cards, safe truncation for branch/run IDs, selected-tab persistence through polling/localStorage, and no normal table-based horizontal scrolling. No backend behavior, workflow semantics, trading logic, write controls, WebSockets, process inspection, raw stdout/stderr, prompts, secrets, or unbounded logs were added.
 - Next action: finish full validation, commit, push, and open PR for Josh review. Josh approval is required before merge.
+
+## 2026-08-23 23:59 UTC — Engineering Dashboard Chat Slice 1 read-only history
+
+- Backlog item/objective: Engineering Dashboard Chat Slice 1 — add a read-only Chat tab showing existing OpenClaw `trading-manager` conversation history for `--project-id trading-bot`.
+- Branch: `agent/dashboard-chat-history`
+- Commit: `f703b7c feat: add read-only engineering chat history`.
+- Status: REVIEW (implementation, validation, and report complete; PR pending at log-update time)
+- Files changed: `dashboard_api/app.py`, `dashboard_api/chat_gateway.py`, `tests/test_dashboard_api_app.py`, `tests/test_dashboard_chat_gateway.py`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`, report artifacts pending.
+- Tests run so far: `.venv/bin/pytest tests/test_dashboard_chat_gateway.py tests/test_dashboard_api_app.py -q` → `32 passed, 2 warnings`.
+- Decisions/discoveries: fixed server-side routing to `trading-manager`; preferred session `agent:trading-manager:telegram:direct:8455029949` still exists with session id `e31c5f61-2d71-4078-bc59-eab62ef92067`; Gateway `chat.history` can read it without creating a new session; projection drops thinking/tool/prompt/raw-output fields and deduplicates delivery-mirror assistant rows.
+- Next action: run full validation, manual local Gateway verification, write reports, commit, push, and open PR for Josh review. Josh approval required before merge or Slice 2 send work.

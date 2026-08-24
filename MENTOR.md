@@ -1101,3 +1101,23 @@ ENGPLAT-003B is now complete for registry loading, project activation, runtime d
 The `/engineering` page is a mobile-first read-only command center. It renders a compact Overview by default and organizes deeper data into six client-side tabs: Overview, Activity, Backlog, Timeline, Reports, and Health. The tab bar is sticky on narrow screens. The page still uses the existing smooth-refresh polling model: `GET /api/engineering/snapshot` every 15 seconds, no full-page meta refresh, no WebSockets, no server push, and no write/control actions.
 
 The Overview tab intentionally contains only high-value status fields: health, project, branch, repository safety, current task/agent/execution/phase, elapsed/latest activity/last completed action, blocker summary, and DONE/REVIEW/TODO/BLOCKED backlog counts. Detail tabs render activity, backlog, events, reports, and health as compact cards/lists rather than wide tables. Selected tab state is preserved during polling and stored in browser `localStorage` across ordinary reloads. Dashboard rendering must continue to escape all snapshot values and must not expose raw stdout/stderr, prompts, private reasoning, secrets, unbounded logs, process inspection, or write controls.
+
+### Engineering Dashboard Chat history tab
+
+The `/engineering` dashboard now includes a seventh read-only tab, Chat. Slice 1
+is history-only: it reads the existing OpenClaw `trading-manager` conversation
+through `dashboard_api.chat_gateway.GatewayChatHistoryClient`, which calls
+Gateway `chat.history` server-side for a fixed/resolved `trading-manager` session
+and exposes only bounded visible fields to the browser (`role`, `text`,
+`timestamp`, plus session `agent`/`status`). The preferred shared Telegram session
+is `agent:trading-manager:telegram:direct:8455029949`; if that exact key moves,
+the adapter resolves the current `trading-manager` session server-side and never
+allows browser-supplied agent IDs, session keys, Gateway URLs, tokens, or RPC
+methods.
+
+Do not add send, abort, interrupt, arbitrary agent/session selection, or direct
+browser Gateway access without a separate approved slice. The Chat tab must not
+expose private reasoning/thinking blocks, hidden prompts, tool arguments/results,
+raw stdout/stderr, secrets, credentials, unbounded transcript content, or a second
+conversation database. Slice 2, if approved, should add only bounded text send via
+a narrow server-side `chat.send` proxy to the same fixed manager target.

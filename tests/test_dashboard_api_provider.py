@@ -8,7 +8,7 @@ import subprocess
 
 from fastapi.testclient import TestClient
 
-from dashboard_api.app import DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, create_default_read_model
+from dashboard_api.app import CHAT_HISTORY_ROUTE, DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, create_default_read_model
 from dashboard_api.providers import (
     EngineeringDashboardProviderConfig,
     GitRepositorySummaryReader,
@@ -171,7 +171,7 @@ def test_default_app_uses_real_provider_and_preserves_exact_route_surface() -> N
     routes = {route.path: route.methods for route in app.routes if hasattr(route, "methods")}
     client = TestClient(app)
 
-    assert routes == {SNAPSHOT_ROUTE: {"GET"}, DASHBOARD_ROUTE: {"GET"}}
+    assert routes == {SNAPSHOT_ROUTE: {"GET"}, CHAT_HISTORY_ROUTE: {"GET"}, DASHBOARD_ROUTE: {"GET"}}
     body = client.get(SNAPSHOT_ROUTE).json()
     assert body["repository"]["root"] != "unavailable"
     assert client.get(DASHBOARD_ROUTE).status_code == 200
@@ -180,6 +180,7 @@ def test_default_app_uses_real_provider_and_preserves_exact_route_surface() -> N
     assert client.get("/redoc").status_code == 404
     for method in (client.post, client.put, client.patch, client.delete):
         assert method(SNAPSHOT_ROUTE).status_code == 405
+        assert method(CHAT_HISTORY_ROUTE).status_code == 405
         assert method(DASHBOARD_ROUTE).status_code == 405
 
 
