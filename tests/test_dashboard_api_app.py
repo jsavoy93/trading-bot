@@ -1893,3 +1893,453 @@ def test_chat_copy_uses_projected_messages_not_raw_transcript_so_pr63_filter_hol
     body = (
         "const assert = require('assert');\nconst script = fs.readFileSync(0, 'utf8');\nconst chatHistory = {innerHTML: '', scrollTop: 0, scrollHeight: 100, addEventListener: () => {}, dataset: {}};\nconst since = {addEventListener: () => {}, dataset: {}, hidden: true, disabled: true, textContent: '', id: 'chat-copy-since'};\nconst status = {dataset: {}, textContent: ''};\nconst projected = PROJECTED_MESSAGES_PLACEHOLDER;\nglobal.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}};\nglobal.document = {\n  getElementById: (id) => {\n    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};\n    if (id === 'chat-history') return chatHistory;\n    if (id === 'chat-copy-since') return since;\n    if (id === 'chat-status') return status;\n    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};\n    return null;\n  },\n  querySelectorAll: () => [],\n};\nglobal.fetch = async (url) => {\n  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};\n  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages: projected})};\n  throw new Error('unexpected url ' + url);\n};\nlet captured = null;\nconst sinceProxy = {\n  ...since,\n  addEventListener: (evt, fn) => { if (evt === 'click') captured = fn; },\n};\nglobal.document.getElementById = (id) => {\n  if (id === 'chat-copy-since') return sinceProxy;\n  if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};\n  if (id === 'chat-history') return chatHistory;\n  if (id === 'chat-status') return status;\n  if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};\n  return null;\n};\nlet clipboardText = null;\nglobal.window.__chatClipboardWriteText = (text) => { clipboardText = text; };\neval(script.replace('<script>', '').replace('</script>', ''));\n(async () => {\n  await window.engineeringDashboard.refreshChatHistory();\n  await captured();\n  await new Promise((r) => setImmediate(r));\n  // Only the projected stopReason=stop assistant row after the last user turn survives.\n  assert.strictEqual(clipboardText, 'final R2');\n  assert(!clipboardText.includes('intermediate'));\n  assert(!clipboardText.includes('narrating'));\n  assert(!clipboardText.includes('raw tool output'));\n})().catch((error) => { console.error(error); process.exit(1); });\n"
     ).replace('PROJECTED_MESSAGES_PLACEHOLDER', json.dumps([{'role': m.role, 'text': m.text} for m in projected]))
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: Chat copy controls on iOS Safari + snapshot polling
+# resilience. These were added together because they share the same
+# dashboard JS surface (the `writeClipboardText` helper and the
+# `refreshDashboard` poll loop).
+#
+# Test pattern: a single capturing `addEventListener` mock on the
+# chat-history node collects the per-message click handler attached by
+# `bindChatCopyControls`. Re-binding is forced by clearing the
+# `dataset.copyBound` flag, which keeps the same mock in place so the
+# captured handler list always reflects the live binding.
+# ---------------------------------------------------------------------------
+
+
+COPY_TEST_HARNESS = textwrap.dedent(
+    """
+    const assert = require('assert');
+    const fs = require('fs');
+    const script = fs.readFileSync(0, 'utf8');
+    const historyHandlers = [];
+    const sinceHandlers = [];
+    const chatHistory = {
+      innerHTML: '', scrollTop: 0, scrollHeight: 100,
+      addEventListener: (evt, fn) => { if (evt === 'click') historyHandlers.push(fn); },
+      dataset: {},
+    };
+    const since = {
+      addEventListener: (evt, fn) => { if (evt === 'click') sinceHandlers.push(fn); },
+      dataset: {},
+      hidden: true, disabled: true, textContent: '', id: 'chat-copy-since',
+    };
+    const status = {dataset: {}, textContent: '', querySelector: () => null};
+    const state = {textContent: '', style: {display: 'none'}, dataset: {}};
+    let capturedState = '';
+    Object.defineProperty(state, 'textContent', {
+      set: (v) => { capturedState = v; },
+      get: () => capturedState,
+      configurable: true,
+    });
+    let warning = {textContent: '', style: {display: 'none'}};
+    let content = {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+    let fetchCalls = 0;
+    let fetchImpl = async () => { fetchCalls += 1; return {ok: true, json: async () => ({project_identity: 'trading-bot'})}; };
+    const fakeDocument = {
+      getElementById: (id) => {
+        if (id === 'dashboard-content') return content;
+        if (id === 'chat-history') return chatHistory;
+        if (id === 'chat-copy-since') return since;
+        if (id === 'chat-status') return status;
+        if (id === 'chat-state') return state;
+        if (id === 'update-warning') return warning;
+        return null;
+      },
+      querySelectorAll: () => [],
+      hidden: false,
+      addEventListener: () => {},
+    };
+    global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}};
+    global.document = fakeDocument;
+    global.fetch = async (url) => {
+      fetchCalls += 1;
+      return fetchImpl(url);
+    };
+    """
+)
+
+
+def _run_copy_case(script: str, body: str, *, with_fallback_document: bool = True) -> None:
+    """Run a Chat copy test with a uniform harness. The body should set up
+    `navigator`, `window.isSecureContext`, `__chatClipboardWriteText`, the
+    chat history mock messages, and trigger the per-message click via
+    `historyHandlers[historyHandlers.length - 1]`. Optionally install
+    fallback mock document properties for the execCommand path."""
+    harness = COPY_TEST_HARNESS
+    if with_fallback_document:
+        harness += textwrap.dedent(
+            """
+            let createdTextareas = 0;
+            let execResult = true;
+            const execCmd = (cmd) => { execCmd.captured = cmd; execCmd.execCalls = (execCmd.execCalls || 0) + 1; return execResult; };
+            Object.assign(fakeDocument, {
+              createElement: (tag) => {
+                createdTextareas += 1;
+                const node = {
+                  tagName: tag.toUpperCase(), value: '', dataset: {}, children: [],
+                  style: {cssText: ''}, attributes: {},
+                  setAttribute: function(k, v) { this.attributes[k] = v; },
+                  getAttribute: function(k) { return this.attributes[k]; },
+                  focus: () => {}, select: () => {}, setSelectionRange: () => {},
+                  parentNode: null, contains: () => true,
+                  appendChild: function(c) { this.children.push(c); c.parentNode = this; return c; },
+                  removeChild: function(c) { this.children = this.children.filter((x) => x !== c); },
+                  addEventListener: () => {},
+                };
+                return node;
+              },
+              body: {
+                appendChild: (c) => { c.parentNode = fakeDocument.body; return c; },
+                removeChild: (c) => { if (c.parentNode === fakeDocument.body) c.parentNode = null; },
+                contains: () => true,
+              },
+              activeElement: null,
+              getSelection: () => ({rangeCount: 0, removeAllRanges: () => {}, addRange: () => {}, getRangeAt: () => null}),
+              execCommand: execCmd,
+            });
+            """
+        )
+    full_body = harness + body
+    _run_dashboard_script_case(script, full_body)
+
+
+def test_copy_falls_back_to_exec_command_when_navigator_clipboard_is_undefined():
+    """iOS Safari over plain HTTP / SSH tunnels exposes no navigator.clipboard.
+
+    The dashboard copy controls must still place the assistant text on the
+    clipboard via the classic document.execCommand('copy') path with an
+    in-DOM temporary textarea. This is the actual iPhone regression that
+    surfaced on PR #64.
+    """
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        execResult = true;
+        const messages = [{role: 'assistant', text: 'fallback payload', timestamp: 't1'}];
+        fetchImpl = async (url) => {
+          if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+          if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+          throw new Error('unexpected url ' + url);
+        };
+        // iOS Safari over HTTP / SSH tunnel: no navigator.clipboard.
+        global.navigator = {};
+        window.isSecureContext = false;
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshChatHistory();
+          // Force a fresh bind so the click handler is captured into historyHandlers.
+          chatHistory.dataset = {};
+          window.engineeringDashboard.switchTab('chat');
+          await new Promise((r) => setImmediate(r));
+          const button = {dataset: {copyIndex: '0'}, textContent: 'Copy', id: ''};
+          const handler = historyHandlers[historyHandlers.length - 1];
+          assert(handler, 'per-message click handler must be attached');
+          await handler({target: {closest: (sel) => sel === '.chat-copy' ? button : null}});
+          await new Promise((r) => setImmediate(r));
+          assert.strictEqual(execCmd.captured, 'copy', 'execCommand must be invoked with copy');
+          assert(execCmd.execCalls >= 1, 'execCommand must run at least once');
+          assert(createdTextareas >= 1, 'a temporary textarea must be created');
+          assert.strictEqual(button.dataset.copyState, 'copied', 'button must show success after fallback succeeds');
+          assert.strictEqual(button.textContent, 'Copied');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body)
+
+
+def test_copy_falls_back_when_clipboard_api_rejects():
+    """When navigator.clipboard.writeText is available but the returned promise
+    rejects (e.g. permission denied, page backgrounded), the fallback path
+    must run so the user still gets a usable Copy button."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        execResult = true;
+        const messages = [{role: 'assistant', text: 'reject payload', timestamp: 't1'}];
+        fetchImpl = async (url) => {
+          if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+          if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+          throw new Error('unexpected url ' + url);
+        };
+        global.navigator = {
+          clipboard: { writeText: () => Promise.reject(new Error('permission denied')) },
+        };
+        window.isSecureContext = true;
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshChatHistory();
+          chatHistory.dataset = {};
+          window.engineeringDashboard.switchTab('chat');
+          await new Promise((r) => setImmediate(r));
+          const button = {dataset: {copyIndex: '0'}, textContent: 'Copy', id: ''};
+          const handler = historyHandlers[historyHandlers.length - 1];
+          await handler({target: {closest: (sel) => sel === '.chat-copy' ? button : null}});
+          await new Promise((r) => setImmediate(r));
+          assert.strictEqual(execCmd.captured, 'copy', 'fallback execCommand must run when Clipboard API rejects');
+          assert(execCmd.execCalls >= 1);
+          assert.strictEqual(button.dataset.copyState, 'copied');
+          assert.strictEqual(button.textContent, 'Copied');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body)
+
+
+def test_copy_reports_failure_when_both_clipboard_paths_fail():
+    """If navigator.clipboard.writeText rejects AND document.execCommand
+    returns false, the button must visibly report 'Copy failed'. The code
+    must NOT silently claim success."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        execResult = false;
+        const messages = [{role: 'assistant', text: 'failure path', timestamp: 't1'}];
+        fetchImpl = async (url) => {
+          if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+          if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+          throw new Error('unexpected url ' + url);
+        };
+        global.navigator = {clipboard: {writeText: () => Promise.reject(new Error('blocked'))}};
+        window.isSecureContext = true;
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshChatHistory();
+          chatHistory.dataset = {};
+          window.engineeringDashboard.switchTab('chat');
+          await new Promise((r) => setImmediate(r));
+          const button = {dataset: {copyIndex: '0'}, textContent: 'Copy', id: ''};
+          const handler = historyHandlers[historyHandlers.length - 1];
+          await handler({target: {closest: (sel) => sel === '.chat-copy' ? button : null}});
+          await new Promise((r) => setImmediate(r));
+          assert.strictEqual(button.dataset.copyState, 'failed', 'button must report failed');
+          assert.strictEqual(button.textContent, 'Copy failed');
+          assert(/manually|failed/i.test(capturedState), 'chat-state banner must surface the failure');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body)
+
+
+def test_copy_text_excludes_hidden_tool_use_and_delivery_mirror_rows():
+    """Regression: PR #63's projection must still be the single source of
+    truth for what gets copied. Hidden toolUse / delivery-mirror / system
+    rows must NEVER enter the clipboard payload. The fallback path must
+    read from the same already-projected message array, not from DOM
+    scraping or raw transcript content."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        const messages = [
+          {role: 'user', text: 'visible Q', timestamp: 't1'},
+          {role: 'assistant', text: 'visible A', timestamp: 't2'},
+        ];
+        fetchImpl = async (url) => {
+          if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+          if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+          throw new Error('unexpected url ' + url);
+        };
+        let copied = null;
+        window.__chatClipboardWriteText = (text) => { copied = text; };
+        global.navigator = {};
+        window.isSecureContext = true;
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshChatHistory();
+          chatHistory.dataset = {};
+          window.engineeringDashboard.switchTab('chat');
+          await new Promise((r) => setImmediate(r));
+          const button = {dataset: {copyIndex: '1'}, textContent: 'Copy', id: ''};
+          const handler = historyHandlers[historyHandlers.length - 1];
+          await handler({target: {closest: (sel) => sel === '.chat-copy' ? button : null}});
+          await new Promise((r) => setImmediate(r));
+          assert.strictEqual(copied, 'visible A', 'per-message copy must equal the projected assistant text exactly');
+          copied = null;
+          since.dataset = {};
+          window.engineeringDashboard.switchTab('overview');
+          since.dataset = {};
+          window.engineeringDashboard.switchTab('chat');
+          await new Promise((r) => setImmediate(r));
+          const sinceHandler = sinceHandlers[sinceHandlers.length - 1];
+          await sinceHandler();
+          await new Promise((r) => setImmediate(r));
+          assert.strictEqual(copied, 'visible A', 'since-copy must only join visible assistant text');
+          assert(!/tool|delivery|mirror|system/i.test(copied || ''));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body, with_fallback_document=False)
+
+
+def test_copy_uses_only_projected_plain_text_not_innerhtml():
+    """Belt-and-braces: the fallback path must populate the temporary
+    textarea from the already-projected text directly, never from
+    innerHTML / DOM scraping."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        execResult = true;
+        const messages = [{role: 'assistant', text: 'plain<&>text', timestamp: 't1'}];
+        fetchImpl = async (url) => {
+          if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+          if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+          throw new Error('unexpected url ' + url);
+        };
+        global.navigator = {};
+        window.isSecureContext = false;
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshChatHistory();
+          chatHistory.dataset = {};
+          window.engineeringDashboard.switchTab('chat');
+          await new Promise((r) => setImmediate(r));
+          const button = {dataset: {copyIndex: '0'}, textContent: 'Copy', id: ''};
+          const handler = historyHandlers[historyHandlers.length - 1];
+          await handler({target: {closest: (sel) => sel === '.chat-copy' ? button : null}});
+          await new Promise((r) => setImmediate(r));
+          assert.strictEqual(execCmd.captured, 'copy');
+          assert(createdTextareas >= 1, 'a temporary textarea must be created');
+          assert.strictEqual(button.dataset.copyState, 'copied');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body)
+
+
+def test_snapshot_poll_skipped_when_document_is_hidden():
+    """When the tab is backgrounded (document.hidden === true), refreshDashboard
+    must NOT issue a fetch and must NOT surface the warning banner. The next
+    visible poll will recover."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        fakeDocument.hidden = true;
+        content.innerHTML = 'LAST KNOWN SNAPSHOT';
+        warning.textContent = '';
+        warning.style.display = 'none';
+        const before = fetchCalls;
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(fetchCalls, before, 'no new fetch must be issued when document is hidden');
+          assert.strictEqual(content.innerHTML, 'LAST KNOWN SNAPSHOT', 'previous content must be preserved');
+          assert.strictEqual(warning.textContent, '', 'no warning must be shown for hidden-document poll');
+          assert.strictEqual(warning.style.display, 'none');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body, with_fallback_document=False)
+
+
+def test_snapshot_poll_ignores_fetch_abort_error():
+    """A fetch AbortError (e.g. iOS Safari cancelling the request when the
+    page is hidden) must not surface the warning banner. This is the most
+    common cause of the user-visible 'Dashboard update failed' banner on
+    iPhone."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        content.innerHTML = 'LAST KNOWN';
+        warning.textContent = '';
+        warning.style.display = 'none';
+        fetchImpl = async () => {
+          const err = new Error('The user aborted a request.');
+          err.name = 'AbortError';
+          throw err;
+        };
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(content.innerHTML, 'LAST KNOWN');
+          assert.strictEqual(warning.textContent, '', 'AbortError must not surface the warning banner');
+          assert.strictEqual(warning.style.display, 'none');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body, with_fallback_document=False)
+
+
+def test_snapshot_poll_still_warns_for_real_network_failure():
+    """A genuine HTTP/network failure (not an abort) must still show the
+    warning. The fix must NOT silence all errors."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        content.innerHTML = 'LAST GOOD';
+        warning.textContent = '';
+        warning.style.display = 'none';
+        fetchImpl = async () => { throw new Error('network down'); };
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(content.innerHTML, 'LAST GOOD');
+          assert(warning.textContent.includes('showing the last known snapshot'));
+          assert.strictEqual(warning.style.display, 'block');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body, with_fallback_document=False)
+
+
+def test_snapshot_poll_recovers_via_visibilitychange_listener():
+    """When the page becomes visible again, the dashboard must run an
+    immediate poll so the UI does not stay on the last cached state for up
+    to 15s."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        let hidden = true;
+        Object.defineProperty(fakeDocument, 'hidden', {get: () => hidden, configurable: true});
+        const visListeners = [];
+        fakeDocument.addEventListener = (evt, fn) => { if (evt === 'visibilitychange') visListeners.push(fn); };
+        content.innerHTML = 'OLD';
+        warning.textContent = '';
+        warning.style.display = 'none';
+        fetchImpl = async () => ({ok: true, json: async () => ({project_identity: 'trading-bot', refreshed: true})});
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          const before = fetchCalls;
+          await window.engineeringDashboard.refreshDashboard();
+          assert.strictEqual(fetchCalls, before, 'poll must be skipped while hidden');
+          assert(visListeners.length >= 1, 'visibilitychange listener must be registered');
+          hidden = false;
+          for (const fn of visListeners) { fn(); }
+          await new Promise((r) => setImmediate(r));
+          assert(fetchCalls > before, 'recovery poll must fire on visibilitychange to visible');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body, with_fallback_document=False)
+
+
+def test_chat_history_still_survives_snapshot_poll_failure():
+    """Regression: PR #64's chat history must survive a snapshot poll
+    failure. A failed poll must NOT wipe the chat-history DOM. The chat
+    tab should remain interactive and the user must still be able to copy
+    messages."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = textwrap.dedent(
+        """
+        content.innerHTML = '<article class="chat-message assistant">preserved</article>';
+        warning.textContent = '';
+        warning.style.display = 'none';
+        fetchImpl = async (url) => {
+          if (url === '/api/engineering/snapshot') throw new Error('snapshot boom');
+          if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages: [{role: 'assistant', text: 'preserved', timestamp: 't1'}]})};
+          throw new Error('unexpected url ' + url);
+        };
+        window.localStorage.getItem = () => 'chat';
+        eval(script.replace('<script>', '').replace('</script>', ''));
+        (async () => {
+          await window.engineeringDashboard.refreshChatHistory();
+          const before = fetchCalls;
+          await window.engineeringDashboard.refreshDashboard();
+          assert(fetchCalls > before, 'snapshot poll must have run');
+          assert.strictEqual(warning.style.display, 'block', 'snapshot failure must show the warning');
+          assert(content.innerHTML.includes('preserved'), 'chat-history DOM must survive snapshot poll failure');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_copy_case(script, body, with_fallback_document=False)

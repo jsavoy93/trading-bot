@@ -592,16 +592,68 @@ def _refresh_script() -> str:
     chatStateCache.scrollTop = target.scrollTop || 0;
     chatStateCache.wasNearBottom = isNearBottom(target);
   };
-  // Bound clipboard helper. Uses navigator.clipboard.writeText when available
-  // and returns a bounded promise. On rejection (insecure context, denied
-  // permission, unsupported browser) the caller surfaces a small failure
-  // state. No unsafe HTML extraction or DOM scraping is involved: callers
-  // pass the already-projected plain-text message text.
+  // iOS-Safari-safe clipboard fallback. Some browsers (notably Safari on iOS
+  // when the dashboard is opened over plain HTTP, an SSH tunnel, or any other
+  // non-secure context) refuse to expose `navigator.clipboard.writeText` at
+  // all — the property is undefined and the modern API path fails closed.
+  // The classic `document.execCommand('copy')` path with an in-DOM temporary
+  // `<textarea>` still works on every iOS Safari version we care about, but
+  // only when the element is in the layout (iOS refuses to focus / select a
+  // `display:none` element). The textarea is positioned offscreen with
+  // `position:fixed; left:0; top:0; opacity:0; pointer-events:none` and the
+  // user's prior selection / focus is restored after the copy.
+  const fallbackCopyToClipboard = (text) => {
+    if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') {
+      return false;
+    }
+    const textarea = document.createElement('textarea');
+    const previousActiveElement = document.activeElement;
+    const previousSelection = (typeof document.getSelection === 'function') ? document.getSelection() : null;
+    const previousRange = (previousSelection && previousSelection.rangeCount > 0) ? previousSelection.getRangeAt(0) : null;
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.setAttribute('aria-hidden', 'true');
+    textarea.setAttribute('tabindex', '-1');
+    textarea.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;padding:0;border:0;outline:0;background:transparent;color:transparent;opacity:0;pointer-events:none;z-index:-1;';
+    let copied = false;
+    try {
+      document.body.appendChild(textarea);
+      // iOS Safari must do focus + select within the user gesture. Calling
+      // these synchronously (no awaits before execCommand) keeps the gesture
+      // chain intact for the duration of the call.
+      if (typeof textarea.focus === 'function') {
+        try { textarea.focus({preventScroll: true}); } catch (error) { /* fall through */ }
+      }
+      try { textarea.select(); } catch (error) { /* fall through */ }
+      try { textarea.setSelectionRange(0, text.length); } catch (error) { /* fall through */ }
+      copied = (typeof document.execCommand === 'function') ? document.execCommand('copy') : false;
+    } finally {
+      // Always remove the temporary element so it cannot leak into the DOM
+      // and so the chat-history click target is restored.
+      if (textarea.parentNode === document.body) {
+        document.body.removeChild(textarea);
+      }
+      if (previousRange && previousSelection && typeof previousSelection.removeAllRanges === 'function') {
+        try { previousSelection.removeAllRanges(); previousSelection.addRange(previousRange); } catch (error) { /* ignore */ }
+      }
+      if (previousActiveElement && typeof previousActiveElement.focus === 'function' && document.body.contains(previousActiveElement)) {
+        try { previousActiveElement.focus({preventScroll: true}); } catch (error) { /* ignore */ }
+      }
+    }
+    return copied;
+  };
+  // Bound clipboard helper. Returns a bounded promise. Order of preference:
+  //   1. The test injection hook (`window.__chatClipboardWriteText`) when
+  //      set, so the headless-Node suite can stub the clipboard without
+  //      depending on `navigator`.
+  //   2. The modern `navigator.clipboard.writeText` API (HTTPS / localhost /
+  //      iOS 13.4+ in a secure context).
+  //   3. The iOS-safe `document.execCommand('copy')` fallback, which works
+  //      on every browser that has `document.body`, including iOS Safari
+  //      over plain HTTP and SSH tunnels.
   //
-  // Test injection hook: a non-default `window.__chatClipboardWriteText`
-  // (set by the test harness) takes precedence over `navigator.clipboard`.
-  // This is the only way to stub the clipboard under headless Node where
-  // `navigator` is a read-only global without a `clipboard` member.
+  // No unsafe HTML extraction or DOM scraping is involved: callers pass the
+  // already-projected plain-text message text from the server (PR #63).
   const writeClipboardText = (text) => {
     const value = typeof text === 'string' ? text : '';
     if (!value) { return Promise.reject(new Error('empty clipboard payload')); }
@@ -609,10 +661,30 @@ def _refresh_script() -> str:
     if (typeof hook === 'function') {
       try { return Promise.resolve(hook(value)); } catch (error) { return Promise.reject(error); }
     }
-    if (typeof navigator !== 'undefined' && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      try { return navigator.clipboard.writeText(value); } catch (error) { return Promise.reject(error); }
+    const hasClipboardApi = typeof navigator !== 'undefined' && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function';
+    const isSecureContext = (typeof window === 'undefined' || window.isSecureContext === undefined) ? true : window.isSecureContext;
+    if (hasClipboardApi && isSecureContext) {
+      // The modern API is preferred; if the returned promise rejects (e.g.,
+      // user denies permission, page is backgrounded) we transparently try
+      // the execCommand fallback so the user still gets a usable Copy.
+      try {
+        const result = navigator.clipboard.writeText(value);
+        if (result && typeof result.then === 'function') {
+          return result.then(
+            () => undefined,
+            () => (fallbackCopyToClipboard(value) ? undefined : Promise.reject(new Error('clipboard write failed')))
+          );
+        }
+      } catch (error) {
+        // Synchronous failure — fall through to the legacy path.
+      }
     }
-    return Promise.reject(new Error('clipboard API unavailable'));
+    try {
+      const ok = fallbackCopyToClipboard(value);
+      return ok ? Promise.resolve() : Promise.reject(new Error('clipboard API unavailable'));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   };
   const setCopyState = (button, state, label) => {
     if (!button || !button.dataset) { return; }
@@ -750,7 +822,39 @@ def _refresh_script() -> str:
     if (form.dataset) { form.dataset.bound = 'true'; }
     form.addEventListener('submit', (event) => { event.preventDefault(); sendChatMessage(input && input.value); });
   };
+  // Snapshot polling.
+  //
+  // We deliberately distinguish three failure shapes so the warning banner
+  // surfaces only what the user can act on, and so transient browser
+  // lifecycle events on iOS Safari never stick the dashboard on the
+  // "Dashboard update failed" banner between user interactions:
+  //
+  //   * User-initiated abort / tab switch / document hidden: do not show
+  //     the warning. iOS Safari aggressively aborts backgrounded fetches
+  //     when the user backgrounds the page or switches tabs, and aborts
+  //     fire as `AbortError` from `fetch`. Treating these as dashboard
+  //     failures would make the banner flash on every backgrounding.
+  //   * Non-abort network / HTTP failure: keep the existing warning so
+  //     the user knows the dashboard is stale.
+  //   * Successful poll: clear the warning.
+  //
+  // When `document.hidden` is true we skip the fetch entirely. We resume
+  // polling on the next `visibilitychange` event so the dashboard recovers
+  // as soon as the user comes back to the tab without paying for wasted
+  // backgrounded network calls.
+  const isAbortLikeError = (error) => {
+    if (!error) { return false; }
+    if (typeof error.name === 'string' && error.name === 'AbortError') { return true; }
+    const message = (typeof error.message === 'string') ? error.message : String(error || '');
+    return /abort|canceled|cancelled/i.test(message);
+  };
+  let pollScheduledWhileHidden = false;
   const refreshDashboard = async () => {
+    if (typeof document !== 'undefined' && document && document.hidden) {
+      pollScheduledWhileHidden = true;
+      return;
+    }
+    pollScheduledWhileHidden = false;
     try {
       const previousX = window.scrollX;
       const previousY = window.scrollY;
@@ -769,6 +873,12 @@ def _refresh_script() -> str:
       bindChatCopyControls();
       setWarning('');
     } catch (error) {
+      if (isAbortLikeError(error)) {
+        // Browser cancelled the fetch because the user backgrounded the
+        // tab, navigated, or triggered a competing request. Do not show
+        // the failure banner — the next visible poll will recover.
+        return;
+      }
       setWarning('Dashboard update failed; showing the last known snapshot. Retrying every 15 seconds.');
     }
   };
@@ -778,6 +888,17 @@ def _refresh_script() -> str:
   window.engineeringDashboard = {refreshDashboard, renderSnapshot, switchTab, selectedTab, refreshChatHistory, renderChatHistory, sendChatMessage, POLL_INTERVAL_MS, CHAT_POLL_INTERVAL_MS, SNAPSHOT_URL, CHAT_HISTORY_URL, CHAT_SEND_URL};
   window.setInterval(refreshDashboard, POLL_INTERVAL_MS);
   window.setInterval(refreshChatHistory, CHAT_POLL_INTERVAL_MS);
+  // When the page becomes visible again (user returns from another app or
+  // tab on iOS), run an immediate poll so the dashboard refreshes without
+  // waiting up to 15 seconds for the next interval tick. Skip the listener
+  // in test harnesses where `document` is a minimal mock without
+  // `addEventListener`.
+  if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { return; }
+      if (pollScheduledWhileHidden) { refreshDashboard(); refreshChatHistory(); }
+    });
+  }
 })();
 </script>
 '''
