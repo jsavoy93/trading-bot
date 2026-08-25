@@ -61,6 +61,7 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
                         {"role": "user", "content": "hello <script>", "timestamp": 1786969711000, "tool_calls": [{"secret": "nope"}]},
                         {
                             "role": "assistant",
+                            "stopReason": "stop",
                             "content": [
                                 {"type": "thinking", "thinking": "private reasoning"},
                                 {"type": "tool_use", "input": {"raw": "args"}},
@@ -104,8 +105,8 @@ def test_history_projection_is_count_bounded_and_deduplicates_delivery_mirror():
     messages = []
     for index in range(CHAT_HISTORY_LIMIT + 10):
         messages.append({"role": "user", "content": f"message {index}", "timestamp": index})
-    messages.append({"role": "assistant", "content": [{"type": "text", "text": "same final"}], "timestamp": 100})
-    messages.append({"role": "assistant", "content": [{"type": "text", "text": "same final"}], "timestamp": 101})
+    messages.append({"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "same final"}], "timestamp": 100})
+    messages.append({"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "same final"}], "timestamp": 101})
 
     history = GatewayChatHistoryClient(
         runner=lambda *args, **kwargs: _completed(
@@ -362,3 +363,286 @@ def test_history_projection_does_not_expose_in_flight_run_object_or_streamed_tex
 
     for forbidden in ("inFlightRun", "in_flight_run", "uuid-9", "leaked-model-reasoning-trace"):
         assert forbidden not in serialized
+
+
+# ---------------------------------------------------------------------------
+# Authoritative assistant-message filter for Engineering dashboard Chat.
+# Goal: the Chat UI shows only the actual manager response.
+#   * role="user" messages are always kept (conversational, no mirror).
+#   * role="assistant" messages are kept ONLY when:
+#       - stopReason == "stop" (the actual final response), AND
+#       - they are NOT OpenClaw delivery-mirror duplicates
+#         (model == "delivery-mirror"; provider metadata is intentionally
+#         NOT used as the durable distinction).
+# All other assistant turns and delivery-mirror rows are excluded.
+# ---------------------------------------------------------------------------
+
+
+def _messages_payload(messages):
+    return {
+        "ok": True,
+        "agentId": TRADING_MANAGER_AGENT_ID,
+        "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY, "sessionId": "session-123"},
+        "history": {
+            "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+            "sessionId": "session-123",
+            "messages": messages,
+        },
+    }
+
+
+def _project(messages):
+    return GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed(_messages_payload(messages))
+    ).history().to_public_dict()
+
+
+def test_history_projection_keeps_user_messages_and_drops_non_user_roles():
+    payload = _project(
+        [
+            {"role": "system", "content": "hidden system", "timestamp": 1},
+            {"role": "tool", "content": "tool result", "timestamp": 2},
+            {"role": "function", "content": "function result", "timestamp": 3},
+            {"role": "developer", "content": "developer hidden", "timestamp": 4},
+            {"role": "user", "content": "real user question", "timestamp": 5},
+        ]
+    )
+    rendered = [(m["role"], m["text"]) for m in payload["messages"]]
+    assert rendered == [("user", "real user question")]
+    serialized = json.dumps(payload)
+    for forbidden in ("hidden system", "tool result", "function result", "developer hidden"):
+        assert forbidden not in serialized
+
+
+def test_history_projection_keeps_only_assistant_messages_with_stop_reason_stop():
+    payload = _project(
+        [
+            {"role": "user", "content": "question", "timestamp": 1},
+            # Tool-use intermediate turn: must be excluded.
+            {
+                "role": "assistant",
+                "stopReason": "toolUse",
+                "content": [{"type": "text", "text": "let me check"}],
+                "timestamp": 2,
+            },
+            # Max-tokens truncation: must be excluded.
+            {
+                "role": "assistant",
+                "stopReason": "max_tokens",
+                "content": [{"type": "text", "text": "truncated mid-thought"}],
+                "timestamp": 3,
+            },
+            # End-turn / aborted / unknown / missing stopReason: all excluded.
+            {
+                "role": "assistant",
+                "stopReason": "end_turn",
+                "content": [{"type": "text", "text": "end_turn reply"}],
+                "timestamp": 4,
+            },
+            {
+                "role": "assistant",
+                "stopReason": "abort",
+                "content": [{"type": "text", "text": "aborted reply"}],
+                "timestamp": 5,
+            },
+            {
+                "role": "assistant",
+                "stopReason": "unknown",
+                "content": [{"type": "text", "text": "unknown reply"}],
+                "timestamp": 6,
+            },
+            {
+                "role": "assistant",
+                # no stopReason at all
+                "content": [{"type": "text", "text": "missing stopReason"}],
+                "timestamp": 7,
+            },
+            # Final response: must be kept.
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "final manager reply"}],
+                "timestamp": 8,
+            },
+        ]
+    )
+    rendered = [(m["role"], m["text"]) for m in payload["messages"]]
+    assert rendered == [
+        ("user", "question"),
+        ("assistant", "final manager reply"),
+    ]
+    serialized = json.dumps(payload)
+    for forbidden in (
+        "let me check",
+        "truncated mid-thought",
+        "end_turn reply",
+        "aborted reply",
+        "unknown reply",
+        "missing stopReason",
+    ):
+        assert forbidden not in serialized
+
+
+def test_history_projection_drops_openclaw_delivery_mirror_assistant_messages():
+    payload = _project(
+        [
+            {"role": "user", "content": "please fix the bug", "timestamp": 1},
+            # The actual manager response.
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "the fix is applied"}],
+                "timestamp": 2,
+            },
+            # The OpenClaw mirror of the same reply (appended by
+            # mirrorTelegramAssistantReplyToTranscript). Identical content +
+            # stopReason, distinguished only by model="delivery-mirror".
+            {
+                "role": "assistant",
+                "provider": "openclaw",
+                "model": "delivery-mirror",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "the fix is applied"}],
+                "timestamp": 3,
+            },
+        ]
+    )
+    rendered = [(m["role"], m["text"]) for m in payload["messages"]]
+    assert rendered == [
+        ("user", "please fix the bug"),
+        ("assistant", "the fix is applied"),
+    ]
+
+
+def test_history_projection_drops_delivery_mirror_even_when_not_adjacent_to_real_reply():
+    # The mirror must be filtered by the explicit metadata, not by adjacent
+    # deduplication. Insert several unrelated user turns between the real
+    # reply and its mirror.
+    payload = _project(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "first reply"}],
+                "timestamp": 1,
+            },
+            {"role": "user", "content": "follow up A", "timestamp": 2},
+            {"role": "user", "content": "follow up B", "timestamp": 3},
+            {"role": "user", "content": "follow up C", "timestamp": 4},
+            {
+                "role": "assistant",
+                "provider": "openclaw",
+                "model": "delivery-mirror",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "first reply"}],
+                "timestamp": 5,
+            },
+        ]
+    )
+    rendered = [(m["role"], m["text"]) for m in payload["messages"]]
+    assert rendered == [
+        ("assistant", "first reply"),
+        ("user", "follow up A"),
+        ("user", "follow up B"),
+        ("user", "follow up C"),
+    ]
+
+
+def test_history_projection_filter_does_not_rely_on_manager_provider_field():
+    # The trading-manager model/provider may change in the future. The mirror
+    # detection MUST be driven by the explicit OpenClaw marker
+    # (model == "delivery-mirror"), not by the manager's configured provider.
+    # A real assistant message from any provider with stopReason="stop" must
+    # still pass; a delivery-mirror marker on any provider must still drop.
+    payload = _project(
+        [
+            # A future-model manager reply (provider != openclaw). Must pass.
+            {
+                "role": "assistant",
+                "provider": "some-future-provider",
+                "model": "some-future-model",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "future model reply"}],
+                "timestamp": 1,
+            },
+            # A delivery-mirror marker is the explicit OpenClaw hint, not a
+            # provider-specific property of the manager itself. Must drop.
+            {
+                "role": "assistant",
+                "provider": "openclaw",
+                "model": "delivery-mirror",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "future model reply"}],
+                "timestamp": 2,
+            },
+            # A delivery-mirror marker with a different (hypothetical future)
+            # provider must STILL drop — the rule is the marker, not the
+            # provider.
+            {
+                "role": "assistant",
+                "provider": "another-channel",
+                "model": "delivery-mirror",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "future model reply"}],
+                "timestamp": 3,
+            },
+        ]
+    )
+    rendered = [(m["role"], m["text"]) for m in payload["messages"]]
+    assert rendered == [("assistant", "future model reply")]
+
+
+def test_history_projection_drops_tool_use_assistant_with_no_user_visible_text():
+    # A pure tool-use assistant turn must not render even when its visible
+    # text happens to be non-empty — stopReason != "stop" excludes it
+    # regardless of text content.
+    payload = _project(
+        [
+            {"role": "user", "content": "investigate", "timestamp": 1},
+            {
+                "role": "assistant",
+                "stopReason": "toolUse",
+                "content": [{"type": "text", "text": "calling read_file"}],
+                "timestamp": 2,
+            },
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [
+                    {"type": "tool_use", "id": "call_1", "input": {"path": "/etc"}},
+                    {"type": "text", "text": "the file shows ..."},
+                ],
+                "timestamp": 3,
+            },
+        ]
+    )
+    rendered = [(m["role"], m["text"]) for m in payload["messages"]]
+    assert rendered == [
+        ("user", "investigate"),
+        ("assistant", "the file shows ..."),
+    ]
+
+
+def test_history_projection_preserves_user_messages_with_no_stop_reason():
+    # User turns in OpenClaw transcripts do not carry stopReason. The rule
+    # only restricts assistant turns; user messages are always kept.
+    payload = _project(
+        [
+            {"role": "user", "content": "alpha", "timestamp": 1},
+            {"role": "user", "content": "beta", "timestamp": 2},
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "ack"}],
+                "timestamp": 3,
+            },
+            {"role": "user", "content": "gamma", "timestamp": 4},
+        ]
+    )
+    rendered = [(m["role"], m["text"]) for m in payload["messages"]]
+    assert rendered == [
+        ("user", "alpha"),
+        ("user", "beta"),
+        ("assistant", "ack"),
+        ("user", "gamma"),
+    ]

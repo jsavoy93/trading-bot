@@ -1167,3 +1167,26 @@ Snapshot-poll survival: `chatStateCache.agentStatus` is captured by `captureChat
 Temporary poll failure: `refreshChatHistory()` catches and re-routes through `renderChatHistory({session: status: "unavailable"})`. This branches into `setChatState('Chat history unavailable; keeping last known messages.', true)` which updates ONLY the chat-state banner. `setAgentStatus()` is NOT called in this branch — Working is preserved across temporary poll failure. There is no client-side timer. "Interrupted" is not projected from elapsed time; only terminal `sessionInfo.status` values produce the Failed indicator.
 
 Hard privacy rules (re-stated): the run-state indicator must never expose `inFlightRun.text` (streamed model reasoning), raw `chat.history` keys, raw Gateway internals, prompts, tool arguments, raw stdout/stderr, secrets, or `run_id`. `dashboard_api.chat_gateway._project_gateway_history` intentionally reads only `sessionInfo.hasActiveRun` (bounded to literal `True`) and `sessionInfo.status` (clamped to `ALLOWED_RUN_STATUSES = {"running","idle","done","failed","killed","timeout"}`). Unknown values become `False`/`None`; the browser only ever sees `has_active_run: bool` and `run_status: string|null`.
+
+### Chat message projection filter (authoritative)
+
+The Chat UI projection in `dashboard_api/chat_gateway._project_message` must show
+**only** the actual manager conversation. Three categories survive:
+
+1. `role="user"` messages are always kept (conversational; OpenClaw only mirrors
+   assistant replies back into the transcript, never user turns).
+2. `role="assistant"` messages are kept **only** when **both** hold:
+   - `stopReason == "stop"` (the actual final response, not an intermediate turn)
+   - NOT an OpenClaw delivery-mirror (`model != "delivery-mirror"`)
+3. Everything else is dropped: `system`, `tool`, `function`, `developer`,
+   `toolResult`, assistant `toolUse` / `max_tokens` / `end_turn` / `abort` /
+   unknown / missing-stopReason rows, and every delivery-mirror duplicate.
+
+The durable distinctions are `role`, `stopReason`, and the explicit OpenClaw
+delivery-mirror marker `model == "delivery-mirror"` written by
+`mirrorTelegramAssistantReplyToTranscript` in
+`/usr/lib/node_modules/openclaw/dist/bot-B-OxOCyH.js` (matches
+`isOpenClawDeliveryMirrorAssistantMessage` in
+`/usr/lib/node_modules/openclaw/dist/transcript-hciCrqol.js`). The filter
+deliberately does **not** key on the trading-manager's configured
+provider/model, so the rule survives any future model change.

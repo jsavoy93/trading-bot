@@ -287,8 +287,22 @@ def _project_gateway_history(payload: Mapping[str, Any]) -> ChatHistory:
 def _project_message(value: Any) -> ChatMessage | None:
     if not isinstance(value, Mapping):
         return None
+    if _is_delivery_mirror_message(value):
+        # OpenClaw delivery-mirror duplicates the actual outbound assistant reply
+        # back into the transcript so other channels see it. The marker is the
+        # explicit `model == "delivery-mirror"` field that OpenClaw writes from
+        # `mirrorTelegramAssistantReplyToTranscript`; the message otherwise has
+        # identical role/content/stopReason to the real response. We must drop
+        # the mirror so the Chat UI does not double-render the same final reply.
+        return None
     role = _safe_role(value.get("role"))
     if role is None:
+        return None
+    if role == "assistant" and not _is_assistant_final_stop_reason(value.get("stopReason")):
+        # Assistant messages with stopReason != "stop" are intermediate model
+        # turns (toolUse calls, max_tokens truncations, aborted runs, ...). Only
+        # the actual final response (stopReason == "stop") is surfaced to the
+        # Chat UI. User messages have no stopReason requirement.
         return None
     text = _extract_visible_text(value.get("content"))
     if not text:
@@ -315,6 +329,29 @@ def _safe_role(value: object) -> str | None:
     if value == "assistant":
         return "assistant"
     return None
+
+
+def _is_assistant_final_stop_reason(value: object) -> bool:
+    # The Chat UI only shows the actual manager response, which OpenClaw marks
+    # with stopReason == "stop". Tool-use intermediate turns, max_tokens
+    # truncations, aborts, and messages missing stopReason metadata are
+    # excluded by design. This avoids rendering model internals and keeps the
+    # dashboard representation faithful to the public Telegram conversation.
+    return value == "stop"
+
+
+def _is_delivery_mirror_message(value: Mapping[str, Any]) -> bool:
+    # OpenClaw's `mirrorTelegramAssistantReplyToTranscript` writes outbound
+    # assistant replies back into the transcript with `model == "delivery-mirror"`
+    # (and provider == "openclaw") so cross-channel replay stays consistent.
+    # The mirror is byte-equivalent to the real response apart from those
+    # marker fields, so the Chat UI would otherwise show the final reply twice.
+    #
+    # The durable distinction is the explicit `model == "delivery-mirror"`
+    # marker written by OpenClaw itself. We deliberately do NOT key on the
+    # trading-manager's configured model/provider, so this filter survives any
+    # future model change for the trading-manager agent.
+    return value.get("role") == "assistant" and value.get("model") == "delivery-mirror"
 
 
 def _extract_visible_text(content: object) -> str:
