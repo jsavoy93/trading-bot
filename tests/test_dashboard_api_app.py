@@ -2343,3 +2343,157 @@ def test_chat_history_still_survives_snapshot_poll_failure():
         """
     )
     _run_copy_case(script, body, with_fallback_document=False)
+
+
+# ---------------------------------------------------------------------------
+# Authoritative agent-status projection rule for Engineering Chat.
+# Phase-1 send-accept semantics test: when a fresh active run appears,
+# stale Failed indicator MUST be cleared (Working takes priority over a
+# leftover terminal run_status).
+# ---------------------------------------------------------------------------
+
+
+def test_active_run_clears_stale_failed_indicator():
+    """After a prior terminal Failed run, a new active run MUST immediately
+    re-flip the indicator to Working. The dashboard projection rule is:
+
+        terminal && !hasActiveRun => failed
+        hasActiveRun               => working
+        terminal && hasActiveRun   => working (NEW: active wins)
+
+    This guards against the 'stale Failed indicator after long wait' bug
+    observed on 2026-08-25 around 15:54 UTC.
+    """
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+
+          // First poll: terminal timeout — indicator becomes Failed.
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'timeout'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'failed');
+
+          // Second poll: a new run was accepted; has_active_run is now true.
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: true, run_status: 'running'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'working');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_dashboard_script_case(script, body)
+
+
+def test_contradictory_running_state_with_no_active_run_resolves_to_idle():
+    """When the Gateway returns the contradictory (has_active_run=false,
+    run_status='running') tuple, the dashboard MUST NOT show Failed; it
+    resolves to Idle. This is the actual contradictory state we observed
+    in the 2026-08-25 15:54 UTC incident."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'running'}, messages: []})};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          assert.strictEqual(dom.elements['chat-status'].dataset.agentStatus, 'idle');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_dashboard_script_case(script, body)
+
+
+# ---------------------------------------------------------------------------
+# UI rendering for the explicit Response-truncated indicator.
+# ---------------------------------------------------------------------------
+
+
+def test_render_chat_history_renders_truncated_badge_when_message_truncated_true():
+    """A message with truncated=true MUST render the 'Response truncated'
+    badge inline, with a clear visual distinction (CSS class). A normal
+    message MUST NOT show the badge."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              return {ok: true, json: async () => ({
+                session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'},
+                messages: [
+                  {role: 'assistant', text: 'short reply', timestamp: 't1', truncated: false},
+                  {role: 'assistant', text: 'A'.repeat(15975) + ' [Response truncated]', timestamp: 't2', truncated: true},
+                ]
+              })};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          const html = dom.elements['chat-history'].innerHTML;
+          // Exactly one truncated badge and one truncated-class on the second article.
+          const badgeCount = (html.match(/class=\"chat-truncated\"/g) || []).length;
+          const truncatedClassCount = (html.match(/chat-message-truncated/g) || []).length;
+          assert.strictEqual(badgeCount, 1, 'exactly one chat-truncated badge rendered');
+          assert(truncatedClassCount >= 1, 'truncated-class must appear at least once');
+          assert(html.includes('Response truncated'), 'badge text must include literal "Response truncated"');
+          // Two assistant messages (data-message-index="0" and "1").
+          assert(html.includes('data-message-index=\"0\"'));
+          assert(html.includes('data-message-index=\"1\"'));
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_dashboard_script_case(script, body)
+
+
+def test_render_chat_history_omits_truncated_badge_for_complete_5k_response():
+    """A 5,138-char manager response MUST render with truncated=false and
+    no badge — even if the dashboard's previous bound (4,000) would have
+    cut it. Copy contracts verified separately."""
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    snapshot_payload = json.dumps(_public_snapshot(populated_snapshot()))
+    body = _shared_chat_dom_script_boilerplate(snapshot_payload) + textwrap.dedent(
+        """
+        (async () => {
+          window.engineeringDashboard.switchTab('chat');
+          global.fetch = async (url) => {
+            if (url === '/api/engineering/chat/history') {
+              const text = 'A'.repeat(5138);
+              return {ok: true, json: async () => ({
+                session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'},
+                messages: [{role: 'assistant', text: text, timestamp: 't1', truncated: false}]
+              })};
+            }
+            throw new Error('unexpected url ' + url);
+          };
+          await window.engineeringDashboard.refreshChatHistory();
+          const html = dom.elements['chat-history'].innerHTML;
+          assert(html.includes('data-message-index="0"'), 'one assistant article rendered');
+          assert(!html.includes('chat-truncated'), 'no truncation badge for complete response');
+          assert(!html.includes('chat-message-truncated'), 'no chat-message-truncated class');
+          assert(!html.includes('[Response truncated]'), 'no truncation marker in the rendered HTML');
+          assert(html.includes('A'.repeat(200)), 'a long run of A characters is present in the rendered text');
+        })().catch((error) => { console.error(error); process.exit(1); });
+        """
+    )
+    _run_dashboard_script_case(script, body)

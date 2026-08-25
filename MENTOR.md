@@ -1113,6 +1113,36 @@ only dashboard chat write path: `POST /api/engineering/chat/send`, which accepts
 exactly `{ "message": "..." }`, trims text, rejects empty/non-text/over-4,000
 character payloads, and calls Gateway `chat.send` server-side.
 
+**OpenClaw Gateway `chat.send` is an accepted-with-runId RPC.** The Gateway
+returns as soon as the run has been queued and a `runId` has been assigned;
+the manager then continues asynchronously and the dashboard tracks progress
+via the 15s `chat.history` poll. The dashboard MUST NOT block on the manager
+run and MUST NOT pass the agent's 1800s `timeoutSeconds` to the `chat.send`
+RPC — doing so would falsely mark any long-running engineering task as
+Failed even when the underlying run is healthy. The dashboard proxy uses
+`GATEWAY_SEND_TIMEOUT_SECONDS = 15` (an accept-only ceiling), which is far
+below the agent run timeout and well within the observed accept round-trip
+(~3–4 s on a healthy Gateway).
+
+**Inbound response bound is `CHAT_MESSAGE_MAX_CHARS = 16_000`** (the bound
+that ships to the browser per projected assistant message). Outbound user-
+input bound is `CHAT_SEND_MAX_CHARS = 4_000` (separate concern, unchanged).
+When the inbound bound is hit, the projection flags `truncated: true` on
+the message and the UI shows a small explicit **"Response truncated"**
+badge — the cut is never silent. The marker used is the ASCII string
+` [Response truncated]`, which survives clipboard / email / JSON transit.
+A normal Trading-Manager report of up to ~5,138 chars (3.1× headroom)
+passes through verbatim and Copy / Copy-since-last-message deliver the
+complete projected text.
+
+**Stale Failed recovery.** The `projectAgentStatus` rule is asymmetric:
+a fresh `hasActiveRun=true` ALWAYS clears any prior terminal Failed
+indicator and flips to Working. This guards against the dashboard
+showing "Trading manager · Failed" after the manager has already accepted
+a new dispatch and is working on it (the 2026-08-25 ~15:54 UTC incident).
+Only `(runStatus ∈ {failed, killed, timeout})` AND no active run is
+interpreted as Failed.
+
 The shared manager target is fixed to `trading-manager`; the preferred shared
 Telegram-named session key is `agent:trading-manager:telegram:direct:8455029949`.
 As of Slice 2 verification the current authoritative session id is
