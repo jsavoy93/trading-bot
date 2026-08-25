@@ -136,7 +136,7 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             ".badge{display:inline-flex;align-items:center;min-height:1.75rem;padding:.2rem .55rem;border-radius:999px;background:#334155;color:#e2e8f0;font-weight:700;font-size:.82rem}.healthy{color:#86efac}.degraded{color:#fbbf24}.error{color:#fca5a5}.warning{border-left:4px solid #f59e0b;padding-left:.75rem}",
             ".tabs{position:sticky;top:0;z-index:2;display:flex;gap:.35rem;overflow-x:auto;padding:.5rem 0;margin:0 0 .5rem;background:#0f172a}.tab-button{appearance:none;border:1px solid #334155;border-radius:999px;background:#1e293b;color:#e2e8f0;padding:.65rem .8rem;min-height:44px;font-weight:700;white-space:nowrap}.tab-button[aria-selected='true']{background:#2563eb;border-color:#60a5fa;color:#fff}.tab-panel[hidden]{display:none}",
             ".list{display:grid;gap:.65rem}.activity-card,.report-card,.event-card,.task-card{border:1px solid #334155;border-radius:12px;padding:.75rem;background:#172033;min-width:0}.kv{display:grid;grid-template-columns:minmax(6rem,.45fr) minmax(0,1fr);gap:.25rem .6rem;margin-top:.5rem}.kv dt{font-weight:700;color:#bfdbfe}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}",
-            ".chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-status{display:flex;align-items:center;gap:.5rem;border:1px solid #334155;border-radius:999px;padding:.4rem .75rem;background:#172033;font-size:.85rem;min-height:36px;margin:0 0 .65rem;width:fit-content;max-width:100%}.chat-status .dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;background:#94a3b8;flex:none}.chat-status[data-agent-status='working'] .dot{background:#fbbf24;animation:chat-status-pulse 1.05s ease-in-out infinite}@keyframes chat-status-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}.chat-status[data-agent-status='failed'] .dot{background:#fca5a5}.chat-status[data-agent-status='stale'] .dot{background:#f59e0b}.chat-status[data-agent-status='unavailable'] .dot{background:#94a3b8}.chat-status[data-agent-status='loading'] .dot{background:#94a3b8}.chat-status .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}",
+            ".chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-message-actions{display:flex;justify-content:flex-end;margin-top:.4rem}.chat-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#0f172a;color:#bfdbfe;font-size:.72rem;padding:.25rem .65rem;min-height:28px;line-height:1.1;cursor:pointer;font-weight:600;letter-spacing:.02em}.chat-copy:hover{background:#1e293b;border-color:#60a5fa;color:#e2e8f0}.chat-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-copy[disabled]{opacity:.6;cursor:not-allowed}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-status{display:flex;align-items:center;gap:.5rem;border:1px solid #334155;border-radius:999px;padding:.4rem .75rem;background:#172033;font-size:.85rem;min-height:36px;margin:0 0 .65rem;width:fit-content;max-width:100%}.chat-status .dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;background:#94a3b8;flex:none}.chat-status[data-agent-status='working'] .dot{background:#fbbf24;animation:chat-status-pulse 1.05s ease-in-out infinite}@keyframes chat-status-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}.chat-status[data-agent-status='failed'] .dot{background:#fca5a5}.chat-status[data-agent-status='stale'] .dot{background:#f59e0b}.chat-status[data-agent-status='unavailable'] .dot{background:#94a3b8}.chat-status[data-agent-status='loading'] .dot{background:#94a3b8}.chat-status .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}.chat-status-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0 0 .65rem}.chat-status-row .chat-status{margin:0}.chat-since-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer}.chat-since-copy:hover{background:#334155;border-color:#60a5fa}.chat-since-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-since-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-since-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-since-copy[disabled]{opacity:.55;cursor:not-allowed}.chat-since-copy[hidden]{display:none}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}",
             "#update-warning{display:none;border-left:4px solid #f59e0b;padding:.75rem;margin:.75rem 0;background:#292524;color:#fde68a;border-radius:10px}",
             "dl{margin:.5rem 0 0}dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0;overflow-wrap:anywhere}code{color:#bae6fd;white-space:normal;overflow-wrap:anywhere}ul{padding-left:1.1rem;margin:.5rem 0}li{margin:.3rem 0}",
             "@media(max-width:700px){.shell{padding:.75rem}.overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.grid{grid-template-columns:1fr}.dashboard-title{font-size:1.1rem}.card,.mini-card,section{padding:.65rem}.kv{grid-template-columns:1fr}.tabs{margin-left:-.75rem;margin-right:-.75rem;padding:.45rem .75rem}.tab-button{font-size:.9rem;padding:.6rem .75rem}}",
@@ -342,7 +342,10 @@ def _chat_tab() -> str:
             "<h2>Chat</h2>",
             "<p class='muted'>Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p>",
             "<div id='chat-state' class='chat-state' role='status' aria-live='polite'>Loading trading-manager history…</div>",
+            "<div class='chat-status-row'>",
             "<div id='chat-status' class='chat-status' data-agent-status='loading' role='status' aria-live='polite' aria-label='Trading manager agent status'><span class='dot' aria-hidden='true'></span><span class='label'>Trading manager · Loading…</span></div>",
+            "<button id='chat-copy-since' class='chat-since-copy' type='button' data-copy-state='idle' hidden disabled aria-label='Copy every trading-manager response since your last message'>Copy since my last message</button>",
+            "</div>",
             "<div id='chat-history' class='chat-history' aria-label='Trading manager conversation history'></div>",
             "<form id='chat-form' class='chat-form'>",
             "<label class='label' for='chat-message'>Message trading-manager</label>",
@@ -439,7 +442,7 @@ def _refresh_script() -> str:
   const reportCard = (report) => detailCard('report-card', esc(report.title), {'Task': report.task_id, 'Outcome': report.outcome || report.kind, 'Generated': report.generated_at, 'Path': report.path});
   const reportsTab = (snapshot) => `<h2>Reports</h2><div class="list">${(snapshot.recent_reports || []).map(reportCard).join('') || '<p class="muted">No recent reports.</p>'}</div>`;
   const healthTab = (snapshot) => `<h2>Health</h2>${healthSection(snapshot.engineering_health)}${warningsSection(snapshot.health_warnings)}<div class="grid">${repositorySection(snapshot.repository)}${testSection(snapshot)}${testingSection(snapshot.testing)}${pullRequestSection(snapshot.pull_request)}</div><p class="muted">Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>`;
-  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading trading-manager history…</div><div id="chat-status" class="chat-status" data-agent-status="loading" role="status" aria-live="polite" aria-label="Trading manager agent status"><span class="dot" aria-hidden="true"></span><span class="label">Trading manager \u00b7 Loading\u2026</span></div><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
+  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading trading-manager history…</div><div class="chat-status-row"><div id="chat-status" class="chat-status" data-agent-status="loading" role="status" aria-live="polite" aria-label="Trading manager agent status"><span class="dot" aria-hidden="true"></span><span class="label">Trading manager \u00b7 Loading\u2026</span></div><button id="chat-copy-since" class="chat-since-copy" type="button" data-copy-state="idle" hidden disabled aria-label="Copy every trading-manager response since your last message">Copy since my last message</button></div><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
   const renderSnapshot = (snapshot) => tabNav() + panel('overview', overviewTab(snapshot), true) + panel('activity', activityTab(snapshot), false) + panel('backlog', backlogTab(snapshot), false) + panel('timeline', timelineTab(snapshot), false) + panel('reports', reportsTab(snapshot), false) + panel('health', healthTab(snapshot), false) + panel('chat', chatTab(), false);
   const selectedTab = () => { try { const stored = window.localStorage && window.localStorage.getItem(TAB_KEY); return TABS.includes(stored) ? stored : 'overview'; } catch (error) { return 'overview'; } };
   const switchTab = (tab) => {
@@ -448,10 +451,11 @@ def _refresh_script() -> str:
     content.querySelectorAll('[data-tab-panel]').forEach((panel) => { panel.hidden = panel.dataset.tabPanel !== selected; });
     try { window.localStorage && window.localStorage.setItem(TAB_KEY, selected); } catch (error) {}
     if (selected === 'chat') { refreshChatHistory(); }
+    bindChatCopyControls();
   };
   const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); bindChatForm(); };
   const setWarning = (message) => { warning.textContent = message; warning.style.display = message ? 'block' : 'none'; };
-  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', composeStatus: 'idle', scrollTop: 0, wasNearBottom: true, agentStatus: 'loading', runStatus: null};
+  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', composeStatus: 'idle', scrollTop: 0, wasNearBottom: true, agentStatus: 'loading', runStatus: null, messages: [], sinceLastUserText: '', copyTimers: {}};
   const isNearBottom = (target) => !target || (target.scrollHeight - target.scrollTop <= target.clientHeight + 48);
   const applyComposeState = () => {
     const input = document.getElementById('chat-message');
@@ -486,6 +490,7 @@ def _refresh_script() -> str:
     renderAgentStatus();
     if (state) { state.textContent = chatStateCache.statusText || ''; state.style.display = chatStateCache.statusDisplay || (state.textContent ? 'block' : 'none'); if (state.dataset) { state.dataset.status = chatStateCache.statusKind || 'available'; } }
     if (target && chatStateCache.historyHtml) { target.innerHTML = chatStateCache.historyHtml; target.scrollTop = chatStateCache.scrollTop || 0; }
+    bindChatCopyControls();
   };
   const setChatState = (message, failed) => {
     const state = document.getElementById('chat-state');
@@ -530,6 +535,13 @@ def _refresh_script() -> str:
   const renderChatHistory = (history) => {
     const target = document.getElementById('chat-history');
     if (!target) { return; }
+    // Any pending per-button copy-reset timers point at DOM nodes that are
+    // about to be replaced; clear them so stale timers never mutate
+    // detached elements after the new history renders.
+    if (chatStateCache.copyTimers) {
+      Object.keys(chatStateCache.copyTimers).forEach((key) => { clearTimeout(chatStateCache.copyTimers[key]); });
+      chatStateCache.copyTimers = {};
+    }
     const session = history && history.session ? history.session : {status: 'unavailable', agent: 'trading-manager'};
     const messages = Array.isArray(history && history.messages) ? history.messages : [];
     if (session.status !== 'available') {
@@ -537,6 +549,9 @@ def _refresh_script() -> str:
       // preserve last-known chat history, surface bounded stale message,
       // and DO NOT falsely switch Working -> Idle. The agent indicator
       // cache (`chatStateCache.agentStatus`) is intentionally not touched here.
+      chatStateCache.messages = [];
+      chatStateCache.sinceLastUserText = '';
+      updateSinceCopyButton();
       setChatState('Chat history unavailable; keeping last known messages.', true);
       return;
     }
@@ -549,20 +564,151 @@ def _refresh_script() -> str:
     if (!messages.length) {
       setChatState('No visible trading-manager messages are available yet.', false);
       target.innerHTML = '';
+      chatStateCache.messages = [];
+      chatStateCache.sinceLastUserText = '';
+      updateSinceCopyButton();
       return;
     }
     const shouldStickToBottom = isNearBottom(target) || chatStateCache.wasNearBottom;
     setChatState('', false);
-    const html = messages.map((message) => {
+    // Source-of-truth: store the already-projected messages array (PR #63
+    // server projection). Copy controls MUST read from this same array so
+    // hidden progress / toolUse / delivery-mirror rows can never leak into
+    // the clipboard. Plain-text only, no HTML extraction, no DOM scraping.
+    chatStateCache.messages = messages.slice();
+    chatStateCache.sinceLastUserText = computeSinceLastUserText(messages);
+    const html = messages.map((message, index) => {
       const role = message && message.role === 'user' ? 'user' : 'assistant';
       const label = role === 'user' ? 'Josh' : 'Trading manager';
-      return `<article class="chat-message ${role}"><span class="chat-meta">${esc(label)} · ${esc(message && message.timestamp)}</span>${esc(message && message.text)}</article>`;
+      const actions = role === 'assistant'
+        ? `<div class="chat-message-actions"><button type="button" class="chat-copy" data-copy-index="${index}" data-copy-state="idle" aria-label="Copy this trading-manager response">Copy</button></div>`
+        : '';
+      return `<article class="chat-message ${role}" data-message-index="${index}"><span class="chat-meta">${esc(label)} · ${esc(message && message.timestamp)}</span>${esc(message && message.text)}${actions}</article>`;
     }).join('');
     target.innerHTML = html;
     chatStateCache.historyHtml = html;
+    updateSinceCopyButton();
     if (shouldStickToBottom) { target.scrollTop = target.scrollHeight; } else { target.scrollTop = chatStateCache.scrollTop || target.scrollTop; }
     chatStateCache.scrollTop = target.scrollTop || 0;
     chatStateCache.wasNearBottom = isNearBottom(target);
+  };
+  // Bound clipboard helper. Uses navigator.clipboard.writeText when available
+  // and returns a bounded promise. On rejection (insecure context, denied
+  // permission, unsupported browser) the caller surfaces a small failure
+  // state. No unsafe HTML extraction or DOM scraping is involved: callers
+  // pass the already-projected plain-text message text.
+  //
+  // Test injection hook: a non-default `window.__chatClipboardWriteText`
+  // (set by the test harness) takes precedence over `navigator.clipboard`.
+  // This is the only way to stub the clipboard under headless Node where
+  // `navigator` is a read-only global without a `clipboard` member.
+  const writeClipboardText = (text) => {
+    const value = typeof text === 'string' ? text : '';
+    if (!value) { return Promise.reject(new Error('empty clipboard payload')); }
+    const hook = (typeof window !== 'undefined') ? window.__chatClipboardWriteText : null;
+    if (typeof hook === 'function') {
+      try { return Promise.resolve(hook(value)); } catch (error) { return Promise.reject(error); }
+    }
+    if (typeof navigator !== 'undefined' && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try { return navigator.clipboard.writeText(value); } catch (error) { return Promise.reject(error); }
+    }
+    return Promise.reject(new Error('clipboard API unavailable'));
+  };
+  const setCopyState = (button, state, label) => {
+    if (!button || !button.dataset) { return; }
+    const allowed = {idle: true, copied: true, failed: true};
+    button.dataset.copyState = allowed[state] ? state : 'idle';
+    if (typeof label === 'string') { button.textContent = label; }
+  };
+  // Cancel any pending restore timer attached to a button before re-render so
+  // a stale timer never mutates a detached node.
+  const cancelCopyTimer = (button) => {
+    if (!button || !chatStateCache.copyTimers) { return; }
+    const key = button.dataset && button.dataset.copyTimerKey;
+    if (key) {
+      const existing = chatStateCache.copyTimers[key];
+      if (existing) { clearTimeout(existing); delete chatStateCache.copyTimers[key]; }
+      delete button.dataset.copyTimerKey;
+    }
+  };
+  const scheduleCopyReset = (button, defaultLabel, delayMs) => {
+    if (!button || !chatStateCache.copyTimers) { return; }
+    cancelCopyTimer(button);
+    const key = button.id || ('copy-' + Math.random().toString(36).slice(2, 10));
+    button.dataset.copyTimerKey = key;
+    chatStateCache.copyTimers[key] = setTimeout(() => {
+      delete chatStateCache.copyTimers[key];
+      if (button.dataset) { delete button.dataset.copyTimerKey; }
+      setCopyState(button, 'idle', defaultLabel);
+    }, delayMs);
+  };
+  const handlePerMessageCopy = (event) => {
+    const button = event && event.target && event.target.closest ? event.target.closest('.chat-copy') : null;
+    if (!button || !chatStateCache.messages) { return; }
+    const index = parseInt(button.dataset.copyIndex, 10);
+    const message = Number.isFinite(index) ? chatStateCache.messages[index] : null;
+    if (!message || message.role !== 'assistant') { return; }
+    const text = typeof message.text === 'string' ? message.text : '';
+    writeClipboardText(text).then(() => {
+      setCopyState(button, 'copied', 'Copied');
+      scheduleCopyReset(button, 'Copy', 1800);
+    }).catch(() => {
+      setCopyState(button, 'failed', 'Copy failed');
+      setChatState('Browser blocked the clipboard write; copy this response manually.', true);
+      scheduleCopyReset(button, 'Copy', 2400);
+    });
+  };
+  const handleSinceCopy = () => {
+    const button = document.getElementById('chat-copy-since');
+    if (!button || button.disabled) { return; }
+    const text = chatStateCache.sinceLastUserText || '';
+    if (!text) { return; }
+    writeClipboardText(text).then(() => {
+      setCopyState(button, 'copied', 'Copied');
+      scheduleCopyReset(button, 'Copy since my last message', 1800);
+    }).catch(() => {
+      setCopyState(button, 'failed', 'Copy failed');
+      setChatState('Browser blocked the clipboard write; copy the responses manually.', true);
+      scheduleCopyReset(button, 'Copy since my last message', 2400);
+    });
+  };
+  // Pure projection helper: returns the joined plain text of every visible
+  // assistant message after the most recent visible user message. Uses the
+  // already-filtered messages array (server projection from PR #63), so
+  // hidden toolUse / delivery-mirror / system rows never enter the result.
+  const computeSinceLastUserText = (messages) => {
+    if (!Array.isArray(messages) || !messages.length) { return ''; }
+    let lastUserIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i] && messages[i].role === 'user') { lastUserIndex = i; break; }
+    }
+    const tail = lastUserIndex >= 0 ? messages.slice(lastUserIndex + 1) : messages.filter((m) => m && m.role === 'assistant');
+    const parts = tail.filter((m) => m && m.role === 'assistant' && typeof m.text === 'string' && m.text.length > 0).map((m) => m.text);
+    return parts.join('\n\n');
+  };
+  const updateSinceCopyButton = () => {
+    const button = document.getElementById('chat-copy-since');
+    if (!button) { return; }
+    const hasText = !!(chatStateCache.sinceLastUserText && chatStateCache.sinceLastUserText.length);
+    if (hasText) { button.hidden = false; button.disabled = false; }
+    else { button.disabled = true; if (!chatStateCache.messages || !chatStateCache.messages.length) { button.hidden = true; } }
+  };
+  const bindChatCopyControls = () => {
+    const history = document.getElementById('chat-history');
+    if (history && (!history.dataset || history.dataset.copyBound !== 'true')) {
+      if (history.dataset) { history.dataset.copyBound = 'true'; }
+      if (typeof history.addEventListener === 'function') {
+        history.addEventListener('click', handlePerMessageCopy);
+      }
+    }
+    const since = document.getElementById('chat-copy-since');
+    if (since && (!since.dataset || since.dataset.sinceBound !== 'true')) {
+      if (since.dataset) { since.dataset.sinceBound = 'true'; }
+      if (typeof since.addEventListener === 'function') {
+        since.addEventListener('click', handleSinceCopy);
+      }
+    }
+    updateSinceCopyButton();
   };
   const refreshChatHistory = async () => {
     try {
@@ -620,6 +766,7 @@ def _refresh_script() -> str:
       if (activeTab === 'chat') { restoreChatUiState(); }
       window.scrollTo(previousX, previousY);
       bindChatForm();
+      bindChatCopyControls();
       setWarning('');
     } catch (error) {
       setWarning('Dashboard update failed; showing the last known snapshot. Retrying every 15 seconds.');
@@ -627,6 +774,7 @@ def _refresh_script() -> str:
   };
   content.addEventListener('click', (event) => { const button = event.target.closest && event.target.closest('[data-tab]'); if (button && content.contains(button)) { event.preventDefault(); switchTab(button.dataset.tab); } });
   bindTabs();
+  bindChatCopyControls();
   window.engineeringDashboard = {refreshDashboard, renderSnapshot, switchTab, selectedTab, refreshChatHistory, renderChatHistory, sendChatMessage, POLL_INTERVAL_MS, CHAT_POLL_INTERVAL_MS, SNAPSHOT_URL, CHAT_HISTORY_URL, CHAT_SEND_URL};
   window.setInterval(refreshDashboard, POLL_INTERVAL_MS);
   window.setInterval(refreshChatHistory, CHAT_POLL_INTERVAL_MS);
