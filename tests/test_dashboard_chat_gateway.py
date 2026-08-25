@@ -80,6 +80,8 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
 
     payload = history.to_public_dict()
 
+    marker = " [Response truncated]"
+    truncated_text = "x" * (CHAT_MESSAGE_MAX_CHARS - len(marker)) + marker
     assert payload == {
         "session": {
             "agent": TRADING_MANAGER_AGENT_ID,
@@ -88,11 +90,12 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
             "run_status": None,
         },
         "messages": [
-            {"role": "user", "text": "hello <script>", "timestamp": "2026-08-17T12:28:31+00:00"},
+            {"role": "user", "text": "hello <script>", "timestamp": "2026-08-17T12:28:31+00:00", "truncated": False},
             {
                 "role": "assistant",
-                "text": "x" * (CHAT_MESSAGE_MAX_CHARS - 1) + "…",
+                "text": truncated_text,
                 "timestamp": "2026-08-17T12:28:32.694000+00:00",
+                "truncated": True,
             },
         ],
     }
@@ -168,7 +171,7 @@ def test_send_adapter_accepts_bounded_text_and_uses_fixed_trading_manager_sessio
     result = GatewayChatHistoryClient(runner=runner).send("  hello manager  ").to_public_dict()
 
     assert result["ok"] is True
-    assert result["status"] == "sent"
+    assert result["status"] == "accepted"
     assert result["run_id"] == "run-123"
     assert result["audit"]["actor"] == "dashboard"
     assert result["audit"]["target"] == TRADING_MANAGER_AGENT_ID
@@ -180,6 +183,11 @@ def test_send_adapter_accepts_bounded_text_and_uses_fixed_trading_manager_sessio
     assert "sessionKey: selected.key" in script
     assert "agentId: AGENT_ID" in script
     assert 'const MESSAGE = "hello manager"' in script
+    # Accept-only timeout (15s) — NOT the 1800s agent run timeout. Long
+    # engineering tasks MUST NOT cause this proxy to time out.
+    assert "timeoutMs: 15000" in script
+    assert "timeoutMs: 1800000" not in script
+    assert "timeoutMs: 180000" not in script
 
 
 def test_send_adapter_rejects_empty_non_text_and_over_limit_without_gateway_call():
@@ -646,3 +654,208 @@ def test_history_projection_preserves_user_messages_with_no_stop_reason():
         ("assistant", "ack"),
         ("user", "gamma"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# 16K inbound response bound + explicit truncation flag.
+# Goal: a normal Trading-Manager report (up to ~16,000 chars) must ship
+# verbatim to the browser with truncated=False; only genuinely oversized
+# responses get truncated, and truncation is always flagged with a visible
+# "[Response truncated]" marker so the UI can never mistake a silently-cut
+# payload for a complete response.
+# ---------------------------------------------------------------------------
+
+
+def _project_payload(messages):
+    return GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed(_messages_payload(messages))
+    ).history().to_public_dict()
+
+
+def test_bounded_message_just_under_16k_passes_through_unchanged():
+    text = "x" * 3_999
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["text"] == text
+    assert msgs[0]["text"].endswith("x")
+
+
+def test_bounded_message_exactly_16k_passes_through_unchanged():
+    text = "x" * CHAT_MESSAGE_MAX_CHARS
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert len(msgs[0]["text"]) == CHAT_MESSAGE_MAX_CHARS
+    assert msgs[0]["text"] == text
+    assert "[Response truncated]" not in msgs[0]["text"]
+
+
+def test_bounded_message_just_over_16k_is_truncated_with_flag_and_marker():
+    text = "x" * (CHAT_MESSAGE_MAX_CHARS + 1)
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is True
+    assert len(msgs[0]["text"]) == CHAT_MESSAGE_MAX_CHARS
+    assert msgs[0]["text"].endswith(" [Response truncated]")
+    assert " [Response truncated]" in msgs[0]["text"]
+
+
+def test_known_5138_char_response_passes_through_unchanged():
+    text = "A" * 5_138
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["text"] == text
+    assert len(msgs[0]["text"]) == 5_138
+    # Copy contract: a normal 5,138-char manager response is delivered in
+    # full, including the entire natural ending, so the browser's per-
+    # message Copy receives the complete projected text.
+    assert msgs[0]["text"][-1] == "A"
+
+
+def test_chat_message_to_dict_always_exposes_truncated_field():
+    # Even for uncut messages, `truncated` MUST be present in the JSON
+    # payload as a boolean (never absent, never null). The browser reads
+    # `message.truncated === true` to decide whether to show the badge.
+    cm = __import__("dashboard_api.chat_gateway", fromlist=["ChatMessage"]).ChatMessage(
+        role="assistant", text="hi", timestamp="t", truncated=False
+    )
+    d = cm.to_dict()
+    assert d["truncated"] is False
+    assert set(d.keys()) == {"role", "text", "timestamp", "truncated"}
+
+
+# ---------------------------------------------------------------------------
+# chat.send accept semantics.
+# Goal: the dashboard's Node subprocess wrapper for the OpenClaw Gateway
+# chat.send RPC must use a bounded ACCEPT timeout (NOT the agent run
+# timeout). Long engineering tasks MUST NOT cause this proxy to time out.
+# The accepted result must surface ok=True with status="accepted" and the
+# run_id assigned by the Gateway. chat.history polling tracks the run
+# progress asynchronously.
+# ---------------------------------------------------------------------------
+
+
+def test_send_adapter_surfaces_accepted_status_with_run_id():
+    def runner(*a, **kw):
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "runId": "run-abc-123",
+        })
+
+    result = GatewayChatHistoryClient(runner=runner).send("hello").to_public_dict()
+
+    assert result["ok"] is True
+    assert result["status"] == "accepted"
+    assert result["run_id"] == "run-abc-123"
+
+
+def test_send_adapter_subprocess_uses_accept_only_timeout_not_run_timeout():
+    captured = {}
+
+    def runner(*args, **kwargs):
+        captured["input"] = kwargs.get("input") or (args[2] if len(args) > 2 else "")
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "runId": "run-xyz-456",
+        })
+
+    GatewayChatHistoryClient(runner=runner).send("hello").to_public_dict()
+
+    script = captured["input"]
+    # Accept timeout (15s = 15000 ms) must be present.
+    assert "timeoutMs: 15000" in script
+    # 180s legacy timeout must NOT be present.
+    assert "timeoutMs: 180000" not in script
+    # 1800s agent run timeout must NOT be present (would block the proxy).
+    assert "timeoutMs: 1800000" not in script
+
+
+def test_send_adapter_subprocess_failure_surfaces_failed_with_bounded_error():
+    def runner(*a, **kw):
+        raise RuntimeError("synthetic gateway failure")
+
+    result = GatewayChatHistoryClient(runner=runner).send("hello").to_public_dict()
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    assert "Gateway chat send unavailable" == result["error"]
+
+
+def test_send_adapter_subprocess_timeout_surfaces_failed_with_bounded_error():
+    import subprocess as _sp
+
+    def runner(*a, **kw):
+        raise _sp.TimeoutExpired(cmd=["node"], timeout=15)
+
+    result = GatewayChatHistoryClient(runner=runner).send("hello").to_public_dict()
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    # Must be a bounded, non-sensitive message; never raw stderr or traceback.
+    assert result["error"] == "Gateway chat send proxy timed out; chat history will reflect run state"
+
+
+def test_send_adapter_does_not_block_on_long_running_manager_run():
+    # The send wrapper returns within seconds regardless of any
+    # in-flight trading-manager run length. This is the core invariant
+    # that prevents the dashboard from falsely marking a still-healthy
+    # manager run as Failed just because the manager is taking minutes.
+    import time
+
+    started = time.monotonic()
+    result = GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "runId": "run-fast",
+        })
+    ).send("hello").to_public_dict()
+    elapsed = time.monotonic() - started
+    assert result["status"] == "accepted"
+    # Synthesised runner returns instantly; bound is generous (0.5s).
+    assert elapsed < 0.5

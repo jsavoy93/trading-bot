@@ -9,10 +9,39 @@ from typing import Any, Callable, Mapping, Sequence
 TRADING_MANAGER_AGENT_ID = "trading-manager"
 PREFERRED_TRADING_MANAGER_SESSION_KEY = "agent:trading-manager:telegram:direct:8455029949"
 CHAT_HISTORY_LIMIT = 50
-CHAT_MESSAGE_MAX_CHARS = 4_000
+# Inbound / projected manager-response hard bound. The size of text we are
+# willing to ship to the browser in a single projected assistant message.
+# Deliberately kept a bounded safety limit (not unlimited) so a runaway
+# model or malformed transcript cannot blow up the dashboard payload. 16,000
+# chars comfortably covers any realistic structured Trading-Manager report
+# (~3x headroom over the typical 5,138-char report we observed). When this
+# bound IS hit, the projection sets `truncated=True` on the message so the
+# UI can show an explicit "Response truncated" indicator and API consumers
+# can never mistake a silently-cut payload for the complete response.
+CHAT_MESSAGE_MAX_CHARS = 16_000
+# Outbound user-input hard bound (Josh -> Trading Manager). Separate from
+# the inbound response bound. Enforced as a rejection, never as a silent cut.
 CHAT_SEND_MAX_CHARS = 4_000
 GATEWAY_HISTORY_TIMEOUT_SECONDS = 15
-GATEWAY_SEND_TIMEOUT_SECONDS = 180
+# Send-accept timeout for the dashboard's Node subprocess wrapping the
+# OpenClaw Gateway `chat.send` RPC. `chat.send` semantics are accepted-with-
+# runId: the RPC returns as soon as the Gateway has queued the run and
+# assigned a run_id; the manager then continues asynchronously and the
+# dashboard tracks progress via the chat.history poll (15s interval). The
+# dashboard therefore does NOT need to wait for the run to complete on this
+# RPC and must NOT use the agent's 1800s timeout here, otherwise the proxy
+# would falsely return "failed" for any long engineering task that takes
+# longer than GATEWAY_SEND_TIMEOUT_SECONDS while the underlying run is
+# still healthy. A bounded accept-only timeout is the correct ceiling.
+# 15 seconds is generous: the Node subprocess + waitForReady + listSessions
+# + RPC round-trip has been observed at ~4 seconds in production.
+GATEWAY_SEND_TIMEOUT_SECONDS = 15
+# Backward-compatible alias retained for any external callers / docs that
+# still reference the previous 180s value. Equal to the accept timeout
+# above; the 180-second send-side wait has been removed (see
+# /root/.openclaw/audit-archives/trading-bot/2026-08-25_155700_read-only-
+# failed-status-diagnosis.md for the full rationale).
+GATEWAY_SEND_LEGACY_TIMEOUT_SECONDS = 180
 
 # Terminal run-state values from OpenClaw Gateway sessionInfo.status.
 # Anything outside this set is surfaced as None (the dashboard treats it as Idle).
@@ -24,9 +53,20 @@ class ChatMessage:
     role: str
     text: str
     timestamp: str | None
+    # `truncated` is `True` only when the server-side projection cut the text
+    # because it exceeded `CHAT_MESSAGE_MAX_CHARS`. The browser and any other
+    # API consumer must treat this as a visible signal that the rendered text
+    # is incomplete (the UI shows a "Response truncated" indicator; Copy may
+    # copy only the bounded projected text but must not claim it is complete).
+    truncated: bool = False
 
     def to_dict(self) -> dict[str, object]:
-        return {"role": self.role, "text": self.text, "timestamp": self.timestamp}
+        return {
+            "role": self.role,
+            "text": self.text,
+            "timestamp": self.timestamp,
+            "truncated": bool(self.truncated),
+        }
 
 
 @dataclass(frozen=True)
@@ -53,12 +93,25 @@ class ChatHistory:
             "run_status": self.run_status,
         }
         if self.unavailable_reason:
-            session["reason"] = _bounded_text(self.unavailable_reason, 160)
+            session["reason"], _ = _bounded_text(self.unavailable_reason, 160)
         return {"session": session, "messages": [message.to_dict() for message in self.messages]}
 
 
 @dataclass(frozen=True)
 class ChatSendResult:
+    # `status` semantics:
+    #   "accepted" — Gateway has accepted the run and assigned a run_id;
+    #                manager continues asynchronously. Browser compose MUST
+    #                return to idle and the chat history poll MUST take over
+    #                progress tracking. This is the success path for any run
+    #                of any length, including runs longer than the dashboard
+    #                proxy timeout.
+    #   "sent"     — legacy alias retained for compatibility with consumers
+    #                that branched on the prior one-word status. Same
+    #                semantics as "accepted" (Gateway accepted the run).
+    #   "rejected" — pre-RPC rejection (empty message, oversize message).
+    #   "failed"   — RPC failed or returned ok!=true. The error field carries
+    #                a bounded, non-sensitive reason.
     ok: bool
     status: str
     run_id: str | None = None
@@ -81,7 +134,7 @@ class ChatSendResult:
         if self.run_id:
             payload["run_id"] = self.run_id
         if self.error:
-            payload["error"] = _bounded_text(self.error, 160)
+            payload["error"], _ = _bounded_text(self.error, 160)
         return payload
 
 
@@ -127,7 +180,30 @@ class GatewayChatHistoryClient:
             if payload.get("ok") is not True:
                 return ChatSendResult(ok=False, status="failed", error="delivery failed", timestamp=_now_iso())
             run_id = _string_or_none(payload.get("runId"))
-            return ChatSendResult(ok=True, status="sent", run_id=run_id, timestamp=_now_iso())
+            # Gateway has accepted the run and assigned a run_id. The manager
+            # continues asynchronously; the dashboard MUST NOT block here. The
+            # browser composes to idle immediately and chat.history polling
+            # tracks progress. We surface status="accepted" so the browser can
+            # distinguish a real accept from a transport-level "sent" claim.
+            return ChatSendResult(
+                ok=True,
+                status="accepted",
+                run_id=run_id,
+                timestamp=_now_iso(),
+            )
+        except subprocess.TimeoutExpired:
+            # Defensive: the Node subprocess wrapper itself timed out before
+            # the Gateway could return. The run is still very likely healthy
+            # on the OpenClaw side — the dashboard simply lost its response.
+            # Surface this as a transport-level failure so the browser compose
+            # recovers, and trust chat.history polling to surface the real
+            # terminal status when the run eventually completes.
+            return ChatSendResult(
+                ok=False,
+                status="failed",
+                error="Gateway chat send proxy timed out; chat history will reflect run state",
+                timestamp=_now_iso(),
+            )
         except Exception:  # noqa: BLE001 - never expose Gateway stderr/tracebacks to browser.
             return ChatSendResult(ok=False, status="failed", error="Gateway chat send unavailable", timestamp=_now_iso())
 
@@ -236,6 +312,14 @@ try {{
       agentId: AGENT_ID,
       ...(selected.sessionId ? {{ sessionId: selected.sessionId }} : {{}}),
       message: MESSAGE,
+      // chat.send semantics are accepted-with-runId: the Gateway RPC
+      // returns as soon as the run has been queued / accepted and a runId
+      // has been assigned. The manager continues asynchronously and the
+      // dashboard tracks progress via the 15s chat.history poll. We pass
+      // the bounded ACCEPT timeout here (15s), NOT the agent run timeout
+      // (1800s), because the dashboard proxy only needs to wait for the
+      // Gateway to acknowledge the submit. A long engineering task must
+      // NEVER cause the dashboard's send proxy to time out.
       timeoutMs: {GATEWAY_SEND_TIMEOUT_SECONDS * 1000}
     }});
     console.log(JSON.stringify({{ ok: true, agentId: AGENT_ID, selectedSession: selected, runId: result.runId }}));
@@ -307,7 +391,13 @@ def _project_message(value: Any) -> ChatMessage | None:
     text = _extract_visible_text(value.get("content"))
     if not text:
         return None
-    return ChatMessage(role=role, text=_bounded_text(text, CHAT_MESSAGE_MAX_CHARS), timestamp=_timestamp(value.get("timestamp")))
+    bounded_text, truncated = _bounded_text(text, CHAT_MESSAGE_MAX_CHARS)
+    return ChatMessage(
+        role=role,
+        text=bounded_text,
+        timestamp=_timestamp(value.get("timestamp")),
+        truncated=truncated,
+    )
 
 
 def _dedupe_messages(messages: Sequence[ChatMessage | None]) -> list[ChatMessage]:
@@ -376,15 +466,28 @@ def _timestamp(value: object) -> str | None:
         seconds = value / 1000 if value > 10_000_000_000 else value
         return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
     if isinstance(value, str):
-        return _bounded_text(value, 80)
+        text, _ = _bounded_text(value, 80)
+        return text
     return None
 
 
-def _bounded_text(value: object, limit: int) -> str:
+def _bounded_text(value: object, limit: int) -> tuple[str, bool]:
+    """Bound a string to `limit` characters.
+
+    Returns a tuple `(text, was_truncated)`. When truncation happens the text
+    is cut to `limit - 2` characters and the explicit `[Response truncated]`
+    marker is appended so the cut is never silent. The marker is intentionally
+    bracketed and ASCII so it survives any downstream consumer (clipboard,
+    email, JSON, ...) without rendering ambiguity.
+    """
     text = str(value)
     if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)] + "…"
+        return text, False
+    # Reserve 25 chars for the marker so it is unambiguously visible inside
+    # the bounded payload and the total length never exceeds `limit`.
+    marker = " [Response truncated]"
+    keep = max(0, limit - len(marker))
+    return text[:keep] + marker, True
 
 
 def _string_or_none(value: object) -> str | None:
