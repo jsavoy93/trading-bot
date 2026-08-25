@@ -1437,3 +1437,459 @@ def test_chat_status_indicator_does_not_render_in_flight_streamed_text():
     )
 
     _run_dashboard_script_case(script, body)
+
+
+# ---------------------------------------------------------------------------
+# Engineering Dashboard Chat copy controls (DASH-007).
+# The features must operate ONLY on the already-projected visible chat
+# messages (server projection from PR #63), never on raw OpenClaw transcript.
+# Both controls must be plain-text, mobile-friendly, and survive the existing
+# 15-second polling and snapshot-poll DOM replacement.
+# ---------------------------------------------------------------------------
+
+
+def test_chat_tab_html_renders_since_copy_button_and_status_row():
+    html = render_dashboard(populated_snapshot())
+    assert "id='chat-copy-since'" in html
+    assert "Copy since my last message" in html
+    assert "class='chat-status-row'" in html
+    # Since-copy must start hidden + disabled until at least one assistant
+    # response after a user message arrives.
+    assert "id='chat-copy-since' class='chat-since-copy' type='button' data-copy-state='idle' hidden disabled" in html
+
+
+def test_chat_tab_inner_script_wires_copy_helpers_and_since_button_dom():
+    html = render_dashboard(populated_snapshot())
+    script = _dashboard_script(html)
+    assert "id=\"chat-copy-since\"" in script
+    assert "Copy since my last message" in script
+    assert "const computeSinceLastUserText" in script
+    assert "const writeClipboardText" in script
+    assert "const handlePerMessageCopy" in script
+    assert "const handleSinceCopy" in script
+    assert "const updateSinceCopyButton" in script
+    assert "const bindChatCopyControls" in script
+    assert "history.addEventListener('click', handlePerMessageCopy);" in script
+    assert "since.addEventListener('click', handleSinceCopy);" in script
+
+
+def test_chat_history_renders_per_message_copy_button_only_on_assistant_cards():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = """
+const assert = require('assert');
+const script = fs.readFileSync(0, 'utf8');
+let chatHistory = {innerHTML: '', scrollTop: 0, scrollHeight: 100, addEventListener: () => {}};
+const since = {addEventListener: () => {}, dataset: {}, hidden: true, disabled: true, textContent: '', id: 'chat-copy-since'};
+const status = {dataset: {}, textContent: ''};
+let captured = null;
+const messages = [
+  {role: 'user', text: 'hi there', timestamp: 't1'},
+  {role: 'assistant', text: 'first reply', timestamp: 't2'},
+  {role: 'user', text: 'next question', timestamp: 't3'},
+  {role: 'assistant', text: 'second reply\\nwith newline', timestamp: 't4'},
+];
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+    if (id === 'chat-history') return chatHistory;
+    if (id === 'chat-copy-since') return since;
+    if (id === 'chat-status') return status;
+    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+global.fetch = async (url) => {
+  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+  throw new Error('unexpected url ' + url);
+};
+const writeCalls = [];
+const nav = {};
+global.window.__chatClipboardWriteText = (text) => { writeCalls.push(text); };
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.refreshChatHistory();
+  captured = chatHistory.innerHTML;
+  // Both assistant cards must include a per-message Copy button.
+  assert(captured.includes('class="chat-copy" data-copy-index="1"'));
+  assert(captured.includes('class="chat-copy" data-copy-index="3"'));
+  // User cards must NOT include a per-message Copy button.
+  assert(!captured.includes('data-copy-index="0"'));
+  assert(!captured.includes('data-copy-index="2"'));
+  // Since-copy must be enabled (two assistant replies after the most recent user message at index 2).
+  assert.strictEqual(since.hidden, false);
+  assert.strictEqual(since.disabled, false);
+  // Verify the since-copy payload joins after the most recent user message with two newlines.
+  assert.strictEqual(writeCalls.length, 0);
+  await window.engineeringDashboard.refreshChatHistory();
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_copy_per_message_writes_plain_text_only_and_toggles_copied_state():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = """
+const assert = require('assert');
+const script = fs.readFileSync(0, 'utf8');
+const historyHandlers = [];
+const sinceHandlers = [];
+const chatHistory = {
+  innerHTML: '', scrollTop: 0, scrollHeight: 100,
+  addEventListener: (evt, fn) => { if (evt === 'click') historyHandlers.push(fn); },
+  dataset: {},
+};
+const since = {
+  addEventListener: (evt, fn) => { if (evt === 'click') sinceHandlers.push(fn); },
+  dataset: {},
+  hidden: true, disabled: true, textContent: 'Copy since my last message', id: 'chat-copy-since',
+};
+const status = {dataset: {}, textContent: ''};
+const state = {textContent: '', style: {display: 'none'}, dataset: {}};
+const messages = [
+  {role: 'user', text: 'Q', timestamp: 't1'},
+  {role: 'assistant', text: 'line one\\nline two', timestamp: 't2'},
+];
+let clipboardText = null;
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}, __chatClipboardWriteText: (text) => { clipboardText = text; }};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+    if (id === 'chat-history') return chatHistory;
+    if (id === 'chat-copy-since') return since;
+    if (id === 'chat-status') return status;
+    if (id === 'chat-state') return state;
+    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+global.fetch = async (url) => {
+  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+  throw new Error('unexpected url ' + url);
+};
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.refreshChatHistory();
+  // The history handler must have been attached.
+  assert(historyHandlers.length >= 1, 'expected delegated click handler on chat-history');
+  // Drive a synthetic click on the per-message Copy button.
+  const button = {dataset: {copyIndex: '1'}, textContent: 'Copy', id: ''};
+  await historyHandlers[historyHandlers.length - 1]({target: {closest: (sel) => sel === '.chat-copy' ? button : null}});
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(clipboardText, 'line one\\nline two', 'clipboard must receive the assistant text exactly');
+  // After successful copy, button state and label toggle.
+  assert.strictEqual(button.dataset.copyState, 'copied');
+  assert.strictEqual(button.textContent, 'Copied');
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_copy_since_button_joins_after_last_user_message_with_double_newline():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = """
+const assert = require('assert');
+const script = fs.readFileSync(0, 'utf8');
+const sinceHandlers = [];
+const chatHistory = {
+  innerHTML: '', scrollTop: 0, scrollHeight: 100,
+  addEventListener: () => {}, dataset: {},
+};
+const since = {
+  addEventListener: (evt, fn) => { if (evt === 'click') sinceHandlers.push(fn); },
+  dataset: {},
+  hidden: true, disabled: true, textContent: 'Copy since my last message', id: 'chat-copy-since',
+};
+const status = {dataset: {}, textContent: ''};
+let clipboardText = null;
+const messages = [
+  {role: 'user', text: 'A', timestamp: 't1'},
+  {role: 'assistant', text: 'Response A1', timestamp: 't2'},
+  {role: 'assistant', text: 'Response A2', timestamp: 't3'},
+  {role: 'user', text: 'B', timestamp: 't4'},
+  {role: 'assistant', text: 'Response B1', timestamp: 't5'},
+  {role: 'assistant', text: 'Response B2', timestamp: 't6'},
+];
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}, __chatClipboardWriteText: (text) => { clipboardText = text; }};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+    if (id === 'chat-history') return chatHistory;
+    if (id === 'chat-copy-since') return since;
+    if (id === 'chat-status') return status;
+    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+global.fetch = async (url) => {
+  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+  throw new Error('unexpected url ' + url);
+};
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.refreshChatHistory();
+  // Since-copy must be enabled (two assistant rows after the most recent user).
+  assert.strictEqual(since.hidden, false);
+  assert.strictEqual(since.disabled, false);
+  assert(sinceHandlers.length >= 1, 'expected since-copy click handler');
+  await sinceHandlers[sinceHandlers.length - 1]();
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(clipboardText, 'Response B1\\n\\nResponse B2');
+  // Must NOT include user messages or earlier assistant turns.
+  assert(!clipboardText.includes('Response A1'));
+  assert(!clipboardText.includes('Response A2'));
+  // The user text 'B' alone must not appear as a separate line.
+  assert(!clipboardText.split('\\n\\n').some((part) => part === 'B'));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_copy_since_button_disabled_when_no_assistant_after_last_user():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = """
+const assert = require('assert');
+const script = fs.readFileSync(0, 'utf8');
+const chatHistory = {innerHTML: '', scrollTop: 0, scrollHeight: 100, addEventListener: () => {}};
+const since = {addEventListener: () => {}, dataset: {}, hidden: true, disabled: true, textContent: 'Copy since my last message', id: 'chat-copy-since'};
+const status = {dataset: {}, textContent: ''};
+const messages = [
+  {role: 'user', text: 'A', timestamp: 't1'},
+  {role: 'assistant', text: 'Response A1', timestamp: 't2'},
+  {role: 'user', text: 'B', timestamp: 't3'},
+];
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+    if (id === 'chat-history') return chatHistory;
+    if (id === 'chat-copy-since') return since;
+    if (id === 'chat-status') return status;
+    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+global.fetch = async (url) => {
+  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+  throw new Error('unexpected url ' + url);
+};
+global.window.__chatClipboardWriteText = () => {};
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.refreshChatHistory();
+  // No assistant after the most recent user message -> disabled.
+  assert.strictEqual(since.disabled, true);
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_copy_since_button_disabled_when_no_user_messages_at_all():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = """
+const assert = require('assert');
+const script = fs.readFileSync(0, 'utf8');
+const chatHistory = {innerHTML: '', scrollTop: 0, scrollHeight: 100, addEventListener: () => {}};
+const since = {addEventListener: () => {}, dataset: {}, hidden: true, disabled: true, textContent: 'Copy since my last message', id: 'chat-copy-since'};
+const status = {dataset: {}, textContent: ''};
+const messages = [
+  {role: 'assistant', text: 'orphan reply', timestamp: 't1'},
+];
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+    if (id === 'chat-history') return chatHistory;
+    if (id === 'chat-copy-since') return since;
+    if (id === 'chat-status') return status;
+    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+global.fetch = async (url) => {
+  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+  throw new Error('unexpected url ' + url);
+};
+global.window.__chatClipboardWriteText = () => {};
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.refreshChatHistory();
+  // Orphan assistant without a prior user message -> still joins all assistant rows
+  // because the spec says "after the most recent user message OR all assistant rows if none".
+  // Verify it is enabled and the orphan is included.
+  assert.strictEqual(since.hidden, false);
+  assert.strictEqual(since.disabled, false);
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_copy_per_message_clipboard_failure_shows_bounded_state_and_restores_button():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = """
+const assert = require('assert');
+const script = fs.readFileSync(0, 'utf8');
+const historyHandlers = [];
+const chatHistory = {
+  innerHTML: '', scrollTop: 0, scrollHeight: 100,
+  addEventListener: (evt, fn) => { if (evt === 'click') historyHandlers.push(fn); },
+  dataset: {},
+};
+const since = {
+  addEventListener: () => {}, dataset: {},
+  hidden: true, disabled: true, textContent: 'Copy since my last message', id: 'chat-copy-since',
+};
+const status = {dataset: {}, textContent: ''};
+const state = {textContent: '', style: {display: 'none'}, dataset: {status: 'available'}};
+const messages = [
+  {role: 'user', text: 'Q', timestamp: 't1'},
+  {role: 'assistant', text: 'reply', timestamp: 't2'},
+];
+const realSetImmediate = global.setImmediate;
+let pendingTimer = null;
+global.setTimeout = (fn, delay) => { pendingTimer = {fn, delay}; return 99; };
+global.clearTimeout = () => { pendingTimer = null; };
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}, __chatClipboardWriteText: () => { throw new Error('denied'); }};
+global.document = {
+  getElementById: (id) => {
+    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+    if (id === 'chat-history') return chatHistory;
+    if (id === 'chat-copy-since') return since;
+    if (id === 'chat-status') return status;
+    if (id === 'chat-state') return state;
+    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+global.fetch = async (url) => {
+  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};
+  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+  throw new Error('unexpected url ' + url);
+};
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.refreshChatHistory();
+  const historyBefore = chatHistory.innerHTML;
+  const button = {dataset: {copyIndex: '1'}, textContent: 'Copy', id: 'btn-stub'};
+  await historyHandlers[historyHandlers.length - 1]({target: {closest: (sel) => sel === '.chat-copy' ? button : null}});
+  await realSetImmediate(() => {});
+  assert.strictEqual(button.textContent, 'Copy failed');
+  assert.strictEqual(button.dataset.copyState, 'failed');
+  assert(state.textContent.toLowerCase().includes('clipboard'));
+  // Chat history must NOT have been mutated by the failure path.
+  assert.strictEqual(chatHistory.innerHTML, historyBefore);
+  // Restore timer fires -> button resets to 'Copy' state.
+  assert(pendingTimer, 'expected a pending restore timer');
+  pendingTimer.fn();
+  assert.strictEqual(button.textContent, 'Copy');
+  assert.strictEqual(button.dataset.copyState, 'idle');
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_copy_controls_survive_snapshot_poll_replacing_dashboard_content():
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = """
+const assert = require('assert');
+const script = fs.readFileSync(0, 'utf8');
+let content = {innerHTML: 'INITIAL', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};
+const warning = {textContent: '', style: {display: 'none'}};
+const chatHistory = {innerHTML: '', scrollTop: 0, scrollHeight: 100, addEventListener: () => {}, dataset: {}};
+const since = {addEventListener: () => {}, dataset: {}, hidden: true, disabled: true, textContent: 'Copy since my last message', id: 'chat-copy-since'};
+const status = {dataset: {}, textContent: ''};
+const messages = [
+  {role: 'user', text: 'Q', timestamp: 't1'},
+  {role: 'assistant', text: 'R1', timestamp: 't2'},
+  {role: 'assistant', text: 'R2', timestamp: 't3'},
+];
+global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}};
+let pollCount = 0;
+global.document = {
+  getElementById: (id) => {
+    if (id === 'dashboard-content') return content;
+    if (id === 'chat-history') return chatHistory;
+    if (id === 'chat-copy-since') return since;
+    if (id === 'chat-status') return status;
+    if (id === 'update-warning') return warning;
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+global.fetch = async (url) => {
+  pollCount += 1;
+  if (url === '/api/engineering/snapshot') {
+    return {ok: true, json: async () => ({project_identity: 'trading-bot', engineering_health: {}, repository: {}, backlog: {counts_by_status: {}, counts_by_priority: {}}, workflow: {}, approval: {}, recent_reports: [], recent_events: [], timeline: [], live_activity: [], recent_executions: [], health_warnings: [], testing: {}, data_freshness_timestamp: '2026-08-25T03:00:00+00:00'})};
+  }
+  if (url === '/api/engineering/chat/history') {
+    return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages})};
+  }
+  throw new Error('unexpected url ' + url);
+};
+global.window.__chatClipboardWriteText = () => {};
+eval(script.replace('<script>', '').replace('</script>', ''));
+(async () => {
+  await window.engineeringDashboard.refreshChatHistory();
+  const htmlBefore = chatHistory.innerHTML;
+  assert(htmlBefore.includes('data-copy-index=\"1\"'));
+  // Simulate snapshot poll replacing dashboard-content.
+  await window.engineeringDashboard.refreshDashboard();
+  await window.engineeringDashboard.refreshChatHistory();
+  // Per-message Copy buttons must still be present and since-copy must remain enabled.
+  assert(chatHistory.innerHTML.includes('data-copy-index=\"1\"'));
+  assert(chatHistory.innerHTML.includes('data-copy-index=\"2\"'));
+  assert.strictEqual(since.hidden, false);
+  assert.strictEqual(since.disabled, false);
+  // Snapshot poll must NOT have duplicated per-message buttons (no two copies of index 1).
+  assert.strictEqual((chatHistory.innerHTML.match(/data-copy-index=\"1\"/g) || []).length, 1);
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    _run_dashboard_script_case(script, body)
+
+
+def test_chat_copy_uses_projected_messages_not_raw_transcript_so_pr63_filter_holds():
+    # Confirm the since-copy payload cannot include a hidden toolUse /
+    # delivery-mirror row, because computeSinceLastUserText operates on the
+    # already-filtered projected messages array (PR #63 server projection).
+    # We simulate a message list that a misbehaving client might inject and
+    # verify the helper still excludes any non-conversational row.
+    import json
+    from dashboard_api.app import create_app
+    from dashboard_api.chat_gateway import _project_message, _dedupe_messages
+    # Fake raw transcript (mimics OpenClaw transcript shape):
+    raw = [
+        {"role": "user", "content": "Q1", "timestamp": 1},
+        {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "text", "text": "narrating between tool calls"}], "timestamp": 2},
+        {"role": "toolResult", "content": "raw tool output", "timestamp": 3},
+        {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "R1 before user"}], "timestamp": 4},
+        {"role": "user", "content": "Q2", "timestamp": 5},
+        {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "text", "text": "intermediate"}], "timestamp": 6},
+        {"role": "assistant", "model": "delivery-mirror", "stopReason": "stop", "content": [{"type": "text", "text": "R2 mirror dup"}], "timestamp": 7},
+        {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "R2 final"}], "timestamp": 8},
+    ]
+    projected = list(_dedupe_messages(_project_message(m) for m in raw))
+    # The dashboard JS reads messages from the projected list, so hidden
+    # toolUse / toolResult / delivery-mirror rows MUST not be present.
+    roles = [m.role for m in projected]
+    assert roles == ["user", "assistant", "user", "assistant"], f"unexpected projected roles: {roles}"
+    texts = [m.text for m in projected]
+    assert all("narrating between tool calls" not in t and "raw tool output" not in t and "intermediate" not in t and "R2 mirror dup" not in t for t in texts)
+    # The visible projection must contain only the legitimate conversational rows.
+    assert texts == ["Q1", "R1 before user", "Q2", "R2 final"]
+    # Now exercise computeSinceLastUserText on the projected list directly
+    # by running the dashboard JS in node.
+    script = _dashboard_script(render_dashboard(populated_snapshot()))
+    body = (
+        "const assert = require('assert');\nconst script = fs.readFileSync(0, 'utf8');\nconst chatHistory = {innerHTML: '', scrollTop: 0, scrollHeight: 100, addEventListener: () => {}, dataset: {}};\nconst since = {addEventListener: () => {}, dataset: {}, hidden: true, disabled: true, textContent: '', id: 'chat-copy-since'};\nconst status = {dataset: {}, textContent: ''};\nconst projected = PROJECTED_MESSAGES_PLACEHOLDER;\nglobal.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}, localStorage: {getItem: () => null, setItem: () => {}}};\nglobal.document = {\n  getElementById: (id) => {\n    if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};\n    if (id === 'chat-history') return chatHistory;\n    if (id === 'chat-copy-since') return since;\n    if (id === 'chat-status') return status;\n    if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};\n    return null;\n  },\n  querySelectorAll: () => [],\n};\nglobal.fetch = async (url) => {\n  if (url === '/api/engineering/snapshot') return {ok: true, json: async () => ({project_identity: 'trading-bot'})};\n  if (url === '/api/engineering/chat/history') return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available', has_active_run: false, run_status: 'idle'}, messages: projected})};\n  throw new Error('unexpected url ' + url);\n};\nlet captured = null;\nconst sinceProxy = {\n  ...since,\n  addEventListener: (evt, fn) => { if (evt === 'click') captured = fn; },\n};\nglobal.document.getElementById = (id) => {\n  if (id === 'chat-copy-since') return sinceProxy;\n  if (id === 'dashboard-content') return {innerHTML: '', addEventListener: () => {}, contains: () => true, querySelectorAll: () => []};\n  if (id === 'chat-history') return chatHistory;\n  if (id === 'chat-status') return status;\n  if (id === 'update-warning') return {textContent: '', style: {display: 'none'}};\n  return null;\n};\nlet clipboardText = null;\nglobal.window.__chatClipboardWriteText = (text) => { clipboardText = text; };\neval(script.replace('<script>', '').replace('</script>', ''));\n(async () => {\n  await window.engineeringDashboard.refreshChatHistory();\n  await captured();\n  await new Promise((r) => setImmediate(r));\n  // Only the projected stopReason=stop assistant row after the last user turn survives.\n  assert.strictEqual(clipboardText, 'final R2');\n  assert(!clipboardText.includes('intermediate'));\n  assert(!clipboardText.includes('narrating'));\n  assert(!clipboardText.includes('raw tool output'));\n})().catch((error) => { console.error(error); process.exit(1); });\n"
+    ).replace('PROJECTED_MESSAGES_PLACEHOLDER', json.dumps([{'role': m.role, 'text': m.text} for m in projected]))

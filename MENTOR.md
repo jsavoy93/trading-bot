@@ -1190,3 +1190,36 @@ delivery-mirror marker `model == "delivery-mirror"` written by
 `/usr/lib/node_modules/openclaw/dist/transcript-hciCrqol.js`). The filter
 deliberately does **not** key on the trading-manager's configured
 provider/model, so the rule survives any future model change.
+
+### Chat copy controls (DASH-007)
+
+`dashboard_api/app.py` adds two client-side copy controls on top of the
+already-projected chat history. They must NEVER read from the raw
+OpenClaw transcript — both controls operate on `chatStateCache.messages`,
+the array populated by `renderChatHistory` from the server-projected
+payload (PR #63). Hidden toolUse / toolResult / delivery-mirror rows
+cannot reach the clipboard.
+
+* Per-message Copy button: rendered on every assistant card with
+  `data-copy-index="${i}"`. Click handler reads
+  `chatStateCache.messages[i].text` (plain text only) and writes it via
+  `navigator.clipboard.writeText`. After success the label toggles to
+  "Copied" for ~1.8 s then restores. On failure the label becomes
+  "Copy failed" for ~2.4 s, a bounded chat-state banner surfaces the
+  reason, and chat history is not mutated.
+* "Copy since my last message" button: header-level action in the same
+  `.chat-status-row` as the agent indicator. Initially `hidden disabled`.
+  The payload is computed by `computeSinceLastUserText(messages)`, which
+  finds the most recent `role="user"` index in the projected array and
+  joins every `role="assistant"` row after it with `\n\n`. The boundary
+  resets automatically after each new user turn, and the payload
+  naturally tracks new final manager responses as they arrive.
+* Re-bind points: `switchTab`, `restoreChatUiState`, `refreshDashboard`,
+  and initial script run all call `bindChatCopyControls`. The
+  `dataset.copyBound` / `dataset.sinceBound` flags make the bind
+  idempotent so the handlers survive `#dashboard-content` snapshot-poll
+  replacement and `#chat-history` re-render without stacking.
+* Test injection hook: `window.__chatClipboardWriteText` (set by the
+  test harness) takes precedence over `navigator.clipboard` so the
+  clipboard can be stubbed under headless Node. In production the hook
+  is undefined and the script falls through to the browser API.

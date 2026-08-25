@@ -4743,3 +4743,140 @@ Blocked until:
 - Non-root paper user exists.
 - Restricted control wrapper exists.
 - Paper safety tests pass.
+
+---
+
+### DASH-007 — Engineering Dashboard Chat copy controls
+
+Status: IN_PROGRESS
+Owner: dashboard-agent
+Priority: P2
+
+Depends on: PR #63 (assistant-message projection filter)
+
+Purpose:
+
+Add a small "Copy" control to every visible Trading Manager / assistant
+message in the Engineering Dashboard Chat tab, plus a header-level
+"Copy since my last message" action that copies every visible manager
+response produced after Josh's most recent user turn. Both controls
+operate ONLY on the already-projected conversational history — never
+on the raw OpenClaw transcript — so hidden progress / toolUse /
+delivery-mirror rows cannot leak through.
+
+Approved scope:
+
+- Start from latest remote `main` after PR #63 merge.
+- Use branch `agent/dashboard-chat-copy-controls`.
+- Pure client-side feature on the existing Engineering Dashboard Chat
+  tab (`dashboard_api/app.py` JS inside the `_refresh_script()` body).
+- Do not add new HTTP routes, new RPC calls, or new server-side
+  storage.
+- Do not change OpenClaw chat/session behavior, message filtering,
+  run-state behavior, send behavior, or the underlying transcript.
+- Preserve all existing Chat-tab behavior: Idle / Working… / Failed
+  indicator, send-state, 15-second history polling, snapshot-poll state
+  cache survival, history bounds, escape / content-type filtering,
+  and no mutation of the OpenClaw transcript.
+
+Allowed areas:
+
+- `dashboard_api/app.py` (Chat-tab JS only — add Copy buttons,
+  "Copy since my last message" header action, clipboard helpers, CSS
+  rules).
+- `tests/test_dashboard_api_app.py` (DOM harness: per-message Copy,
+  "Copy since my last message" computation, disabled / empty state,
+  clipboard fallback path, survival across snapshot poll and send
+  races).
+- `AGENT_BACKLOG.md`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`,
+  `REPORT.md`, `reports/` (governance records only).
+
+Explicit exclusions:
+
+- `dashboard_api/chat_gateway.py` (server-side projection must not
+  change).
+- OpenClaw Gateway / session / transcript.
+- Trading, brokerage, Alpaca, `dashboard.py`, secrets, env files,
+  CI/CD, branch protection.
+- New HTTP routes, RPC calls, databases, or write APIs.
+
+Acceptance criteria:
+
+- Every visible assistant message card in the Chat tab has a small
+  unobtrusive Copy button. User messages do NOT get a Copy button.
+- Clicking the per-message Copy button writes ONLY the displayed
+  assistant text to the clipboard (plain text, no HTML, no "Trading
+  manager", no timestamp, no button label, no metadata). Newlines and
+  formatting in the original message are preserved.
+- After a successful per-message copy, the button label changes to
+  "Copied" for approximately 1.5–2 seconds and then returns to "Copy".
+- On clipboard failure, the button does NOT lose its history, the
+  chat history is not modified, and a small bounded failure
+  indication is shown. The button restores itself afterward.
+- A "Copy since my last message" header action is placed near the
+  Chat status / header area. It is mobile-first unobtrusive.
+- "Copy since my last message" copies every visible assistant message
+  after the most recent visible user message, joined by exactly two
+  newline characters. It does NOT include the user message itself,
+  timestamps, speaker names, separators, JSON, HTML, or UI metadata.
+- "Copy since my last message" is hidden or disabled when there are
+  zero assistant responses after the most recent visible user message.
+- The "since my last message" boundary updates automatically as new
+  final manager responses arrive after Josh's latest user turn, and
+  resets to the newest user message after Josh sends another turn.
+- Both copy controls survive 15-second chat-history polling,
+  dashboard snapshot polling (which replaces `#dashboard-content`),
+  Working → Idle transitions, and page refresh.
+- No hidden progress / toolUse / delivery-mirror rows can be included
+  in "Copy since my last message" because the source of truth is the
+  already-projected visible messages list (PR #63).
+- Clipboard content is plain text. `navigator.clipboard.writeText`
+  with a bounded fallback (e.g., `document.execCommand('copy')`) is
+  used; no unsafe HTML extraction or DOM scraping is used.
+- Focused dashboard tests, relevant engineering regressions, and the
+  full safe suite pass.
+- Repository is clean at completion.
+- PR is open against `main` and ready for Josh's review.
+
+Required tests:
+
+- Per-message Copy button exists on every assistant card and only on
+  assistant cards.
+- Per-message Copy writes exactly the message text (no metadata) and
+  toggles "Copied" then restores "Copy".
+- Clipboard-write failure path: bounded failure state surfaced, button
+  restores, chat history untouched.
+- "Copy since my last message" boundary correctness: assistant rows
+  after the last user message are joined by `\n\n`; nothing before is
+  included; the user message itself is excluded.
+- "Copy since my last message" disabled / hidden when there are zero
+  matching assistant rows.
+- Boundary resets correctly after a new user turn.
+- Copy controls survive a snapshot poll that replaces the Chat DOM.
+- Copy controls survive a fresh chat-history poll while a send is in
+  flight.
+- No PR #63-filtered-out rows can leak into the "since" payload.
+- No new HTTP routes, no new RPC calls, no new databases.
+- Existing chat / dashboard / agent-indicator behavior preserved.
+- Full safe suite passes.
+
+Implementation risks:
+
+- Clipboard API requires a secure context; a bounded fallback path
+  (textarea + `execCommand('copy')`) covers non-secure contexts and
+  older browsers without leaking DOM.
+- Event handlers on Copy buttons must survive `#dashboard-content`
+  replacement during snapshot polling. The existing
+  `restoreChatUiState` path re-applies event bindings; the new
+  controls must hook into the same re-bind step.
+- "Copied" → "Copy" timer must be cancelled if the button is
+  re-rendered before it fires, to avoid mutating a stale node.
+- The "since" computation must operate on the same projected
+  `messages` array that the rendering uses — never on the raw
+  Gateway payload — so it is naturally consistent with PR #63's
+  filter.
+
+Execution gate:
+
+- Non-executable until Josh approves a narrow implementation plan with
+  the allowed areas above.
