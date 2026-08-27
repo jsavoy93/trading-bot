@@ -1117,12 +1117,25 @@ character payloads, and calls Gateway `chat.send` server-side.
 returns as soon as the run has been queued and a `runId` has been assigned;
 the manager then continues asynchronously and the dashboard tracks progress
 via the 15s `chat.history` poll. The dashboard MUST NOT block on the manager
-run and MUST NOT pass the agent's 1800s `timeoutSeconds` to the `chat.send`
-RPC — doing so would falsely mark any long-running engineering task as
-Failed even when the underlying run is healthy. The dashboard proxy uses
-`GATEWAY_SEND_TIMEOUT_SECONDS = 15` (an accept-only ceiling), which is far
-below the agent run timeout and well within the observed accept round-trip
-(~3–4 s on a healthy Gateway).
+run and MUST NOT inject **any** `timeoutMs` into the `chat.send` RPC payload.
+OpenClaw treats `chat.send`'s `timeoutMs` field as the agent RUN deadline
+(it flows straight into `registerChatAbortController` /
+`resolveChatRunExpiresAtMs`); passing any value — even a tiny 15s
+accept-only value — would silently shadow the operator-owned
+`agents.defaults.timeoutSeconds = 1800` configured in
+`/root/.openclaw/openclaw.json`. Worse, OpenClaw's
+`resolveChatRunExpiresAtMs` clamps the resulting `expiresAtMs` to a
+hard 2-minute floor (`minMs = 2 * 6e4`), so any small dashboard
+override produced the observable "chat run timed out" abort at
+~2 m 20 s on the long engineering tasks of 2026-08-25 and
+2026-08-26. The dashboard now leaves the RUN deadline entirely to
+OpenClaw runtime config: omitting `timeoutMs` lets `resolveAgentTimeoutMs`
+fall back to `clampTimerTimeoutMs(cfg.agents.defaults.timeoutSeconds * 1000)
+= 1_800_000`, giving an effective ~31-minute run deadline
+(`1800 s + 60 s grace`, bounded to `[120 s, 24 h]`). The dashboard proxy
+keeps `GATEWAY_SEND_TIMEOUT_SECONDS = 15` solely as the bounded
+subprocess `timeout=` for the Node wrapper (so a wedged Node call cannot
+hang the proxy forever); it is NOT injected into the RPC payload.
 
 **Inbound response bound is `CHAT_MESSAGE_MAX_CHARS = 16_000`** (the bound
 that ships to the browser per projected assistant message). Outbound user-

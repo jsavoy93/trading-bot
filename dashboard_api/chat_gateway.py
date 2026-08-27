@@ -25,23 +25,21 @@ CHAT_SEND_MAX_CHARS = 4_000
 GATEWAY_HISTORY_TIMEOUT_SECONDS = 15
 # Send-accept timeout for the dashboard's Node subprocess wrapping the
 # OpenClaw Gateway `chat.send` RPC. `chat.send` semantics are accepted-with-
-# runId: the RPC returns as soon as the Gateway has queued the run and
-# assigned a run_id; the manager then continues asynchronously and the
-# dashboard tracks progress via the chat.history poll (15s interval). The
-# dashboard therefore does NOT need to wait for the run to complete on this
-# RPC and must NOT use the agent's 1800s timeout here, otherwise the proxy
-# would falsely return "failed" for any long engineering task that takes
-# longer than GATEWAY_SEND_TIMEOUT_SECONDS while the underlying run is
-# still healthy. A bounded accept-only timeout is the correct ceiling.
-# 15 seconds is generous: the Node subprocess + waitForReady + listSessions
-# + RPC round-trip has been observed at ~4 seconds in production.
+# runId: the Gateway returns as soon as the run has been queued and a
+# run_id has been assigned; the manager then continues asynchronously and
+# the dashboard tracks progress via the chat.history poll. The dashboard
+# MUST NOT block on the run and MUST NOT pass any run-deadline timeout to
+# the `chat.send` RPC payload. Doing so would either (a) falsely mark any
+# long-running engineering task as Failed when the underlying run is
+# healthy, or (b) override the authoritative OpenClaw `agents.defaults.
+# timeoutSeconds` (currently 1800s) configured in
+# `/root/.openclaw/openclaw.json`. The agent-run deadline is therefore
+# owned entirely by OpenClaw runtime config — the dashboard only enforces
+# this bounded subprocess-level ceiling so a wedged Node call cannot hang
+# the proxy forever. 15 seconds is generous: the Node subprocess +
+# waitForReady + listSessions + sendChat round-trip has been observed at
+# ~4 seconds in production.
 GATEWAY_SEND_TIMEOUT_SECONDS = 15
-# Backward-compatible alias retained for any external callers / docs that
-# still reference the previous 180s value. Equal to the accept timeout
-# above; the 180-second send-side wait has been removed (see
-# /root/.openclaw/audit-archives/trading-bot/2026-08-25_155700_read-only-
-# failed-status-diagnosis.md for the full rationale).
-GATEWAY_SEND_LEGACY_TIMEOUT_SECONDS = 180
 
 # Terminal run-state values from OpenClaw Gateway sessionInfo.status.
 # Anything outside this set is surfaced as None (the dashboard treats it as Idle).
@@ -311,16 +309,18 @@ try {{
       sessionKey: selected.key,
       agentId: AGENT_ID,
       ...(selected.sessionId ? {{ sessionId: selected.sessionId }} : {{}}),
-      message: MESSAGE,
-      // chat.send semantics are accepted-with-runId: the Gateway RPC
-      // returns as soon as the run has been queued / accepted and a runId
-      // has been assigned. The manager continues asynchronously and the
-      // dashboard tracks progress via the 15s chat.history poll. We pass
-      // the bounded ACCEPT timeout here (15s), NOT the agent run timeout
-      // (1800s), because the dashboard proxy only needs to wait for the
-      // Gateway to acknowledge the submit. A long engineering task must
-      // NEVER cause the dashboard's send proxy to time out.
-      timeoutMs: {GATEWAY_SEND_TIMEOUT_SECONDS * 1000}
+      message: MESSAGE
+      // NOTE: the dashboard intentionally does NOT pass a `timeoutMs`
+      // field to `chat.send`. OpenClaw treats that field as the agent RUN
+      // deadline (which lands directly in `registerChatAbortController`),
+      // so passing any value here would silently shadow the configured
+      // `agents.defaults.timeoutSeconds = 1800` in
+      // `/root/.openclaw/openclaw.json` and either falsely time out long
+      // engineering tasks (when the override is small) or bypass the
+      // operator-owned deadline entirely (when the override is large).
+      // The agent-run deadline is therefore owned entirely by OpenClaw
+      // runtime config; the dashboard only enforces the bounded
+      // subprocess-level ceiling via `timeout={GATEWAY_SEND_TIMEOUT_SECONDS}`.
     }});
     console.log(JSON.stringify({{ ok: true, agentId: AGENT_ID, selectedSession: selected, runId: result.runId }}));
   }}
