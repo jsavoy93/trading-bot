@@ -183,11 +183,24 @@ def test_send_adapter_accepts_bounded_text_and_uses_fixed_trading_manager_sessio
     assert "sessionKey: selected.key" in script
     assert "agentId: AGENT_ID" in script
     assert 'const MESSAGE = "hello manager"' in script
-    # Accept-only timeout (15s) — NOT the 1800s agent run timeout. Long
-    # engineering tasks MUST NOT cause this proxy to time out.
-    assert "timeoutMs: 15000" in script
-    assert "timeoutMs: 1800000" not in script
-    assert "timeoutMs: 180000" not in script
+    # The chat.send RPC payload must NOT include any `timeoutMs` key.
+    # OpenClaw treats `timeoutMs` as the agent RUN deadline — passing it
+    # would shadow `agents.defaults.timeoutSeconds = 1800` configured in
+    # `/root/.openclaw/openclaw.json` and falsely mark long engineering
+    # runs as Failed. The agent-run deadline is owned by OpenClaw runtime
+    # config; the dashboard only enforces the bounded subprocess-level
+    # ceiling via `timeout=GATEWAY_SEND_TIMEOUT_SECONDS`.
+    #
+    # We assert the JSON key (`timeoutMs:`) is absent. Comments may
+    # legitimately reference the identifier `timeoutMs` to document
+    # the contract; a JS object literal with that key would appear as
+    # `timeoutMs:` (colon, not assignment).
+    import re
+    assert not re.search(r"\btimeoutMs\s*:", script), (
+        "dashboard must not pass any timeoutMs key to chat.send; "
+        "the agent-run deadline is owned by OpenClaw runtime config"
+    )
+    assert "sendChat" in script and "message: MESSAGE" in script
 
 
 def test_send_adapter_rejects_empty_non_text_and_over_limit_without_gateway_call():
@@ -793,7 +806,7 @@ def test_send_adapter_surfaces_accepted_status_with_run_id():
     assert result["run_id"] == "run-abc-123"
 
 
-def test_send_adapter_subprocess_uses_accept_only_timeout_not_run_timeout():
+def test_send_adapter_subprocess_uses_accept_only_subprocess_timeout_not_run_timeout():
     captured = {}
 
     def runner(*args, **kwargs):
@@ -808,12 +821,29 @@ def test_send_adapter_subprocess_uses_accept_only_timeout_not_run_timeout():
     GatewayChatHistoryClient(runner=runner).send("hello").to_public_dict()
 
     script = captured["input"]
-    # Accept timeout (15s = 15000 ms) must be present.
-    assert "timeoutMs: 15000" in script
-    # 180s legacy timeout must NOT be present.
+    # The chat.send RPC payload must NOT include any `timeoutMs` key at
+    # all (no `timeoutMs:`, no `timeoutMs =`, no partial match). OpenClaw
+    # treats `timeoutMs` as the agent RUN deadline; passing it would
+    # shadow `agents.defaults.timeoutSeconds = 1800` configured in
+    # `/root/.openclaw/openclaw.json` and falsely mark long engineering
+    # runs as Failed.
+    import re
+    assert not re.search(r"\btimeoutMs\s*:", script), (
+        "dashboard must not pass any timeoutMs to chat.send; "
+        "the agent-run deadline is owned by OpenClaw runtime config"
+    )
+    # Defence in depth: also assert the specific forbidden numeric values.
+    assert "timeoutMs: 15000" not in script
     assert "timeoutMs: 180000" not in script
-    # 1800s agent run timeout must NOT be present (would block the proxy).
     assert "timeoutMs: 1800000" not in script
+    # The subprocess wrapper's own ceiling is still enforced via
+    # `timeout=GATEWAY_SEND_TIMEOUT_SECONDS` (15s) — that is the only
+    # dashboard-imposed timeout for chat.send, and it bounds the
+    # wait-for-accept only (NOT the agent run).
+    from dashboard_api.chat_gateway import GATEWAY_SEND_TIMEOUT_SECONDS
+    assert GATEWAY_SEND_TIMEOUT_SECONDS == 15, (
+        "the chat.send subprocess accept ceiling must remain 15s"
+    )
 
 
 def test_send_adapter_subprocess_failure_surfaces_failed_with_bounded_error():
@@ -859,3 +889,227 @@ def test_send_adapter_does_not_block_on_long_running_manager_run():
     assert result["status"] == "accepted"
     # Synthesised runner returns instantly; bound is generous (0.5s).
     assert elapsed < 0.5
+
+
+# ---------------------------------------------------------------------------
+# chat.send timeout ownership regression tests (Option A fix).
+# Goal: the dashboard must NOT inject any agent-run deadline into the
+# chat.send RPC. The 1800s agent timeout is owned by OpenClaw runtime
+# config (`agents.defaults.timeoutSeconds` in
+# `/root/.openclaw/openclaw.json`). The dashboard only bounds the
+# wait-for-accept at the subprocess layer; it does NOT impose a 15s,
+# 180s, or any other run-completion timeout on the chat.send call.
+# Without the override, OpenClaw's `resolveAgentTimeoutMs({cfg,
+# overrideMs: undefined})` returns `clampTimerTimeoutMs(
+# cfg.agents.defaults.timeoutSeconds * 1000)`, which feeds
+# `registerChatAbortController` and yields an effective ~31-minute run
+# deadline (1800s + 60s grace, bounded by [120s, 24h]). The previous bug
+# was an oversized dashboard pollution that shadowed the configured
+# deadline with a tiny 15s override; the 120s `minMs` floor in
+# `resolveChatRunExpiresAtMs` then yielded the observed 2-minute abort.
+# ---------------------------------------------------------------------------
+
+
+def test_send_adapter_payload_omits_timeoutms_field_entirely():
+    """Regression: dashboard chat.send RPC payload must not contain timeoutMs.
+
+    Previously (PRs #66 and earlier) the dashboard injected
+    `timeoutMs: {GATEWAY_SEND_TIMEOUT_SECONDS * 1000}` into the chat.send
+    RPC. OpenClaw consumed that field as the agent-run deadline, shadowed
+    the configured `agents.defaults.timeoutSeconds = 1800`, and — once the
+    120-second `minMs` floor in `resolveChatRunExpiresAtMs` clamped the
+    small value — emitted "chat run timed out" at ~2 m 20 s. This test
+    pins the new contract: timeoutMs must be absent from the JSON payload
+    sent to the Gateway.
+    """
+    captured = {}
+
+    def runner(*args, **kwargs):
+        captured["input"] = kwargs.get("input") or (args[2] if len(args) > 2 else "")
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "runId": "run-no-timeoutms",
+        })
+
+    GatewayChatHistoryClient(runner=runner).send("audit the dashboard").to_public_dict()
+
+    script = captured["input"]
+    # Strict: the JSON payload must not contain a `timeoutMs` key AT ALL.
+    # Comments may legitimately reference the identifier `timeoutMs` to
+    # document the contract; only the JSON key (`timeoutMs:`) is forbidden.
+    import re
+    assert not re.search(r"\btimeoutMs\s*:", script), (
+        "dashboard chat.send payload must not contain a `timeoutMs:` key; "
+        "agent-run deadline is owned by OpenClaw config"
+    )
+    # Also assert the surrounding object-literal text does not contain
+    # any of the previously injected values.
+    assert "timeoutMs:" not in script
+
+
+def test_send_adapter_subprocess_timeout_remains_accept_only_15s():
+    """Regression: chat.send subprocess wrapper still bounded at 15s.
+
+    The dashboard keeps a bounded accept-only subprocess ceiling of 15s
+    (`timeout=GATEWAY_SEND_TIMEOUT_SECONDS`) so a wedged Node call cannot
+    hang the proxy forever. This is NOT the agent-run deadline — it is
+    the wait-for-accept. It must be unchanged after the Option A fix.
+    """
+    captured = {}
+
+    def runner(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "runId": "run-accept-only",
+        })
+
+    GatewayChatHistoryClient(runner=runner).send("hello").to_public_dict()
+
+    assert captured["kwargs"]["timeout"] == 15, (
+        "subprocess accept-only ceiling must remain 15s after the fix"
+    )
+    # The wrapper Node script must not contain a parallel JavaScript-side
+    # `timeoutMs` either. We assert the JSON key (`timeoutMs:`) is absent;
+    # comments may legitimately reference the identifier for documentation.
+    import re
+    script = captured["kwargs"].get("input") or ""
+    assert not re.search(r"\btimeoutMs\s*:", script), (
+        "dashboard must not inject any timeoutMs key into chat.send"
+    )
+
+
+def test_chat_history_timeout_unaffected_by_send_payload_change():
+    """Regression: chat.history separate RPC keeps its own 15s boundary.
+
+    The Option A fix only touches the chat.send payload. chat.history is
+    a separate RPC whose bounded wait-for-poll lives on the Python
+    `subprocess.run` layer (`timeout=GATEWAY_HISTORY_TIMEOUT_SECONDS`).
+    It must remain exactly 15 seconds after the change.
+    """
+    from dashboard_api.chat_gateway import GATEWAY_HISTORY_TIMEOUT_SECONDS
+    captured = {}
+
+    def runner(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "history": {
+                "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                "messages": [],
+                "sessionInfo": {"hasActiveRun": False, "status": "idle"},
+            },
+        })
+
+    GatewayChatHistoryClient(runner=runner).history()
+
+    assert captured["kwargs"]["timeout"] == GATEWAY_HISTORY_TIMEOUT_SECONDS
+    assert captured["kwargs"]["timeout"] == 15
+    # The chat.history Node script must NOT inject any run-deadline
+    # field either (chat.history is a read; it never enters
+    # registerChatAbortController). Assert the JSON key (`timeoutMs:`)
+    # is absent; comments may legitimately mention the identifier.
+    import re
+    script = captured["kwargs"].get("input") or ""
+    assert not re.search(r"\btimeoutMs\s*:", script)
+
+
+def test_legacy_180s_send_alias_constant_is_removed_from_module():
+    """Regression: the obsolete GATEWAY_SEND_LEGACY_TIMEOUT_SECONDS alias
+    is gone after the fix. Its presence was misleading — the comment
+    claimed "Equal to the accept timeout above" while the value was
+    hardcoded to 180 (a stale value from the previously removed
+    180-second send-side wait). With the fix, no internal or external
+    caller should reference this constant anywhere in the module.
+    """
+    import dashboard_api.chat_gateway as gateway_module
+    # The legacy alias must be removed entirely from the public module
+    # surface — it implies the dashboard still controls the send timeout,
+    # which it no longer does.
+    assert not hasattr(gateway_module, "GATEWAY_SEND_LEGACY_TIMEOUT_SECONDS"), (
+        "GATEWAY_SEND_LEGACY_TIMEOUT_SECONDS must be removed once the "
+        "dashboard no longer injects any chat.send timeout"
+    )
+
+
+def test_chat_bounds_constants_remain_unchanged():
+    """Regression: outbound 4K and inbound 16K bounds preserved.
+
+    The Option A fix touches only the chat.send timeout contract. The
+    outbound user-input bound (CHAT_SEND_MAX_CHARS = 4_000) and the
+    inbound projected-manager-response bound (CHAT_MESSAGE_MAX_CHARS =
+    16_000) must remain exactly as specified so existing truncation
+    semantics and the per-character Copy contract are preserved.
+    """
+    from dashboard_api.chat_gateway import (
+        CHAT_SEND_MAX_CHARS,
+        CHAT_MESSAGE_MAX_CHARS,
+        CHAT_HISTORY_LIMIT,
+        ALLOWED_RUN_STATUSES,
+    )
+    assert CHAT_SEND_MAX_CHARS == 4_000
+    assert CHAT_MESSAGE_MAX_CHARS == 16_000
+    assert CHAT_HISTORY_LIMIT == 50
+    # The allowed terminal run-status set must remain unchanged so the
+    # Idle / Working / Failed indicator mapping is preserved.
+    assert ALLOWED_RUN_STATUSES == frozenset({"running", "idle", "done", "failed", "killed", "timeout"})
+
+
+def test_send_compose_returns_promptly_after_acceptance_regardless_of_run_length():
+    """Regression: browser compose returns to idle immediately on accept.
+
+    The send wrapper returns within seconds regardless of any in-flight
+    trading-manager run length. A long engineering task (e.g. >30
+    minutes) must NEVER block this proxy. With the Option A fix the
+    chat.send RPC no longer carries a dashboard-imposed deadline, so
+    the only bound on this call is the 15s subprocess accept ceiling;
+    the run itself progresses asynchronously under the OpenClaw-owned
+    1800s timeout (31-min effective deadline).
+    """
+    import time
+
+    # 1) The proxy itself must return promptly. The synthesised runner
+    #    returns instantly; the proxy must not introduce any artificial
+    #    wait that would block browser compose state.
+    started = time.monotonic()
+    result = GatewayChatHistoryClient(
+        runner=lambda *a, **kw: _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "runId": "run-prompt",
+        })
+    ).send("hello").to_public_dict()
+    elapsed = time.monotonic() - started
+    assert result["ok"] is True
+    assert result["status"] == "accepted"
+    assert result["run_id"] == "run-prompt"
+    assert elapsed < 0.5
+
+    # 2) The agent-run deadline ownership is documented in the script:
+    #    no `timeoutMs` is injected, so the run falls back to
+    #    OpenClaw's `agents.defaults.timeoutSeconds = 1800`.
+    captured = {}
+
+    def runner2(*args, **kwargs):
+        captured["input"] = kwargs.get("input") or (args[2] if len(args) > 2 else "")
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "runId": "run-no-block",
+        })
+
+    GatewayChatHistoryClient(runner=runner2).send("audit long task").to_public_dict()
+    # Only the JSON key (`timeoutMs:`) is forbidden; comments may mention
+    # the identifier for documentation.
+    import re
+    assert not re.search(r"\btimeoutMs\s*:", captured["input"]), (
+        "dashboard must not inject a timeoutMs key into chat.send"
+    )
