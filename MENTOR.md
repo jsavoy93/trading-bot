@@ -1137,16 +1137,63 @@ keeps `GATEWAY_SEND_TIMEOUT_SECONDS = 15` solely as the bounded
 subprocess `timeout=` for the Node wrapper (so a wedged Node call cannot
 hang the proxy forever); it is NOT injected into the RPC payload.
 
-**Inbound response bound is `CHAT_MESSAGE_MAX_CHARS = 16_000`** (the bound
+**Inbound response bound is `CHAT_MESSAGE_MAX_CHARS = 64_000`** (the bound
 that ships to the browser per projected assistant message). Outbound user-
 input bound is `CHAT_SEND_MAX_CHARS = 4_000` (separate concern, unchanged).
+The same bound is passed as the `maxChars` parameter to the OpenClaw
+Gateway `chat.history` RPC (`CHAT_HISTORY_MAX_CHARS = 64_000`) so the
+Gateway does not pre-truncate at its own 8,000-char default
+(`DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS` in
+`/usr/lib/node_modules/openclaw/dist/chat-display-projection-CSlqmWmw.js`).
+The 64K inbound bound was raised from the previous 16K so the largest
+observed Trading-Manager audit response (18,354 chars on 2026-08-27
+~12:02:57 UTC) ships verbatim to the browser instead of being silently
+cut. 64K gives ~3.5x headroom over the largest observed audit response.
+64K × 50 messages worst-case ≈ 3.2M characters, well within the 25 MiB
+WebSocket payload cap.
+
 When the inbound bound is hit, the projection flags `truncated: true` on
 the message and the UI shows a small explicit **"Response truncated"**
 badge — the cut is never silent. The marker used is the ASCII string
 ` [Response truncated]`, which survives clipboard / email / JSON transit.
-A normal Trading-Manager report of up to ~5,138 chars (3.1× headroom)
-passes through verbatim and Copy / Copy-since-last-message deliver the
-complete projected text.
+Each projected message also carries a `truncation_source` field which is
+one of:
+
+  * `null` — text was NOT truncated (the common case).
+  * `"gateway"` — the OpenClaw Gateway `chat.history` projection
+    already truncated this text (the canonical `\n...(truncated)...`
+    suffix was detected at the end of the projected text); the
+    dashboard did NOT add its own bound here.
+  * `"dashboard"` — the dashboard's own `_bounded_text` safety bound
+    cut this text at `CHAT_MESSAGE_MAX_CHARS`.
+
+The upstream truncation marker is detected by **suffix position** (text
+ends with the literal marker) so legitimate user content that
+incidentally contains the substring `...(truncated)...` elsewhere in
+the body (e.g. quoting a previous truncated message) is NEVER
+misclassified as upstream truncation.
+
+A normal Trading-Manager report of up to ~18,354 chars passes through
+verbatim and Copy / Copy-since-last-message deliver the complete
+projected text. Pathological responses above 64K are explicitly
+surfaced as `truncated: true, truncation_source: "dashboard"` with
+the visible ` [Response truncated]` marker.
+
+**Future fallback for responses >64K (out of scope, documented for next iteration):**
+OpenClaw Gateway already exposes a supported RPC for full per-message
+retrieval: `chat.message.get` with parameters `{sessionKey, agentId,
+messageId, maxChars: 1..2_000_000}`. The handler reads the full message
+from the indexed transcript via `readSessionMessageByIdAsync` and respects
+the visibility filter (`dropPreSessionStartAnnouncePairs`) and the
+`MAX_TRANSCRIPT_PARSE_LINE_BYTES = 256 KiB` safety cap. Live
+verification on 2026-08-27 confirmed the RPC returns the full 18,354-
+char text byte-for-byte when the bound is raised. The dashboard does NOT
+need to read session log files directly and does NOT need to modify the
+OpenClaw dist. If a future Trading-Manager response legitimately exceeds
+64K, a follow-up PR can add `/api/engineering/chat/message.get` to fetch
+the full message on demand; the dashboard's `ChatMessage` would need to
+carry `messageId` (from `__openclaw.id` on the projected message) for
+the browser to call it.
 
 **Stale Failed recovery.** The `projectAgentStatus` rule is asymmetric:
 a fresh `hasActiveRun=true` ALWAYS clears any prior terminal Failed

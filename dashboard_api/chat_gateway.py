@@ -12,13 +12,41 @@ CHAT_HISTORY_LIMIT = 50
 # Inbound / projected manager-response hard bound. The size of text we are
 # willing to ship to the browser in a single projected assistant message.
 # Deliberately kept a bounded safety limit (not unlimited) so a runaway
-# model or malformed transcript cannot blow up the dashboard payload. 16,000
-# chars comfortably covers any realistic structured Trading-Manager report
-# (~3x headroom over the typical 5,138-char report we observed). When this
-# bound IS hit, the projection sets `truncated=True` on the message so the
-# UI can show an explicit "Response truncated" indicator and API consumers
-# can never mistake a silently-cut payload for the complete response.
-CHAT_MESSAGE_MAX_CHARS = 16_000
+# model or malformed transcript cannot blow up the dashboard payload.
+# 64,000 chars gives substantial realistic engineering-report headroom:
+#   * Known real Trading Manager response = 18,354 chars (audit-style report)
+#   * 16K (the previous value) was already proven too small
+#   * 32K would work today but leaves relatively little headroom
+#   * 64K gives ~3.5x headroom over the largest observed audit response
+# 64K x 50 messages = ~3.2M characters worst case, well within the 25 MiB
+# WebSocket payload cap (the previous 500K x 50 = 25 MiB cap was at the
+# limit). Pathological responses above 64K are explicitly reported as
+# truncated and marked with `truncation_source="dashboard"` so the UI can
+# show an explicit "Response truncated" indicator; API consumers can never
+# mistake a silently-cut payload for the complete response.
+CHAT_MESSAGE_MAX_CHARS = 64_000
+# The same bound MUST be passed to the OpenClaw Gateway `chat.history`
+# RPC so the Gateway does not pre-truncate the text at its own default
+# 8,000-char cap (`DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS` in
+# `/usr/lib/node_modules/openclaw/dist/chat-display-projection-CSlqmWmw.js`).
+# The Gateway schema caps `maxChars` at 500_000; 64_000 is comfortably
+# inside that range. When the Gateway cuts a text block (because the raw
+# transcript exceeds this bound) it appends the canonical suffix
+# `\n...(truncated)...`; the dashboard detects that suffix and surfaces it
+# as `truncation_source="gateway"` (see `_detect_openclaw_gateway_marker`
+# below). Without this RPC parameter, the Gateway would silently cut at
+# 8,000 chars while the dashboard reported `truncated=False` (because
+# 8,000 < 64_000), which is exactly the regression that motivated this
+# bound raise.
+CHAT_HISTORY_MAX_CHARS = 64_000
+# Authoritative OpenClaw Gateway chat-history truncation marker.
+# Source: `truncateChatHistoryText()` in
+# `/usr/lib/node_modules/openclaw/dist/chat-display-projection-CSlqmWmw.js`.
+# The marker is the literal suffix appended to a text block that exceeded
+# the per-block cap. We match by suffix position (not by substring search)
+# so legitimate user content that incidentally contains similar text is
+# never misclassified as Gateway truncation.
+OPENCLAW_GATEWAY_TRUNCATION_MARKER = "\n...(truncated)..."
 # Outbound user-input hard bound (Josh -> Trading Manager). Separate from
 # the inbound response bound. Enforced as a rejection, never as a silent cut.
 CHAT_SEND_MAX_CHARS = 4_000
@@ -51,12 +79,27 @@ class ChatMessage:
     role: str
     text: str
     timestamp: str | None
-    # `truncated` is `True` only when the server-side projection cut the text
-    # because it exceeded `CHAT_MESSAGE_MAX_CHARS`. The browser and any other
-    # API consumer must treat this as a visible signal that the rendered text
-    # is incomplete (the UI shows a "Response truncated" indicator; Copy may
-    # copy only the bounded projected text but must not claim it is complete).
+    # `truncated` is `True` whenever the text is incomplete for any reason:
+    #   * dashboard `_bounded_text` cut it because it exceeded
+    #     `CHAT_MESSAGE_MAX_CHARS` (the 64K safety bound), OR
+    #   * OpenClaw Gateway already cut it at the chat.history layer
+    #     (the upstream `\n...(truncated)...` marker is present).
+    # The browser and any other API consumer must treat this as a visible
+    # signal that the rendered text is incomplete (the UI shows a
+    # "Response truncated" indicator; Copy may copy only the bounded
+    # projected text but must not claim it is complete).
     truncated: bool = False
+    # `truncation_source` identifies which layer cut the text:
+    #   * None      — text was NOT truncated (the common case)
+    #   * "gateway" — OpenClaw Gateway chat.history already truncated the
+    #                 text (the canonical `\n...(truncated)...` suffix
+    #                 was detected at the end of the projected text);
+    #                 dashboard did NOT add its own bound here.
+    #   * "dashboard" — dashboard `_bounded_text` cut the text at
+    #                   `CHAT_MESSAGE_MAX_CHARS` (the 64K safety bound).
+    # Exposed as a separate field so the UI can distinguish "we hit our
+    # internal ceiling" from "OpenClaw already cut this upstream".
+    truncation_source: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -64,6 +107,7 @@ class ChatMessage:
             "text": self.text,
             "timestamp": self.timestamp,
             "truncated": bool(self.truncated),
+            "truncation_source": self.truncation_source,
         }
 
 
@@ -249,6 +293,15 @@ import {{ GatewayChatClient }} from '/usr/lib/node_modules/openclaw/dist/gateway
 const AGENT_ID = {json.dumps(TRADING_MANAGER_AGENT_ID)};
 const PREFERRED_SESSION_KEY = {json.dumps(PREFERRED_TRADING_MANAGER_SESSION_KEY)};
 const LIMIT = {CHAT_HISTORY_LIMIT};
+// Per-message text-block cap for the chat.history projection. The OpenClaw
+// Gateway default is 8,000 chars (DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS in
+// `/usr/lib/node_modules/openclaw/dist/chat-display-projection-CSlqmWmw.js`).
+// The dashboard raises this to CHAT_HISTORY_MAX_CHARS so the largest
+// realistic Trading-Manager audit responses (~18,354 chars observed) ship
+// verbatim to the browser. The dashboard also applies the same bound
+// independently on the projection side so even if a future OpenClaw
+// release silently changes the default, the projection remains bounded.
+const MAX_CHARS = {CHAT_HISTORY_MAX_CHARS};
 
 function scoreSession(session) {{
   const key = typeof session?.key === 'string' ? session.key : '';
@@ -269,7 +322,7 @@ try {{
   if (!selected?.key) {{
     console.log(JSON.stringify({{ ok: false, unavailableReason: 'trading_manager_session_not_found', agentId: AGENT_ID }}));
   }} else {{
-    const history = await client.loadHistory({{ sessionKey: selected.key, agentId: AGENT_ID, limit: LIMIT }});
+    const history = await client.loadHistory({{ sessionKey: selected.key, agentId: AGENT_ID, limit: LIMIT, maxChars: MAX_CHARS }});
     console.log(JSON.stringify({{ ok: true, agentId: AGENT_ID, selectedSession: selected, history }}));
   }}
 }} finally {{
@@ -391,12 +444,41 @@ def _project_message(value: Any) -> ChatMessage | None:
     text = _extract_visible_text(value.get("content"))
     if not text:
         return None
-    bounded_text, truncated = _bounded_text(text, CHAT_MESSAGE_MAX_CHARS)
+    # Detect upstream OpenClaw Gateway truncation FIRST. The Gateway
+    # appends the canonical `\n...(truncated)...` suffix to any text
+    # block whose raw transcript exceeds the chat.history `maxChars`
+    # bound. The Gateway emits no separate `truncated` flag on the
+    # projected message — the marker is the only authoritative signal.
+    # We match by suffix position (the canonical marker is appended at
+    # the end of the truncated text block) so legitimate user content
+    # that incidentally contains a similar substring elsewhere is never
+    # misclassified as Gateway truncation.
+    gateway_truncated, gateway_text = _split_off_openclaw_gateway_marker(text)
+    if gateway_truncated:
+        # The Gateway already truncated. We do NOT re-bound this text
+        # at the dashboard's 64K ceiling (the bound was already applied
+        # upstream, and re-applying it would obscure the source). We
+        # surface the gateway cut verbatim with `truncation_source =
+        # "gateway"` so the UI knows the bound was hit before the text
+        # reached the dashboard projection.
+        return ChatMessage(
+            role=role,
+            text=gateway_text,
+            timestamp=_timestamp(value.get("timestamp")),
+            truncated=True,
+            truncation_source="gateway",
+        )
+    # No upstream Gateway cut — apply the dashboard's own 64K safety
+    # bound. The bound is intentionally large (64K covers the largest
+    # observed audit-style manager response ~3.5x over) so the dashboard
+    # cut is genuinely a safety net for pathological cases only.
+    bounded_text, dashboard_truncated = _bounded_text(text, CHAT_MESSAGE_MAX_CHARS)
     return ChatMessage(
         role=role,
         text=bounded_text,
         timestamp=_timestamp(value.get("timestamp")),
-        truncated=truncated,
+        truncated=dashboard_truncated,
+        truncation_source="dashboard" if dashboard_truncated else None,
     )
 
 
@@ -488,6 +570,40 @@ def _bounded_text(value: object, limit: int) -> tuple[str, bool]:
     marker = " [Response truncated]"
     keep = max(0, limit - len(marker))
     return text[:keep] + marker, True
+
+
+def _split_off_openclaw_gateway_marker(text: str) -> tuple[bool, str]:
+    """Detect the upstream OpenClaw Gateway chat-history truncation marker.
+
+    The OpenClaw Gateway `chat.history` RPC projects each non-tool text
+    block through `truncateChatHistoryText()` (see
+    `/usr/lib/node_modules/openclaw/dist/chat-display-projection-CSlqmWmw.js`).
+    When a raw transcript block exceeds the chat.history `maxChars` bound,
+    the Gateway appends the canonical suffix `\n...(truncated)...` to the
+    cut text. The Gateway does NOT emit a separate `truncated` flag on
+    the projected message — the marker is the only authoritative signal
+    that the text is incomplete upstream of the dashboard.
+
+    This helper detects the marker by **suffix position** (text ends with
+    the literal marker), not by substring search. This is critical:
+    legitimate user content can legitimately contain the substring
+    `...(truncated)...` anywhere in the body (e.g. quoting a previous
+    message that itself had the marker), and that must NEVER be confused
+    with an authoritative upstream truncation event. The Gateway only
+    emits the marker as a trailing suffix on the block it cut; a
+    substring elsewhere is not a Gateway-cut signal.
+
+    Returns `(was_truncated, cleaned_text)`:
+      * `(False, text)` — text does not end with the canonical marker;
+        not truncated by the Gateway.
+      * `(True, text_without_marker)` — text ends with the canonical
+        marker; the Gateway truncated it. The marker is stripped from
+        the returned text so the browser does not display the literal
+        marker alongside the cut text.
+    """
+    if not text.endswith(OPENCLAW_GATEWAY_TRUNCATION_MARKER):
+        return False, text
+    return True, text[: -len(OPENCLAW_GATEWAY_TRUNCATION_MARKER)]
 
 
 def _string_or_none(value: object) -> str | None:
