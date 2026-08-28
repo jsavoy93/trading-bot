@@ -1908,3 +1908,37 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Manual verification: parallel dashboard instance on `127.0.0.1:18002` (port 8001 untouched). Fired `POST /api/engineering/chat/send` at `2026-08-27 11:09:50 UTC` with a read-only audit prompt. Wall time **4 s** with `ok=true, status=accepted, run_id=0290a374-56f4-42a9-9abc-345fbf3c4a67`. Polled `/api/engineering/chat/history` every 15 s for the next **13 m 2 s** straight: every poll returned `status=available, has_active_run=true, run_status=running`. Past the prior-bug 2 m 20 s abort window by **4 m 11 s** with no abort. No false Failed indicator. OpenClaw session log shows active agent turn-taking (`toolResult`/`assistant` pairs every 2-10 s) throughout. Polled via the parallel dashboard on `18002`; the live production dashboard on `8001` was not running during validation, so the fix was demonstrated against the patched code.
 - Risks: low. Dashboard-only change. OpenClaw dist unmodified. `openclaw.json` unmodified. `trading-manager` `timeoutSeconds` unmodified. chat.history timeout unmodified. chat history polling model unmodified. The single implementation risk is if a future contributor re-injects `timeoutMs` — the strict regex test in `test_send_adapter_payload_omits_timeoutms_field_entirely` is the durable guard.
 - Next action: STOP for Josh review at PR #67.
+
+
+## 2026-08-28 01:37:00 UTC — Dashboard chat.history 64K bound + upstream truncation marker (chat-history-truncation fix from audit 1242)
+
+- Backlog item/objective: Implement the 64K-bound Phase 1 design from `/root/.openclaw/audit-archives/trading-bot/2026-08-27_124200_read-only-chat-history-truncation-trace.md`. The OpenClaw Gateway `chat.history` RPC was silently pre-truncating each text block at its 8,000-char default (`DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS`), the dashboard's previous 16K bound cut the already-cut payload silently because 8,018 < 16,000, and the projection's `truncated: false` was misleadingly reporting success. The known 18,354-char audit response was being delivered to the browser at 8,018 chars ending in `\n...(truncated)...`. Phase 1 raises both bounds to 64,000 chars and detects the canonical Gateway marker. Josh pre-approved.
+- Branch: `feat/dashboard-chat-history-64k-bound`
+- Base commit: `335ee41` (PR #67)
+- Status: DONE — pending Josh PR review
+- Files changed: `dashboard_api/chat_gateway.py`, `tests/test_dashboard_chat_gateway.py`, `MENTOR.md`, `ITERATION_PROGRESS_LOG.md`, `REPORT.md`, `reports/2026-08-28_013700_dashboard-chat-history-64k-bound.md`
+- Architecture (64K bound + upstream truncation marker detection):
+  - `CHAT_MESSAGE_MAX_CHARS = 64_000` (was 16_000): inbound/projected bound; covers ~3.5x headroom over the largest observed audit response.
+  - `CHAT_HISTORY_MAX_CHARS = 64_000` (new): passed as `maxChars` to the Gateway `chat.history` RPC payload so the Gateway does not pre-truncate at its 8,000 default.
+  - `OPENCLAW_GATEWAY_TRUNCATION_MARKER = "\n...(truncated)..."` (new): the canonical suffix produced by `truncateChatHistoryText()` in `/usr/lib/node_modules/openclaw/dist/chat-display-projection-CSlqmWmw.js`.
+  - `_split_off_openclaw_gateway_marker()` (new): detects the marker by **suffix position only** so legitimate user content that contains the substring elsewhere (e.g. quoting a previous truncated message) is never misclassified.
+  - `ChatMessage.truncation_source` (new): `None | "gateway" | "dashboard"`. Distinguishes which layer cut the text. The browser reads this to choose between "OpenClaw already cut this upstream" and "we hit our internal 64K safety bound".
+  - `_project_message()`: detects upstream Gateway truncation FIRST (returns immediately with `truncation_source="gateway"`), then applies the 64K dashboard safety bound (`truncation_source="dashboard"` if it cuts).
+- Tests: focused chat gateway `.venv/bin/python -m pytest tests/test_dashboard_chat_gateway.py -q` → `45 passed, 1 warning` (37 previous + 8 new); full safe suite `.venv/bin/python -m pytest -q` → `870 passed, 84 warnings` (+8 from 862); `git diff --check` → PASS.
+- New tests:
+  - `test_known_18354_char_audit_response_passes_through_unchanged` — the permanent regression case: full 18,354-char response must ship verbatim with `truncated=False, truncation_source=None`, ending with the exact natural conclusion text.
+  - `test_64k_hard_bound_63999_chars_complete_with_no_truncation` — just under bound, complete.
+  - `test_64k_hard_bound_exactly_64000_chars_complete_with_no_truncation` — at the bound, complete (boundary test).
+  - `test_64k_hard_bound_64001_chars_truncated_with_explicit_marker` — just over bound, `truncated=True, truncation_source="dashboard"`, marker appended.
+  - `test_gateway_truncation_marker_surfaces_as_truncation_source_gateway` — upstream cut produces `truncation_source="gateway"`, marker stripped, no double-marker.
+  - `test_gateway_marker_substring_not_at_suffix_is_not_misclassified` — quoting a previous truncated message (marker mid-body) is NOT misclassified.
+  - `test_gateway_marker_with_trailing_content_is_not_misclassified` — marker followed by anything is NOT misclassified.
+  - `test_chat_history_rpc_passes_max_chars_to_gateway` — the RPC payload carries `maxChars: MAX_CHARS` so the Gateway does not pre-truncate at its 8K default.
+  - Renamed `_16k_` tests → `_64k_` and tightened to assert `truncation_source` field too.
+  - Updated `test_chat_bounds_constants_remain_unchanged` to pin 4K / 64K / 64K / 50 / allowed statuses / Gateway marker constant.
+  - Updated `test_chat_message_to_dict_always_exposes_truncated_field` → `..._and_source_fields` to assert both fields.
+- Behavior preserved: PRs #58–#67 contracts — fixed `trading-manager` routing, preferred session key, 50-message history limit, 4,000-char outbound, 15-second polling, snapshot-poll state cache survival, Idle/Working/Failed projection, send-state, escape + content-type filtering, no transcript mutation, PR #63 three-category projection, PR #64/#65 copy controls, PR #67 chat.send accept-only timeout (no `timeoutMs` injected). PRs #63, #64, #65, #66, #67 all tests remain green.
+- Manual verification (planned, post-deploy): dispatch a fresh audit prompt with > 64K text and confirm `truncated=true, truncation_source="dashboard"` with visible marker; dispatch a normal prompt and confirm `truncated=false, truncation_source=null`.
+- Risks: low. 64K × 50 worst case is ~3.2M chars (well within 25 MiB WebSocket cap). No OpenClaw dist modification. No session log file reads. No browser-side raw file access. The new `_split_off_openclaw_gateway_marker()` helper is bounded and tested for false-positive protection.
+- Out of scope (documented in MENTOR.md for next iteration): per-message full-text retrieval via OpenClaw Gateway `chat.message.get` RPC for responses that genuinely exceed 64K. The RPC is supported and live-verified; not wired to the dashboard yet because the 64K bound is already 3.5x the largest observed audit response. If a future Trading-Manager response legitimately exceeds 64K, a follow-up PR adds `/api/engineering/chat/message.get` and propagates `__openclaw.id` as `messageId` on `ChatMessage`.
+- Next action: Commit, push branch, open PR, STOP for Josh review.

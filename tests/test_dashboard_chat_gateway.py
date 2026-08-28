@@ -90,12 +90,13 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
             "run_status": None,
         },
         "messages": [
-            {"role": "user", "text": "hello <script>", "timestamp": "2026-08-17T12:28:31+00:00", "truncated": False},
+            {"role": "user", "text": "hello <script>", "timestamp": "2026-08-17T12:28:31+00:00", "truncated": False, "truncation_source": None},
             {
                 "role": "assistant",
                 "text": truncated_text,
                 "timestamp": "2026-08-17T12:28:32.694000+00:00",
                 "truncated": True,
+                "truncation_source": "dashboard",
             },
         ],
     }
@@ -685,8 +686,8 @@ def _project_payload(messages):
     ).history().to_public_dict()
 
 
-def test_bounded_message_just_under_16k_passes_through_unchanged():
-    text = "x" * 3_999
+def test_bounded_message_just_under_64k_passes_through_unchanged():
+    text = "x" * 63_999
     payload = _project_payload(
         [
             {
@@ -700,11 +701,12 @@ def test_bounded_message_just_under_16k_passes_through_unchanged():
     msgs = payload["messages"]
     assert len(msgs) == 1
     assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
     assert msgs[0]["text"] == text
     assert msgs[0]["text"].endswith("x")
 
 
-def test_bounded_message_exactly_16k_passes_through_unchanged():
+def test_bounded_message_exactly_64k_passes_through_unchanged():
     text = "x" * CHAT_MESSAGE_MAX_CHARS
     payload = _project_payload(
         [
@@ -719,12 +721,13 @@ def test_bounded_message_exactly_16k_passes_through_unchanged():
     msgs = payload["messages"]
     assert len(msgs) == 1
     assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
     assert len(msgs[0]["text"]) == CHAT_MESSAGE_MAX_CHARS
     assert msgs[0]["text"] == text
     assert "[Response truncated]" not in msgs[0]["text"]
 
 
-def test_bounded_message_just_over_16k_is_truncated_with_flag_and_marker():
+def test_bounded_message_just_over_64k_is_truncated_with_flag_and_marker():
     text = "x" * (CHAT_MESSAGE_MAX_CHARS + 1)
     payload = _project_payload(
         [
@@ -739,6 +742,7 @@ def test_bounded_message_just_over_16k_is_truncated_with_flag_and_marker():
     msgs = payload["messages"]
     assert len(msgs) == 1
     assert msgs[0]["truncated"] is True
+    assert msgs[0]["truncation_source"] == "dashboard"
     assert len(msgs[0]["text"]) == CHAT_MESSAGE_MAX_CHARS
     assert msgs[0]["text"].endswith(" [Response truncated]")
     assert " [Response truncated]" in msgs[0]["text"]
@@ -759,6 +763,7 @@ def test_known_5138_char_response_passes_through_unchanged():
     msgs = payload["messages"]
     assert len(msgs) == 1
     assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
     assert msgs[0]["text"] == text
     assert len(msgs[0]["text"]) == 5_138
     # Copy contract: a normal 5,138-char manager response is delivered in
@@ -767,16 +772,285 @@ def test_known_5138_char_response_passes_through_unchanged():
     assert msgs[0]["text"][-1] == "A"
 
 
-def test_chat_message_to_dict_always_exposes_truncated_field():
+# ---------------------------------------------------------------------------
+# Regression: known 18,354-char audit response must ship verbatim.
+#
+# The 18,354-char response is the historical audit message that exposed
+# the chat.history truncation bug. Before this fix the dashboard's 16K
+# bound cut the text silently; after this fix the 64K bound accommodates
+# the full response. The full message must pass through the dashboard
+# projection with truncated=False and truncation_source=None so the
+# browser's Copy controls receive the complete projected text including
+# the natural final ending (the response ends with "valid
+# validation threshold ..." which the test asserts explicitly).
+# ---------------------------------------------------------------------------
+
+
+def test_known_18354_char_audit_response_passes_through_unchanged():
+    # The exact final ending of the historical 18,354-char audit message.
+    # This anchor guarantees the natural conclusion of the response is
+    # preserved verbatim — there must NEVER be silent truncation here.
+    natural_ending = "the 60-second OpenClaw watchdog does NOT abort at 2 m 20 s, and a real 7 m 52 s Trading Manager run has been observed healthy across every required validation threshold (180 s, 240 s, 300 s, 420 s).**"
+    assert len(natural_ending) < 18_354
+    text = ("X" * (18_354 - len(natural_ending))) + natural_ending
+    assert len(text) == 18_354
+    assert text.endswith(natural_ending)
+
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+    assert len(msgs[0]["text"]) == 18_354
+    # The natural final ending must be preserved byte-for-byte — the
+    # response was truncated mid-word at "respons" before the fix.
+    assert msgs[0]["text"].endswith(natural_ending)
+    assert "[Response truncated]" not in msgs[0]["text"]
+    assert msgs[0]["text"] == text
+
+
+def test_64k_hard_bound_63999_chars_complete_with_no_truncation():
+    text = "x" * 63_999
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+    assert len(msgs[0]["text"]) == 63_999
+    assert msgs[0]["text"] == text
+    assert "[Response truncated]" not in msgs[0]["text"]
+
+
+def test_64k_hard_bound_exactly_64000_chars_complete_with_no_truncation():
+    text = "x" * 64_000
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+    assert len(msgs[0]["text"]) == 64_000
+    assert msgs[0]["text"] == text
+    assert "[Response truncated]" not in msgs[0]["text"]
+
+
+def test_64k_hard_bound_64001_chars_truncated_with_explicit_marker():
+    text = "x" * 64_001
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is True
+    assert msgs[0]["truncation_source"] == "dashboard"
+    assert len(msgs[0]["text"]) == 64_000
+    assert msgs[0]["text"].endswith(" [Response truncated]")
+    assert " [Response truncated]" in msgs[0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Upstream OpenClaw Gateway chat.history truncation marker detection.
+# The Gateway emits the canonical `\n...(truncated)...` suffix on any text
+# block that exceeded the chat.history `maxChars` RPC parameter; the
+# dashboard must surface that as `truncation_source="gateway"` so the UI
+# can show an explicit indicator (and so we never report truncated=false
+# for text known to have been cut upstream). Detection is by suffix
+# position so legitimate user content that incidentally contains the
+# substring elsewhere is never misclassified.
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_truncation_marker_surfaces_as_truncation_source_gateway():
+    from dashboard_api.chat_gateway import OPENCLAW_GATEWAY_TRUNCATION_MARKER
+
+    raw_text = "A" * 8_000 + OPENCLAW_GATEWAY_TRUNCATION_MARKER
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": raw_text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is True
+    assert msgs[0]["truncation_source"] == "gateway"
+    # The canonical Gateway marker is stripped from the rendered text so
+    # the browser does not display the literal marker alongside the cut.
+    assert OPENCLAW_GATEWAY_TRUNCATION_MARKER not in msgs[0]["text"]
+    assert msgs[0]["text"] == "A" * 8_000
+    # The dashboard's own [Response truncated] marker is NOT appended
+    # when the upstream Gateway already truncated — the bound was hit
+    # before the text reached the dashboard.
+    assert "[Response truncated]" not in msgs[0]["text"]
+
+
+def test_gateway_marker_substring_not_at_suffix_is_not_misclassified():
+    # A legitimate user reply that quotes a previous truncated message
+    # (the substring appears mid-body, not at the suffix) must NOT be
+    # misclassified as upstream Gateway truncation. Detection is by
+    # suffix position only.
+    from dashboard_api.chat_gateway import OPENCLAW_GATEWAY_TRUNCATION_MARKER
+
+    body = "Earlier you said: " + OPENCLAW_GATEWAY_TRUNCATION_MARKER + " and then we continued."
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": body}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+    assert msgs[0]["text"] == body
+
+
+def test_gateway_marker_with_trailing_content_is_not_misclassified():
+    # The canonical marker is only the literal suffix; any trailing
+    # content after the marker defeats the suffix match. This protects
+    # against accidental false positives from model content that ends
+    # with similar but non-identical text. Construct a body whose final
+    # character follows the marker literally, so the substring
+    # `...(truncated)...` appears in the text but not as the exact
+    # trailing suffix.
+    from dashboard_api.chat_gateway import OPENCLAW_GATEWAY_TRUNCATION_MARKER
+
+    # Embed the marker, then continue with more content. The text
+    # contains the marker as a substring, NOT as a trailing suffix.
+    raw = "prefix " + OPENCLAW_GATEWAY_TRUNCATION_MARKER + " suffix"
+
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": raw}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+    # The marker must remain verbatim in the projected text — we did
+    # NOT mistakenly treat it as a Gateway cut.
+    assert OPENCLAW_GATEWAY_TRUNCATION_MARKER in msgs[0]["text"]
+
+
+def test_chat_history_rpc_passes_max_chars_to_gateway():
+    # The chat.history RPC payload must include `maxChars` so the Gateway
+    # does not pre-truncate text at its own 8K default. Without this, the
+    # 18,354-char audit response would arrive at the dashboard already
+    # cut to 8,018 chars with the upstream marker present.
+    captured = {}
+
+    def runner(*args, **kwargs):
+        captured["input"] = kwargs.get("input") or (args[2] if len(args) > 2 else "")
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "history": {
+                "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                "messages": [],
+            },
+        })
+
+    GatewayChatHistoryClient(runner=runner).history()
+
+    script = captured["input"]
+    from dashboard_api.chat_gateway import CHAT_HISTORY_MAX_CHARS
+    # The chat.history RPC call MUST include the `maxChars` key. We
+    # assert the key is present (the literal JS identifier) and that the
+    # bound value is in the script (as a const), and that the value
+    # equals the dashboard's inbound bound so neither layer cuts
+    # earlier than the other.
+    assert "maxChars:" in script, (
+        "chat.history RPC must pass maxChars; "
+        "without it the Gateway silently truncates at its 8K default"
+    )
+    # The const value must be exposed in the script as a numeric literal
+    # matching the dashboard bound.
+    assert f"const MAX_CHARS = {CHAT_HISTORY_MAX_CHARS}" in script, (
+        f"MAX_CHARS const must equal CHAT_HISTORY_MAX_CHARS={CHAT_HISTORY_MAX_CHARS}"
+    )
+    # The actual chat.history RPC payload must reference MAX_CHARS (the
+    # bound propagates from the const into the client.loadHistory call).
+    assert "maxChars: MAX_CHARS" in script, (
+        "client.loadHistory must pass maxChars: MAX_CHARS so the Gateway "
+        "does not pre-truncate"
+    )
+    # chat.send is a separate path and is not present in this script at
+    # all (it lives in _gateway_send_node_script). We assert the chat.history
+    # script does NOT mention sendChat to confirm we are inspecting the
+    # right RPC.
+    assert "sendChat" not in script
+
+
+def test_chat_message_to_dict_always_exposes_truncated_and_source_fields():
     # Even for uncut messages, `truncated` MUST be present in the JSON
     # payload as a boolean (never absent, never null). The browser reads
     # `message.truncated === true` to decide whether to show the badge.
+    # `truncation_source` MUST be present and one of (None, "gateway",
+    # "dashboard") so the UI can distinguish upstream truncation from
+    # dashboard-applied truncation. None indicates a non-truncated message.
     cm = __import__("dashboard_api.chat_gateway", fromlist=["ChatMessage"]).ChatMessage(
-        role="assistant", text="hi", timestamp="t", truncated=False
+        role="assistant", text="hi", timestamp="t", truncated=False, truncation_source=None
     )
     d = cm.to_dict()
     assert d["truncated"] is False
-    assert set(d.keys()) == {"role", "text", "timestamp", "truncated"}
+    assert d["truncation_source"] is None
+    assert set(d.keys()) == {"role", "text", "timestamp", "truncated", "truncation_source"}
+
+    # Gateway-truncated message keeps both fields populated.
+    cm_gw = __import__("dashboard_api.chat_gateway", fromlist=["ChatMessage"]).ChatMessage(
+        role="assistant", text="cut", timestamp="t", truncated=True, truncation_source="gateway"
+    )
+    d_gw = cm_gw.to_dict()
+    assert d_gw["truncated"] is True
+    assert d_gw["truncation_source"] == "gateway"
 
 
 # ---------------------------------------------------------------------------
@@ -1039,23 +1313,49 @@ def test_legacy_180s_send_alias_constant_is_removed_from_module():
 
 
 def test_chat_bounds_constants_remain_unchanged():
-    """Regression: outbound 4K and inbound 16K bounds preserved.
+    """Regression: outbound 4K, inbound 64K, history 50 bounds preserved.
 
-    The Option A fix touches only the chat.send timeout contract. The
-    outbound user-input bound (CHAT_SEND_MAX_CHARS = 4_000) and the
-    inbound projected-manager-response bound (CHAT_MESSAGE_MAX_CHARS =
-    16_000) must remain exactly as specified so existing truncation
-    semantics and the per-character Copy contract are preserved.
+    The chat.history truncation fix raises the projected-manager-response
+    bound from 16_000 to 64_000 chars (CHAT_MESSAGE_MAX_CHARS) so the
+    largest observed Trading-Manager audit response (~18,354 chars) ships
+    verbatim to the browser instead of being silently cut at the previous
+    16K cap. The same bound is passed as `maxChars` to the OpenClaw Gateway
+    chat.history RPC (CHAT_HISTORY_MAX_CHARS) so the Gateway does not
+    pre-truncate at its own 8K default.
+
+    Other bounds remain:
+      * outbound user-input CHAT_SEND_MAX_CHARS = 4_000
+      * history window CHAT_HISTORY_LIMIT = 50
+      * allowed terminal run-status set unchanged
+
+    The 64K x 50 worst-case history payload (~3.2M characters) is well
+    within the 25 MiB WebSocket payload cap; the previous 500K x 50
+    proposal would have hit the cap exactly.
     """
     from dashboard_api.chat_gateway import (
         CHAT_SEND_MAX_CHARS,
         CHAT_MESSAGE_MAX_CHARS,
         CHAT_HISTORY_LIMIT,
+        CHAT_HISTORY_MAX_CHARS,
         ALLOWED_RUN_STATUSES,
+        OPENCLAW_GATEWAY_TRUNCATION_MARKER,
     )
     assert CHAT_SEND_MAX_CHARS == 4_000
-    assert CHAT_MESSAGE_MAX_CHARS == 16_000
+    # The 64K inbound bound was raised from the previous 16K so the known
+    # 18,354-char audit response is no longer silently cut. The bound is
+    # also passed as `maxChars` to the chat.history RPC so the Gateway does
+    # not pre-truncate.
+    assert CHAT_MESSAGE_MAX_CHARS == 64_000
+    assert CHAT_HISTORY_MAX_CHARS == 64_000
+    assert CHAT_MESSAGE_MAX_CHARS == CHAT_HISTORY_MAX_CHARS, (
+        "dashboard inbound bound must equal Gateway maxChars so neither "
+        "layer cuts earlier than the other"
+    )
     assert CHAT_HISTORY_LIMIT == 50
+    # The canonical upstream Gateway truncation marker is the literal
+    # suffix produced by `truncateChatHistoryText()` in
+    # `/usr/lib/node_modules/openclaw/dist/chat-display-projection-CSlqmWmw.js`.
+    assert OPENCLAW_GATEWAY_TRUNCATION_MARKER == "\n...(truncated)..."
     # The allowed terminal run-status set must remain unchanged so the
     # Idle / Working / Failed indicator mapping is preserved.
     assert ALLOWED_RUN_STATUSES == frozenset({"running", "idle", "done", "failed", "killed", "timeout"})
