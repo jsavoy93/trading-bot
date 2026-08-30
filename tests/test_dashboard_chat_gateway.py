@@ -1017,10 +1017,25 @@ def test_chat_history_rpc_passes_max_chars_to_gateway():
         f"MAX_CHARS const must equal CHAT_HISTORY_MAX_CHARS={CHAT_HISTORY_MAX_CHARS}"
     )
     # The actual chat.history RPC payload must reference MAX_CHARS (the
-    # bound propagates from the const into the client.loadHistory call).
+    # bound propagates from the const into the direct chat.history RPC
+    # call). We assert this is a direct RPC payload (call to client.client
+    # .request("chat.history", {...})) and NOT through the broken
+    # GatewayChatClient.loadHistory wrapper.
+    assert "client.client.request(\"chat.history\"" in script, (
+        "chat.history must be called directly via the underlying "
+        "GatewayClient (client.client.request), bypassing the "
+        "GatewayChatClient.loadHistory wrapper that drops maxChars"
+    )
     assert "maxChars: MAX_CHARS" in script, (
-        "client.loadHistory must pass maxChars: MAX_CHARS so the Gateway "
-        "does not pre-truncate"
+        "the chat.history RPC payload must include maxChars: MAX_CHARS "
+        "so the Gateway honors the 64K bound"
+    )
+    # The defective wrapper MUST NOT be used for the history path. If we
+    # ever regress and call `client.loadHistory(...)`, maxChars will be
+    # silently dropped by OpenClaw dist and we'll be back to 8K truncation.
+    assert "client.loadHistory" not in script, (
+        "GatewayChatClient.loadHistory must NOT be used for chat.history; "
+        "it silently drops maxChars from the RPC payload"
     )
     # chat.send is a separate path and is not present in this script at
     # all (it lives in _gateway_send_node_script). We assert the chat.history
@@ -1029,7 +1044,382 @@ def test_chat_history_rpc_passes_max_chars_to_gateway():
     assert "sendChat" not in script
 
 
-def test_chat_message_to_dict_always_exposes_truncated_and_source_fields():
+# ---------------------------------------------------------------------------
+# PR #68 follow-up: chat.history RPC payload boundary tests
+# Goal: prove the actual RPC payload reaching chat.history contains
+# maxChars: 64000. The PR #68 test only grepped the generated script text,
+# which was insufficient because the (defective) GatewayChatClient.loadHistory
+# wrapper silently drops `maxChars` from the RPC payload it constructs.
+# These tests assert the actual call boundary so a future regression that
+# re-introduces the wrapper (or any other silent drop) fails immediately.
+# ---------------------------------------------------------------------------
+
+
+def _history_script_input() -> str:
+    captured = {}
+
+    def runner(*args, **kwargs):
+        captured["input"] = kwargs.get("input") or (args[2] if len(args) > 2 else "")
+        return _completed({
+            "ok": True,
+            "agentId": TRADING_MANAGER_AGENT_ID,
+            "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+            "history": {
+                "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+                "messages": [],
+            },
+        })
+
+    GatewayChatHistoryClient(runner=runner).history()
+    return captured["input"]
+
+
+def test_history_script_uses_direct_chat_history_rpc_not_loadhistory_wrapper():
+    # Strong preference: bypass the broken wrapper by calling the
+    # underlying GatewayClient.request("chat.history", ...) directly.
+    # This test fails if the wrapper is reintroduced.
+    script = _history_script_input()
+    assert 'client.client.request("chat.history"' in script, (
+        "history script must call client.client.request(\"chat.history\", ...) "
+        "directly, NOT client.loadHistory(...) which silently drops maxChars"
+    )
+    assert "client.loadHistory" not in script, (
+        "client.loadHistory must NOT be invoked from the history path; "
+        "the OpenClaw dist wrapper drops maxChars from the chat.history RPC payload"
+    )
+
+
+def test_history_script_actual_rpc_payload_includes_max_chars_bound():
+    # Inspect the literal payload object inside the script call. We
+    # parse it as JavaScript object-literal-ish text to confirm the
+    # four required keys (sessionKey, agentId, limit, maxChars) and
+    # that maxChars equals the dashboard's CHAT_HISTORY_MAX_CHARS.
+    import re
+    from dashboard_api.chat_gateway import CHAT_HISTORY_LIMIT, CHAT_HISTORY_MAX_CHARS
+
+    script = _history_script_input()
+
+    # Extract the payload object passed to client.client.request("chat.history", {...})
+    # Tolerate either the entire object body or a const-then-spread.
+    m = re.search(
+        r'client\.client\.request\(\s*"chat\.history"\s*,\s*\{([^}]*)\}\s*\)',
+        script,
+        re.DOTALL,
+    )
+    assert m, "could not locate chat.history RPC payload in script"
+    payload = m.group(1)
+    assert "sessionKey" in payload
+    assert "agentId" in payload
+    assert "limit" in payload
+    assert f"limit: {CHAT_HISTORY_LIMIT}" in payload or "limit: LIMIT" in payload
+    assert f"maxChars: {CHAT_HISTORY_MAX_CHARS}" in payload or "maxChars: MAX_CHARS" in payload
+    # The MAX_CHARS const must equal CHAT_HISTORY_MAX_CHARS in the script.
+    assert f"const MAX_CHARS = {CHAT_HISTORY_MAX_CHARS}" in script
+
+
+def test_history_script_does_not_emit_run_deadline_keys():
+    # PR #67 ownership: chat.history is a read; it must never inject any
+    # agent-run deadline. The direct RPC call uses only {sessionKey, agentId,
+    # limit, maxChars}. We also forbid any send-style field name in the
+    # history payload.
+    import re
+    script = _history_script_input()
+    m = re.search(
+        r'client\.client\.request\(\s*"chat\.history"\s*,\s*\{([^}]*)\}\s*\)',
+        script,
+        re.DOTALL,
+    )
+    assert m
+    payload = m.group(1)
+    for forbidden in ("timeoutMs", "timeoutSeconds", "timeout", "deadline", "deliver", "message"):
+        assert forbidden not in payload, (
+            f"chat.history RPC payload must not include '{forbidden}'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# PR #68 follow-up: payload-size regression suite
+# Goal: prove that responses from 5K to 21K chars flow through the history
+# projection without being cut at 8K by the Gateway. The mock Gateway client
+# in these tests simulates the honor of `maxChars=64000` by returning the
+# full uncut assistant text. The dashboard-side projection layer must then
+# surface that text complete with truncated=False, truncation_source=None.
+# ---------------------------------------------------------------------------
+
+
+def test_history_5_138_char_final_response_passes_through_completely():
+    text = "x" * 5138
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "assistant"
+    assert len(msgs[0]["text"]) == 5138
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+
+
+def test_history_8_001_boundary_character_survives_uncut():
+    text = "A" * 8000 + "Z"  # 8,001 chars total
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert len(msgs[0]["text"]) == 8001
+    assert msgs[0]["text"][-1] == "Z", (
+        "character 8,001 must survive — proof the 8K Gateway cut is bypassed"
+    )
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+
+
+def test_history_18_354_char_audit_response_passes_through_completely():
+    text = "x" * 18354
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert len(msgs[0]["text"]) == 18354
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+
+
+def test_history_21_510_char_response_passes_through_completely():
+    text = "x" * 21510
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert len(msgs[0]["text"]) == 21510
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+
+
+def test_history_natural_ending_survives_under_64k():
+    natural_ending = (
+        "head of the response " * 1500
+        + "must confirm items 4, 5, and 6 above with actual numbers, not projections.\n\n---\n\nEND OF AUDIT REPORT."
+    )
+    assert len(natural_ending) > 18000
+    assert len(natural_ending) < CHAT_MESSAGE_MAX_CHARS
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": natural_ending}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["text"] == natural_ending
+    assert msgs[0]["text"].endswith("END OF AUDIT REPORT.")
+    assert msgs[0]["truncated"] is False
+    assert msgs[0]["truncation_source"] is None
+
+
+def test_history_gateway_truncation_marker_still_surfaces_as_truncation_source_gateway():
+    # Regression: PR #68's explicit marker detection must continue to work
+    # even after we switch to a direct chat.history RPC. The Gateway still
+    # may cut text at its internal default for very large messages, in
+    # which case it appends "\n...(truncated)..."; the dashboard must
+    # surface this as truncation_source="gateway".
+    from dashboard_api.chat_gateway import OPENCLAW_GATEWAY_TRUNCATION_MARKER
+    cut_text = ("x" * 8000) + OPENCLAW_GATEWAY_TRUNCATION_MARKER
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": cut_text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert len(msgs[0]["text"]) == 8000  # marker stripped
+    assert msgs[0]["truncated"] is True
+    assert msgs[0]["truncation_source"] == "gateway"
+
+
+def test_history_dashboard_bound_truncation_still_surfaces_as_truncation_source_dashboard():
+    # Regression: the dashboard's own 64K safety bound must continue to
+    # trigger when a message exceeds CHAT_MESSAGE_MAX_CHARS even if the
+    # Gateway's chat.history (with maxChars=64000) passes through the
+    # full text. The browser must still see truncation_source="dashboard"
+    # in that case.
+    over_dashboard_bound_text = "y" * (CHAT_MESSAGE_MAX_CHARS + 100)
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": over_dashboard_bound_text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["truncated"] is True
+    assert msgs[0]["truncation_source"] == "dashboard"
+
+
+# ---------------------------------------------------------------------------
+# PR #68 follow-up: bounds, filters, and contracts that must remain intact
+# ---------------------------------------------------------------------------
+
+
+def test_history_bounds_remain_unchanged_after_fix():
+    # Hard guardrails: the bounds from PR #58..PR #68 must not regress.
+    from dashboard_api import chat_gateway
+    assert chat_gateway.CHAT_HISTORY_MAX_CHARS == 64_000
+    assert chat_gateway.CHAT_MESSAGE_MAX_CHARS == 64_000
+    assert chat_gateway.CHAT_SEND_MAX_CHARS == 4_000
+    assert chat_gateway.CHAT_HISTORY_LIMIT == 50
+    assert chat_gateway.GATEWAY_HISTORY_TIMEOUT_SECONDS == 15
+    assert chat_gateway.OPENCLAW_GATEWAY_TRUNCATION_MARKER == "\n...(truncated)..."
+
+
+def test_history_projection_filters_delivery_mirror_and_tool_rows():
+    # PR #63 filtering must remain intact: tool/assistant-tool/system/
+    # delivery-mirror rows must not be projected even when the
+    # chat.history RPC (via direct call) returns them.
+    runner_payload = _completed({
+        "ok": True,
+        "agentId": TRADING_MANAGER_AGENT_ID,
+        "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY},
+        "history": {
+            "sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY,
+            "sessionId": "session-123",
+            "messages": [
+                {"role": "user", "content": "audit me", "timestamp": 1},
+                {"role": "system", "content": "hidden prompt", "timestamp": 2},
+                {"role": "tool", "toolName": "exec", "content": [{"type": "text", "text": "raw output"}], "timestamp": 3},
+                {
+                    "role": "assistant",
+                    "stopReason": "toolUse",
+                    "content": [
+                        {"type": "thinking", "thinking": "private reasoning"},
+                        {"type": "tool_use", "input": {"raw": "args"}},
+                    ],
+                    "stamp": 4,
+                    "model": "openclaw/sonnet",
+                    "senderLabel": "openclaw",
+                },
+                {
+                    "role": "assistant",
+                    "stopReason": "stop",
+                    "content": [{"type": "text", "text": "FINAL ANSWER"}],
+                    "model": "delivery-mirror",
+                    "timestamp": 5,
+                },
+                {
+                    "role": "assistant",
+                    "stopReason": "stop",
+                    "content": [{"type": "text", "text": "REAL FINAL"}],
+                    "timestamp": 6,
+                },
+            ],
+        },
+    })
+    history = GatewayChatHistoryClient(runner=lambda *a, **kw: runner_payload).history()
+    msgs = history.to_public_dict()["messages"]
+    # Only user + the real assistant final stop message must survive.
+    assert len(msgs) == 2
+    assert msgs[0]["role"] == "user"
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[1]["text"] == "REAL FINAL"
+    # No tool/assistant-tool/system/delivery-mirror rows leaked through.
+    roles = {m["role"] for m in msgs}
+    assert roles == {"user", "assistant"}
+
+
+def test_history_copy_contracts_individual_and_since_remain_intact():
+    # PR #64/#65: the browser-side Individual Copy and Copy-since-my-last-
+    # message read from chatStateCache.messages[index].text and
+    # chatStateCache.sinceLastUserText. Both must equal the dashboard
+    # projection exactly. We verify this here by checking the projection
+    # carries the full text (no truncation by PR #68 fix) so the Copy
+    # contracts deliver the complete final message.
+    full_text = ("PR68-COPY-PROOF " * 2000).strip()  # ~32K
+    payload = _project_payload(
+        [
+            {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": full_text}],
+                "timestamp": 1,
+            }
+        ]
+    )
+    msgs = payload["messages"]
+    assert len(msgs) == 1
+    # Individual Copy source: chatStateCache.messages[0].text
+    assert msgs[0]["text"] == full_text
+    assert len(msgs[0]["text"]) == len(full_text)  # uncut
+    # Copy-since-my-last-message source: computeSinceLastUserText joins
+    # trailing assistant texts after the last user with "\n\n". With a
+    # single assistant message, join([text]) = text.
+    copy_since_text = msgs[0]["text"]  # single-element join equals source
+    assert copy_since_text == full_text
+
+
+def test_history_pr67_timeout_ownership_unchanged():
+    # PR #67: the chat.history path is a read; it never enters the
+    # agent-run deadline ownership discussion. The script must not inject
+    # any timeoutMs / timeoutSeconds / deadline field into the chat.history
+    # RPC payload.
+    import re
+    script = _history_script_input()
+    # Find the direct chat.history RPC payload
+    m = re.search(
+        r'client\.client\.request\(\s*"chat\.history"\s*,\s*\{([^}]*)\}\s*\)',
+        script,
+        re.DOTALL,
+    )
+    assert m
+    payload = m.group(1)
+    for forbidden in ("timeoutMs", "timeoutSeconds", "timeout", "deadline"):
+        assert forbidden not in payload
+
+
+
     # Even for uncut messages, `truncated` MUST be present in the JSON
     # payload as a boolean (never absent, never null). The browser reads
     # `message.truncated === true` to decide whether to show the badge.

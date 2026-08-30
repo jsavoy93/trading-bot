@@ -287,6 +287,26 @@ class UnavailableChatHistoryClient:
 
 
 def _gateway_history_node_script() -> str:
+    # NOTE: PR #68 followed originally called `client.loadHistory(...)`, but
+    # `GatewayChatClient.loadHistory(opts)` at
+    # `/usr/lib/node_modules/openclaw/dist/gateway-chat-Bdx06tul.js:125-138`
+    # silently drops `opts.maxChars` when constructing the `chat.history` RPC
+    # payload. With `maxChars` dropped the Gateway falls back to its default
+    # 8,000-char per-message cap
+    # (`DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS` in
+    # `chat-display-projection-CSlqmWmw.js`) and any response over 8K is
+    # cut at the Gateway layer. We bypass the wrapper by reaching into the
+    # underlying `GatewayClient` instance (held as `client.client` by
+    # `GatewayChatClient`) and issuing the raw `chat.history` RPC directly
+    # with `maxChars: MAX_CHARS` in the payload. The schema
+    # (`ChatHistoryParamsSchema` in
+    # `/usr/lib/node_modules/openclaw/dist/schema-KBhSSPA3.js`) accepts
+    # `maxChars` (1..500_000) and the handler (`handleChatHistoryRequest` in
+    # `chat-DOMgZOP2.js:1729-1780`) honors it via
+    # `resolveEffectiveChatHistoryMaxChars(cfg, maxChars)`. The dashboard
+    # also applies the same bound independently on the projection side so
+    # even if a future OpenClaw release silently changes the default the
+    # projection remains bounded.
     return f"""
 import {{ GatewayChatClient }} from '/usr/lib/node_modules/openclaw/dist/gateway-chat-Bdx06tul.js';
 
@@ -322,7 +342,16 @@ try {{
   if (!selected?.key) {{
     console.log(JSON.stringify({{ ok: false, unavailableReason: 'trading_manager_session_not_found', agentId: AGENT_ID }}));
   }} else {{
-    const history = await client.loadHistory({{ sessionKey: selected.key, agentId: AGENT_ID, limit: LIMIT, maxChars: MAX_CHARS }});
+    // Bypass GatewayChatClient.loadHistory() — see the docstring above.
+    // That wrapper drops `maxChars` from the chat.history RPC payload.
+    // The underlying GatewayClient (held as `client.client` by the
+    // GatewayChatClient instance) honors `maxChars` directly.
+    const history = await client.client.request("chat.history", {{
+      sessionKey: selected.key,
+      agentId: AGENT_ID,
+      limit: LIMIT,
+      maxChars: MAX_CHARS,
+    }});
     console.log(JSON.stringify({{ ok: true, agentId: AGENT_ID, selectedSession: selected, history }}));
   }}
 }} finally {{
