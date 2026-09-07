@@ -32,6 +32,9 @@ env/
 .env.local
 .env.production
 
+# Persistent dashboard service runtime env (PR1: dashboard.service.d/10-env.conf)
+.dashboard.env
+
 # Logs
 *.log
 logs/
