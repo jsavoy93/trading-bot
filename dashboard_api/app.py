@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from html import escape
 from typing import Mapping, Protocol
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from dashboard_api.chat_gateway import GatewayChatHistoryClient
@@ -22,6 +22,18 @@ from dashboard_api.engineering_read_model import (
     TestingSummary,
     WorkflowSummary,
 )
+from dashboard_api.security import (
+    CF_ACCESS_JWT_HEADER,
+    CF_CONNECTING_IP_HEADER,
+    CloudflareAccessValidator,
+    InProcessRateLimiter,
+    JwtValidationResult,
+    OriginCheckResult,
+    SecuritySettings,
+    WriteOriginGuard,
+    make_rejection,
+    request_is_from_loopback,
+)
 from engineering.context import build_project_context
 from engineering.models import TRADING_BOT_PROJECT
 from dashboard_api.providers import (
@@ -34,6 +46,7 @@ SNAPSHOT_ROUTE = "/api/engineering/snapshot"
 CHAT_HISTORY_ROUTE = "/api/engineering/chat/history"
 CHAT_SEND_ROUTE = "/api/engineering/chat/send"
 DASHBOARD_ROUTE = "/engineering"
+HEALTHZ_ROUTE = "/healthz"
 MAX_RENDERED_MAP_ITEMS = 50
 
 
@@ -71,9 +84,30 @@ def create_default_read_model() -> SnapshotProvider:
     return create_engineering_dashboard_provider(config)
 
 
-def create_app(snapshot_provider: SnapshotProvider | None = None, chat_history_provider: ChatHistoryProvider | None = None) -> FastAPI:
+def create_app(
+    snapshot_provider: SnapshotProvider | None = None,
+    chat_history_provider: ChatHistoryProvider | None = None,
+    security_settings: SecuritySettings | None = None,
+    access_validator: CloudflareAccessValidator | None = None,
+    origin_guard: WriteOriginGuard | None = None,
+    chat_rate_limiter: InProcessRateLimiter | None = None,
+) -> FastAPI:
     provider = snapshot_provider or create_default_read_model()
     chat_provider = chat_history_provider or GatewayChatHistoryClient()
+    settings = security_settings or SecuritySettings.from_env()
+    validator = access_validator or CloudflareAccessValidator(
+        team_domain=settings.team_domain,
+        audience=settings.audience,
+    )
+    guard = origin_guard or WriteOriginGuard(
+        public_hostnames=settings.public_hostnames,
+        allow_missing_origin=settings.allow_missing_origin,
+    )
+    rate_limiter = chat_rate_limiter or InProcessRateLimiter(
+        limit=settings.chat_send_rate_limit,
+        window_seconds=settings.chat_send_rate_window_seconds,
+    )
+    enforcement = settings.normalized_enforcement()
     app = FastAPI(
         title="Engineering Dashboard",
         version="1.0.0",
@@ -82,20 +116,142 @@ def create_app(snapshot_provider: SnapshotProvider | None = None, chat_history_p
         openapi_url=None,
     )
 
+    # ----- Security dependencies (PR2) -----
+    async def enforce_access(request: Request) -> JwtValidationResult | None:
+        """Validate Cloudflare Access JWT for the current request.
+
+        Enforcement rules:
+        - ``disabled``: always pass (no Access check). Used in tests.
+        - ``local-bypass`` (production default): validate when the
+          request is NOT a direct loopback request. Direct loopback
+          requests (no Cf-Connecting-Ip header) pass through without
+          a JWT so that local scripts and ``ssh`` health checks work.
+        - ``always``: validate on every request including loopback.
+
+        On failure we emit a deterministic 401 JSON body. The JWT and
+        its claims are never logged.
+        """
+        if enforcement == "disabled":
+            return None
+        if enforcement == "local-bypass" and request_is_from_loopback(request):
+            return None
+        token = request.headers.get(CF_ACCESS_JWT_HEADER) or ""
+        result = validator.validate(token)
+        if not result.valid:
+            return make_rejection(
+                status_code=401,
+                code="access_required",
+                message="Cloudflare Access authentication required",
+            )
+        # Stash identity for downstream handlers + audit logging.
+        request.state.cf_access_email = result.email
+        request.state.cf_access_status = result.status
+        return result
+
+    async def enforce_write_origin(request: Request) -> OriginCheckResult:
+        """Reject mutating requests whose Origin/Referer is not in the
+        configured public hostnames.
+        """
+        if not guard.should_check(request.method):
+            return OriginCheckResult(True, "non_mutating")
+        if not guard.is_enabled():
+            return OriginCheckResult(True, "guard_disabled")
+        result = guard.check(
+            method=request.method,
+            origin=request.headers.get("origin"),
+            referer=request.headers.get("referer"),
+        )
+        if not result.allowed:
+            return make_rejection(
+                status_code=403,
+                code="origin_not_allowed",
+                message="Origin/Referer not allowed for write request",
+            )
+        return result
+
+    async def enforce_chat_rate_limit(request: Request) -> None:
+        """Apply the in-process chat.send rate limit.
+
+        Keyed by the verified Access email when present (so the limit
+        is per-user even when multiple users share an egress IP), and
+        falls back to ``Cf-Connecting-Ip`` then ``request.client.host``
+        for unauthenticated local requests.
+        """
+        identity = getattr(request.state, "cf_access_email", None)
+        if not identity:
+            identity = request.headers.get(CF_CONNECTING_IP_HEADER)
+        if not identity and request.client is not None:
+            identity = request.client.host
+        key = identity or "__anon__"
+        allowed, retry_after = rate_limiter.check(key)
+        if not allowed:
+            return make_rejection(
+                status_code=429,
+                code="rate_limited",
+                message="chat.send rate limit exceeded",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    # ----- Routes -----
+    @app.get(HEALTHZ_ROUTE, name="engineering_healthz")
+    async def engineering_healthz(request: Request) -> JSONResponse:
+        """Localhost-only health endpoint.
+
+        Bypasses Cloudflare Access entirely so that ``curl localhost``
+        and ssh-based health checks do not need a JWT. Returns 403 if
+        the request is not a direct loopback request.
+        """
+        if not request_is_from_loopback(request):
+            return JSONResponse(
+                {"ok": False, "status": "rejected", "error": "healthz is localhost-only"},
+                status_code=403,
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": "ok",
+                "service": "engineering-dashboard",
+                "version": app.version,
+                "enforcement": enforcement,
+                "ts": datetime.now(UTC).isoformat(),
+            }
+        )
+
     @app.get(SNAPSHOT_ROUTE, name="engineering_snapshot")
-    def engineering_snapshot() -> JSONResponse:
+    async def engineering_snapshot(
+        request: Request,
+        _access: JwtValidationResult | Response | None = Depends(enforce_access),
+    ) -> Response:
+        if isinstance(_access, Response):
+            return _access
         snapshot = provider.snapshot()
         return JSONResponse(_public_snapshot_payload(snapshot))
 
     @app.get(CHAT_HISTORY_ROUTE, name="engineering_chat_history")
-    def engineering_chat_history() -> JSONResponse:
+    async def engineering_chat_history(
+        request: Request,
+        _access: JwtValidationResult | Response | None = Depends(enforce_access),
+    ) -> Response:
+        if isinstance(_access, Response):
+            return _access
         history = chat_provider.history()
         if hasattr(history, "to_public_dict"):
             return JSONResponse(history.to_public_dict())
         return JSONResponse(history)
 
     @app.post(CHAT_SEND_ROUTE, name="engineering_chat_send")
-    async def engineering_chat_send(request: Request) -> JSONResponse:
+    async def engineering_chat_send(
+        request: Request,
+        _access: JwtValidationResult | Response | None = Depends(enforce_access),
+        _origin: OriginCheckResult | Response = Depends(enforce_write_origin),
+        _rate: None | Response = Depends(enforce_chat_rate_limit),
+    ) -> Response:
+        if isinstance(_access, Response):
+            return _access
+        if isinstance(_origin, Response):
+            return _origin
+        if isinstance(_rate, Response):
+            return _rate
         try:
             payload = await request.json()
         except Exception:  # noqa: BLE001 - return bounded public error only.
@@ -112,7 +268,12 @@ def create_app(snapshot_provider: SnapshotProvider | None = None, chat_history_p
         return JSONResponse(body, status_code=400 if status == "rejected" else 503)
 
     @app.get(DASHBOARD_ROUTE, response_class=HTMLResponse, name="engineering_dashboard")
-    def engineering_dashboard() -> HTMLResponse:
+    async def engineering_dashboard(
+        request: Request,
+        _access: JwtValidationResult | Response | None = Depends(enforce_access),
+    ) -> Response:
+        if isinstance(_access, Response):
+            return _access
         snapshot = provider.snapshot()
         return HTMLResponse(render_dashboard(snapshot))
 

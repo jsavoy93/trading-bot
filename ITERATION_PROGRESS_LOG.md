@@ -1987,3 +1987,49 @@ agent/engplat-002a-project-context-contracts created from current main.
   - Reboot-survival is configuration-verified (Linger + WantedBy=default.target + enabled). Actual reboot end-to-end verification requires a host reboot, which is out of scope for a non-destructive PR. The deterministic `start-limit-burst` and `RestartSec=5` were empirically proven by the SIGKILL test.
   - Per Josh's spec, Cloudflare Tunnel + Access (PR2) is the only intended external path until then; until PR2 lands, the dashboard is reachable only from the local host or via the existing SSH session — no public port.
 - Next action: Josh review of PR1 on branch `agent/dash-persistent-service-pr1` (head `b3beea7`, base `8976279`). DO NOT begin PR2 until explicit Josh approval. DO NOT merge automatically.
+
+
+- UTC date and time: 2026-09-07 14:50:51 UTC
+- Backlog item/objective: PR2 of Josh-approved durable Engineering Dashboard plan (5-PR sequence). Implement server-side Cloudflare Access JWT validation, write-Origin guard, chat.send rate limit, /healthz, cloudflared systemd service, and operational docs. STOP at the manual Cloudflare account/domain/tunnel step.
+- Branch: `agent/dash-cf-tunnel-access-pr2`
+- Base commit: `6972e1e` (main, after PR1 #70 merge)
+- Head commit: `1c3c04a` (single implementation commit, 8 files / +1,933 / -6)
+- Status: DONE — pending Josh PR review. STOP per Josh's instruction; do NOT begin PR3 until review.
+- Files changed:
+  - `dashboard_api/security.py` (new, 533 lines): CloudflareAccessValidator, WriteOriginGuard, InProcessRateLimiter, SecuritySettings, request_is_from_loopback.
+  - `dashboard_api/app.py` (modified, +173/-3): FastAPI Depends(enforce_access) on every route, Depends(enforce_write_origin) + Depends(enforce_chat_rate_limit) on chat.send, new /healthz route (localhost-only, bypasses Access).
+  - `tests/test_dashboard_security.py` (new, 613 lines, 53 focused tests).
+  - `tests/test_dashboard_api_app.py` + `tests/test_dashboard_api_provider.py` (modified): /healthz added to exact route surface; TestClient pinned to 127.0.0.1 for the healthz probe.
+  - `docs/infrastructure/cloudflare-tunnel-access.md` (new, 269 lines): architecture diagram, security contract, manual Cloudflare setup checklist (7 steps), explicit STOP points, end-to-end verification list.
+  - `.gitignore` (+5): .cloudflared.env + .cloudflared/.
+  - `MENTOR.md` (+5): pointer under Architecture Overview.
+- System files written OUTSIDE the repo (not tracked):
+  - `/usr/bin/cloudflared` (`cloudflared version 2026.8.3`).
+  - `~/.config/systemd/user/cloudflared.service` (mirrors dashboard.service layout; Restart=always; WantedBy=default.target; disabled).
+  - `~/.config/systemd/user/cloudflared.service.d/10-env.conf` (drop-in sourcing .cloudflared.env).
+  - `/root/.openclaw/workspace/trading-bot/.cloudflared.env` (mode 0600, gitignored, placeholder comments only).
+- Tests:
+  - Focused dashboard slice (`tests/test_dashboard_security.py + tests/test_dashboard_api_app.py + tests/test_dashboard_api_provider.py + tests/test_dashboard_chat_gateway.py + tests/test_dashboard_engineering_read_model.py + tests/test_dashboard_timeline.py`): **227 passed, 3 warnings in 21.06 s**.
+  - Full safe suite: **936 passed, 85 warnings in 60.57 s** (883 → 936 = +53 security tests, 0 regressions).
+  - `git diff --check` clean.
+- Live service verification (post-restart on `1c3c04a`):
+  - `ss -tlnp | grep :8010` → `LISTEN 0 2048 127.0.0.1:8010` (loopback only, no 0.0.0.0:8010).
+  - `curl http://127.0.0.1:8010/healthz` → 200 with `enforcement:"disabled"` (correct until real team_domain/audience wired).
+  - `curl http://127.0.0.1:8010/engineering` → 200.
+  - `curl http://127.0.0.1:8010/api/engineering/snapshot` → 200.
+  - `curl http://127.0.0.1:8010/api/engineering/chat/history?limit=5` → 200.
+  - `POST /api/engineering/chat/send` with valid JSON → 503 "Gateway chat send unavailable" (pre-existing PR1 behavior when Gateway subprocess is unreachable; PR2 only wraps the route).
+  - `POST /api/engineering/chat/send` with 4,001-char body → 400 (existing 4,000-char bound preserved verbatim).
+- Important decisions / discoveries:
+  - The service stays `enforcement="disabled"` (no Access required) until Josh wires the real Cloudflare team_domain and audience. Local users see exactly the same behavior as PR1.
+  - The /healthz route deliberately bypasses Access but rejects requests with Cf-Connecting-Ip (so tunneled requests that the proxy rewrote to 127.0.0.1 still get 403, not 200).
+  - CloudflareAccessValidator caches JWKS for 1h with a 32-entry ceiling; the unverified header is parsed first to enforce RS256 before any certs fetch. The JWT itself and raw claims are never logged.
+  - The origin guard runs BEFORE the chat_provider.send call but AFTER the existing 4,000-char and non-text rejection checks, so the documented 400 path is preserved.
+  - The chat.send rate limiter is keyed by the verified Access email when present (so the limit is per-user), then Cf-Connecting-Ip, then request.client.host, then __anon__.
+  - cloudflared.service has no fake tunnel IDs / tokens / domains anywhere. /root/.cloudflared/ does not exist; the service is loaded but disabled until Josh completes the manual setup.
+- Risks / known follow-ups:
+  - End-to-end external HTTPS verification (https://dashboard.yourdomain.com → 307 Access redirect → login → 200 with valid JWT) cannot run until Josh provisions a Cloudflare account + domain + tunnel.
+  - Real Access JWT validation against a production team is not yet exercised; tests use a local JWKS fixture.
+  - Reboot-survival / SIGKILL empirical verification of cloudflared.service is configured but not yet run (no real tunnel to test against).
+  - Out of scope (documented in MENTOR.md and the report archive): PR3 durable SQLite chat store, PR4 durable + live chat UI, PR5 current-session backfill, CUPS 0.0.0.0:631 follow-up, Cloudflare-side WAF.
+- Next action: Josh review of PR2 on branch `agent/dash-cf-tunnel-access-pr2` (head `1c3c04a`, base `6972e1e`). DO NOT begin PR3 until explicit Josh approval. DO NOT merge automatically.

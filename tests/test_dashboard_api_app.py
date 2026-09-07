@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from dashboard_api.app import CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
+from dashboard_api.app import CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, HEALTHZ_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
 from dashboard_api.providers import EngineeringDashboardProviderConfig, create_engineering_dashboard_provider
 from dashboard_api.engineering_read_model import (
     AgentActivitySummary,
@@ -343,7 +343,13 @@ def test_no_mutation_http_methods_or_routes():
     app = create_app(StaticProvider(populated_snapshot()))
     routes = {route.path: route.methods for route in app.routes if hasattr(route, "methods")}
 
-    assert routes == {SNAPSHOT_ROUTE: {"GET"}, CHAT_HISTORY_ROUTE: {"GET"}, CHAT_SEND_ROUTE: {"POST"}, DASHBOARD_ROUTE: {"GET"}}
+    assert routes == {
+        SNAPSHOT_ROUTE: {"GET"},
+        CHAT_HISTORY_ROUTE: {"GET"},
+        CHAT_SEND_ROUTE: {"POST"},
+        DASHBOARD_ROUTE: {"GET"},
+        HEALTHZ_ROUTE: {"GET"},
+    }
     client = TestClient(app)
     for method in (client.post, client.put, client.patch, client.delete):
         assert method(SNAPSHOT_ROUTE).status_code == 405
@@ -351,6 +357,7 @@ def test_no_mutation_http_methods_or_routes():
         expected_send_status = 400 if method.__name__ == "post" else 405
         assert method(CHAT_SEND_ROUTE).status_code == expected_send_status
         assert method(DASHBOARD_ROUTE).status_code == 405
+        assert method(HEALTHZ_ROUTE).status_code == 405
 
 
 def test_bounded_lists_and_deterministic_ordering_in_response():
@@ -410,8 +417,8 @@ def test_no_import_filename_or_route_collision_with_legacy_dashboard_py():
     assert Path(dashboard_api.__file__).parent.name == "dashboard_api"
     assert not Path("dashboard-api").exists()
     app = create_app(StaticProvider(populated_snapshot()))
-    assert {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE}.issubset({route.path for route in app.routes})
-    assert {route.path for route in app.routes} == {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE}
+    assert {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, HEALTHZ_ROUTE}.issubset({route.path for route in app.routes})
+    assert {route.path for route in app.routes} == {SNAPSHOT_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, HEALTHZ_ROUTE}
 
 
 def test_launch_command_documented_and_no_route_exposes_controls():
