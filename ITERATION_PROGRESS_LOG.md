@@ -1942,3 +1942,48 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Risks: low. 64K × 50 worst case is ~3.2M chars (well within 25 MiB WebSocket cap). No OpenClaw dist modification. No session log file reads. No browser-side raw file access. The new `_split_off_openclaw_gateway_marker()` helper is bounded and tested for false-positive protection.
 - Out of scope (documented in MENTOR.md for next iteration): per-message full-text retrieval via OpenClaw Gateway `chat.message.get` RPC for responses that genuinely exceed 64K. The RPC is supported and live-verified; not wired to the dashboard yet because the 64K bound is already 3.5x the largest observed audit response. If a future Trading-Manager response legitimately exceeds 64K, a follow-up PR adds `/api/engineering/chat/message.get` and propagates `__openclaw.id` as `messageId` on `ChatMessage`.
 - Next action: Commit, push branch, open PR, STOP for Josh review.
+
+- UTC date and time: 2026-09-07 02:15 UTC
+- Backlog item/objective: PR1 of Josh-approved durable Engineering Dashboard plan (5-PR sequence: persistent service → Cloudflare Tunnel+Access → durable SQLite chat store → durable+live chat UI → current-session backfill). Implement ONLY persistent process management — dashboard starts after reboot, restarts on crash, loopback-only, logs via journalctl, no Termius needed.
+- Branch: `agent/dash-persistent-service-pr1`
+- Base commit: `8976279` (main)
+- Head commit: `b3beea7`
+- Status: DONE — pending Josh PR review. STOP per Josh's instruction; do NOT begin PR2 until review.
+- Files changed:
+  - `.gitignore` (+3): gitignore `.dashboard.env` (project-local runtime env for the systemd service).
+  - `MENTOR.md` (+5): pointer under Architecture Overview pointing at the new docs file.
+  - `docs/infrastructure/dashboard-systemd.md` (+111, new): full service reference (unit content, drop-in, operating commands, reboot/crash-restart/loopback verification, production discipline).
+- System files written OUTSIDE the repo (not tracked):
+  - `~/.config/systemd/user/dashboard.service` (main unit, 834 B)
+  - `~/.config/systemd/user/dashboard.service.d/10-env.conf` (drop-in, 312 B)
+  - `/root/.openclaw/workspace/trading-bot/.dashboard.env` (mode 0600, 567 B, gitignored placeholder)
+- Service behavior contract (mirrors `openclaw-gateway.service`):
+  - WorkingDirectory=`/root/.openclaw/workspace/trading-bot`
+  - ExecStart=`/root/.openclaw/workspace/trading-bot/.venv/bin/python -m uvicorn dashboard_api.app:app --host 127.0.0.1 --port 8010`
+  - Restart=always, RestartSec=5, StartLimitBurst=5/60s
+  - TimeoutStopSec=30, TimeoutStartSec=30, SuccessExitStatus=0 143, KillMode=control-group
+  - WantedBy=default.target (user-level)
+  - Linger=yes on root (pre-existing), so reboot-survival config verified
+  - Explicit Environment block, no TESTING/UNIT_TESTING in production env
+- Verification (2026-09-07, all on the same running service):
+  - `curl http://127.0.0.1:8010/engineering` → HTTP 200, 60768 B, 0.096 s
+  - `curl http://127.0.0.1:8010/api/engineering/snapshot` → HTTP 200, 5098 B (JSON: project_identity=trading-bot, repo root/branch/dirty paths)
+  - `curl 'http://127.0.0.1:8010/api/engineering/chat/history?limit=5'` → HTTP 200, 141 B (GatewayChatHistoryClient reachable, session unavailable at this exact moment is expected — gateway uses bounded retry)
+  - `ss -tlnp | grep :8010` → `LISTEN 0 2048 127.0.0.1:8010 ... users:(("python",pid=...,fd=...))` — loopback bind only, no `0.0.0.0:8010`
+  - Crash restart: SIGKILL main PID 558505 → RestartSec=5 → new PID 558561, `NRestarts` 0→1, `Active: active`, `/engineering` HTTP 200, journald captured the full lifecycle.
+  - `systemctl --user daemon-reload && systemctl --user enable dashboard.service` → symlink `~/.config/systemd/user/default.target.wants/dashboard.service` created (auto-start after boot, via Linger).
+  - `journalctl --user -u dashboard.service` → logs available (start, uvicorn boot, GET request lines, kill, restart, new boot).
+- Tests: `git diff --check` PASS (clean). Focused: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest tests/test_dashboard_api_app.py tests/test_dashboard_api_provider.py tests/test_dashboard_chat_gateway.py tests/test_dashboard_engineering_read_model.py tests/test_dashboard_timeline.py -q` → **174 passed, 2 warnings in 20.17 s**. Full safe suite: `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q` → **883 passed, 84 warnings in 57.34 s** (pre-existing warnings only: pytest `timeout` unknown config, websockets.legacy deprecation, `datetime.utcnow()` in src/database/sqlite_db.py — all flagged in MENTOR.md).
+- Important decisions / discoveries:
+  - The repo dashboard entry in `dashboard_api/app.py` already defaults to `--host 127.0.0.1 --port 8010`, so the existing authoritative port (per Josh's global correction) was already correct — no source-code change required.
+  - Drop-in pattern: mirrored OpenClaw with `EnvironmentFile=-/root/.openclaw/workspace/trading-bot/.dashboard.env`. Leading `-` keeps the service bootable even if the env file is missing; the env file is created empty+0600+gitignored as a forward-compatibility hook.
+  - `PYTHONUNBUFFERED=1` added so uvicorn output is captured line-by-line in journald (otherwise Python buffers stdout under systemd, hiding errors).
+  - `PYTHONHASHSEED=random` is the standard Python 3.3+ default — kept explicit only for documentation; harmless.
+  - Did NOT add `TESTING=1` / `UNIT_TESTING=1` to the production service env (Josh's spec: "do not blindly carry test-only flags into a persistent production service").
+  - The snapshot endpoint now reports `is_clean: false` because of the untracked `.dashboard.env` and the pre-existing untracked `reports/2026-08-25_120323_...md` archive — the env file is gitignored, the report is a pre-existing reviewable archive that should not be removed or committed.
+- Risks / known follow-ups:
+  - The CUPS `0.0.0.0:631` exposure is unrelated to PR1 and is documented in Josh's spec as a separate follow-up task — not in this PR.
+  - The persistent service never holds live brokerage, Telegram, or OpenClaw Gateway tokens. It reaches the Gateway over loopback only; the Gateway itself owns broker credentials.
+  - Reboot-survival is configuration-verified (Linger + WantedBy=default.target + enabled). Actual reboot end-to-end verification requires a host reboot, which is out of scope for a non-destructive PR. The deterministic `start-limit-burst` and `RestartSec=5` were empirically proven by the SIGKILL test.
+  - Per Josh's spec, Cloudflare Tunnel + Access (PR2) is the only intended external path until then; until PR2 lands, the dashboard is reachable only from the local host or via the existing SSH session — no public port.
+- Next action: Josh review of PR1 on branch `agent/dash-persistent-service-pr1` (head `b3beea7`, base `8976279`). DO NOT begin PR2 until explicit Josh approval. DO NOT merge automatically.

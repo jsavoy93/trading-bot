@@ -85,6 +85,11 @@ The bot runs in a loop:
 3. Execute trades if conditions are met
 4. Sleep 5 minutes → repeat
 
+**Engineering Dashboard:** `dashboard_api/app.py` (FastAPI) runs under a
+user-level systemd service (`dashboard.service`, loopback `127.0.0.1:8010`)
+mirroring the `openclaw-gateway.service` layout. Reboot-survival via
+`Linger=yes` for the root user. See `docs/infrastructure/dashboard-systemd.md`.
+
 ---
 
 ## Key Files
