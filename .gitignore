@@ -35,6 +35,11 @@ env/
 # Persistent dashboard service runtime env (PR1: dashboard.service.d/10-env.conf)
 .dashboard.env
 
+# Cloudflare tunnel runtime env + creds (PR2: cloudflared.service.d/10-env.conf)
+.cloudflared.env
+.cloudflared/
+
+
 # Logs
 *.log
 logs/

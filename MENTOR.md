@@ -90,6 +90,19 @@ user-level systemd service (`dashboard.service`, loopback `127.0.0.1:8010`)
 mirroring the `openclaw-gateway.service` layout. Reboot-survival via
 `Linger=yes` for the root user. See `docs/infrastructure/dashboard-systemd.md`.
 
+**Cloudflare Tunnel + Access (PR2):** `cloudflared` runs as a second
+user-level systemd service (`~/.config/systemd/user/cloudflared.service`,
+egress-only, never `0.0.0.0`). Tunnel credentials live in
+`/root/.cloudflared/<TUNNEL_ID>.json` (chmod 0600) and the dashboard
+runtime env (`.dashboard.env` + `.cloudflared.env`) — none are
+committed. `dashboard_api/security.py` validates the
+`Cf-Access-Jwt-Assertion` against the team's published JWKS, enforces
+Origin/Referer on mutating routes, and rate-limits
+`/api/engineering/chat/send`. The `/healthz` endpoint is localhost-only
+(it rejects requests with `Cf-Connecting-Ip` so tunneled requests are
+never confused with direct loopback). See
+`docs/infrastructure/cloudflare-tunnel-access.md`.
+
 ---
 
 ## Key Files

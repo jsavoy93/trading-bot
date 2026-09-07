@@ -8,7 +8,7 @@ import subprocess
 
 from fastapi.testclient import TestClient
 
-from dashboard_api.app import CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, SNAPSHOT_ROUTE, create_app, create_default_read_model
+from dashboard_api.app import CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, HEALTHZ_ROUTE, SNAPSHOT_ROUTE, create_app, create_default_read_model
 from dashboard_api.providers import (
     EngineeringDashboardProviderConfig,
     GitRepositorySummaryReader,
@@ -169,12 +169,23 @@ def test_default_app_uses_real_provider_and_preserves_exact_route_surface() -> N
     provider = create_default_read_model()
     app = create_app(provider)
     routes = {route.path: route.methods for route in app.routes if hasattr(route, "methods")}
-    client = TestClient(app)
+    # ``client=...`` makes the TestClient requests appear to come from
+    # 127.0.0.1 so the localhost-only /healthz endpoint (added in PR2) is
+    # exercised the same way a real ``curl http://127.0.0.1:8010/healthz``
+    # would be. The non-healthz routes are not affected.
+    client = TestClient(app, client=("127.0.0.1", 50000))
 
-    assert routes == {SNAPSHOT_ROUTE: {"GET"}, CHAT_HISTORY_ROUTE: {"GET"}, CHAT_SEND_ROUTE: {"POST"}, DASHBOARD_ROUTE: {"GET"}}
+    assert routes == {
+        SNAPSHOT_ROUTE: {"GET"},
+        CHAT_HISTORY_ROUTE: {"GET"},
+        CHAT_SEND_ROUTE: {"POST"},
+        DASHBOARD_ROUTE: {"GET"},
+        HEALTHZ_ROUTE: {"GET"},
+    }
     body = client.get(SNAPSHOT_ROUTE).json()
     assert body["repository"]["root"] != "unavailable"
     assert client.get(DASHBOARD_ROUTE).status_code == 200
+    assert client.get(HEALTHZ_ROUTE).status_code == 200
     assert client.get("/openapi.json").status_code == 404
     assert client.get("/docs").status_code == 404
     assert client.get("/redoc").status_code == 404
@@ -184,6 +195,7 @@ def test_default_app_uses_real_provider_and_preserves_exact_route_surface() -> N
         expected_send_status = 400 if method.__name__ == "post" else 405
         assert method(CHAT_SEND_ROUTE).status_code == expected_send_status
         assert method(DASHBOARD_ROUTE).status_code == 405
+        assert method(HEALTHZ_ROUTE).status_code == 405
 
 
 def test_read_only_event_store_does_not_create_missing_database(tmp_path: Path) -> None:
