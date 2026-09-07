@@ -2073,3 +2073,24 @@ agent/engplat-002a-project-context-contracts created from current main.
   - If a future OpenClaw release moves `/root/.openclaw/openclaw.env`, the dashboard silently falls back to parent-env-only (preserving the original behavior). The configurable `gateway_token_env_file` parameter allows the path to be overridden.
   - Out of scope (documented): PR3 durable SQLite chat store, PR4 durable + live chat UI, PR5 current-session backfill, CUPS 0.0.0.0:631, Cloudflare real domain/tunnel, Cloudflare-side WAF.
 - Next action: Josh review of branch `fix/dashboard-chat-gateway-token-env` (head `b71598d`, base `6972e1e`). DO NOT merge automatically. DO NOT begin PR3.
+
+
+- UTC date and time: 2026-09-07 23:38:30 UTC
+- Backlog item/objective: Post-merge verification of PR #72 (chat.send 503 fix). Josh merged PR #72 via GitHub UI and asked the manager to confirm the dashboard is healthy on main, loopback-only, and that a real chat.send submission reaches trading-manager.
+- Branch: main (PR #72 merged by Josh at commit `4ca6338`)
+- Status: DONE — post-merge verification PASS.
+- Steps executed:
+  - Confirmed main advanced to `4ca6338` (PR #72 merge commit) via `git pull --ff-only`.
+  - Restarted `dashboard.service` (`systemctl --user restart dashboard.service`); PID 582903.
+  - Verified `ss -tlnp | grep :8010` → `LISTEN 0 2048 127.0.0.1:8010` (loopback only, no 0.0.0.0).
+  - POST `{"message":"DASHBOARD_CHAT_OK"}` to `/api/engineering/chat/send` → **HTTP 200** with body `{"ok":true,"status":"accepted","audit":{"timestamp":"2026-09-07T23:37:50.703743+00:00","actor":"dashboard","source":"dashboard","target":"trading-manager","delivery_status":"accepted","run_id":"0936d64d-b548-4352-87dd-7d19f7dccc94"},"run_id":"0936d64d-b548-4352-87dd-7d19f7dccc94"}`.
+  - Direct Node session inspection confirmed the message reached the trading-manager session `agent:trading-manager:telegram:direct:8455029949` and the agent is actively responding (3 toolResult entries in the raw transcript show the agent ran the dashboard verification tools after receiving the dashboard message context).
+  - `/healthz` 200 (loopback), `/engineering` 200, `/api/engineering/snapshot` 200, `/api/engineering/chat/history` 200 with `status:"available", has_active_run:true, run_status:"running"` (the agent is currently mid-toolUse on Josh's verification request).
+  - 4,001-char POST → 400 (4,000-char bound preserved); non-text POST → 400 (non-text rejection preserved).
+- Live result highlights:
+  - chat.send: HTTP 200, status=accepted, run_id assigned.
+  - chat.history: HTTP 200, status=available, has_active_run=true (the agent is processing).
+  - Loopback safety preserved: 127.0.0.1:8010 only.
+  - All four local endpoints 200 from loopback.
+  - 4,000-char + non-text rejections still 400.
+- Next action: Manager idle. Awaiting Josh's next instruction. PR3 (durable SQLite chat store) NOT begun.
