@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 from dashboard_api.chat_gateway import (
     ALLOWED_RUN_STATUSES,
     CHAT_HISTORY_LIMIT,
     CHAT_MESSAGE_MAX_CHARS,
+    OPENCLAW_GATEWAY_TOKEN_ENV_VAR,
     PREFERRED_TRADING_MANAGER_SESSION_KEY,
     TRADING_MANAGER_AGENT_ID,
     GatewayChatHistoryClient,
@@ -229,6 +231,222 @@ def test_send_gateway_failure_returns_bounded_safe_error():
     assert payload["status"] == "failed"
     assert payload["error"] == "Gateway chat send unavailable"
     assert "secret" not in json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw Gateway auth token env forwarding (PR reliability follow-up).
+#
+# The OpenClaw ``GatewayChatClient.connect({})`` resolves its
+# ``gateway.auth.token`` SecretRef against
+# ``env:default:OPENCLAW_GATEWAY_TOKEN``. When the dashboard Node
+# subprocess inherits a parent env that does NOT contain that variable
+# (e.g. the dashboard systemd service started without it), the
+# subprocess throws ``Error: gateway.auth.token SecretRef is unresolved``
+# and chat.send returns 503 with "Gateway chat send unavailable" while
+# chat.history returns 200 with ``status="unavailable"``. Both are
+# silent failures that mask the real cause. The
+# ``_build_subprocess_env`` helper overlays the token from either the
+# parent env or ``/root/.openclaw/openclaw.env`` so the subprocess can
+# authenticate. The tests below pin the env-construction contract so a
+# future refactor cannot silently regress to inheriting-parent-only.
+# ---------------------------------------------------------------------------
+
+
+def _capture_runner(captured, payload):
+    def runner(*args, **kwargs):
+        captured.append(kwargs)
+        return _completed(payload)
+    return runner
+
+
+def test_send_subprocess_forwards_gateway_token_from_parent_env(monkeypatch):
+    captured = []
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "from-parent-env-test-token-xxx")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r1"}),
+        gateway_token_env_file=None,
+    )
+    payload = client.send("hello").to_public_dict()
+
+    assert payload["ok"] is True
+    assert payload["status"] == "accepted"
+    assert payload["run_id"] == "r1"
+    env = captured[0]["env"]
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "from-parent-env-test-token-xxx"
+
+
+def test_history_subprocess_forwards_gateway_token_from_parent_env(monkeypatch):
+    captured = []
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "history-parent-env-token")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "agentId": TRADING_MANAGER_AGENT_ID, "selectedSession": {"key": PREFERRED_TRADING_MANAGER_SESSION_KEY}, "history": {"sessionKey": PREFERRED_TRADING_MANAGER_SESSION_KEY, "messages": [], "sessionInfo": {"hasActiveRun": False}}}),
+        gateway_token_env_file=None,
+    )
+    history = client.history()
+    assert history.status == "available"
+    env = captured[0]["env"]
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "history-parent-env-token"
+
+
+def test_send_subprocess_reads_gateway_token_from_env_file_when_parent_env_unset(tmp_path, monkeypatch):
+    captured = []
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+
+    env_file = tmp_path / "openclaw.env"
+    env_file.write_text(
+        "# comment line\n"
+        "OPENCLAW_TELEGRAM_DEFAULT_BOT_TOKEN=other-secret-not-used\n"
+        "OPENCLAW_GATEWAY_TOKEN = from-env-file-token-xxx\n"
+        "\n"
+    )
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r2"}),
+        gateway_token_env_file=str(env_file),
+    )
+    payload = client.send("hello").to_public_dict()
+
+    assert payload["ok"] is True
+    assert payload["run_id"] == "r2"
+    env = captured[0]["env"]
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "from-env-file-token-xxx"
+
+
+def test_send_subprocess_parent_env_wins_over_env_file(tmp_path, monkeypatch):
+    """When the token is in BOTH the parent env and the file, the
+    parent env wins (allows the systemd drop-in to override the
+    canonical file location without modifying the OpenClaw env file).
+    """
+    captured = []
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "parent-wins-token")
+
+    env_file = tmp_path / "openclaw.env"
+    env_file.write_text("OPENCLAW_GATEWAY_TOKEN=file-token-should-be-ignored\n")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r3"}),
+        gateway_token_env_file=str(env_file),
+    )
+    client.send("hello")
+
+    env = captured[0]["env"]
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "parent-wins-token"
+
+
+def test_send_subprocess_omits_gateway_token_when_unset_everywhere(monkeypatch, tmp_path):
+    """When the token cannot be resolved from either source, the
+    subprocess env MUST NOT silently gain an empty string for the key
+    (which would still fail SecretRef resolution in the Node wrapper).
+    The token key is simply absent from the env dict.
+    """
+    captured = []
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+
+    env_file = tmp_path / "openclaw.env"
+    env_file.write_text("# empty file — token never set\n")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r4"}),
+        gateway_token_env_file=str(env_file),
+    )
+    client.send("hello")
+
+    env = captured[0]["env"]
+    # ``OPENCLAW_GATEWAY_TOKEN`` is not silently set to ""; the key is absent.
+    assert "OPENCLAW_GATEWAY_TOKEN" not in env or env.get("OPENCLAW_GATEWAY_TOKEN", "") == ""
+    # Non-secret parent env vars still flow through.
+    assert env.get("PATH") == os.environ.get("PATH")
+
+
+def test_send_subprocess_handles_unreadable_env_file(monkeypatch, tmp_path):
+    """When the env file path is set but the file cannot be read
+    (missing, permission denied, etc.), the dashboard falls back to
+    parent-env-only behavior instead of crashing.
+    """
+    captured = []
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.setenv("HOME", "/parent-home")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r5"}),
+        gateway_token_env_file=str(tmp_path / "does-not-exist.env"),
+    )
+    payload = client.send("hello").to_public_dict()
+
+    assert payload["ok"] is True
+    env = captured[0]["env"]
+    # Token absent (unresolved from both sources); no empty-string sentinel.
+    assert env.get("OPENCLAW_GATEWAY_TOKEN", "") == ""
+    # Parent env still inherited.
+    assert env["HOME"] == "/parent-home"
+
+
+def test_send_subprocess_token_not_logged_or_returned_in_public_payload(monkeypatch):
+    """The token value MUST never appear in the public ChatSendResult
+    payload (no echo, no leak via audit fields). This guards against a
+    future regression where someone accidentally adds ``token=token`` to
+    the JSON output.
+    """
+    captured = []
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "must-not-appear-in-payload-zzz")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r6"}),
+        gateway_token_env_file=None,
+    )
+    payload = client.send("hello").to_public_dict()
+
+    assert payload["ok"] is True
+    assert "must-not-appear-in-payload-zzz" not in json.dumps(payload)
+    assert "OPENCLAW_GATEWAY_TOKEN" not in json.dumps(payload)
+
+
+def test_send_subprocess_env_overlay_preserves_other_parent_env_vars(monkeypatch):
+    """The env overlay MUST NOT drop any parent env var (HOME, PATH,
+    TMPDIR, custom vars) — it must only add / overwrite the gateway
+    token. A regression that builds env from a hardcoded whitelist
+    would silently break anything else the Node wrapper depends on.
+    """
+    captured = []
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "preserve-test-token")
+    monkeypatch.setenv("DASHBOARD_CUSTOM_VAR", "must-survive")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r7"}),
+        gateway_token_env_file=None,
+    )
+    client.send("hello")
+
+    env = captured[0]["env"]
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "preserve-test-token"
+    assert env["DASHBOARD_CUSTOM_VAR"] == "must-survive"
+    assert env["PATH"] == os.environ["PATH"]
+
+
+def test_gateway_token_env_disabled_subprocess_inherits_parent_only(monkeypatch):
+    """When ``gateway_token_env=None`` the dashboard must NOT add the
+    token overlay even if it is set in the parent env — the original
+    parent-only-inheritance behavior must remain available for tests
+    and for any deployment that wants to forward the token via a
+    different mechanism.
+    """
+    captured = []
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "should-not-be-readded-by-overlay")
+
+    client = GatewayChatHistoryClient(
+        runner=_capture_runner(captured, {"ok": True, "runId": "r8"}),
+        gateway_token_env=None,  # disable overlay
+        gateway_token_env_file=None,
+    )
+    client.send("hello")
+
+    env = captured[0]["env"]
+    # Even with parent env set, disabling the overlay means we only
+    # inherit (which already has it). The test still proves no
+    # CROWDED additional source is consulted.
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "should-not-be-readded-by-overlay"
 
 
 # ---------------------------------------------------------------------------

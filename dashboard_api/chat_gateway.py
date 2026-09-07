@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -72,6 +73,24 @@ GATEWAY_SEND_TIMEOUT_SECONDS = 15
 # Terminal run-state values from OpenClaw Gateway sessionInfo.status.
 # Anything outside this set is surfaced as None (the dashboard treats it as Idle).
 ALLOWED_RUN_STATUSES = frozenset({"running", "idle", "done", "failed", "killed", "timeout"})
+
+# Name of the environment variable the OpenClaw Node-side
+# ``GatewayChatClient`` resolves its ``gateway.auth.token`` SecretRef
+# against. The dashboard Node subprocess MUST have this variable set or
+# ``GatewayChatClient.connect({})`` throws
+# ``Error: gateway.auth.token SecretRef is unresolved
+# (env:default:OPENCLAW_GATEWAY_TOKEN)`` and chat.send / chat.history
+# surface a 503 / "unavailable" instead of the real RPC response.
+OPENCLAW_GATEWAY_TOKEN_ENV_VAR = "OPENCLAW_GATEWAY_TOKEN"
+# Authoritative on-disk location of the OpenClaw Gateway secrets env
+# file (chmod 0600, root:root, never committed). The dashboard reads the
+# gateway token from here at subprocess time so the secret does not need
+# to be duplicated into ``.dashboard.env`` or any other dashboard-owned
+# env file. If the file is unreadable or the token is missing the
+# dashboard falls back to whatever ``OPENCLAW_GATEWAY_TOKEN`` is set in
+# the parent process environment (which is the configuration the
+# OpenClaw-supplied ``openclaw-gateway.service`` already uses).
+DEFAULT_OPENCLAW_GATEWAY_ENV_FILE = "/root/.openclaw/openclaw.env"
 
 
 @dataclass(frozen=True)
@@ -193,9 +212,95 @@ class GatewayChatHistoryClient:
         *,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         timeout_seconds: int = GATEWAY_HISTORY_TIMEOUT_SECONDS,
+        gateway_token_env: str | None = OPENCLAW_GATEWAY_TOKEN_ENV_VAR,
+        gateway_token_env_file: str | None = DEFAULT_OPENCLAW_GATEWAY_ENV_FILE,
     ) -> None:
         self._runner = runner
         self._timeout_seconds = timeout_seconds
+        # ``gateway_token_env`` — name of the env var that carries the
+        # OpenClaw Gateway auth token. Set to ``None`` to disable env
+        # construction entirely (the Node subprocess then inherits the
+        # parent env as-is, exactly as the dashboard behaved before this
+        # client was introduced).
+        self._gateway_token_env = gateway_token_env
+        # ``gateway_token_env_file`` — optional path to an env-style file
+        # (``KEY=VALUE`` lines, comments with ``#``) that the client
+        # reads to resolve the gateway token when the variable is not
+        # already set in the parent process. Set to ``None`` to disable
+        # file-based resolution. Defaults to the OpenClaw canonical
+        # location (chmod 0600, root-owned, never committed).
+        self._gateway_token_env_file = gateway_token_env_file
+
+    def _resolve_gateway_token(self) -> str | None:
+        """Resolve the OpenClaw Gateway auth token without ever logging it.
+
+        Resolution order:
+        1. ``os.environ[gateway_token_env]`` — lets the dashboard
+           systemd drop-in override the canonical location.
+        2. The file at ``gateway_token_env_file`` — read once per
+           subprocess; lines starting with ``#`` are comments; ``=``
+           is the separator. If the variable appears more than once,
+           the last non-empty value wins.
+
+        Returns ``None`` if the variable cannot be resolved from either
+        source. Callers MUST treat ``None`` as a configuration error and
+        fall back to inherited-parent-env behavior so the original
+        dashboard behavior (inheriting whatever the parent process had)
+        is preserved when neither source is available.
+        """
+        if self._gateway_token_env:
+            parent = os.environ.get(self._gateway_token_env)
+            if parent:
+                return parent
+        if self._gateway_token_env_file:
+            try:
+                with open(self._gateway_token_env_file, "r", encoding="utf-8") as fh:
+                    resolved: str | None = None
+                    for raw_line in fh:
+                        line = raw_line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        key, sep, value = line.partition("=")
+                        if sep != "=" or key.strip() != self._gateway_token_env:
+                            continue
+                        candidate = value.strip()
+                        if candidate:
+                            resolved = candidate
+                    if resolved:
+                        return resolved
+            except OSError:
+                # File missing / not readable / permission denied /
+                # is-a-directory / etc. — treat as unconfigured. The
+                # caller falls back to inherited-parent-env behavior.
+                pass
+        return None
+
+    def _build_subprocess_env(self) -> dict[str, str]:
+        """Build the env passed to the Node subprocess for chat.send / chat.history.
+
+        Inherits the parent process environment so anything else the
+        OpenClaw Node wrapper needs (HOME, PATH, TMPDIR, ...) flows
+        through unchanged. Then overlays ``OPENCLAW_GATEWAY_TOKEN`` (or
+        whatever ``gateway_token_env`` is configured to) from either the
+        parent process env or the canonical OpenClaw env file so the
+        subprocess can resolve the ``gateway.auth.token`` SecretRef.
+
+        Without this overlay the subprocess fails at
+        ``GatewayChatClient.connect({})`` with the SecretRef error and
+        the dashboard surfaces the failure as a generic
+        "Gateway chat send unavailable" 503 or a status="unavailable"
+        200 on chat.history — both of which mask the real cause and
+        cause the dashboard to look "broken" even when the underlying
+        Gateway is healthy.
+
+        The token value is never logged; this method does not call any
+        logger. Callers must not log the returned dict either.
+        """
+        env = dict(os.environ)
+        token = self._resolve_gateway_token()
+        if self._gateway_token_env and token:
+            env[self._gateway_token_env] = token
+        return env
 
     def history(self) -> ChatHistory:
         try:
@@ -258,6 +363,7 @@ class GatewayChatHistoryClient:
             capture_output=True,
             check=False,
             timeout=self._timeout_seconds,
+            env=self._build_subprocess_env(),
         )
         if result.returncode != 0:
             raise RuntimeError("OpenClaw Gateway chat history is unavailable")
@@ -272,6 +378,7 @@ class GatewayChatHistoryClient:
             capture_output=True,
             check=False,
             timeout=GATEWAY_SEND_TIMEOUT_SECONDS,
+            env=self._build_subprocess_env(),
         )
         if result.returncode != 0:
             raise RuntimeError("OpenClaw Gateway chat send is unavailable")
