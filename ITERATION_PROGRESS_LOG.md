@@ -2033,3 +2033,43 @@ agent/engplat-002a-project-context-contracts created from current main.
   - Reboot-survival / SIGKILL empirical verification of cloudflared.service is configured but not yet run (no real tunnel to test against).
   - Out of scope (documented in MENTOR.md and the report archive): PR3 durable SQLite chat store, PR4 durable + live chat UI, PR5 current-session backfill, CUPS 0.0.0.0:631 follow-up, Cloudflare-side WAF.
 - Next action: Josh review of PR2 on branch `agent/dash-cf-tunnel-access-pr2` (head `1c3c04a`, base `6972e1e`). DO NOT begin PR3 until explicit Josh approval. DO NOT merge automatically.
+
+
+- UTC date and time: 2026-09-07 18:48:59 UTC
+- Backlog item/objective: Post-merge reliability follow-up. Diagnose and fix the dashboard `chat.send` 503 and `chat.history` status="unavailable" surfaced after PR #70's persistent dashboard.service. Josh explicitly authorized a focused reliability task with a small/safe fix.
+- Branch: `fix/dashboard-chat-gateway-token-env`
+- Base commit: `6972e1e` (main, after PR #70 + #71)
+- Head commit: `b71598d` (single implementation commit, 2 files / +325 / -0)
+- Status: DONE — pending Josh PR review.
+- Files changed:
+  - `dashboard_api/chat_gateway.py` (+107): added `OPENCLAW_GATEWAY_TOKEN_ENV_VAR` + `DEFAULT_OPENCLAW_GATEWAY_ENV_FILE` constants; constructor params `gateway_token_env` (default `"OPENCLAW_GATEWAY_TOKEN"`) and `gateway_token_env_file` (default `"/root/.openclaw/openclaw.env"`); new methods `_resolve_gateway_token()` and `_build_subprocess_env()`; both `_call_gateway_history()` and `_call_gateway_send()` now pass `env=self._build_subprocess_env()` to the runner.
+  - `tests/test_dashboard_chat_gateway.py` (+218): 14 new tests pinning the env-construction contract (parent-env precedence, env-file fallback, parent-wins-on-conflict, no empty-string sentinel, token never logged, parent env vars preserved, overlay disableable).
+- Root cause: PR1's persistent `dashboard.service` does NOT include `OPENCLAW_GATEWAY_TOKEN` in its process env. The Node subprocess used by chat.send / chat.history resolves `gateway.auth.token` SecretRef against `env:default:OPENCLAW_GATEWAY_TOKEN`; without the variable the subprocess throws `Error: gateway.auth.token SecretRef is unresolved` and the dashboard surfaces the failure as 503 (send) or 200 + status="unavailable" (history). Both paths have been broken since PR1's merge; PR2's verification noted chat.history returning "session unavailable at this exact moment is expected" but did not root-cause the failure. Before PR1, the dashboard ran from an interactive uvicorn that inherited the token from the shell.
+- Why history "appeared to work" but send "appeared broken": it did not. Both paths run the same subprocess and fail at the same line. The difference is the adapter's exception handling: history() catches and returns the bounded 200 unavailable envelope; the FastAPI send handler then sees `ok != True` and surfaces the bounded error as 503.
+- Fix design:
+  - Resolution order: parent env (lets a systemd drop-in override the canonical location) → `/root/.openclaw/openclaw.env` (canonical, chmod 0600, root-owned, never committed; same file used by `openclaw-gateway.service`).
+  - When neither source has the variable, the subprocess env gains no empty-string sentinel; it simply inherits the parent env.
+  - The token value is never logged.
+  - No network calls; the file read is bounded by Python's file API and the format is permissive (comments, blank lines, multi-line KEY=VALUE, last-non-empty-wins).
+- Tests:
+  - Focused dashboard slice (6 test files): **236 passed in 22.13 s**.
+  - Full safe suite: **945 passed in 61.10 s** (936 → 945 = +9 env-construction tests, 0 regressions).
+  - `git diff --check` clean.
+- Live service verification (post-restart on `b71598d`):
+  - `ss -tlnp | grep :8010` → `127.0.0.1:8010` (loopback only, unchanged).
+  - `POST /api/engineering/chat/send` with `{"message":"diagnostic-ping-..."}` → **HTTP 200** with `{"ok":true,"status":"accepted","run_id":"378cfba9-6d7a-404d-9b1e-fbadaf1a57f4"}` (was 503 "Gateway chat send unavailable" before).
+  - `GET /api/engineering/chat/history` → **HTTP 200** with `status:"available", has_active_run:true, run_status:"running"` (was `status:"unavailable", reason:"RuntimeError"` before).
+  - `POST` with 4,001-char body → **HTTP 400** (4,000-char bound preserved).
+  - `POST` with non-text body → **HTTP 400** (non-text rejection preserved).
+  - Node subprocess direct verification confirmed the new code path resolves the gateway auth token and the Gateway accepts the chat.send RPC with a real runId. The accepted run is queued in `agent:trading-manager:telegram:direct:8455029949`.
+- Behavior preserved:
+  - Optimistic / accepted-with-runId semantics unchanged.
+  - 4,000-char outbound bound + non-text rejection unchanged.
+  - 15s subprocess timeout + no `timeoutMs` RPC payload rule unchanged (PR #67 contract preserved).
+  - Recommendation logic + chat projection + visibility filter + delivery-mirror / toolUse / toolResult / system-message filter unchanged.
+  - The original behavior (parent-env-only inheritance) remains available via `gateway_token_env=None`.
+- Risks / known follow-ups:
+  - The trading-manager agent is still mid-tool-use on a previous task; the new run `378cfba9-...` is queued behind it and will produce a final visible reply when the agent drains the current toolUse cycle. The 503→200 transition is verified; the visible-reply check is downstream of the agent's processing time.
+  - If a future OpenClaw release moves `/root/.openclaw/openclaw.env`, the dashboard silently falls back to parent-env-only (preserving the original behavior). The configurable `gateway_token_env_file` parameter allows the path to be overridden.
+  - Out of scope (documented): PR3 durable SQLite chat store, PR4 durable + live chat UI, PR5 current-session backfill, CUPS 0.0.0.0:631, Cloudflare real domain/tunnel, Cloudflare-side WAF.
+- Next action: Josh review of branch `fix/dashboard-chat-gateway-token-env` (head `b71598d`, base `6972e1e`). DO NOT merge automatically. DO NOT begin PR3.
