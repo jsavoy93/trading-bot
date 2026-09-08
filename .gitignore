@@ -130,6 +130,12 @@ USER.md
 
 # Local agent iteration state
 .agent-state/
+# Durable engineering dashboard chat history (PR3).
+# Created at runtime by dashboard_api.chat_persistence.ChatPersistenceStore;
+# never tracked. WAL + 0600 enforced at create time; see the module docstring.
+.agent-state/engineering-chat.sqlite3
+.agent-state/engineering-chat.sqlite3-shm
+.agent-state/engineering-chat.sqlite3-wal
 
 # Repository-owned Codex wrapper runtime records and artifacts
 .codex-wrapper-runs/

@@ -8,7 +8,7 @@ import subprocess
 
 from fastapi.testclient import TestClient
 
-from dashboard_api.app import CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, HEALTHZ_ROUTE, SNAPSHOT_ROUTE, create_app, create_default_read_model
+from dashboard_api.app import CHAT_HISTORY_DURABLE_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, HEALTHZ_ROUTE, SNAPSHOT_ROUTE, create_app, create_default_read_model
 from dashboard_api.providers import (
     EngineeringDashboardProviderConfig,
     GitRepositorySummaryReader,
@@ -178,6 +178,7 @@ def test_default_app_uses_real_provider_and_preserves_exact_route_surface() -> N
     assert routes == {
         SNAPSHOT_ROUTE: {"GET"},
         CHAT_HISTORY_ROUTE: {"GET"},
+        CHAT_HISTORY_DURABLE_ROUTE: {"GET"},
         CHAT_SEND_ROUTE: {"POST"},
         DASHBOARD_ROUTE: {"GET"},
         HEALTHZ_ROUTE: {"GET"},
@@ -192,6 +193,7 @@ def test_default_app_uses_real_provider_and_preserves_exact_route_surface() -> N
     for method in (client.post, client.put, client.patch, client.delete):
         assert method(SNAPSHOT_ROUTE).status_code == 405
         assert method(CHAT_HISTORY_ROUTE).status_code == 405
+        assert method(CHAT_HISTORY_DURABLE_ROUTE).status_code == 405
         expected_send_status = 400 if method.__name__ == "post" else 405
         assert method(CHAT_SEND_ROUTE).status_code == expected_send_status
         assert method(DASHBOARD_ROUTE).status_code == 405

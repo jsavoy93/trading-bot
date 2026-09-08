@@ -4880,3 +4880,135 @@ Execution gate:
 
 - Non-executable until Josh approves a narrow implementation plan with
   the allowed areas above.
+
+### DASH-008 — Durable SQLite chat history for the Engineering Dashboard (PR3)
+
+Status: IN REVIEW (branch `agent/dashboard-chat-history-durable-pr3`,
+ready for Josh's review).
+
+Goal: Persist only the already-authorized visible chat messages so
+OpenClaw session rotation / restart no longer makes the old dashboard
+conversation disappear.
+
+Storage:
+
+- Dedicated `.agent-state/engineering-chat.sqlite3` (separate from
+  `trading_bot.db` and any fantasy DB).
+- SQLite WAL, mode 0600 root:root, parent dir 0700, gitignored.
+- Idempotent schema with `PRAGMA user_version` migration gate.
+- Schema columns (PR3 spec):
+  `id`, `project_id`, `agent_id`, `conversation_id`,
+  `openclaw_session_id`, `role` (`CHECK IN ('user','assistant')`),
+  `text`, `created_at`, `source_message_id`, `openclaw_run_id`,
+  `truncated`, `truncation_source`, `dedup_key` (`UNIQUE NOT NULL`),
+  `delivery_status`.
+- Indexes: `(project_id, agent_id, conversation_id, created_at)` and
+  `(created_at, id)` for pagination.
+
+Visibility / security contract:
+
+- Single source of truth = `dashboard_api.chat_gateway.project_message`.
+- Persist only `user` and `assistant` with `stopReason=="stop"` AND
+  `model!="delivery-mirror"`.
+- No second filter is introduced in the persistence layer.
+- Assistant identity metadata (`__openclaw.id`, `responseId`,
+  raw `timestamp`) is plumbed through ChatMessage as internal-only
+  fields (excluded from `to_dict()`) so the public API surface is
+  unchanged.
+
+Identifier semantics (locked with Josh 2026-09-08):
+
+- `conversation_id` = stable logical conversation =
+  `agent:trading-manager:telegram:direct:8455029949` (does NOT
+  rotate across OpenClaw trajectory rotation).
+- `openclaw_session_id` = rotating trajectory UUID.
+- Session rotation preserves all prior rows under the same
+  `conversation_id`; new rows are appended with the new
+  `openclaw_session_id`. No reorder / delete.
+
+Dedup strategy (deterministic synthesis, locked 2026-09-08):
+
+- Assistant dedup_key priority order:
+  1. `mid:{__openclaw.id}|sid:{session_id}`
+  2. `rid:{responseId}|sid:{session_id}`
+  3. `ts:{epoch_ms}|sid:{session_id}|sha:{text_hash[:16]}`
+- User dedup_key priority order:
+  1. `run:{run_id}` (chat.send accept)
+  2. `ts:{iso_second_bucket}|sid:{session_id}|sha:{text_hash[:16]}`
+  3. `local:{uuid4}` (server-generated backstop, never reused)
+- `UNIQUE(dedup_key)` + `INSERT OR IGNORE`.
+- 15-second polling, page refresh, OpenClaw restart, and reconciliation
+  are all safe.
+
+Send-failure contract:
+
+- `chat.send` accept → 1 user row, `delivery_status="accepted"`.
+- `chat.send` reject (pre-RPC) → NOT persisted.
+- `chat.send` failure (transport / RPC) → NOT persisted.
+- No "failed" or "rejected" durable rows in PR3.
+
+API (PR3 does NOT switch the browser UI; that is PR4):
+
+- `GET /api/engineering/chat/history/durable`:
+  - `limit` (default 50, hard ceiling 200)
+  - `before_id` (cursor; pagination older than that id)
+  - Ordering: oldest → newest
+  - Project / agent scoped; the browser never picks the
+    conversation_id; the lazy resolver in
+    `dashboard_api.app._LazyConversationDurableProvider` resolves it
+    from the live Gateway session.
+  - Response shape:
+    `{ "session": {...}, "messages": [ChatMessage, ...], "before_id": int|null, "limit": int }`
+- `DASHBOARD_CHAT_PERSISTENCE_ENABLED` env var (default `1`) is the
+  kill switch for the write side; the read endpoint stays available.
+
+Tests:
+
+- 34 new tests pass; full safe suite passes (979 total).
+- The 5 corrected dedup cases Josh specified are all green:
+  1. same source message reconciled 100× → 1 row
+  2. same source message reconciled after restart → 1 row
+  3. identical text from different run_ids → 2 rows
+  4. identical text from different openclaw_session_ids → 2 rows
+  5. session rotation preserves old rows and appends new rows
+- Round-trip: `truncated` + `truncation_source` preserved.
+- Pagination: `before_id` returns strictly older rows.
+- send-rejected / send-failed are NOT persisted.
+
+Files added / changed:
+
+- `dashboard_api/chat_persistence.py` (NEW — storage)
+- `dashboard_api/chat_history_durable.py` (NEW — read API)
+- `dashboard_api/chat_persistence_integration.py` (NEW — wiring)
+- `dashboard_api/chat_gateway.py` (rename `_project_message` →
+  `project_message`; add optional identity metadata fields to
+  `ChatMessage`; add `_nested_get` helper)
+- `dashboard_api/app.py` (inject persistence + new GET endpoint)
+- `tests/test_chat_persistence.py` (NEW)
+- `tests/test_chat_history_durable.py` (NEW)
+- `tests/test_dashboard_api_app.py` (route-set + new route constant)
+- `tests/test_dashboard_api_provider.py` (route-set + new route constant)
+- `tests/test_dashboard_api_app.py::test_chat_copy_*` (rename import)
+- `.gitignore` (explicit ignore of `engineering-chat.sqlite3*`)
+
+Out of scope (explicit, locked 2026-09-08):
+
+- PR4 — UI switch (browser reads `/api/engineering/chat/history/durable`).
+- PR5 — backfill of historic conversations.
+- Cloudflare Tunnel / Access changes.
+- Raw trajectory / reset file parsing.
+- Live brokerage / OpenClaw gateway config.
+
+Acceptance evidence:
+
+- All 13 PR3 acceptance criteria PASS (storage, projection-reuse,
+  persistence semantics, dedup, API, tests).
+- No regression in any prior test (979/979 safe suite pass).
+- Repo working tree changes limited to the file list above
+  (plus gitignored `.agent-state/engineering-chat.sqlite3*` at runtime).
+
+Execution gate:
+
+- Non-executable until Josh explicitly approves the implementation
+  for merge. PR3 stops here for review per Josh's instruction
+  ("STOP when PR3 is ready for review").

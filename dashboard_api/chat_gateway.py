@@ -119,6 +119,17 @@ class ChatMessage:
     # Exposed as a separate field so the UI can distinguish "we hit our
     # internal ceiling" from "OpenClaw already cut this upstream".
     truncation_source: str | None = None
+    # Identity metadata (PR3 durable store). Internal-only; intentionally
+    # excluded from to_dict() so the public /api/engineering/chat/history
+    # payload is unchanged. Populated by `_project_message` from the raw
+    # Gateway payload so the durable store can synthesize a stable
+    # dedup_key (priority 1: source_message_id; priority 2: response_id;
+    # fallback uses raw_timestamp_ms + session_id + text_hash). When
+    # `_project_message` returns None (filtered row), these fields are
+    # always None as well.
+    source_message_id: str | None = None
+    response_id: str | None = None
+    raw_timestamp_ms: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -539,7 +550,7 @@ def _project_gateway_history(payload: Mapping[str, Any]) -> ChatHistory:
         raise RuntimeError("missing resolved trading-manager session")
 
     raw_messages = history.get("messages") if isinstance(history.get("messages"), Sequence) else ()
-    messages = tuple(_dedupe_messages(_project_message(message) for message in raw_messages))[-CHAT_HISTORY_LIMIT:]
+    messages = tuple(_dedupe_messages(project_message(message) for message in raw_messages))[-CHAT_HISTORY_LIMIT:]
     session_info = history.get("sessionInfo") if isinstance(history.get("sessionInfo"), Mapping) else {}
     # Authoritative in-flight indicator from the Gateway's chatAbortControllers
     # registry. `in_flight_run` and the streamed text under it are intentionally
@@ -557,7 +568,12 @@ def _project_gateway_history(payload: Mapping[str, Any]) -> ChatHistory:
     )
 
 
-def _project_message(value: Any) -> ChatMessage | None:
+# Public projection function: single source of truth for which raw OpenClaw
+# Gateway chat.history messages become durable visible rows. The durable
+# chat-history store (PR3, dashboard_api.chat_persistence) and the live
+# /api/engineering/chat/history endpoint BOTH route through this function
+# so the visibility contract cannot drift between the two surfaces.
+def project_message(value: Any) -> ChatMessage | None:
     if not isinstance(value, Mapping):
         return None
     if _is_delivery_mirror_message(value):
@@ -590,6 +606,12 @@ def _project_message(value: Any) -> ChatMessage | None:
     # that incidentally contains a similar substring elsewhere is never
     # misclassified as Gateway truncation.
     gateway_truncated, gateway_text = _split_off_openclaw_gateway_marker(text)
+    # Identity metadata (PR3 durable store). Extracted from the raw
+    # payload so the persisting wrapper can synthesize a stable dedup_key.
+    raw_timestamp_value = value.get("timestamp")
+    raw_timestamp_ms = raw_timestamp_value if isinstance(raw_timestamp_value, (int, float)) else None
+    identity_source_message_id = _string_or_none(_nested_get(value, "__openclaw", "id"))
+    identity_response_id = _string_or_none(value.get("responseId")) if isinstance(value, Mapping) else None
     if gateway_truncated:
         # The Gateway already truncated. We do NOT re-bound this text
         # at the dashboard's 64K ceiling (the bound was already applied
@@ -600,9 +622,12 @@ def _project_message(value: Any) -> ChatMessage | None:
         return ChatMessage(
             role=role,
             text=gateway_text,
-            timestamp=_timestamp(value.get("timestamp")),
+            timestamp=_timestamp(raw_timestamp_value),
             truncated=True,
             truncation_source="gateway",
+            source_message_id=identity_source_message_id,
+            response_id=identity_response_id,
+            raw_timestamp_ms=raw_timestamp_ms,
         )
     # No upstream Gateway cut — apply the dashboard's own 64K safety
     # bound. The bound is intentionally large (64K covers the largest
@@ -612,9 +637,12 @@ def _project_message(value: Any) -> ChatMessage | None:
     return ChatMessage(
         role=role,
         text=bounded_text,
-        timestamp=_timestamp(value.get("timestamp")),
+        timestamp=_timestamp(raw_timestamp_value),
         truncated=dashboard_truncated,
         truncation_source="dashboard" if dashboard_truncated else None,
+        source_message_id=identity_source_message_id,
+        response_id=identity_response_id,
+        raw_timestamp_ms=raw_timestamp_ms,
     )
 
 
@@ -744,6 +772,23 @@ def _split_off_openclaw_gateway_marker(text: str) -> tuple[bool, str]:
 
 def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _nested_get(value: object, *keys: str) -> object:
+    """Read a nested key path from a Mapping-like object.
+
+    Returns None if any segment is missing or if the value is not a Mapping.
+    Used to extract ``__openclaw.id`` (and similar) from the raw Gateway
+    payload without unsafe ``getattr`` chains. PR3 identity-metadata plumbing.
+    """
+    current: object = value
+    for key in keys:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+        if current is None:
+            return None
+    return current
 
 
 def _bounded_bool(value: object) -> bool:
