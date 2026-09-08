@@ -2073,3 +2073,80 @@ agent/engplat-002a-project-context-contracts created from current main.
   - If a future OpenClaw release moves `/root/.openclaw/openclaw.env`, the dashboard silently falls back to parent-env-only (preserving the original behavior). The configurable `gateway_token_env_file` parameter allows the path to be overridden.
   - Out of scope (documented): PR3 durable SQLite chat store, PR4 durable + live chat UI, PR5 current-session backfill, CUPS 0.0.0.0:631, Cloudflare real domain/tunnel, Cloudflare-side WAF.
 - Next action: Josh review of branch `fix/dashboard-chat-gateway-token-env` (head `b71598d`, base `6972e1e`). DO NOT merge automatically. DO NOT begin PR3.
+
+
+- UTC date and time: 2026-09-07 23:38:30 UTC
+- Backlog item/objective: Post-merge verification of PR #72 (chat.send 503 fix). Josh merged PR #72 via GitHub UI and asked the manager to confirm the dashboard is healthy on main, loopback-only, and that a real chat.send submission reaches trading-manager.
+- Branch: main (PR #72 merged by Josh at commit `4ca6338`)
+- Status: DONE — post-merge verification PASS.
+- Steps executed:
+  - Confirmed main advanced to `4ca6338` (PR #72 merge commit) via `git pull --ff-only`.
+  - Restarted `dashboard.service` (`systemctl --user restart dashboard.service`); PID 582903.
+  - Verified `ss -tlnp | grep :8010` → `LISTEN 0 2048 127.0.0.1:8010` (loopback only, no 0.0.0.0).
+  - POST `{"message":"DASHBOARD_CHAT_OK"}` to `/api/engineering/chat/send` → **HTTP 200** with body `{"ok":true,"status":"accepted","audit":{"timestamp":"2026-09-07T23:37:50.703743+00:00","actor":"dashboard","source":"dashboard","target":"trading-manager","delivery_status":"accepted","run_id":"0936d64d-b548-4352-87dd-7d19f7dccc94"},"run_id":"0936d64d-b548-4352-87dd-7d19f7dccc94"}`.
+  - Direct Node session inspection confirmed the message reached the trading-manager session `agent:trading-manager:telegram:direct:8455029949` and the agent is actively responding (3 toolResult entries in the raw transcript show the agent ran the dashboard verification tools after receiving the dashboard message context).
+  - `/healthz` 200 (loopback), `/engineering` 200, `/api/engineering/snapshot` 200, `/api/engineering/chat/history` 200 with `status:"available", has_active_run:true, run_status:"running"` (the agent is currently mid-toolUse on Josh's verification request).
+  - 4,001-char POST → 400 (4,000-char bound preserved); non-text POST → 400 (non-text rejection preserved).
+- Live result highlights:
+  - chat.send: HTTP 200, status=accepted, run_id assigned.
+  - chat.history: HTTP 200, status=available, has_active_run=true (the agent is processing).
+  - Loopback safety preserved: 127.0.0.1:8010 only.
+  - All four local endpoints 200 from loopback.
+  - 4,000-char + non-text rejections still 400.
+- Next action: Manager idle. Awaiting Josh's next instruction. PR3 (durable SQLite chat store) NOT begun.
+
+## 2026-09-08 — PR3 Durable SQLite chat history for the Engineering Dashboard
+
+- UTC start: ~12:24 (Josh GO with 4 corrections at 12:23)
+- UTC end: ~12:50 (full suite green; PR3 ready for review)
+- Branch: `agent/dashboard-chat-history-durable-pr3`
+- Backlog item: DASH-008 (new entry appended to AGENT_BACKLOG.md)
+- Status: DONE (implementation + tests green; awaiting Josh review per
+  Josh's "STOP when PR3 is ready for review")
+- Files changed (vs main):
+  - `dashboard_api/chat_persistence.py` (NEW)
+  - `dashboard_api/chat_history_durable.py` (NEW)
+  - `dashboard_api/chat_persistence_integration.py` (NEW)
+  - `dashboard_api/chat_gateway.py` (rename `_project_message` →
+    `project_message`; add internal identity fields to ChatMessage;
+    add `_nested_get` helper)
+  - `dashboard_api/app.py` (new `CHAT_HISTORY_DURABLE_ROUTE`;
+    `_LazyConversationDurableProvider`; `PersistingChatHistoryProvider`
+    injection; env-var kill switch)
+  - `tests/test_chat_persistence.py` (NEW — 26 tests)
+  - `tests/test_chat_history_durable.py` (NEW — 8 tests)
+  - `tests/test_dashboard_api_app.py` (route-set + new route constant
+    + chat_copy import rename)
+  - `tests/test_dashboard_api_provider.py` (route-set + new route)
+  - `.gitignore` (explicit `engineering-chat.sqlite3*` ignore)
+  - `AGENT_BACKLOG.md` (DASH-008 entry appended)
+  - `MENTOR.md` (durable-chat section appended)
+- Tests / backtests:
+  - 34 new tests pass.
+  - Full safe suite: 979/979 pass (was 969 pre-PR3; net +10).
+  - 5 corrected dedup cases (Josh's 12:23 corrections) all green.
+  - send-rejected / send-failed verified NOT persisted.
+- Important decisions:
+  - Used `__openclaw.id` as priority-1 dedup signal (observed unique
+    within 50-msg probe of the live system); `responseId` as
+    priority-2 (also observed unique).
+  - conversation_id = stable OpenClaw session key (does NOT rotate).
+    Verified against a real Gateway probe on 2026-09-08.
+  - Persisting wrapper is pass-through-tolerant so existing tests
+    using dict-returning providers still pass.
+  - ChatMessage gets 3 internal-only identity fields excluded from
+    `to_dict()` so the public /api/engineering/chat/history payload
+    is byte-equivalent to pre-PR3.
+- Remaining risks:
+  - Josh has not yet approved merge. PR3 stops here for review.
+  - Backfill of pre-PR3 conversations is intentionally out of scope
+    (PR5). The durable store starts empty on first run; existing
+    Gateway history is still visible via the live endpoint.
+  - The `chat.history` poll inserts durable rows on every visible
+    assistant message. With the 15-second poll cadence, a busy
+    conversation of 50 messages will trigger 50 inserts per poll but
+    only the FIRST poll inserts (subsequent polls see dedup_key
+    collisions and INSERT OR IGNORE is a no-op). Cheap.
+- Next action: Josh reviews the diff on
+  `agent/dashboard-chat-history-durable-pr3` and either approves
+  merge or requests changes.

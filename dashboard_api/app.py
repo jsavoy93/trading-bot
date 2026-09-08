@@ -8,6 +8,21 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from dashboard_api.chat_gateway import GatewayChatHistoryClient
+from dashboard_api.chat_history_durable import (
+    ChatHistoryDurableProvider,
+    DEFAULT_LIMIT as DURABLE_HISTORY_DEFAULT_LIMIT,
+    MAX_LIMIT as DURABLE_HISTORY_MAX_LIMIT,
+    StoreBackedChatHistoryDurableProvider,
+)
+from dashboard_api.chat_persistence import (
+    DEFAULT_PATH as CHAT_PERSISTENCE_DEFAULT_PATH,
+    ChatPersistenceStore,
+)
+from dashboard_api.chat_persistence_integration import (
+    ChatHistoryProvider as PersistingChatHistoryProviderProtocol,
+    PersistingChatHistoryProvider,
+    build_default_persisting_provider,
+)
 from dashboard_api.engineering_read_model import (
     AgentActivitySummary,
     ApprovalSummary,
@@ -44,10 +59,22 @@ from dashboard_api.providers import (
 
 SNAPSHOT_ROUTE = "/api/engineering/snapshot"
 CHAT_HISTORY_ROUTE = "/api/engineering/chat/history"
+CHAT_HISTORY_DURABLE_ROUTE = "/api/engineering/chat/history/durable"
 CHAT_SEND_ROUTE = "/api/engineering/chat/send"
 DASHBOARD_ROUTE = "/engineering"
 HEALTHZ_ROUTE = "/healthz"
 MAX_RENDERED_MAP_ITEMS = 50
+
+# PR3 chat persistence env var. Defaults to enabled. Set to "0" to bypass
+# the persisting wrapper (live chat still works; nothing is written to the
+# durable store). The durable-history endpoint stays available regardless.
+DASHBOARD_CHAT_PERSISTENCE_ENABLED_ENV = "DASHBOARD_CHAT_PERSISTENCE_ENABLED"
+
+# Project identity used by the PR3 durable chat store. The OpenClaw
+# chat session key (`agent:trading-manager:telegram:direct:8455029949`)
+# is the logical conversation_id and is resolved at runtime from the
+# Gateway session info; it does NOT need to be hard-coded here.
+TRADING_MANAGER_PROJECT_ID = "trading-bot"
 
 
 class SnapshotProvider(Protocol):
@@ -58,6 +85,119 @@ class ChatHistoryProvider(Protocol):
     def history(self) -> object: ...
 
     def send(self, message: object) -> object: ...
+
+
+def _chat_persistence_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return True iff PR3 chat persistence is enabled.
+
+    Reads `DASHBOARD_CHAT_PERSISTENCE_ENABLED` from the supplied env mapping
+    (defaults to the current process env). Defaults to enabled ("1").
+    Recognized true spellings: 1, true, yes, on. Anything else (including
+    empty / unset) is treated as enabled to match the PR3 default; set to
+    "0" / "false" / "off" / "no" to bypass.
+    """
+    raw = (env or __import__("os").environ).get(DASHBOARD_CHAT_PERSISTENCE_ENABLED_ENV, "1")
+    return str(raw).strip().lower() not in ("0", "false", "off", "no")
+
+
+def _parse_positive_int(value: object, *, default: int, maximum: int) -> int:
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(n, maximum))
+
+
+class _LazyConversationDurableProvider:
+    """ChatHistoryDurableProvider that resolves conversation_id on first read.
+
+    The first call to `latest()` triggers a live chat.history RPC via the
+    underlying provider to discover the stable OpenClaw session key, which
+    is then cached for the lifetime of the app. Subsequent calls (and all
+    `older_than` calls) use the cached conversation_id.
+
+    For Trading Manager the resolved key is `agent:trading-manager:telegram:
+    direct:8455029949` which does NOT rotate across OpenClaw trajectory
+    rotation, so the durable store joins both pre- and post-rotation
+    assistant rows under the same logical conversation. See PR3 spec
+    §"Identifier semantics".
+    """
+
+    def __init__(
+        self,
+        store: ChatPersistenceStore,
+        live_provider: PersistingChatHistoryProviderProtocol,
+    ) -> None:
+        self._store = store
+        self._live = live_provider
+        self._cached_conversation_id: str | None = None
+
+    def latest(self, *, limit: int = DURABLE_HISTORY_DEFAULT_LIMIT) -> list:
+        from dashboard_api.chat_gateway import ChatMessage
+        cid = self._resolve()
+        if not cid:
+            return []
+        rows = self._store.list_messages(
+            conversation_id=cid,
+            limit=_parse_positive_int(limit, default=DURABLE_HISTORY_DEFAULT_LIMIT, maximum=DURABLE_HISTORY_MAX_LIMIT),
+        )
+        return [
+            ChatMessage(
+                role=r.role,
+                text=r.text,
+                timestamp=r.timestamp,
+                truncated=r.truncated,
+                truncation_source=r.truncation_source,
+            )
+            for r in rows
+        ]
+
+    def older_than(self, *, before_id: int, limit: int = DURABLE_HISTORY_DEFAULT_LIMIT) -> list:
+        from dashboard_api.chat_gateway import ChatMessage
+        cid = self._resolve()
+        if not cid:
+            return []
+        rows = self._store.list_messages(
+            conversation_id=cid,
+            before_id=int(before_id),
+            limit=_parse_positive_int(limit, default=DURABLE_HISTORY_DEFAULT_LIMIT, maximum=DURABLE_HISTORY_MAX_LIMIT),
+        )
+        return [
+            ChatMessage(
+                role=r.role,
+                text=r.text,
+                timestamp=r.timestamp,
+                truncated=r.truncated,
+                truncation_source=r.truncation_source,
+            )
+            for r in rows
+        ]
+
+    def _resolve(self) -> str | None:
+        if self._cached_conversation_id:
+            return self._cached_conversation_id
+        try:
+            history = self._live.history()
+        except Exception:
+            return None
+        if history.resolved_session_key:
+            self._cached_conversation_id = history.resolved_session_key
+        elif history.agent:
+            self._cached_conversation_id = f"agent:{history.agent}"
+        return self._cached_conversation_id
+
+
+def _build_default_durable_provider(
+    store: ChatPersistenceStore,
+    live_provider: PersistingChatHistoryProviderProtocol,
+) -> ChatHistoryDurableProvider:
+    """Build the default durable-history provider.
+
+    Uses the lazy conversation-id resolver so the durable store joins all
+    rows under the stable OpenClaw session key (not the rotating session
+    UUID).
+    """
+    return _LazyConversationDurableProvider(store, live_provider)
 
 
 def create_default_read_model() -> SnapshotProvider:
@@ -91,10 +231,47 @@ def create_app(
     access_validator: CloudflareAccessValidator | None = None,
     origin_guard: WriteOriginGuard | None = None,
     chat_rate_limiter: InProcessRateLimiter | None = None,
+    chat_persistence_store: ChatPersistenceStore | None = None,
+    chat_history_durable_provider: ChatHistoryDurableProvider | None = None,
+    chat_persistence_enabled: bool | None = None,
 ) -> FastAPI:
     provider = snapshot_provider or create_default_read_model()
-    chat_provider = chat_history_provider or GatewayChatHistoryClient()
     settings = security_settings or SecuritySettings.from_env()
+    # PR3 durable chat history wiring. Persistence is enabled by default;
+    # the env var DASHBOARD_CHAT_PERSISTENCE_ENABLED can disable it (see
+    # _chat_persistence_enabled). The durable-history provider is always
+    # available so the new GET endpoint can be exercised even when the
+    # write side is off.
+    persistence_on = (
+        chat_persistence_enabled
+        if chat_persistence_enabled is not None
+        else _chat_persistence_enabled()
+    )
+    inner_chat_provider = chat_history_provider or GatewayChatHistoryClient()
+    from dashboard_api.chat_gateway import TRADING_MANAGER_AGENT_ID
+    if chat_persistence_store is not None:
+        chat_store = chat_persistence_store
+    elif persistence_on:
+        chat_store = ChatPersistenceStore(
+            path=CHAT_PERSISTENCE_DEFAULT_PATH,
+            project_id=TRADING_MANAGER_PROJECT_ID,
+            agent_id=TRADING_MANAGER_AGENT_ID,
+        )
+    else:
+        chat_store = None
+    if persistence_on and chat_store is not None:
+        chat_provider = PersistingChatHistoryProvider(
+            inner_chat_provider,
+            chat_store,
+        )
+    else:
+        chat_provider = inner_chat_provider
+    durable_provider = chat_history_durable_provider
+    if durable_provider is None and chat_store is not None:
+        durable_provider = _build_default_durable_provider(
+            chat_store,
+            inner_chat_provider,
+        )
     validator = access_validator or CloudflareAccessValidator(
         team_domain=settings.team_domain,
         audience=settings.audience,
@@ -238,6 +415,73 @@ def create_app(
         if hasattr(history, "to_public_dict"):
             return JSONResponse(history.to_public_dict())
         return JSONResponse(history)
+
+    @app.get(CHAT_HISTORY_DURABLE_ROUTE, name="engineering_chat_history_durable")
+    async def engineering_chat_history_durable(
+        request: Request,
+        before_id: int | None = None,
+        limit: int | None = None,
+        _access: JwtValidationResult | Response | None = Depends(enforce_access),
+    ) -> Response:
+        """Return durable chat history (PR3).
+
+        Returns the last ``limit`` visible durable messages ordered
+        oldest → newest. When ``before_id`` is supplied the response is
+        paged to messages strictly older than that id (same ordering).
+        The default ``limit`` is 50; the hard ceiling is 200.
+
+        The browser UI does NOT consume this endpoint yet (PR4). It is
+        exposed here so operators + tests can verify the durable store is
+        populated end-to-end.
+
+        Response shape (matches the live endpoint so PR4 can switch with
+        minimal change):
+            {
+              "session": { "agent": str, "status": "available"|"unavailable" },
+              "messages": [ {role, text, timestamp, truncated, truncation_source}, ... ],
+              "before_id": int | null,
+              "limit": int
+            }
+        """
+        if isinstance(_access, Response):
+            return _access
+        if durable_provider is None:
+            return JSONResponse(
+                {
+                    "session": {"agent": "", "status": "unavailable"},
+                    "messages": [],
+                    "before_id": None,
+                    "limit": DURABLE_HISTORY_DEFAULT_LIMIT,
+                }
+            )
+        bounded_limit = _parse_positive_int(
+            limit,
+            default=DURABLE_HISTORY_DEFAULT_LIMIT,
+            maximum=DURABLE_HISTORY_MAX_LIMIT,
+        )
+        try:
+            if before_id is None or int(before_id) <= 0:
+                messages = durable_provider.latest(limit=bounded_limit)
+                cursor = None
+            else:
+                messages = durable_provider.older_than(
+                    before_id=int(before_id),
+                    limit=bounded_limit,
+                )
+                cursor = int(before_id)
+        except ValueError as exc:
+            return JSONResponse(
+                {"ok": False, "status": "rejected", "error": str(exc)},
+                status_code=400,
+            )
+        return JSONResponse(
+            {
+                "session": {"agent": "", "status": "available"},
+                "messages": [m.to_dict() for m in messages],
+                "before_id": cursor,
+                "limit": bounded_limit,
+            }
+        )
 
     @app.post(CHAT_SEND_ROUTE, name="engineering_chat_send")
     async def engineering_chat_send(

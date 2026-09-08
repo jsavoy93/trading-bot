@@ -1331,3 +1331,91 @@ cannot reach the clipboard.
   test harness) takes precedence over `navigator.clipboard` so the
   clipboard can be stubbed under headless Node. In production the hook
   is undefined and the script falls through to the browser API.
+
+## Durable engineering dashboard chat history (PR3)
+
+The dashboard's live `/api/engineering/chat/history` endpoint reads from
+the OpenClaw Gateway `chat.history` RPC, which is bounded to the current
+trajectory / session. OpenClaw rotates sessions periodically; the prior
+conversation does not disappear from the Gateway but the dashboard's
+"current" session view can. PR3 adds a parallel durable store so the
+historical conversation survives rotation, restart, and reconciliation.
+
+Storage: `.agent-state/engineering-chat.sqlite3` (WAL, mode 0600 root:root,
+gitignored). Schema is in `dashboard_api/chat_persistence.py`. The store is
+authoritative for the durable conversation boundary; the live Gateway
+projection remains the authoritative visibility filter.
+
+Visibility contract (NEVER re-implement here):
+- Persist ONLY `user` rows and `assistant` rows with
+  `stopReason == "stop"` AND `model != "delivery-mirror"`.
+- The single source of truth for the filter is
+  `dashboard_api.chat_gateway.project_message` (formerly the
+  underscore-private `_project_message`; renamed in PR3 so the
+  persistence layer can call it directly without bypassing the
+  abstraction).
+- The persistence layer (`dashboard_api/chat_persistence`) trusts the
+  caller to have already projected; it enforces only the SQLite CHECK
+  constraint on `role IN ('user','assistant')`.
+
+Identifier semantics (locked 2026-09-08):
+- `conversation_id` is the STABLE logical conversation
+  (`agent:trading-manager:telegram:direct:8455029949`); it does NOT
+  rotate across OpenClaw trajectory rotation.
+- `openclaw_session_id` is the ROTATING trajectory UUID.
+- Session rotation therefore APPENDS new rows under the same
+  `conversation_id` with a new `openclaw_session_id`. Prior rows are
+  preserved verbatim; never delete or reorder.
+
+Dedup_key synthesis (deterministic):
+- Assistant priority order: `mid:{__openclaw.id}|sid:{sid}` →
+  `rid:{responseId}|sid:{sid}` → `ts:{ms}|sid:{sid}|sha:{text_hash[:16]}`.
+- User priority order: `run:{run_id}` → `ts:{second_bucket}|sid:{sid}|sha:{text_hash[:16]}` → `local:{uuid4}`.
+- The `__openclaw.id` and `responseId` are passed through to the
+  persistence layer as INTERNAL-ONLY fields on `ChatMessage`
+  (`source_message_id`, `response_id`, `raw_timestamp_ms`). They are
+  intentionally EXCLUDED from `to_dict()` so the public
+  `/api/engineering/chat/history` payload is byte-equivalent to the
+  pre-PR3 surface.
+- `UNIQUE(dedup_key)` + `INSERT OR IGNORE` makes 15-second polling,
+  page refresh, OpenClaw restart, and reconciliation all idempotent.
+
+Send-failure contract (PR3 default, NOT to be loosened without sign-off):
+- `chat.send` accept (run_id present) → persist user row,
+  `delivery_status="accepted"`.
+- `chat.send` reject (pre-RPC) → NOT persisted.
+- `chat.send` failure (transport / RPC) → NOT persisted.
+- There are no `delivery_status="failed"` or `delivery_status="rejected"`
+  rows in PR3 by design. This is the cleanest contract; loosening it
+  requires a separate spec.
+
+API (PR4 will switch the browser; PR3 only adds):
+- `GET /api/engineering/chat/history/durable?limit=&before_id=`
+- Default limit 50; hard ceiling 200.
+- Oldest → newest ordering.
+- Project / agent scoped; the browser never picks the
+  conversation_id; the lazy resolver
+  (`dashboard_api.app._LazyConversationDurableProvider`) discovers the
+  stable OpenClaw session key on the first read and caches it.
+- `DASHBOARD_CHAT_PERSISTENCE_ENABLED` env var (default `1`) is the
+  kill switch for the write side; the read endpoint stays available.
+
+Wiring (`dashboard_api/chat_persistence_integration.py`):
+- `PersistingChatHistoryProvider` wraps the underlying
+  `GatewayChatHistoryClient` (or any `ChatHistoryProvider`-shaped
+  object). It exposes the same interface so app.py uses it
+  transparently.
+- Pass-through tolerance: if the underlying provider returns something
+  other than a `ChatHistory` / `ChatSendResult` (e.g. a plain dict in a
+  test fixture), the wrapper returns it unchanged. The production
+  wiring uses `GatewayChatHistoryClient` which always returns the typed
+  dataclasses.
+- Persistence failures NEVER change the user-visible chat.send /
+  chat.history response (the Gateway run is already accepted;
+  surfacing a local DB failure as a send failure would be a lie).
+
+Out of scope (explicit, locked 2026-09-08):
+- PR4 — UI switch.
+- PR5 — historic backfill.
+- Cloudflare Tunnel / Access changes.
+- Raw trajectory / reset file parsing.
