@@ -84,6 +84,11 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
 
     marker = " [Response truncated]"
     truncated_text = "x" * (CHAT_MESSAGE_MAX_CHARS - len(marker)) + marker
+    # PR4: ChatMessage.to_dict() now also exposes nullable identity
+    # fields. None of the raw rows in this fixture carry `__openclaw`
+    # or `responseId`, so the live projection emits them as None. Only
+    # rows emitted from the durable store carry durable_id /
+    # openclaw_run_id / openclaw_session_id.
     assert payload == {
         "session": {
             "agent": TRADING_MANAGER_AGENT_ID,
@@ -92,13 +97,27 @@ def test_history_projection_returns_only_safe_visible_bounded_fields():
             "run_status": None,
         },
         "messages": [
-            {"role": "user", "text": "hello <script>", "timestamp": "2026-08-17T12:28:31+00:00", "truncated": False, "truncation_source": None},
+            {
+                "role": "user",
+                "text": "hello <script>",
+                "timestamp": "2026-08-17T12:28:31+00:00",
+                "truncated": False,
+                "truncation_source": None,
+                "source_message_id": None,
+                "durable_id": None,
+                "openclaw_run_id": None,
+                "openclaw_session_id": None,
+            },
             {
                 "role": "assistant",
                 "text": truncated_text,
                 "timestamp": "2026-08-17T12:28:32.694000+00:00",
                 "truncated": True,
                 "truncation_source": "dashboard",
+                "source_message_id": None,
+                "durable_id": None,
+                "openclaw_run_id": None,
+                "openclaw_session_id": None,
             },
         ],
     }
@@ -1650,7 +1669,17 @@ def test_history_pr67_timeout_ownership_unchanged():
     d = cm.to_dict()
     assert d["truncated"] is False
     assert d["truncation_source"] is None
-    assert set(d.keys()) == {"role", "text", "timestamp", "truncated", "truncation_source"}
+    # PR4: identity fields are now exposed additively; default to None
+    # when not populated by the projection.
+    assert d["source_message_id"] is None
+    assert d["durable_id"] is None
+    assert d["openclaw_run_id"] is None
+    assert d["openclaw_session_id"] is None
+    assert set(d.keys()) == {
+        "role", "text", "timestamp", "truncated", "truncation_source",
+        "source_message_id", "durable_id", "openclaw_run_id",
+        "openclaw_session_id",
+    }
 
     # Gateway-truncated message keeps both fields populated.
     cm_gw = __import__("dashboard_api.chat_gateway", fromlist=["ChatMessage"]).ChatMessage(

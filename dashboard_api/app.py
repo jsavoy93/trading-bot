@@ -541,7 +541,7 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             ".badge{display:inline-flex;align-items:center;min-height:1.75rem;padding:.2rem .55rem;border-radius:999px;background:#334155;color:#e2e8f0;font-weight:700;font-size:.82rem}.healthy{color:#86efac}.degraded{color:#fbbf24}.error{color:#fca5a5}.warning{border-left:4px solid #f59e0b;padding-left:.75rem}",
             ".tabs{position:sticky;top:0;z-index:2;display:flex;gap:.35rem;overflow-x:auto;padding:.5rem 0;margin:0 0 .5rem;background:#0f172a}.tab-button{appearance:none;border:1px solid #334155;border-radius:999px;background:#1e293b;color:#e2e8f0;padding:.65rem .8rem;min-height:44px;font-weight:700;white-space:nowrap}.tab-button[aria-selected='true']{background:#2563eb;border-color:#60a5fa;color:#fff}.tab-panel[hidden]{display:none}",
             ".list{display:grid;gap:.65rem}.activity-card,.report-card,.event-card,.task-card{border:1px solid #334155;border-radius:12px;padding:.75rem;background:#172033;min-width:0}.kv{display:grid;grid-template-columns:minmax(6rem,.45fr) minmax(0,1fr);gap:.25rem .6rem;margin-top:.5rem}.kv dt{font-weight:700;color:#bfdbfe}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}",
-            ".chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-message-actions{display:flex;justify-content:flex-end;margin-top:.4rem}.chat-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#0f172a;color:#bfdbfe;font-size:.72rem;padding:.25rem .65rem;min-height:28px;line-height:1.1;cursor:pointer;font-weight:600;letter-spacing:.02em}.chat-copy:hover{background:#1e293b;border-color:#60a5fa;color:#e2e8f0}.chat-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-copy[disabled]{opacity:.6;cursor:not-allowed}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-status{display:flex;align-items:center;gap:.5rem;border:1px solid #334155;border-radius:999px;padding:.4rem .75rem;background:#172033;font-size:.85rem;min-height:36px;margin:0 0 .65rem;width:fit-content;max-width:100%}.chat-status .dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;background:#94a3b8;flex:none}.chat-status[data-agent-status='working'] .dot{background:#fbbf24;animation:chat-status-pulse 1.05s ease-in-out infinite}@keyframes chat-status-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}.chat-status[data-agent-status='failed'] .dot{background:#fca5a5}.chat-status[data-agent-status='stale'] .dot{background:#f59e0b}.chat-status[data-agent-status='unavailable'] .dot{background:#94a3b8}.chat-status[data-agent-status='loading'] .dot{background:#94a3b8}.chat-status .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}.chat-status-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0 0 .65rem}.chat-status-row .chat-status{margin:0}.chat-since-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer}.chat-since-copy:hover{background:#334155;border-color:#60a5fa}.chat-since-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-since-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-since-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-since-copy[disabled]{opacity:.55;cursor:not-allowed}.chat-since-copy[hidden]{display:none}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}.chat-truncated{display:inline-block;margin-top:.4rem;padding:.15rem .55rem;border:1px solid #f59e0b;border-radius:999px;background:#292524;color:#fde68a;font-size:.72rem;font-weight:600;letter-spacing:.02em}.chat-message-truncated{box-shadow:inset 3px 0 0 #f59e0b}",
+            ".chat-history-shell{display:flex;flex-direction:column;gap:.5rem;margin:0}.chat-load-older{appearance:none;border:1px solid #475569;border-radius:10px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer;width:fit-content}.chat-load-older:hover{background:#334155;border-color:#60a5fa}.chat-load-older:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-load-older[disabled]{opacity:.55;cursor:not-allowed}.chat-load-older[hidden]{display:none}.chat-load-older[data-loading='true']::after{content:' \u2026'}.chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-message-actions{display:flex;justify-content:flex-end;margin-top:.4rem}.chat-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#0f172a;color:#bfdbfe;font-size:.72rem;padding:.25rem .65rem;min-height:28px;line-height:1.1;cursor:pointer;font-weight:600;letter-spacing:.02em}.chat-copy:hover{background:#1e293b;border-color:#60a5fa;color:#e2e8f0}.chat-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-copy[disabled]{opacity:.6;cursor:not-allowed}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-status{display:flex;align-items:center;gap:.5rem;border:1px solid #334155;border-radius:999px;padding:.4rem .75rem;background:#172033;font-size:.85rem;min-height:36px;margin:0 0 .65rem;width:fit-content;max-width:100%}.chat-status .dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;background:#94a3b8;flex:none}.chat-status[data-agent-status='working'] .dot{background:#fbbf24;animation:chat-status-pulse 1.05s ease-in-out infinite}@keyframes chat-status-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}.chat-status[data-agent-status='failed'] .dot{background:#fca5a5}.chat-status[data-agent-status='stale'] .dot{background:#f59e0b}.chat-status[data-agent-status='unavailable'] .dot{background:#94a3b8}.chat-status[data-agent-status='loading'] .dot{background:#94a3b8}.chat-status .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}.chat-status-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0 0 .65rem}.chat-status-row .chat-status{margin:0}.chat-since-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer}.chat-since-copy:hover{background:#334155;border-color:#60a5fa}.chat-since-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-since-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-since-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-since-copy[disabled]{opacity:.55;cursor:not-allowed}.chat-since-copy[hidden]{display:none}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}.chat-truncated{display:inline-block;margin-top:.4rem;padding:.15rem .55rem;border:1px solid #f59e0b;border-radius:999px;background:#292524;color:#fde68a;font-size:.72rem;font-weight:600;letter-spacing:.02em}.chat-message-truncated{box-shadow:inset 3px 0 0 #f59e0b}",
             "#update-warning{display:none;border-left:4px solid #f59e0b;padding:.75rem;margin:.75rem 0;background:#292524;color:#fde68a;border-radius:10px}",
             "dl{margin:.5rem 0 0}dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0;overflow-wrap:anywhere}code{color:#bae6fd;white-space:normal;overflow-wrap:anywhere}ul{padding-left:1.1rem;margin:.5rem 0}li{margin:.3rem 0}",
             "@media(max-width:700px){.shell{padding:.75rem}.overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.grid{grid-template-columns:1fr}.dashboard-title{font-size:1.1rem}.card,.mini-card,section{padding:.65rem}.kv{grid-template-columns:1fr}.tabs{margin-left:-.75rem;margin-right:-.75rem;padding:.45rem .75rem}.tab-button{font-size:.9rem;padding:.6rem .75rem}}",
@@ -806,8 +806,43 @@ def _refresh_script() -> str:
   const SNAPSHOT_URL = '__SNAPSHOT_ROUTE__';
   const CHAT_HISTORY_URL = '__CHAT_HISTORY_ROUTE__';
   const CHAT_SEND_URL = '__CHAT_SEND_ROUTE__';
+  const CHAT_HISTORY_DURABLE_URL = '__CHAT_HISTORY_DURABLE_ROUTE__';
   const POLL_INTERVAL_MS = 15000;
   const CHAT_POLL_INTERVAL_MS = 15000;
+  const DURABLE_HISTORY_PAGE_SIZE = 50;
+  const DURABLE_OLDER_PAGE_SIZE = 50;
+  // PR4: dedup keys priority order. The browser merge layer uses
+  // ``source_message_id`` for assistant rows (raw `__openclaw.id`),
+  // ``openclaw_run_id`` for user rows from chat.send, and a textual
+  // (role, text, ts_bucket) fallback for user rows that have neither.
+  // Identical text from different runs / sessions / session rotations
+  // MUST remain separate rows; we never dedup on text alone.
+  const localKeyPrefix = 'local:';
+  const fallbackBucketSeconds = 1000;
+  const makeOptimisticKey = () => localKeyPrefix + (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : ('xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; const v = c === 'x' ? r : (r & 0x3) | 0x8; return v.toString(16); })));
+  const fallbackBucket = (timestamp) => {
+    if (typeof timestamp !== 'string' || !timestamp) { return ''; }
+    const ms = Date.parse(timestamp);
+    if (!Number.isFinite(ms)) { return timestamp; }
+    return String(Math.floor(ms / fallbackBucketSeconds));
+  };
+  const messageDedupKey = (message) => {
+    if (!message || typeof message !== 'object') { return ''; }
+    const role = message.role === 'user' ? 'user' : (message.role === 'assistant' ? 'assistant' : 'other');
+    const sid = typeof message.source_message_id === 'string' ? message.source_message_id : '';
+    const rid = typeof message.openclaw_run_id === 'string' ? message.openclaw_run_id : '';
+    if (sid) { return role + '|sid=' + sid; }
+    if (rid) { return role + '|rid=' + rid; }
+    if (typeof message.durable_id === 'number' && message.durable_id > 0) { return role + '|did=' + message.durable_id; }
+    const text = typeof message.text === 'string' ? message.text : '';
+    return role + '|tb=' + fallbackBucket(message.timestamp) + '|sha=' + fallbackTextHash(text);
+  };
+  const fallbackTextHash = (text) => {
+    if (typeof text !== 'string' || !text) { return ''; }
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) { hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0; }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  };
   const TAB_KEY = 'engineeringDashboard.selectedTab';
   const TABS = ['overview', 'activity', 'backlog', 'timeline', 'reports', 'health', 'chat'];
   const content = document.getElementById('dashboard-content');
@@ -847,7 +882,7 @@ def _refresh_script() -> str:
   const reportCard = (report) => detailCard('report-card', esc(report.title), {'Task': report.task_id, 'Outcome': report.outcome || report.kind, 'Generated': report.generated_at, 'Path': report.path});
   const reportsTab = (snapshot) => `<h2>Reports</h2><div class="list">${(snapshot.recent_reports || []).map(reportCard).join('') || '<p class="muted">No recent reports.</p>'}</div>`;
   const healthTab = (snapshot) => `<h2>Health</h2>${healthSection(snapshot.engineering_health)}${warningsSection(snapshot.health_warnings)}<div class="grid">${repositorySection(snapshot.repository)}${testSection(snapshot)}${testingSection(snapshot.testing)}${pullRequestSection(snapshot.pull_request)}</div><p class="muted">Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>`;
-  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading trading-manager history…</div><div class="chat-status-row"><div id="chat-status" class="chat-status" data-agent-status="loading" role="status" aria-live="polite" aria-label="Trading manager agent status"><span class="dot" aria-hidden="true"></span><span class="label">Trading manager \u00b7 Loading\u2026</span></div><button id="chat-copy-since" class="chat-since-copy" type="button" data-copy-state="idle" hidden disabled aria-label="Copy every trading-manager response since your last message">Copy since my last message</button></div><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
+  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded. History is loaded from the durable store first; live Gateway polling keeps the run indicator and the newest visible messages current.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading durable trading-manager history…</div><div class="chat-status-row"><div id="chat-status" class="chat-status" data-agent-status="loading" role="status" aria-live="polite" aria-label="Trading manager agent status"><span class="dot" aria-hidden="true"></span><span class="label">Trading manager \u00b7 Loading\u2026</span></div><button id="chat-copy-since" class="chat-since-copy" type="button" data-copy-state="idle" hidden disabled aria-label="Copy every trading-manager response since your last message">Copy since my last message</button></div><div class="chat-history-shell"><button id="chat-load-older" class="chat-load-older" type="button" hidden aria-label="Load older trading-manager messages">Load older</button><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
   const renderSnapshot = (snapshot) => tabNav() + panel('overview', overviewTab(snapshot), true) + panel('activity', activityTab(snapshot), false) + panel('backlog', backlogTab(snapshot), false) + panel('timeline', timelineTab(snapshot), false) + panel('reports', reportsTab(snapshot), false) + panel('health', healthTab(snapshot), false) + panel('chat', chatTab(), false);
   const selectedTab = () => { try { const stored = window.localStorage && window.localStorage.getItem(TAB_KEY); return TABS.includes(stored) ? stored : 'overview'; } catch (error) { return 'overview'; } };
   const switchTab = (tab) => {
@@ -858,9 +893,37 @@ def _refresh_script() -> str:
     if (selected === 'chat') { refreshChatHistory(); }
     bindChatCopyControls();
   };
-  const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); bindChatForm(); };
+  const bindTabs = () => { content.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', (event) => { event.preventDefault(); switchTab(button.dataset.tab); })); switchTab(selectedTab()); bindChatForm(); bindChatCopyControls(); bindChatLoadOlder(); };
   const setWarning = (message) => { warning.textContent = message; warning.style.display = message ? 'block' : 'none'; };
-  const chatStateCache = {historyHtml: '', statusText: 'Loading trading-manager history…', statusDisplay: 'block', statusKind: 'working', draft: '', composeStatus: 'idle', scrollTop: 0, wasNearBottom: true, agentStatus: 'loading', runStatus: null, messages: [], sinceLastUserText: '', copyTimers: {}};
+  const chatStateCache = {
+    historyHtml: '',
+    statusText: 'Loading durable trading-manager history…',
+    statusDisplay: 'block',
+    statusKind: 'working',
+    draft: '',
+    composeStatus: 'idle',
+    scrollTop: 0,
+    wasNearBottom: true,
+    agentStatus: 'loading',
+    runStatus: null,
+    // PR4: three-way source model. messages is the projected view
+    // the existing copy controls consume (kept for backward compat with
+    // PR #64 / PR #65 tests). durableRows / liveRows /
+    // optimisticRows are the new authoritative sources; the merged
+    // view is computed by computeMergedRows() and is what the DOM
+    // renders.
+    messages: [],
+    durableRows: [],
+    liveRows: [],
+    optimisticRows: [],
+    lastDurableId: null,
+    olderAvailable: false,
+    durableFetchInFlight: false,
+    olderFetchInFlight: false,
+    sinceLastUserText: '',
+    copyTimers: {},
+    optimisticKeyToIndex: {},
+  };
   const isNearBottom = (target) => !target || (target.scrollHeight - target.scrollTop <= target.clientHeight + 48);
   const applyComposeState = () => {
     const input = document.getElementById('chat-message');
@@ -917,17 +980,27 @@ def _refresh_script() -> str:
     loading: 'Trading manager · Loading…',
   };
   const TERMINAL_RUN_STATUSES = {failed: true, killed: true, timeout: true};
+  // PR4 (stale terminal-state recovery): when the live chat.history poll
+  // returns a healthy non-terminal state (session available, no active run,
+  // run_status not in {failed, killed, timeout}), the UI MUST clear any
+  // stale Failed pill from a prior terminal run. The earlier rule only
+  // cleared stale failed state when a fresh active run arrived, which
+  // meant a backgrounded / throttled tab could remain stuck on
+  // "Trading manager \u00b7 Failed" indefinitely even though the manager
+  // had been idle and ready for the next dispatch for a long time.
+  //
+  // Rules:
+  //   - has_active_run=true                -> 'working' (active dispatch)
+  //   - run_status in TERMINAL_RUN_STATUSES -> 'failed' (genuine terminal)
+  //   - otherwise (healthy available, no active run, non-terminal run_status)
+  //     -> 'idle'                          (clears stale failed state)
+  //
+  // The genuine terminal state is preserved when run_status is *currently*
+  // {failed, killed, timeout} and there is no active run; only a stale
+  // cached Failed pill from a prior turn is cleared.
   const projectAgentStatus = (hasActiveRun, runStatus) => {
-    // Authoritative rule: a fresh active run MUST clear any stale failed
-    // state from a prior terminal run. This guards against the dashboard
-    // showing "Trading manager \u00b7 Failed" after the manager has already
-    // accepted a new dispatch and is working on it. The chat.history poll
-    // is the only place this rule is invoked; the browser's send-accepted
-    // optimistic flip calls setAgentStatus('working') directly.
-    const terminal = runStatus && TERMINAL_RUN_STATUSES[runStatus];
-    if (terminal && !hasActiveRun) { return 'failed'; }
     if (hasActiveRun) { return 'working'; }
-    if (terminal) { return 'failed'; }
+    if (runStatus && TERMINAL_RUN_STATUSES[runStatus]) { return 'failed'; }
     return 'idle';
   };
   const renderAgentStatus = () => {
@@ -944,25 +1017,27 @@ def _refresh_script() -> str:
     chatStateCache.agentStatus = allowed[next] ? next : 'idle';
     renderAgentStatus();
   };
-  const renderChatHistory = (history) => {
-    const target = document.getElementById('chat-history');
-    if (!target) { return; }
-    // Any pending per-button copy-reset timers point at DOM nodes that are
-    // about to be replaced; clear them so stale timers never mutate
-    // detached elements after the new history renders.
-    if (chatStateCache.copyTimers) {
-      Object.keys(chatStateCache.copyTimers).forEach((key) => { clearTimeout(chatStateCache.copyTimers[key]); });
-      chatStateCache.copyTimers = {};
-    }
+  // PR4: three-source merged rendering. The legacy `renderChatHistory`
+  // is retained as a thin wrapper for backward-compat (tests still call
+  // `window.engineeringDashboard.renderChatHistory({session, messages})`).
+  // It now treats the input as a LIVE chat.history payload, updates
+  // `liveRows` + agent indicator, and re-renders the merged view.
+  const safeMessageArray = (input) => Array.isArray(input) ? input.slice() : [];
+  const applyLiveHistory = (history) => {
     const session = history && history.session ? history.session : {status: 'unavailable', agent: 'trading-manager'};
-    const messages = Array.isArray(history && history.messages) ? history.messages : [];
+    const messages = safeMessageArray(history && history.messages);
+    // PR #63 server projection has already removed hidden / tool /
+    // delivery-mirror / system rows. We trust that filter and use the
+    // resulting messages as-is for liveRows. The persistent identity
+    // fields added by PR4 (``source_message_id`` / ``openclaw_run_id``)
+    // are forwarded so the merge layer can dedup against durable rows.
     if (session.status !== 'available') {
-      // Gateway is unavailable (genuine OR temporary poll failure). Per spec:
-      // preserve last-known chat history, surface bounded stale message,
-      // and DO NOT falsely switch Working -> Idle. The agent indicator
-      // cache (`chatStateCache.agentStatus`) is intentionally not touched here.
-      chatStateCache.messages = [];
-      chatStateCache.sinceLastUserText = '';
+      // Poll failure / Gateway unavailable. Preserve last-known durable
+      // AND live state so the user keeps seeing the conversation; only
+      // surface the bounded stale message; do NOT falsely flip
+      // Working -> Idle. We deliberately do NOT clear liveRows here.
+      chatStateCache.messages = computeMergedRows().slice();
+      chatStateCache.sinceLastUserText = computeSinceLastUserText(chatStateCache.messages);
       updateSinceCopyButton();
       setChatState('Chat history unavailable; keeping last known messages.', true);
       return;
@@ -973,23 +1048,43 @@ def _refresh_script() -> str:
     const runStatus = rawRunStatus && allowedRunStatuses[rawRunStatus] ? rawRunStatus : null;
     chatStateCache.runStatus = runStatus;
     setAgentStatus(projectAgentStatus(hasActiveRun, runStatus));
-    if (!messages.length) {
+    chatStateCache.liveRows = messages;
+    chatStateCache.messages = computeMergedRows().slice();
+    chatStateCache.sinceLastUserText = computeSinceLastUserText(chatStateCache.messages);
+    updateSinceCopyButton();
+    renderMergedHistory();
+    setChatState('', false);
+  };
+  // PR4 backward-compat shim. Existing tests still call
+  // `renderChatHistory({session, messages})`; we route it through the
+  // new live-history applier. No PR #63 filter is bypassed: the server
+  // has already projected the payload before this function sees it.
+  const renderChatHistory = (history) => applyLiveHistory(history);
+  const renderMergedHistory = () => {
+    const target = document.getElementById('chat-history');
+    if (!target) { return; }
+    // Clear stale per-button copy-reset timers (their buttons are about
+    // to be replaced).
+    if (chatStateCache.copyTimers) {
+      Object.keys(chatStateCache.copyTimers).forEach((key) => { clearTimeout(chatStateCache.copyTimers[key]); });
+      chatStateCache.copyTimers = {};
+    }
+    const merged = chatStateCache.messages;
+    if (!merged.length) {
       setChatState('No visible trading-manager messages are available yet.', false);
       target.innerHTML = '';
-      chatStateCache.messages = [];
-      chatStateCache.sinceLastUserText = '';
-      updateSinceCopyButton();
+      chatStateCache.historyHtml = '';
       return;
     }
-    const shouldStickToBottom = isNearBottom(target) || chatStateCache.wasNearBottom;
-    setChatState('', false);
-    // Source-of-truth: store the already-projected messages array (PR #63
-    // server projection). Copy controls MUST read from this same array so
-    // hidden progress / toolUse / delivery-mirror rows can never leak into
-    // the clipboard. Plain-text only, no HTML extraction, no DOM scraping.
-    chatStateCache.messages = messages.slice();
-    chatStateCache.sinceLastUserText = computeSinceLastUserText(messages);
-    const html = messages.map((message, index) => {
+    // PR4: stick to bottom only when the user is currently near the
+    // bottom of the (NEW) history element. The earlier sticky
+    // `wasNearBottom` would yank users who scrolled up between renders
+    // (e.g. iPhone Safari bounce-back after a touch scroll). The current
+    // near-bottom check happens AFTER innerHTML is assigned below, so
+    // we capture the pre-render scroll geometry first.
+    const preRenderScrollTop = target ? target.scrollTop : 0;
+    const preRenderScrollHeight = target ? target.scrollHeight : 0;
+    const html = merged.map((message, index) => {
       const role = message && message.role === 'user' ? 'user' : 'assistant';
       const label = role === 'user' ? 'Josh' : 'Trading manager';
       const isTruncated = !!(message && message.truncated === true);
@@ -999,16 +1094,183 @@ def _refresh_script() -> str:
       const actions = role === 'assistant'
         ? `<div class="chat-message-actions"><button type="button" class="chat-copy" data-copy-index="${index}" data-copy-state="idle" aria-label="Copy this trading-manager response">Copy</button></div>`
         : '';
-      return `<article class="chat-message ${role}${isTruncated ? ' chat-message-truncated' : ''}" data-message-index="${index}"><span class="chat-meta">${esc(label)} · ${esc(message && message.timestamp)}</span>${esc(message && message.text)}${truncatedBadge}${actions}</article>`;
+      // PR4: data-source attributes let the tests / DOM inspection
+      // identify which source each row came from. ``optimistic`` rows
+      // get a distinct outline so the user can see which row is their
+      // pending send.
+      const source = typeof message.__source === 'string' ? message.__source : 'durable';
+      const sourceAttr = ` data-source="${esc(source)}"`;
+      const optimisticAttr = source === 'optimistic' ? ' style="outline:1px dashed #60a5fa;outline-offset:-1px"' : '';
+      const liveOnlyAttr = source === 'live-only' ? ' style="outline:1px dotted #94a3b8;outline-offset:-1px"' : '';
+      return `<article class="chat-message ${role}${isTruncated ? ' chat-message-truncated' : ''}" data-message-index="${index}"${sourceAttr}${optimisticAttr}${liveOnlyAttr}><span class="chat-meta">${esc(label)} · ${esc(message && message.timestamp)}</span>${esc(message && message.text)}${truncatedBadge}${actions}</article>`;
     }).join('');
     target.innerHTML = html;
     chatStateCache.historyHtml = html;
-    updateSinceCopyButton();
-    if (shouldStickToBottom) { target.scrollTop = target.scrollHeight; } else { target.scrollTop = chatStateCache.scrollTop || target.scrollTop; }
+    // Use the POST-render scrollHeight (it grew when innerHTML was set)
+    // and the pre-render near-bottom status (whether the user was near
+    // the bottom BEFORE we added new rows). This is iPhone-Safari safe:
+    // the user is only yanked to the new bottom when they were already
+    // near the old bottom. Users who scrolled up stay put.
+    const postRenderScrollHeight = target ? target.scrollHeight : 0;
+    const wasNearBottomBeforeRender = preRenderScrollHeight > 0
+      && (preRenderScrollHeight - preRenderScrollTop <= (target ? target.clientHeight : 0) + 48);
+    if (wasNearBottomBeforeRender) { target.scrollTop = postRenderScrollHeight; }
     chatStateCache.scrollTop = target.scrollTop || 0;
-    chatStateCache.wasNearBottom = isNearBottom(target);
   };
-  // iOS-Safari-safe clipboard fallback. Some browsers (notably Safari on iOS
+  // PR4: deterministic three-source merge. Priority order:
+  //   1. durableRows (oldest -> newest) anchor the visible history.
+  //   2. liveRows that are NOT already in durableRows are appended
+  //      (live-only) so the user sees the newest messages before the
+  //      next durable poll catches up.
+  //   3. optimisticRows that are NOT already in durableRows are
+  //      appended after live-only so the user's pending send is
+  //      always visible at the bottom.
+  // Dedup keys (priority):
+  //   - source_message_id (assistant; raw `__openclaw.id`)
+  //   - openclaw_run_id (user; chat.send accept)
+  //   - durable_id (durable rows)
+  //   - (role, text, ts_bucket) fallback for live user rows that have
+  //     neither source_message_id nor openclaw_run_id.
+  // We NEVER dedup on text alone; identical text from different runs /
+  // sessions / session rotations remains separate rows.
+  const computeMergedRows = () => {
+    const durable = chatStateCache.durableRows || [];
+    const live = chatStateCache.liveRows || [];
+    const optimistic = chatStateCache.optimisticRows || [];
+    const durableKeys = new Set();
+    for (let i = 0; i < durable.length; i += 1) {
+      const k = messageDedupKey(durable[i]);
+      if (k) { durableKeys.add(k); }
+    }
+    const annotated = [];
+    for (let i = 0; i < durable.length; i += 1) {
+      const m = Object.assign({}, durable[i], {__source: 'durable'});
+      annotated.push(m);
+    }
+    // PR4: dedup live rows against each other (and against durable) so
+    // a noisy Gateway projection that emits the same source_message_id
+    // twice does not produce duplicate visible rows. Identical text from
+    // different runs / sessions / session rotations stays separate
+    // because the dedup key is anchored on identity fields, not text.
+    const liveKeys = new Set(durableKeys);
+    for (let i = 0; i < live.length; i += 1) {
+      const k = messageDedupKey(live[i]);
+      if (k && liveKeys.has(k)) { continue; }
+      if (k) { liveKeys.add(k); }
+      annotated.push(Object.assign({}, live[i], {__source: 'live-only'}));
+    }
+    // Optimistic rows also dedup against durable and live (a live poll
+    // may pick up the user's own message before the durable store
+    // catches up; once both share openclaw_run_id, only one row renders).
+    for (let i = 0; i < optimistic.length; i += 1) {
+      const k = messageDedupKey(optimistic[i]);
+      if (k && liveKeys.has(k)) { continue; }
+      if (k) { liveKeys.add(k); }
+      annotated.push(Object.assign({}, optimistic[i], {__source: 'optimistic'}));
+    }
+    return annotated;
+  };
+  // PR4: durable history fetch (initial 50 + Load older pagination).
+  // The "Load older" button is hidden until the FIRST durable fetch
+  // lands and ``olderAvailable`` is determined by the response size:
+  // a full page implies more rows may exist.
+  const refreshDurableHistory = async () => {
+    if (chatStateCache.durableFetchInFlight) { return; }
+    chatStateCache.durableFetchInFlight = true;
+    try {
+      const response = await fetch(CHAT_HISTORY_DURABLE_URL + '?limit=' + DURABLE_HISTORY_PAGE_SIZE, {method: 'GET', headers: {'Accept': 'application/json'}, cache: 'no-store'});
+      if (!response.ok) { throw new Error('durable history request failed: ' + response.status); }
+      const payload = await response.json();
+      const rows = safeMessageArray(payload && payload.messages);
+      chatStateCache.durableRows = rows;
+      chatStateCache.lastDurableId = rows.length ? rows[0].durable_id : null;
+      // PR4: enable "Load older" whenever the initial page returned any
+      // rows. The Gateway handles "no older rows" by returning an empty
+      // list, at which point the button hides itself. This is friendlier
+      // than waiting for a full 50-row page (small histories would
+      // otherwise have no Load older button at all).
+      chatStateCache.olderAvailable = rows.length > 0;
+      chatStateCache.messages = computeMergedRows().slice();
+      chatStateCache.sinceLastUserText = computeSinceLastUserText(chatStateCache.messages);
+      updateSinceCopyButton();
+      renderMergedHistory();
+      updateLoadOlderButton();
+    } catch (error) {
+      // Durable fetch failure: preserve last-known state, surface
+      // bounded stale message. The live polling indicator continues
+      // to function independently.
+      setChatState('Durable chat history unavailable; keeping last known messages.', true);
+    } finally {
+      chatStateCache.durableFetchInFlight = false;
+    }
+  };
+  const loadOlderDurable = async () => {
+    if (chatStateCache.olderFetchInFlight) { return; }
+    if (!chatStateCache.olderAvailable) { return; }
+    if (!chatStateCache.lastDurableId || typeof chatStateCache.lastDurableId !== 'number') { return; }
+    chatStateCache.olderFetchInFlight = true;
+    const button = document.getElementById('chat-load-older');
+    if (button) { button.dataset.loading = 'true'; button.disabled = true; }
+    try {
+      const url = CHAT_HISTORY_DURABLE_URL + '?limit=' + DURABLE_OLDER_PAGE_SIZE + '&before_id=' + encodeURIComponent(String(chatStateCache.lastDurableId));
+      const response = await fetch(url, {method: 'GET', headers: {'Accept': 'application/json'}, cache: 'no-store'});
+      if (!response.ok) { throw new Error('load older failed: ' + response.status); }
+      const payload = await response.json();
+      const olderRows = safeMessageArray(payload && payload.messages);
+      // Preserve current scroll position: capture the FIRST visible
+      // row's offset from the top of the chat-history element so we
+      // can restore it after prepending. This is the iPhone-Safari-
+      // friendly way to keep the user's viewport when loading older.
+      const target = document.getElementById('chat-history');
+      const previousScrollTop = target ? target.scrollTop : 0;
+      const previousScrollHeight = target ? target.scrollHeight : 0;
+      const previousFirstChild = target && target.firstElementChild ? target.firstElementChild : null;
+      const previousFirstOffsetTop = (target && previousFirstChild) ? (previousFirstChild.offsetTop - target.offsetTop) : 0;
+      if (olderRows.length) {
+        chatStateCache.durableRows = olderRows.concat(chatStateCache.durableRows);
+        chatStateCache.lastDurableId = olderRows[0].durable_id;
+        chatStateCache.olderAvailable = olderRows.length >= DURABLE_OLDER_PAGE_SIZE;
+      } else {
+        chatStateCache.olderAvailable = false;
+      }
+      chatStateCache.messages = computeMergedRows().slice();
+      chatStateCache.sinceLastUserText = computeSinceLastUserText(chatStateCache.messages);
+      updateSinceCopyButton();
+      renderMergedHistory();
+      // Restore scroll: the first previously-visible row should now
+      // appear at the same offset within the (taller) scroll area.
+      const newTarget = document.getElementById('chat-history');
+      if (newTarget && previousFirstChild && previousScrollHeight > 0) {
+        const delta = newTarget.scrollHeight - previousScrollHeight;
+        newTarget.scrollTop = Math.max(0, previousScrollTop + delta);
+      }
+      updateLoadOlderButton();
+    } catch (error) {
+      setChatState('Could not load older messages; please try again.', true);
+    } finally {
+      chatStateCache.olderFetchInFlight = false;
+      if (button) { delete button.dataset.loading; button.disabled = false; }
+    }
+  };
+  const updateLoadOlderButton = () => {
+    const button = document.getElementById('chat-load-older');
+    if (!button) { return; }
+    if (chatStateCache.olderAvailable) {
+      button.hidden = false;
+      button.disabled = !!chatStateCache.olderFetchInFlight;
+    } else {
+      button.hidden = true;
+      button.disabled = true;
+    }
+  };
+  const bindChatLoadOlder = () => {
+    const button = document.getElementById('chat-load-older');
+    if (!button || typeof button.addEventListener !== 'function') { return; }
+    if (button.dataset && button.dataset.bound === 'true') { return; }
+    if (button.dataset) { button.dataset.bound = 'true'; }
+    button.addEventListener('click', () => { loadOlderDurable(); });
+  };
+  // iOS-Safari-safe clipboard fallback. Some browsers (notably Safari on iOS  // iOS-Safari-safe clipboard fallback. Some browsers (notably Safari on iOS
   // when the dashboard is opened over plain HTTP, an SSH tunnel, or any other
   // non-secure context) refuse to expose `navigator.clipboard.writeText` at
   // all — the property is undefined and the modern API path fails closed.
@@ -1198,16 +1460,29 @@ def _refresh_script() -> str:
     }
     updateSinceCopyButton();
   };
+  // PR4: refreshChatHistory fetches BOTH live (chat.history) and
+  // durable (chat/history/durable) so the merged view stays current
+  // and live-only rows collapse into durable rows once they are
+  // persisted. The durable fetch is awaited first so the user sees
+  // history immediately on first open; subsequent polls await both
+  // sequentially. A live poll failure preserves last-known state and
+  // does NOT flip the agent indicator.
   const refreshChatHistory = async () => {
+    try {
+      await refreshDurableHistory();
+    } catch (error) {
+      // refreshDurableHistory already surfaces a bounded stale banner;
+      // continue to live so the merged view still updates.
+    }
     try {
       const response = await fetch(CHAT_HISTORY_URL, {method: 'GET', headers: {'Accept': 'application/json'}, cache: 'no-store'});
       if (!response.ok) { throw new Error('chat history request failed: ' + response.status); }
-      renderChatHistory(await response.json());
+      applyLiveHistory(await response.json());
     } catch (error) {
       // Poll failure. Preserve all caches (chat-history HTML, agent indicator,
       // scroll position). The chat-state banner shows the existing bounded stale
       // message; the agent indicator does NOT flip Working -> Idle.
-      renderChatHistory({session: {agent: 'trading-manager', status: 'unavailable'}, messages: []});
+      applyLiveHistory({session: {agent: 'trading-manager', status: 'unavailable'}, messages: []});
     }
   };
   const sendChatMessage = async (message) => {
@@ -1218,6 +1493,34 @@ def _refresh_script() -> str:
     if (trimmed.length > 4000) { setChatState('Message is too long; maximum is 4000 characters.', true); return; }
     setComposeState(original, 'sending');
     setChatState('Sending message to trading-manager…', false);
+    // PR4: optimistic UI row. Added BEFORE the POST so the user sees
+    // their message immediately. The row carries a local-only dedup key;
+    // when the durable store catches up (next poll), the optimistic row
+    // collapses into the durable row via the ``openclaw_run_id`` dedup
+    // signal. Send failure removes the optimistic row and shows the
+    // existing bounded failure banner; the user's draft is restored.
+    const optimisticKey = makeOptimisticKey();
+    const optimisticMessage = {
+      role: 'user',
+      text: trimmed,
+      timestamp: new Date().toISOString(),
+      truncated: false,
+      truncation_source: null,
+      source_message_id: null,
+      durable_id: null,
+      openclaw_run_id: null,
+      openclaw_session_id: null,
+      __optimisticKey: optimisticKey,
+    };
+    chatStateCache.optimisticRows.push(optimisticMessage);
+    chatStateCache.optimisticKeyToIndex[optimisticKey] = chatStateCache.optimisticRows.length - 1;
+    chatStateCache.messages = computeMergedRows().slice();
+    chatStateCache.sinceLastUserText = computeSinceLastUserText(chatStateCache.messages);
+    updateSinceCopyButton();
+    renderMergedHistory();
+    // Scroll to bottom on send so the user sees their optimistic row.
+    const sendTarget = document.getElementById('chat-history');
+    if (sendTarget) { sendTarget.scrollTop = sendTarget.scrollHeight; }
     try {
       const response = await fetch(CHAT_SEND_URL, {method: 'POST', headers: {'Accept': 'application/json', 'Content-Type': 'application/json'}, cache: 'no-store', body: JSON.stringify({message: trimmed})});
       const result = await response.json().catch(() => ({}));
@@ -1228,6 +1531,16 @@ def _refresh_script() -> str:
       // polling MUST take over progress tracking. We do NOT block here on
       // the manager run — long engineering tasks can take minutes to hours.
       const acceptedRunId = result && (result.run_id || (result.audit && result.audit.run_id)) || null;
+      // Tag the optimistic row with the accepted run_id so the next
+      // durable poll can collapse it (the durable row carries the same
+      // openclaw_run_id).
+      if (acceptedRunId) {
+        const idx = chatStateCache.optimisticKeyToIndex[optimisticKey];
+        if (typeof idx === 'number' && idx >= 0 && idx < chatStateCache.optimisticRows.length) {
+          chatStateCache.optimisticRows[idx] = Object.assign({}, chatStateCache.optimisticRows[idx], {openclaw_run_id: acceptedRunId});
+        }
+        optimisticMessage.openclaw_run_id = acceptedRunId;
+      }
       setComposeState('', 'idle');
       setChatState('Message sent. Trading-manager is working; waiting for response…', false);
       // Optimistically flip the indicator to Working so the UI reflects the
@@ -1237,10 +1550,19 @@ def _refresh_script() -> str:
       if (acceptedRunId) { setAgentStatus('working'); }
       await refreshChatHistory();
     } catch (error) {
+      // Send failure: remove the optimistic row, restore the draft,
+      // and show the bounded failure banner. The persistent chat
+      // history is preserved (durable + live).
+      chatStateCache.optimisticRows = chatStateCache.optimisticRows.filter((m) => m && m.__optimisticKey !== optimisticKey);
+      delete chatStateCache.optimisticKeyToIndex[optimisticKey];
+      chatStateCache.messages = computeMergedRows().slice();
+      chatStateCache.sinceLastUserText = computeSinceLastUserText(chatStateCache.messages);
+      updateSinceCopyButton();
+      renderMergedHistory();
       setComposeState(original, 'idle');
       setChatState('Message send failed; existing chat history is preserved.', true);
     }
-  };
+  };;
   const bindChatForm = () => {
     const form = document.getElementById('chat-form');
     const input = document.getElementById('chat-message');
@@ -1291,13 +1613,14 @@ def _refresh_script() -> str:
       if (!response.ok) { throw new Error('snapshot request failed: ' + response.status); }
       const snapshot = await response.json();
       content.innerHTML = renderSnapshot(snapshot);
-      if (activeTab === 'chat') { restoreChatUiState(); }
+        if (activeTab === 'chat') { restoreChatUiState(); }
       switchTab(activeTab);
       bindTabs();
       if (activeTab === 'chat') { restoreChatUiState(); }
       window.scrollTo(previousX, previousY);
       bindChatForm();
       bindChatCopyControls();
+      bindChatLoadOlder();
       setWarning('');
     } catch (error) {
       if (isAbortLikeError(error)) {
@@ -1312,7 +1635,8 @@ def _refresh_script() -> str:
   content.addEventListener('click', (event) => { const button = event.target.closest && event.target.closest('[data-tab]'); if (button && content.contains(button)) { event.preventDefault(); switchTab(button.dataset.tab); } });
   bindTabs();
   bindChatCopyControls();
-  window.engineeringDashboard = {refreshDashboard, renderSnapshot, switchTab, selectedTab, refreshChatHistory, renderChatHistory, sendChatMessage, POLL_INTERVAL_MS, CHAT_POLL_INTERVAL_MS, SNAPSHOT_URL, CHAT_HISTORY_URL, CHAT_SEND_URL};
+  bindChatLoadOlder();
+  window.engineeringDashboard = {refreshDashboard, renderSnapshot, switchTab, selectedTab, refreshChatHistory, renderChatHistory, sendChatMessage, refreshDurableHistory, loadOlderDurable, computeMergedRows, messageDedupKey, CHAT_HISTORY_DURABLE_URL, DURABLE_HISTORY_PAGE_SIZE, DURABLE_OLDER_PAGE_SIZE, POLL_INTERVAL_MS, CHAT_POLL_INTERVAL_MS, SNAPSHOT_URL, CHAT_HISTORY_URL, CHAT_SEND_URL};
   window.setInterval(refreshDashboard, POLL_INTERVAL_MS);
   window.setInterval(refreshChatHistory, CHAT_POLL_INTERVAL_MS);
   // When the page becomes visible again (user returns from another app or
@@ -1329,7 +1653,7 @@ def _refresh_script() -> str:
 })();
 </script>
 '''
-    return script.replace("__SNAPSHOT_ROUTE__", SNAPSHOT_ROUTE).replace("__CHAT_HISTORY_ROUTE__", CHAT_HISTORY_ROUTE).replace("__CHAT_SEND_ROUTE__", CHAT_SEND_ROUTE)
+    return script.replace("__SNAPSHOT_ROUTE__", SNAPSHOT_ROUTE).replace("__CHAT_HISTORY_ROUTE__", CHAT_HISTORY_ROUTE).replace("__CHAT_SEND_ROUTE__", CHAT_SEND_ROUTE).replace("__CHAT_HISTORY_DURABLE_ROUTE__", CHAT_HISTORY_DURABLE_ROUTE)
 
 
 def _engineering_health_section(health: EngineeringHealthSummary | None, warnings: tuple[HealthWarning, ...]) -> str:
