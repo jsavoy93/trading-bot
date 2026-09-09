@@ -5012,3 +5012,164 @@ Execution gate:
 - Non-executable until Josh explicitly approves the implementation
   for merge. PR3 stops here for review per Josh's instruction
   ("STOP when PR3 is ready for review").
+
+### DASH-009 — PR4: Durable + Live Chat UI for the Engineering Dashboard
+
+Status: READY FOR REVIEW (branch `agent/dashboard-chat-durable-ui-pr4`,
+implementation complete, full safe suite 1001/1001, awaiting Josh's
+merge approval).
+
+Goal: Make the durable SQLite chat store the authoritative source of
+historical visible ordering on the Chat tab while live Gateway polling
+keeps providing current run state (Working / Idle / Failed,
+has_active_run, run_status) and reconciliation of the newest visible
+messages. The UI must survive OpenClaw session rotation without losing
+prior conversation.
+
+Scope locked by Josh on 2026-09-08 16:52 UTC. PR5 (backfill) and any
+Cloudflare / Tunnel / Access changes are explicitly out of scope. Raw
+trajectory / reset files are not parsed. Durable storage schema is not
+changed (only additive response fields, see below).
+
+UI behavior on Chat tab open:
+
+1. Fetch `/api/engineering/chat/history/durable?limit=50` first.
+2. Render those rows immediately, oldest → newest.
+3. Start (continue) live Gateway polling on the existing 15-second
+   cadence.
+4. Live polling is authoritative ONLY for:
+   - Working / Idle / Failed (agent indicator)
+   - `has_active_run`
+   - `run_status`
+   - current visible final messages that have not yet reached the
+     durable store.
+5. Durable store is authoritative for historical visible ordering.
+6. Session rotation must NOT remove previously rendered rows.
+
+Live + durable merge rules:
+
+- Durable rows already rendered remain stable across polls.
+- Live visible rows may appear immediately BEFORE the next durable poll
+  catches up. They render with `data-source="live-only"`.
+- When the same message arrives in a later durable poll, the live-only
+  row is collapsed into the durable row (dedup) and the DOM stays put.
+- Dedup keys (priority order, highest first):
+  - Assistant: `source_message_id` (from raw `__openclaw.id`)
+  - User: `openclaw_run_id` (from chat.send accept)
+  - Either: `(role, text, timestamp_bucket)` where
+    `timestamp_bucket = floor(epoch_ms / 1000)`
+- Identical text from different runs / sessions / sessions rotations
+  MUST remain separate rows (no text-only dedup).
+- Live polling must never reorder previously rendered durable history.
+- Hidden / tool / system / delivery-mirror rows must never be exposed.
+
+API response additions (additive, backwards-compatible):
+
+- `ChatMessage.to_dict()` now also exposes (all optional / nullable):
+  - `source_message_id` (assistant messages only; the raw
+    `__openclaw.id`)
+  - `durable_id` (durable messages only; the SQLite row id)
+  - `openclaw_run_id` (user messages; the chat.send run id)
+  - `openclaw_session_id` (durable messages; rotating trajectory UUID)
+- All four fields default to `None` when not applicable. Existing
+  fields (`role`, `text`, `timestamp`, `truncated`, `truncation_source`)
+  are unchanged.
+- `_to_chat_message` in `chat_history_durable.py` populates them from
+  `DurableChatMessage`.
+
+Send UX (preserves existing optimistic behavior, adds collapse):
+
+- Local UI adds the user message row immediately with a local UUID
+  key.
+- POST `/api/engineering/chat/send` runs asynchronously (fire-and-forget
+  in the UI; UI does not block on the manager).
+- Accepted `run_id` is associated with the optimistic row.
+- When the durable store catches up (next poll), the optimistic row +
+  durable row are collapsed to one. The `data-source="optimistic"`
+  marker is removed.
+- Send failure does not silently disappear: existing bounded failure
+  banner + preserved draft + preserved chat history are kept.
+- 4,000-character outbound bound and non-text rejection preserved.
+- The UI MUST NOT block while the manager is processing.
+
+"Load older" control (top of Chat history):
+
+- A "Load older" button is added at the top of `#chat-history`.
+- On click: `GET /api/engineering/chat/history/durable?before_id=<oldest
+  durable id>&limit=50`.
+- Older rows are prepended (NOT appended).
+- Current scroll position is preserved after prepend (no auto-scroll).
+- The control hides (or disables) when no older rows remain (server
+  returns `before_id: null`).
+- No infinite scroll in PR4.
+
+Auto-scroll rules (mobile-first; iPhone Safari):
+
+- If user is already near bottom when a new message arrives → keep
+  following bottom.
+- If user has scrolled up → do NOT yank them back down.
+- Sending a new message MAY scroll to the optimistic user message.
+- "Load older" must preserve viewport (do not auto-scroll to bottom).
+
+Copy controls (preserve PR #64 / #65 / PR3 behavior):
+
+- Per-message Copy on assistant cards.
+- "Copy since my last message" header button.
+- iOS-Safari clipboard fallback path is preserved.
+- Copy operates on the EXACT visible projected text only.
+- Copy source-of-truth is the rendered (merged) message array, never
+  raw Gateway payload.
+
+Acceptance evidence required:
+
+- 18+ new tests in `tests/test_pr4_durable_chat_ui.py` (or appended to
+  `tests/test_dashboard_api_app.py`); covering:
+  1. durable-first load renders before live polling lands
+  2. live-only rows collapse into durable rows on next poll
+  3. live assistant dedup uses `source_message_id`
+  4. live user dedup falls back to `(role, text, ts_bucket)`
+  5. identical text from different runs stays as 2 rows
+  6. session rotation: durable rows preserved, live polling resumes
+  7. "Load older" prepends and preserves scroll position
+  8. "Load older" hides when no older rows remain
+  9. optimistic user row added immediately on send
+  10. optimistic row collapses with durable row on next poll
+  11. send failure preserves draft + history + shows bounded warning
+  12. 4,000-char + non-text rejection preserved
+  13. auto-scroll: near bottom → follow; scrolled up → stay put
+  14. "Load older" preserves viewport
+  15. per-message Copy works on durable rows
+  16. "Copy since my last message" works on merged view
+  17. hidden/tool/system rows never appear in rendered DOM
+  18. all 979 existing tests still pass
+
+Execution gate:
+
+- Non-executable until Josh explicitly approves merge.
+
+PR4 additional correction (Josh 2026-09-09 02:25 UTC):
+
+Stale terminal-state recovery for the agent status pill:
+
+- When `session.status='available'`, `has_active_run=false`, and
+  `run_status` is NOT in `{failed, killed, timeout}`, the UI MUST
+  transition the pill back to Idle even if it was previously Failed.
+- The pre-PR4 logic only cleared stale Failed on a fresh
+  `has_active_run=true` event, which meant a backgrounded / throttled
+  tab could remain stuck on `Trading manager · Failed` indefinitely
+  (the runtime issue observed 2026-09-08 17:59 UTC).
+- Genuine terminal failures (current `run_status` in
+  `{failed, killed, timeout}` with no active run) are STILL surfaced as
+  Failed. Only a STALE cached Failed pill from a prior turn is cleared.
+- The recovery is pill-only; it MUST NOT clear or reorder the visible
+  durable chat history rows.
+
+Regression coverage added (4 new tests in
+`tests/test_pr4_durable_chat_ui.py`):
+
+  19. active run → Failed terminal state surfaces as Failed
+  20. later healthy available poll → transitions Failed back to Idle
+  21. backgrounded tab wake-up poll clears stale Failed
+  22. durable history remains visible throughout status recovery
+
+Test results: 1001/1001 full safe suite pass (979 pre-PR4 + 22 PR4).

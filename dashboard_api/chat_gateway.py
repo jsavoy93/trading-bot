@@ -127,9 +127,18 @@ class ChatMessage:
     # fallback uses raw_timestamp_ms + session_id + text_hash). When
     # `_project_message` returns None (filtered row), these fields are
     # always None as well.
+    #
+    # PR4 NOTE: the four identity fields below are NOW exposed on the
+    # public ``to_dict()`` payload as nullable additive fields so the
+    # browser-side live+durable merge has stable keys to dedup on.
+    # Existing fields (role, text, timestamp, truncated, truncation_source)
+    # are unchanged; clients that ignore unknown fields are unaffected.
     source_message_id: str | None = None
-    response_id: str | None = None
-    raw_timestamp_ms: int | None = None
+    response_id: str | None = None  # internal-only; never serialized
+    raw_timestamp_ms: int | None = None  # internal-only; never serialized
+    durable_id: int | None = None
+    openclaw_run_id: str | None = None
+    openclaw_session_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -138,6 +147,10 @@ class ChatMessage:
             "timestamp": self.timestamp,
             "truncated": bool(self.truncated),
             "truncation_source": self.truncation_source,
+            "source_message_id": self.source_message_id,
+            "durable_id": self.durable_id,
+            "openclaw_run_id": self.openclaw_run_id,
+            "openclaw_session_id": self.openclaw_session_id,
         }
 
 

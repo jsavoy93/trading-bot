@@ -2150,3 +2150,42 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Next action: Josh reviews the diff on
   `agent/dashboard-chat-history-durable-pr3` and either approves
   merge or requests changes.
+
+## 2026-09-09 — PR4 ready for review
+
+- Branch `agent/dashboard-chat-durable-ui-pr4` is now implementation
+  complete with 22 new tests in `tests/test_pr4_durable_chat_ui.py`.
+- Full safe suite: 1001/1001 (979 pre-PR4 + 22 PR4).
+- `git diff --check` clean.
+- PR4 correction (Josh 2026-09-09 02:25 UTC): added stale
+  terminal-state recovery in `projectAgentStatus()`. The pre-PR4
+  logic required a future `has_active_run=true` to clear a stale
+  Failed pill, which left backgrounded / throttled tabs stuck on
+  `Trading manager · Failed` indefinitely (the runtime issue
+  observed 2026-09-08 17:59 UTC). The new logic: any healthy poll
+  (session available, no active run, run_status not in
+  `{failed, killed, timeout}`) transitions the pill back to Idle
+  even without an active run event. Genuine terminal failures
+  (current `run_status` in that set with no active run) still
+  surface as Failed.
+- 4 regression tests added:
+  1. active run → Failed terminal state (preserves genuine failure)
+  2. later healthy available poll → Idle (recovers from stale)
+  3. backgrounded tab wake-up poll clears stale Failed (regression
+     for the 2026-09-08 runtime issue)
+  4. durable history remains visible throughout status recovery
+- Other PR4 fixes that landed:
+  - Auto-scroll no longer yanks users who scrolled up (removed
+    sticky `wasNearBottom`); near-bottom check happens against
+    pre-render geometry, not cached post-render state.
+  - Live rows are now deduped against each other (not just against
+    durable). Noisy Gateway projections with duplicate
+    `source_message_id` no longer render twice.
+  - `refreshChatHistory` always re-fetches both durable and live
+    (previously only on first call). Live-only rows now collapse
+    into durable rows on subsequent polls.
+  - "Load older" button enabled whenever initial page has any rows
+    (was: only when page is full = 50 rows). Friendlier for small
+    histories.
+- STOP. Awaiting Josh's merge approval. Do not auto-merge. Do not
+  begin PR5.

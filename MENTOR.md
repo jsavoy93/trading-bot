@@ -1419,3 +1419,87 @@ Out of scope (explicit, locked 2026-09-08):
 - PR5 — historic backfill.
 - Cloudflare Tunnel / Access changes.
 - Raw trajectory / reset file parsing.
+
+## PR4 — Durable + Live Chat UI for the Engineering Dashboard (DASH-009)
+
+**Branch:** `agent/dashboard-chat-durable-ui-pr4`
+**Status (2026-09-09):** Ready for review. 1001/1001 tests pass.
+**Approval gate:** Josh explicit merge approval (do NOT auto-merge).
+
+What PR4 does:
+
+- On Chat tab open, `GET /api/engineering/chat/history/durable?limit=50`
+  fires FIRST. Rows render immediately, oldest → newest.
+- Live `/api/engineering/chat/history` continues to poll on the existing
+  15-second cadence for `Working / Idle / Failed`, `has_active_run`,
+  `run_status`, and reconciliation of new visible messages.
+- Session rotation does NOT remove previously rendered rows.
+
+Deterministic client merge (in `dashboard_api/app.js`):
+
+  - Three sources: `durableRows`, `liveRows`, `optimisticRows`.
+  - Dedup key priority:
+    1. `source_message_id` (assistant; raw `__openclaw.id`)
+    2. `openclaw_run_id` (user; chat.send accept)
+    3. `durable_id` (durable rows)
+    4. Fallback: `(role, text, ts_bucket)` where
+       `ts_bucket = floor(epoch_ms / 1000)`. Used only when no identity
+       field is available. NEVER dedup on text alone.
+  - Live rows are deduped against each other AND against durable rows
+    (the pre-PR4 logic only deduped live vs durable).
+  - Optimistic rows dedup against durable and live; collapse into the
+    durable row when both share `openclaw_run_id`.
+
+Auto-scroll (iPhone Safari safe):
+
+  - Stick to bottom only when user was near bottom BEFORE the render
+    (gap = `preRenderScrollHeight - preRenderScrollTop <= clientHeight + 48`).
+  - The pre-PR4 sticky `wasNearBottom` was REMOVED because it yanked
+    users who scrolled up between renders (especially noticeable after
+    a touch-scroll bounce).
+  - "Load older" preserves viewport via scrollHeight delta math (see
+    `loadOlderDurable`).
+
+Status pill recovery (PR4 correction, Josh 2026-09-09 02:25 UTC):
+
+  - `projectAgentStatus()` now follows:
+    1. `has_active_run=true` → `working`
+    2. `run_status` ∈ `{failed, killed, timeout}` → `failed` (genuine
+       terminal)
+    3. Otherwise → `idle` (clears stale cached Failed)
+  - The pre-PR4 rule required a future `has_active_run=true` to clear
+    a stale Failed pill. That meant a backgrounded / throttled tab
+    stayed stuck on `Trading manager · Failed` indefinitely after the
+    runtime issue observed 2026-09-08 17:59 UTC.
+  - The pill recovery is pill-only: the durable chat history rows are
+    never cleared or reordered by the status transition.
+
+Other preserved behavior:
+
+  - Per-message Copy + "Copy since my last message" (PR #64 / #65 /
+    PR3 contract preserved).
+  - iOS-Safari clipboard fallback (`fallbackCopyToClipboard`).
+  - Truncation UI (`Response truncated` badge).
+  - 4,000-character outbound bound + non-text rejection in `sendChatMessage`.
+  - Optimistic send row added BEFORE POST; collapsed into durable row on
+    catch-up; removed on failure with bounded failure banner.
+  - `refreshChatHistory` now always re-fetches durable AND live
+    (previously only on first call). This is what enables the
+    live-only → durable collapse on subsequent polls.
+
+Out of scope (still locked):
+
+- PR5 (historic backfill) — not started.
+- Cloudflare Tunnel / Access changes — not started.
+- Raw trajectory / reset file parsing — not started.
+- Auto-merge — requires explicit Josh approval.
+
+Files changed in PR4:
+
+  - `dashboard_api/app.py` — chat JS embedded template rewritten.
+  - `dashboard_api/chat_gateway.py` — identity field exposure on `to_dict`.
+  - `dashboard_api/chat_history_durable.py` — `_to_chat_message`
+    populates identity fields.
+  - `tests/test_dashboard_api_app.py` — pre-PR4 test mock updated for
+    new durable endpoint and new near-bottom scroll behavior.
+  - `tests/test_pr4_durable_chat_ui.py` — NEW 22 tests.

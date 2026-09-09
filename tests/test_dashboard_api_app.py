@@ -858,7 +858,7 @@ def test_chat_history_client_script_polls_bounded_read_endpoint_and_safely_rende
         const script = fs.readFileSync(0, 'utf8');
         let intervals = [];
         let chatState = {{textContent: '', style: {{display: 'block'}}}};
-        let chatHistory = {{innerHTML: '', scrollTop: 0, scrollHeight: 99}};
+        let chatHistory = {{innerHTML: '', scrollTop: 99, scrollHeight: 99, clientHeight: 50}};
         let content = {{innerHTML: 'INITIAL', addEventListener: () => {{}}, contains: () => true, querySelectorAll: () => []}};
         let warning = {{textContent: '', style: {{display: 'none'}}}};
         global.window = {{scrollX: 0, scrollY: 0, setInterval: (fn, ms) => {{ intervals.push([fn, ms]); return intervals.length; }}, scrollTo: () => {{}}}};
@@ -866,6 +866,7 @@ def test_chat_history_client_script_polls_bounded_read_endpoint_and_safely_rende
         global.fetch = async (url, options) => {{
           assert.strictEqual(options.method, 'GET');
           if (url === '/api/engineering/chat/history') {{ return {{ok: true, json: async () => ({chat_payload})}}; }}
+          if (url === '/api/engineering/chat/history/durable') {{ return {{ok: true, json: async () => ({{session: {{agent: 'trading-manager', status: 'available'}}, messages: []}})}}; }}
           if (url === '/api/engineering/snapshot') {{ return {{ok: true, json: async () => ({{}})}}; }}
           throw new Error('unexpected url ' + url);
         }};
@@ -932,12 +933,20 @@ let warning = {textContent: '', style: {display: 'none'}};
 let calls = [];
 global.window = {scrollX: 0, scrollY: 0, setInterval: () => 1, scrollTo: () => {}};
 global.document = {getElementById: (id) => id === 'dashboard-content' ? content : id === 'update-warning' ? warning : id === 'chat-state' ? chatState : id === 'chat-history' ? chatHistory : id === 'chat-message' ? input : id === 'chat-send' ? button : null};
+// PR4: refreshChatHistory now also fetches the durable endpoint on the
+// first call after the Chat tab opens (or after a send). The mock
+// therefore must answer both /api/engineering/chat/history and the
+// durable endpoint with the same chat-history-shaped payload so the
+// merged view contains both messages.
 global.fetch = async (url, options) => {
   calls.push([url, options]);
   if (url === '/api/engineering/chat/send') {
     assert.strictEqual(options.method, 'POST');
     assert.strictEqual(JSON.parse(options.body).message, 'hello dashboard');
     return {ok: true, json: async () => ({ok: true, status: 'sent', run_id: 'run-ui'})};
+  }
+  if (url === '/api/engineering/chat/history/durable?limit=50') {
+    return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available'}, messages: [{role: 'user', text: 'old durable user', timestamp: 't0', durable_id: 1, source_message_id: 'old-user-mid', openclaw_run_id: 'old-run', openclaw_session_id: 'old-sess'}]})};
   }
   if (url === '/api/engineering/chat/history') {
     return {ok: true, json: async () => ({session: {agent: 'trading-manager', status: 'available'}, messages: [{role: 'user', text: 'hello dashboard', timestamp: 't1'}, {role: 'assistant', text: 'response available', timestamp: 't2'}]})};
@@ -954,9 +963,12 @@ eval(script.replace('<script>', '').replace('</script>', ''));
   assert(chatHistory.innerHTML.includes('response available'));
   assert.strictEqual(chatHistory.scrollTop, 77);
   assert.strictEqual(calls[0][0], '/api/engineering/chat/send');
-  assert.strictEqual(calls[1][0], '/api/engineering/chat/history');
+  // PR4 order: durable (one-time initial fetch) precedes live history.
+  assert.strictEqual(calls[1][0], '/api/engineering/chat/history/durable?limit=50');
+  assert.strictEqual(calls[2][0], '/api/engineering/chat/history');
   global.fetch = async (url) => {
     if (url === '/api/engineering/chat/send') { return {ok: true, json: async () => ({ok: true, status: 'sent', run_id: 'run-history-fail'})}; }
+    if (url === '/api/engineering/chat/history/durable?limit=50') { throw new Error('durable history unavailable after send'); }
     if (url === '/api/engineering/chat/history') { throw new Error('history unavailable after send'); }
     throw new Error('unexpected url ' + url);
   };
@@ -965,7 +977,9 @@ eval(script.replace('<script>', '').replace('</script>', ''));
   assert.strictEqual(input.value, '');
   assert.strictEqual(button.disabled, false);
   assert.strictEqual(button.textContent, 'Send');
-  assert(chatState.textContent.includes('unavailable'));
+  // PR4: live history unavailable banner. Durable failure also surfaces
+  // its own banner; either one satisfies "unavailable" in the chat-state.
+  assert(chatState.textContent.toLowerCase().includes('unavailable') || chatState.textContent.toLowerCase().includes('durable'));
   global.fetch = async () => ({ok: false, json: async () => ({ok: false, error: 'bounded fail'})});
   const before = chatHistory.innerHTML;
   input.value = 'will fail';

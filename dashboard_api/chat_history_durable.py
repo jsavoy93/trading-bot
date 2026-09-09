@@ -75,12 +75,25 @@ def _bounded_limit(limit: int) -> int:
 
 
 def _to_chat_message(row: DurableChatMessage) -> ChatMessage:
+    """Convert a DurableChatMessage into a public-facing ChatMessage.
+
+    PR4: also forwards the stable identity fields the browser merge
+    layer keys on (``durable_id``, ``source_message_id``,
+    ``openclaw_run_id``, ``openclaw_session_id``). All four are exposed
+    as nullable fields on the public ``ChatMessage.to_dict()`` payload;
+    ``None`` when not applicable (e.g. user rows from chat.history that
+    do not carry ``source_message_id``).
+    """
     return ChatMessage(
         role=row.role,
         text=row.text,
         timestamp=row.timestamp,
         truncated=row.truncated,
         truncation_source=row.truncation_source,
+        durable_id=row.id,
+        source_message_id=row.source_message_id,
+        openclaw_run_id=row.openclaw_run_id,
+        openclaw_session_id=row.openclaw_session_id,
     )
 
 
