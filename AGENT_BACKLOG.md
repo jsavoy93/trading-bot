@@ -4391,6 +4391,36 @@ Acceptance criteria:
 
 ---
 
+### SCORE-003 — Fix MEDIUM SELL unreachable (pre-existing bug)
+
+Status: TODO (backlog candidate from SCORE-001 review)
+Owner: trading-exec
+Priority: P3
+
+Context: SCORE-001 (PR #76) preserved the existing SELL semantics
+exactly per the user rule "STOP and report before changing
+thresholds". The pre-existing algebraic bug — MEDIUM SELL is
+unreachable because `blended_signed <= -50` already implies
+`blended_signed <= 20` — was intentionally preserved and
+documented in MENTOR.md as a future iteration item.
+
+Acceptance criteria:
+
+- Pick one of two approaches (deliberate threshold change,
+  requires its own review):
+  - (a) Redefine MEDIUM SELL on the 0..100 scale (e.g.,
+    `total_score` in [20, 50]).
+  - (b) Derive a separate `blended_signed` band for MEDIUM
+    (e.g., `-50 < blended_signed <= -25`).
+- All SELL signals reachable (STRONG and MEDIUM both fire on
+  representative inputs).
+- No regression to STRONG SELL detection.
+- Document the new threshold values in MENTOR.md and the
+  audit archive.
+- Add tests for MEDIUM SELL reachability.
+
+---
+
 ## Phase D — Execution Paths
 
 ### EXEC-001 — Repair daily-only analysis
