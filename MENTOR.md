@@ -1596,3 +1596,145 @@ deliberate threshold change that requires a separate review.
   > mild bullish
 - Integration: full `calculate_indicators` → `_score_components` →
   `_clamp_total_score` round-trip
+
+## SCORE-001 — Amend #1, #2, #3 (PR #76 in-place amendment)
+
+**Status:** Follow-up commits on the same branch
+`agent/score-001-normalize-indicator-scores`; PR #76 is updated
+in-place. The three amends close a fail-OPEN NaN path, add
+post-multiplier bound tests, and disclose two collateral behavior
+changes the original PR did not document.
+
+### Amend #1 — fail-closed on invalid / non-finite indicator data
+
+The original SCORE-001 helpers silently substituted `0` for any
+NaN/missing indicator, and `_clamp_total_score(NaN) == 0.0`. This
+opened two real risks:
+
+- A **published 0/100 score** from invalid data (looks like the most
+  extreme bearish possible value, and any dashboard / alert that
+  reads `analysis['total_score']` would surface a misleading
+  signal). This is "fail-OPEN" — invalid data appears as a valid
+  extreme-bearish score.
+- A **false BUY** for partial-NaN inputs. A bullish RSI/SMA/BB with
+  NaN MACD (treated as 0) could sum to 100 (clamped) and trigger
+  BUY. The SELL branch is incidentally safe because `blended_signed
+  <= -50` is not reachable through NaN, but the BUY branch was open.
+
+**Fix:** the helpers now return `None` for invalid input rather than
+silently coercing to a numeric value. The new `_is_finite_number`
+helper centralizes the validation and is the single source of truth
+for "is this a valid real number that can participate in score math?"
+
+- `_score_components(latest, catalyst_score)` returns `None` if ANY
+  required input is non-finite: RSI, SMA fast/slow, MACD_histogram,
+  ATR, BB upper/lower, close, or the catalyst score. ATR is
+  additionally required to be strictly positive (0 ATR makes the
+  MACD ratio undefined).
+- `_clamp_total_score(raw)` returns `None` for NaN, inf, unparseable
+  string, or non-numeric input.
+- `analyze_symbol()` and `analyze_multi_timeframe()` both check the
+  helper return value and abort with `return None` (matching the
+  existing "no data" pattern) so the caller treats the symbol as
+  non-actionable. **No BUY, no SELL, no published 0/100 score.**
+- The volatility-tier multiplier path, the hourly blend, and the
+  insider-trading +10 boost each check the clamp's return for None
+  and abort if it appears.
+
+### Amend #2 — post-multiplier bounds
+
+The original PR documented "components are clamped to ±25" but the
+volatility-tier 1.3x multiplier (applied in `analyze_symbol` AFTER
+the helper) extends the AUTHORITATIVE post-multiplier bound to
+±32.5 for RSI (low-vol) and SMA (high-vol). The final
+`_clamp_total_score` is the 0..100 guard, but the per-component
+contribution bound is wider than the helper output.
+
+**Authoritative documented bounds (POST-multiplier, PRE-final-clamp):**
+
+| Component | Pre-multiplier (helper) | Post-multiplier (`analyze_symbol`) | Worst case |
+|---|---|---|---|
+| RSI | ±25 | ±32.5 (low-vol `atr_pct < 2.0` only) | ±32.5 |
+| SMA | ±25 | ±32.5 (high-vol `atr_pct > 5.0` only) | ±32.5 |
+| MACD | ±25 | ±25 (no multiplier) | ±25 |
+| BB | ±25 | ±25 (no multiplier) | ±25 |
+| Catalyst | 0..+25 | 0..+25 (no multiplier) | 0..+25 |
+
+**Worst-case envelope:**
+
+- Bullish raw signed sum: 32.5 + 32.5 + 25 + 25 + 25 = **+140** →
+  `clamp(50 + 140)` = **100**.
+- Bearish raw signed sum: -32.5 + -32.5 + -25 + -25 + 0 = **-115** →
+  `clamp(50 - 115)` = **0**.
+
+`tests/test_smart_bot_score_normalization.py` adds explicit tests
+that verify the post-multiplier ±32.5 bound for both RSI and SMA,
+the worst-case envelope (sum doesn't exceed +140 / -115), and that
+the final clamp still holds the published total_score in 0..100
+across the full envelope.
+
+### Amend #3 — collateral disclosures
+
+The original PR understated two adjacent behaviors that the review
+surfaced. They are now explicitly documented:
+
+**3A. MTF `buy_criteria[0]['passed']` "Score ≥ 65" behavior changed.**
+
+The pre-SCORE-001 MTF total_score was a signed value (range
+roughly -185..+135) with a "/100" display label. The check
+`bool(total_score >= 65)` was therefore comparing a signed value
+against a 0..100-style threshold, which was internally
+inconsistent. The post-SCORE-001 MTF total_score is genuinely in
+0..100 and the check is now consistent. **Net effect: moderate
+bullish MTF setups (e.g., rsi=40, sma=+2%, half-ATR MACD, near
+lower BB) that previously failed the signed-vs-65 check (signed
+value ~25) now pass the 0..100-vs-65 check (published value
+~65+).** This is a documented collateral behavior change from
+the SCORE-001 scale fix.
+
+**3B. MEDIUM SELL is unreachable both before and after SCORE-001.**
+
+The SELL branch contains two nested checks:
+
+```python
+elif blended_signed <= -50:
+    signal = "SELL"
+    if blended_signed <= 20:
+        signal_strength = "STRONG"
+    else:
+        signal_strength = "MEDIUM"  # unreachable
+```
+
+Algebraically, `blended_signed <= -50` already implies
+`blended_signed <= 20`, so the "MEDIUM SELL" branch is unreachable
+in BOTH the pre- and post-SCORE-001 code. All SELL signals are
+STRONG. This is a pre-existing bug that SCORE-001 deliberately
+preserved (the user spec said "STOP and report before changing
+buy/sell thresholds"). A separate backlog item should be created
+to fix this in a future iteration (e.g., redefining MEDIUM SELL
+on a 0..100 scale, e.g., total_score in [20, 50]).
+
+### Updated test count
+
+`tests/test_smart_bot_score_normalization.py` now contains 86 tests
+(up from 56 in the original PR). New tests cover:
+
+- `_score_components` returns None for NaN RSI / SMA fast / SMA slow /
+  MACD_histogram / ATR (NaN) / ATR (0) / BB upper / BB lower / close
+- `_score_components` returns None for NaN / None / unparseable-string
+  catalyst
+- Partial-NaN (bullish others, NaN MACD) cannot produce a bullish
+  score (the previously documented false-BUY path)
+- `_clamp_total_score` returns None for NaN / inf / None / unparseable
+  string / unparseable object (parametrized)
+- Post-multiplier bound tests: RSI low-vol +32.5; SMA high-vol +32.5;
+  RSI bearish -32.5; SMA bearish -32.5; MACD +25; BB +25; catalyst
+  0..+25
+- Worst-case envelope: bullish sum = +140 → clamped to 100; bearish
+  sum = -115 → clamped to 0; published score always 0..100
+- MTF `Score ≥ 65` collateral disclosure test
+- MEDIUM SELL algebraic-unreachable invariant test
+
+Full safe suite: **1125/1125 pass** (was 1095 pre-amend, +30 new).
+`git diff --check` clean. Brokerage safety gate unchanged. SmartBot
+remains OFF. BOT-002 not enabled.
