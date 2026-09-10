@@ -2591,3 +2591,84 @@ agent/engplat-002a-project-context-contracts created from current main.
   ready for Josh's review.
 - Next action: Stop for Josh's review. Do not merge, do not begin
   SCORE-002 or BOT-002, do not change strategy thresholds.
+
+
+## 2026-09-10 22:15–22:55 UTC — BOT-002 paper-only runner install + smoke
+
+- Task start time: `2026-09-10 22:15 UTC`
+- Task end time: `2026-09-10 22:55 UTC`
+- Elapsed time: Approximately 40 minutes
+- Continuity: Continuous
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: BOT-002 (install and validate the
+  persistent PAPER-ONLY SmartBot runner). Approved by Josh at
+  22:15 UTC with explicit guard-rails: PREFLIGHT inspect first,
+  paper-only fail-closed guard, systemd service, controlled smoke
+  test, STOP and report before enabling for continuous operation.
+- Branch: `main`
+- Commits: `c1cbe63` (this commit), `e47efe5` (SCORE-003 backlog
+  housekeeping), `126d04f` (SCORE-001 merge), `4d7de83` (BOT-001
+  merge).
+- Status: `DONE` (smoke-tested; unit installed but NOT enabled —
+  awaiting Josh's explicit enablement approval).
+- Files changed:
+  - `src/core/smart_bot.py` (+139/-0) — adds
+    `trading_bot_paper_only_guard()` module-level function; adds
+    `_finalize_active_session_on_shutdown(reason)` helper; adds
+    `SystemExit` handler in `run_continuous_loop`.
+  - `main.py` (+30/-1) — installs SIGTERM and SIGINT handlers that
+    translate signals into `sys.exit(0)` for graceful shutdown.
+  - `scripts/run_continuous.py` (+60/-17) — adds
+    `_acquire_single_instance_lock()`; defaults `LOOP_DELAY` to
+    `None` (uses schema-backed value).
+  - `systemd/smartbot-runner.service.template` (+50/-50) — BOT-002
+    updates: ExecStart targets `main.py --continuous`,
+    safety properties comments reflect BOT-002 changes, removed
+    invalid `OnStartupFailure` key (not in this systemd version),
+    moved `RestartPreventExitStatus` to `[Service]` section.
+  - `tests/conftest.py` (+12/-0) — adds `collect_ignore` for the
+    two demo scripts in `tests/` that construct `SmartTradingBot()`
+    at module-import time.
+  - `tests/test_bot002_paper_only_guard.py` (NEW, 19 tests) — paper-
+    only guard tests (17) + graceful-shutdown tests (2).
+  - `reports/2026-09-10_224000_bot002-paper-only-runner-install.md`
+    (NEW) — audit archive for BOT-002.
+  - `ITERATION_PROGRESS_LOG.md` — this continuity entry.
+- Tests/backtests:
+  - `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/test_bot002_paper_only_guard.py -q` →
+    `19 passed, 2 warnings in 6.20s`.
+  - `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/test_bot001_session_counters.py
+    tests/test_bot001_session_lifecycle.py
+    tests/test_bot002_paper_only_guard.py -q` →
+    `41 passed, 18 warnings in 3.85s`.
+  - Full safe suite: `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python
+    -m pytest tests/ -q` →
+    `1144 passed, 26 warnings in 79.29s` (was 1125 pre-BOT-002,
+    +19 new).
+  - `git diff --check HEAD` clean.
+  - `systemd-analyze verify
+    /root/.config/systemd/user/smartbot-runner.service` exits 0
+    (unit is valid).
+  - Brokerage safety gate still reports paper default and live
+    brokerage blocked.
+- Decisions/risks:
+  - **ExecStart targets `main.py --continuous`** (not
+    `scripts/run_continuous.py`) because `main.py` owns the
+    single-instance lock and uses schema-backed `loop_delay_seconds`.
+  - **`trading_bot_paper_only_guard()` rejects ANY ambiguous or
+    live configuration** — only the literal `"1"` is accepted for
+    `TRADING_BOT_PAPER_ONLY`; only the approved paper endpoint is
+    accepted; only `PK`-prefixed API keys are accepted.
+  - **SIGTERM graceful shutdown**: `main.py` installs signal
+    handlers that translate SIGTERM/SIGINT into `sys.exit(0)`;
+    `run_continuous_loop` adds a `SystemExit` handler that calls
+    `_finalize_active_session_on_shutdown(reason)` so the in-progress
+    session row is always closed on graceful shutdown.
+  - **Loop delay = 10s (schema-backed)** — pre-existing DB setting;
+    not changed by BOT-002. The runner correctly uses this value.
+- Manager review decision: `ACCEPT`; smoke-tested and ready for
+  Josh's enablement approval.
+- Next action: **STOP**. Awaiting Josh's review. Do NOT enable the
+  unit for continuous operation. Do NOT start SCORE-002.
