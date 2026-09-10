@@ -2518,3 +2518,76 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Next action: Stop for Josh's review. Do not merge, push main, or
   begin SCORE-002, BOT-002, EXEC tasks, UNIVERSE tasks, CONFIG-002,
   dashboard work, or Cloudflare work.
+
+
+## 2026-09-10 19:03–20:45 UTC — SCORE-001 amend #1, #2, #3 (in-place PR #76)
+
+- Task start time: `2026-09-10 19:03 UTC`
+- Task end time: `2026-09-10 20:45 UTC`
+- Elapsed time: Approximately 1 hour 42 minutes
+- Continuity: Continuous
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: SCORE-001 amend #1 (fail-closed on
+  invalid / non-finite indicator data), amend #2 (post-multiplier
+  bound tests), amend #3 (collateral disclosures: MTF "Score ≥ 65"
+  behavior change, MEDIUM SELL unreachable). Approved by Josh at
+  19:03 UTC with explicit guard-rails: don't merge, don't begin
+  SCORE-002 or BOT-002, don't change strategy thresholds unless
+  explicitly required and approved, update existing PR #76 only.
+- Branch: `agent/score-001-normalize-indicator-scores`
+- Commits: amend #1, #2, #3 follow this entry.
+- Status: `DONE` (PR-ready; awaiting Josh review).
+- Files changed:
+  - `src/core/smart_bot.py` — adds `import math`; adds
+    `_is_finite_number` static method; `_score_components` rewrites
+    with full input validation and returns `None` on invalid input;
+    accepts `catalyst_score` parameter; `_clamp_total_score` returns
+    `None` for NaN/unparseable; `analyze_symbol` and
+    `analyze_multi_timeframe()` both check helper/clamp returns and
+    abort with `return None` on None.
+  - `tests/test_smart_bot_score_normalization.py` — 30 new tests
+    (56 → 86 total); updated 2 existing tests for the new None
+    contract.
+  - `MENTOR.md` — added full SCORE-001 amend #1/#2/#3 section.
+  - `reports/2026-09-10_204500_score-001-amend-1-2-3.md` — audit
+    archive for this amendment.
+  - `ITERATION_PROGRESS_LOG.md` — this continuity entry.
+- Tests/backtests:
+  - `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/test_smart_bot_score_normalization.py -q` →
+    `86 passed, 2 warnings in 2.44s`.
+  - `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/test_smart_bot_indicators.py
+    tests/test_smart_bot_decision_paths.py tests/test_settings_service.py
+    -q` → `52 passed, 2 warnings in 3.71s` (unchanged).
+  - Full safe suite: `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python
+    -m pytest tests/ -q` →
+    `1125 passed, 109 warnings in 120.76s` (was 1095 pre-amend,
+    +30 new).
+  - `git diff --check HEAD` clean.
+  - Brokerage safety gate still reports paper default and live
+    brokerage blocked. SmartBot remains OFF. BOT-002 not enabled.
+- Decisions/risks:
+  - **Fail-closed semantics chosen:** return `None` from helpers
+    rather than raising an exception. This matches the existing
+    `analyze_symbol` pattern of `return None` for "no data" cases
+    and avoids accidental exception swallowing. Callers MUST check
+    for `None`.
+  - **SELL semantics still preserved exactly:** the SELL branch
+    still uses `blended_signed <= -50` (and `<= 20` for STRONG).
+    No threshold value changed. The MEDIUM SELL branch remains
+    unreachable; this is now documented as a pre-existing bug
+    preserved per the user spec and is recommended as a separate
+    backlog item (SCORE-003).
+  - **MTF "Score ≥ 65" behavior change is now explicitly disclosed:**
+    moderate bullish MTF setups now pass where they previously
+    failed (the prior signed-vs-65 check was internally
+    inconsistent with the "/100" label).
+  - **Post-multiplier bound is now documented and tested:** the
+    authoritative per-component bound is ±32.5 for RSI (low-vol)
+    and SMA (high-vol), not ±25 as the original PR claimed. The
+    final `_clamp_total_score` is the 0..100 guard.
+- Manager review decision: `ACCEPT`; PR #76 is updated in-place and
+  ready for Josh's review.
+- Next action: Stop for Josh's review. Do not merge, do not begin
+  SCORE-002 or BOT-002, do not change strategy thresholds.
