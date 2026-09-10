@@ -149,3 +149,4 @@ node_modules/
 
 # Preserved fantasy app split-out/runtime copy must not live in trading-bot
 /draft-center/
+.trading-dashboard.env
