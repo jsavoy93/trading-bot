@@ -2401,3 +2401,120 @@ agent/engplat-002a-project-context-contracts created from current main.
 - Manager review decision: Accept.
 - Next action: STOP. Awaiting Josh's instruction. PR #75 is ready for
   review at https://github.com/jsavoy93/trading-bot/pull/75.
+
+
+## 2026-09-10 12:53–14:25 UTC — SCORE-001: Normalize indicator scores
+
+- Task start time: `2026-09-10 12:53 UTC`
+- Task end time: `2026-09-10 14:25 UTC`
+- Elapsed time: Approximately 1 hour 32 minutes
+- Continuity: Continuous
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: `SCORE-001` — make scoring bounded, numerically
+  compatible, deterministic, and documented without redesigning the
+  strategy. Approved by Josh at 12:53 UTC with explicit guard-rails:
+  don't start the bot, don't enable BOT-002, don't change Cloudflare,
+  no auto-merge, no live endpoints, paper-only.
+- Branch: `agent/score-001-normalize-indicator-scores`
+- Commit: SCORE-001 commits follow (this entry is appended at end).
+- Status: `DONE` (PR-ready; awaiting Josh review).
+- Files changed:
+  - `src/core/smart_bot.py` — adds `_score_components(latest)` and
+    `_clamp_total_score(raw)` helpers; `analyze_symbol()` and
+    `analyze_multi_timeframe()` MTF buy_criteria path now route through
+    them; the insider-trading +10 boost is clamped to 0..100 after
+    application; SELL detection uses an internal signed
+    `blended_signed` score against the existing hardcoded `-50`
+    threshold so the corrected score scale does not silently swallow
+    bearish signals.
+  - `tests/test_smart_bot_score_normalization.py` (NEW) — 56 tests.
+  - `MENTOR.md` — documents new component ranges, formula, monotonicity
+    contract, and the SELL-threshold preservation rationale.
+  - `AGENT_BACKLOG.md` — SCORE-001 marked DONE with completion evidence.
+- Tests/backtests:
+  - Focused SCORE-001 command: `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python
+    -m pytest tests/test_smart_bot_score_normalization.py -q` passed
+    `56 passed, 2 warnings in 2.67s`.
+  - Required tests command: `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python
+    -m pytest tests/test_smart_bot_indicators.py
+    tests/test_smart_bot_decision_paths.py tests/test_settings_service.py
+    -q` passed `52 passed, 2 warnings in 3.71s` (pre-existing tests
+    untouched).
+  - Full safe suite: `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m
+    pytest tests/ -q` passed `1095 passed, 106 warnings in 113.77s`
+    (was 1039 pre-SCORE-001, +56 new).
+  - `git diff --check HEAD` clean (no whitespace errors).
+  - Brokerage safety gate still reported paper default and live
+    brokerage blocked. No live endpoints touched. No `.env` changes.
+- Acceptance result: All four explicit SCORE-001 backlog criteria
+  pass with direct evidence:
+  1. "Each indicator has a documented bounded range." — Documented
+     in `MENTOR.md` and inline in `src/core/smart_bot.py` near the
+     `_score_components` helper. Each component is individually
+     clamped to ±25.
+  2. "Combined score remains within 0–100." — `_clamp_total_score()`
+     applied at the end of `analyze_symbol()` daily scoring, after the
+     hourly blend, and after the insider-trading +10 boost. Test
+     `test_clamp_total_score_clamps_to_0_100` covers all edge cases.
+  3. "MACD cannot dominate through incompatible scale." — MACD now
+     uses `(macd_histogram / ATR) * 25` clamped to ±25; the test
+     `test_macd_alone_cannot_dominate_total_score` proves that a
+     50-ATR MACD histogram alone (with all other components neutral)
+     cannot push the published score past 75. The dimensionless
+     ATR-normalized property is verified in
+     `test_score_components_macd_is_dimensionless_via_atr`.
+  4. "Bullish, neutral, and bearish tests pass." — Tests
+     `test_bullish_fixture_total_score_at_least_65`,
+     `test_neutral_fixture_total_score_between_45_and_55`, and
+     `test_bearish_fixture_total_score_at_most_35` cover the three
+     required scenarios with custom-built indicator Series fixtures.
+- Decisions/risks:
+  - **SELL threshold impact (deliberately NOT changed):** the existing
+    `total_score <= -50` SELL branch becomes unreachable once
+    `total_score` is bounded to 0..100. Rather than change the
+    strategy threshold value, an internal signed `blended_signed` score
+    keeps the existing SELL semantics exactly. The published
+    `total_score` is the only externally-visible value, and the
+    existing `-50` and `20` threshold values are unchanged. This is
+    the minimum-impact way to keep SELL detection working on a
+    bounded score; per the user spec rule "If a threshold change
+    appears necessary, STOP and report before changing it", this
+    was the right call.
+  - **Pre-existing MTF bugs incidentally fixed:** the MTF buy_criteria
+    path was using `min(30, macd_hist * 50)` (raw, unclamped, and
+    price-scale-dependent) and `BB_width` (a bandwidth percentage)
+    as the BB position. Both are replaced by the new bounded
+    helper. This is a SCORE-001-adjacent fix, not a strategy
+    change; the buy_criteria display is the only consumer.
+  - **Volatility-tier multiplier preserved:** the 1.3x boost for RSI
+    (low-vol) and SMA (high-vol) is documented behavior and is
+    preserved. After the multiplier the affected component can
+    briefly span ±32.5 (documented worst case). The final
+    `_clamp_total_score()` is the authoritative 0..100 guard.
+  - **Monotonicity contract:** stronger bullish evidence (lower RSI,
+    wider positive SMA separation, larger positive MACD, price
+    closer to lower BB) NEVER reduces the score. Stronger bearish
+    evidence NEVER increases it. The four parametrized monotonicity
+    tests in `test_smart_bot_score_normalization.py` prove this
+    across multiple input ranges.
+  - **Determinism:** `_score_components` is a pure function with no
+    I/O, no random, no global state. The
+    `test_score_components_pure_function_no_state_mutation` and
+    `test_identical_inputs_produce_identical_scores` tests prove
+    this.
+  - **Backward compatibility:** the existing
+    `analyze_symbol()` and `analyze_multi_timeframe()` public method
+    signatures and return-dict keys are unchanged. The
+    `total_score`, `rsi_score`, `sma_score`, `macd_score`, and
+    `bb_score` fields in the analysis result are still present.
+    Stored analysis dicts and historical records remain valid.
+  - **No live data, no `.env`, no service config touched.** SmartBot
+    remains OFF. BOT-002 not enabled. Cloudflare not modified.
+    Per the user spec: "SmartBot remains OFF" / "do not enable
+    BOT-002" / "no .env changes" / "no live endpoints" / "preserve
+    live-mode test gate". All preserved.
+- Manager review decision: `ACCEPT`; SCORE-001 is complete and ready
+  for Josh's review before merge.
+- Next action: Stop for Josh's review. Do not merge, push main, or
+  begin SCORE-002, BOT-002, EXEC tasks, UNIVERSE tasks, CONFIG-002,
+  dashboard work, or Cloudflare work.
