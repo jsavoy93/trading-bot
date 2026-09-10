@@ -4,6 +4,7 @@ Works around package conflicts by using direct HTTP requests.
 """
 import os
 import time
+import math
 import logging
 import random
 import asyncio
@@ -1682,20 +1683,46 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             filter_results, blocked_by, blocked_count = self._finalize_filter_results(filter_results)
 
             # ── Compute total_score from available indicators (needed for buy_criteria) ──
-            # RSI score: 0-100, 50=neutral; oversold positive, overbought negative
-            rsi_score_daily = 50 + (50 - rsi_daily) * 1.5 if rsi_daily < 50 else 50 - (rsi_daily - 50) * 1.5
-            rsi_score_daily = max(0, min(100, rsi_score_daily))
-            # SMA score: based on trend direction and strength
-            sma_pct_diff = ((sma_fast_daily - sma_slow_daily) / sma_slow_daily) * 100 if sma_slow_daily > 0 else 0
-            _sma_score_daily = min(30, sma_pct_diff * 5) if sma_pct_diff > 0 else max(-30, sma_pct_diff * 5)
-            # MACD score: use MACD histogram if available
-            macd_hist = df_daily['MACD_histogram'].iloc[-1] if 'MACD_histogram' in df_daily.columns else None
-            _macd_score_daily = min(30, float(macd_hist) * 50) if macd_hist is not None and pd.notna(macd_hist) else 0
-            # BB score: how close to lower/upper band
-            bb_position = df_daily['BB_width'].iloc[-1] if 'BB_width' in df_daily.columns else 0.15
-            _bb_score_daily = 25 - abs(bb_position - 0.10) * 100 if pd.notna(bb_position) else 15
-            # Total score: blend of components (centered at 0, positive=bullish, negative=bearish)
-            total_score = rsi_score_daily + _sma_score_daily + _macd_score_daily + _bb_score_daily - 50
+            # SCORE-001: use the same bounded component helper as analyze_symbol()
+            # so the MTF buy_criteria score uses ATR-normalized MACD and a
+            # real (price-derived) BB position instead of the prior raw
+            # ``macd_hist * 50`` and ``BB_width``-as-position bugs.
+            #
+            # SCORE-001 fail-closed (amend #1): if the helper returns None
+            # because the daily bar has non-finite indicator data, the
+            # function aborts with None so the caller treats the symbol as
+            # non-actionable. The persisted total_score / rsi_score_daily
+            # / buy_criteria fields are NOT updated.
+            latest_daily = df_daily.iloc[-1]
+            mtf_components = self._score_components(latest_daily)
+            if mtf_components is None:
+                logging.debug(
+                    f"⏸ {symbol}: SCORE-001 fail-closed; MTF daily bar has "
+                    f"non-finite indicator data, skipping analysis"
+                )
+                return None
+            _rsi_score_daily = mtf_components['rsi_score']
+            _sma_score_daily = mtf_components['sma_score']
+            _macd_score_daily = mtf_components['macd_score']
+            _bb_score_daily = mtf_components['bb_score']
+            rsi_score_daily = self._clamp_total_score(50.0 + _rsi_score_daily)
+            if rsi_score_daily is None:
+                logging.debug(
+                    f"⏸ {symbol}: SCORE-001 fail-closed; MTF rsi_score_daily "
+                    f"clamp received non-finite input, skipping analysis"
+                )
+                return None
+            macd_hist = latest_daily.get('MACD_histogram', None)
+            # Total score: 0..100 bounded, centered at 50.
+            total_score = self._clamp_total_score(
+                50.0 + _rsi_score_daily + _sma_score_daily + _macd_score_daily + _bb_score_daily
+            )
+            if total_score is None:
+                logging.debug(
+                    f"⏸ {symbol}: SCORE-001 fail-closed; MTF total_score "
+                    f"clamp received non-finite input, skipping analysis"
+                )
+                return None
 
             # Build buy_criteria for storage
             buy_criteria = [
@@ -1716,8 +1743,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 },
                 {
                     'name': 'MACD positive',
-                    'passed': bool(macd_hist is not None and macd_hist > 0),
-                    'detail': f'{macd_hist:.3f}' if macd_hist is not None else 'N/A',
+                    'passed': bool(macd_hist is not None and pd.notna(macd_hist) and macd_hist > 0),
+                    'detail': f'{float(macd_hist):.3f}' if macd_hist is not None and pd.notna(macd_hist) else 'N/A',
                 },
             ]
             if volume_ratio is not None:
@@ -1829,6 +1856,196 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         blocked_count = len(blocking_filters)
         blocked_by = blocking_filters[0] if blocking_filters else None
         return filter_results, blocked_by, blocked_count
+
+    # =============================================================================
+    # SCORE-001 — Normalize indicator scores
+    # =============================================================================
+    # Documented component ranges (BEFORE any volatility-tier multiplier and
+    # BEFORE final _clamp_total_score()):
+    #
+    #   RSI:        -25 .. +25   (linear; RSI=0 → +25, RSI=50 → 0, RSI=100 → -25)
+    #   SMA:        -25 .. +25   (5% SMA separation = ±25; >5% saturates)
+    #   MACD:       -25 .. +25   (ATR-normalized: 1 ATR of histogram = ±25)
+    #   BB:         -25 .. +25   (lower band=+25, upper band=-25, midpoint=0)
+    #   Catalyst:    0  .. +25   (additive bonus from gap-up / volume surge)
+    #   Regime:    -20  .. +20   (market regime penalty/bonus, optional)
+    #
+    # After the documented low-volatility RSI multiplier (1.3x) or high-volatility
+    # SMA multiplier (1.3x) the affected component can briefly span ±32.5 in
+    # either direction. That is the documented worst case.
+    #
+    # The final total_score is clamped to 0..100 by _clamp_total_score() as
+    # defense-in-depth so a malformed input, an indicator regression, or a
+    # future strategy tweak can never push a BUY/SELL gate out of its
+    # documented 0..100 range.
+    #
+    # Monotonicity contract: stronger bullish evidence (lower RSI, wider
+    # positive SMA separation, larger positive MACD, price closer to lower
+    # BB) NEVER reduces the score. Stronger bearish evidence NEVER increases
+    # it. The MACD formula is dimensionless (macd_histogram / ATR), so a
+    # high-volatility symbol and a low-volatility symbol receive comparable
+    # MACD contribution and MACD cannot dominate via raw price scale.
+    # =============================================================================
+
+    @staticmethod
+    def _is_finite_number(value: object) -> bool:
+        """Return True iff ``value`` is a finite real number (no NaN, no
+        inf, no unparseable input). Used by the scoring helpers to detect
+        invalid indicator data and fail closed."""
+        if value is None:
+            return False
+        if isinstance(value, bool):  # bool is a subclass of int; reject
+            return False
+        if isinstance(value, float):
+            return math.isfinite(value)
+        if isinstance(value, (int,)):
+            return True
+        if isinstance(value, (str, bytes)):
+            try:
+                f = float(value)
+            except (TypeError, ValueError):
+                return False
+            return math.isfinite(f)
+        # numpy / pandas scalars and pd.NA / NaT
+        try:
+            if pd.isna(value):  # type: ignore[arg-type]
+                return False
+        except (TypeError, ValueError):
+            pass
+        try:
+            f = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(f)
+
+    def _score_components(
+        self,
+        latest: pd.Series,
+        catalyst_score: float = 0.0,
+    ) -> Optional[Dict[str, float]]:
+        """Compute bounded component scores for one bar's indicators.
+
+        Returns a dict with the four documented components plus a
+        diagnostic ``macd_atr_ratio`` and the validated ``catalyst_score``.
+        Each component is individually clamped to its documented range
+        BEFORE any volatility-tier multiplier is applied, so the returned
+        values are always within ``±25`` regardless of input scale. The
+        volatility-tier multiplier in :meth:`analyze_symbol` is applied on
+        top of these and may briefly push RSI / SMA to ±32.5; the final
+        ``_clamp_total_score`` is responsible for keeping the published
+        total in 0..100.
+
+        MACD uses the dimensionless ratio ``macd_histogram / ATR`` so the
+        component cannot dominate via raw price scale (the prior
+        ``(macd_hist / price) * 5000`` scaling was symbol-dependent).
+
+        **Fail-closed:** if any required input (RSI, SMA_fast, SMA_slow,
+        MACD_histogram, ATR, BB_upper, BB_lower, close) is missing,
+        non-finite, or unparseable, or if ``catalyst_score`` is not a
+        finite number, the function returns ``None`` and the caller MUST
+        treat the symbol as non-actionable (skip/HOLD). It does NOT
+        silently substitute a neutral 0, which would let a missing MACD
+        or ATR pass other components' bullish contribution through and
+        produce a false BUY.
+        """
+        # --- Validate every required input up-front (fail closed) -------
+        required = {
+            'RSI': latest.get('RSI') if hasattr(latest, 'get') else None,
+            f'SMA_{self.sma_fast}': latest.get(f'SMA_{self.sma_fast}') if hasattr(latest, 'get') else None,
+            f'SMA_{self.slow_getter()}': latest.get(f'SMA_{self.slow_getter()}') if hasattr(latest, 'get') else None,
+            'MACD_histogram': latest.get('MACD_histogram') if hasattr(latest, 'get') else None,
+            'ATR': latest.get('ATR') if hasattr(latest, 'get') else None,
+            'BB_upper': latest.get('BB_upper') if hasattr(latest, 'get') else None,
+            'BB_lower': latest.get('BB_lower') if hasattr(latest, 'get') else None,
+            'close': latest.get('close') if hasattr(latest, 'get') else None,
+        }
+        for name, value in required.items():
+            if not self._is_finite_number(value):
+                return None
+        if not self._is_finite_number(catalyst_score):
+            return None
+
+        rsi = float(required['RSI'])
+        sma_fast_val = float(required[f'SMA_{self.sma_fast}'])
+        sma_slow_val = float(required[f'SMA_{self.slow_getter()}'])
+        macd_hist = float(required['MACD_histogram'])
+        atr = float(required['ATR'])
+        bb_upper = float(required['BB_upper'])
+        bb_lower = float(required['BB_lower'])
+        price = float(required['close'])
+        catalyst = float(catalyst_score)
+
+        # RSI: monotonic linear. RSI=0 -> +25 (max bullish), RSI=50 -> 0,
+        # RSI=100 -> -25 (max bearish). Always clamped to ±25.
+        rsi_score = max(-25.0, min(25.0, 25.0 - (rsi / 2.0)))
+
+        # SMA: pct separation × 5. 5% separation = ±25 (saturates beyond).
+        sma_score = 0.0
+        if sma_slow_val > 0:
+            sma_pct = ((sma_fast_val - sma_slow_val) / sma_slow_val) * 100.0
+            sma_score = max(-25.0, min(25.0, sma_pct * 5.0))
+
+        # MACD: ATR-normalized. 1 ATR of histogram = ±25. Dimensionless,
+        # so volatility differences across symbols are absorbed by ATR.
+        # Extreme inputs are clamped to ±25 (defense-in-depth). ATR must
+        # be strictly positive; an ATR of 0 (or any value that makes the
+        # MACD ratio non-finite) fails closed.
+        macd_score = 0.0
+        macd_ratio = 0.0
+        if atr > 0:
+            macd_ratio = macd_hist / atr
+            if not self._is_finite_number(macd_ratio):
+                return None
+            macd_score = max(-25.0, min(25.0, macd_ratio * 25.0))
+        else:
+            # ATR is required to be strictly positive for the MACD
+            # ratio to be well-defined. ATR=0 fails closed.
+            return None
+
+        # BB: position-based. lower band -> +25, upper band -> -25.
+        bb_score = 0.0
+        if bb_upper > bb_lower > 0 and price > 0:
+            bb_position = (price - bb_lower) / (bb_upper - bb_lower)
+            bb_score = max(-25.0, min(25.0, 25.0 - (bb_position * 50.0)))
+
+        return {
+            'rsi_score': rsi_score,
+            'sma_score': sma_score,
+            'macd_score': macd_score,
+            'bb_score': bb_score,
+            'catalyst_score': catalyst,
+            # Diagnostic field: the raw dimensionless MACD ratio
+            # (macd_histogram / ATR) is exposed for tests and audit so the
+            # normalization can be inspected without re-deriving it.
+            'macd_atr_ratio': macd_ratio,
+        }
+
+    def slow_getter(self) -> int:
+        """Compatibility shim: returns the configured slow SMA period.
+
+        Used by ``_score_components`` to look up the slow SMA column
+        without baking the format string into the validation block.
+        """
+        return self.sma_slow
+
+    def _clamp_total_score(self, raw_score: object) -> Optional[float]:
+        """Explicit defense-in-depth clamp of total_score to 0..100.
+
+        Each component is individually clamped to its documented range, but
+        the sum (plus volatility-tier multiplier, catalyst bonus, regime
+        adjustment, and hourly blend) can theoretically exceed 0..100.
+        This final clamp guarantees the published total_score contract
+        regardless of intermediate inputs.
+
+        **Fail-closed:** returns ``None`` for NaN, inf, unparseable, or
+        non-numeric input. Callers MUST treat ``None`` as "non-actionable;
+        skip/HOLD" rather than substituting 0 (which would appear as the
+        most extreme bearish score and could in principle corrupt the
+        ``total_score`` history of a symbol with malformed data).
+        """
+        if not self._is_finite_number(raw_score):
+            return None
+        return max(0.0, min(100.0, float(raw_score)))
 
     def check_sp_relative_strength(self, symbol: str, df: pd.DataFrame, lookback_days: int = 20) -> tuple:
         """
@@ -1996,46 +2213,40 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             signal_strength = "WEAK"
             ai_insight = None
 
-            # RSI-based score (contributes to total)
-            rsi_score = 0
-            if rsi < 30:
-                rsi_score = 25 * (1 - rsi / 30)
-            elif rsi < 50:
-                rsi_score = 12.5 * (1 - (rsi - 30) / 20)
-            elif rsi < 70:
-                rsi_score = -12.5 * ((rsi - 50) / 20)
-            else:
-                rsi_score = -25 * min(1, (rsi - 70) / 30)
-
-            # SMA Score: based on how far fast is above/below slow
-            sma_score = 0
-            if sma_fast > sma_slow:
-                sma_pct = ((sma_fast - sma_slow) / sma_slow) * 100
-                sma_score = min(25, sma_pct * 5)  # Max 25 at 5% separation
-            elif sma_fast < sma_slow:
-                sma_pct = ((sma_slow - sma_fast) / sma_slow) * 100
-                sma_score = -min(25, sma_pct * 5)
-            else:
-                sma_score = 0
-
-            # MACD Score: normalize by price so high-priced stocks don't always max out.
-            # A histogram equal to 0.5% of price earns the maximum +25.
-            macd_hist = latest.get('MACD_histogram', 0)
-            if pd.notna(macd_hist) and price > 0:
-                macd_score = max(-25, min(25, (macd_hist / price) * 5000))
-            else:
-                macd_score = 0
-
-            # Bollinger Band Score: based on position within bands
-            bb_score = 0
-            if pd.notna(bb_lower) and pd.notna(bb_middle) and price > 0 and pd.notna(bb_upper):
-                bb_position = (price - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
-                # Lower band = bullish (25), Upper = bearish (-25)
-                bb_score = max(-25, min(25, 25 - (bb_position * 50)))
+            # SCORE-001: compute bounded component scores from the indicators
+            # produced by calculate_indicators(). Each component is individually
+            # clamped to its documented range (±25). The dimensionless MACD
+            # ratio (macd_histogram / ATR) absorbs volatility differences so
+            # MACD cannot dominate via raw price scale.
+            #
+            # SCORE-001 fail-closed (amend #1): catalyst_score is also
+            # validated and routed through the helper. If any required
+            # indicator (RSI, SMA fast/slow, MACD_histogram, ATR, BB
+            # upper/lower, close) or catalyst is non-finite, the helper
+            # returns None and this function aborts with None so the
+            # caller treats the symbol as non-actionable (skip/HOLD).
+            # No BUY, no SELL, and no published 0/100 score is emitted.
+            catalyst_data = self.scan_catalysts(symbol)
+            catalyst_score = catalyst_data.get('catalyst_score', 0)
+            components = self._score_components(latest, catalyst_score=catalyst_score)
+            if components is None:
+                logging.debug(
+                    f"⏸ {symbol}: SCORE-001 fail-closed; invalid indicator or "
+                    f"catalyst data, skipping analysis"
+                )
+                return None
+            rsi_score = components['rsi_score']
+            sma_score = components['sma_score']
+            macd_score = components['macd_score']
+            bb_score = components['bb_score']
+            macd_atr_ratio = components['macd_atr_ratio']
 
             # Get volatility tier and adjust scoring
             # Low volatility = mean-reversion works better
             # High volatility = momentum works better
+            # Note: the 1.3x multiplier can briefly push the affected component
+            # beyond its documented ±25 range (±32.5 worst case). The final
+            # _clamp_total_score() below is the authoritative 0..100 guard.
             atr_pct = latest.get('ATR_pct', 0)
             volatility_tier = 'mid'
             if pd.notna(atr_pct):
@@ -2047,14 +2258,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     volatility_tier = 'high'
                     # Boost momentum signals for high volatility
                     sma_score *= 1.3  # Stronger weight on SMA/momentum for high-vol
-
-            # Catalyst scanner - boost scores for stocks with catalysts
-            catalyst_data = self.scan_catalysts(symbol)
-            catalyst_score = catalyst_data.get('catalyst_score', 0)
-
-            # Total Score (0-100 scale, 50 = neutral) - daily component
-            daily_score = rsi_score + sma_score + macd_score + bb_score + catalyst_score
-            daily_score = daily_score
 
             # Multi-timeframe blending: blend daily (70%) with hourly (30%)
             # Hourly score uses RSI + SMA on 1-hour bars for intraday confirmation
@@ -2086,25 +2289,63 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 except Exception as e:
                     logging.debug(f"Hourly score failed for {symbol}: {e}")
 
-            if hourly_score is not None:
-                total_score = daily_score * (1 - self.hourly_weight) + hourly_score * self.hourly_weight
+            # Total Score (0-100 scale, 50 = neutral) - daily component.
+            # Centered at 50: raw signed sum of components plus 50, then
+            # explicitly clamped to 0..100 via _clamp_total_score().
+            # The raw signed daily score is kept separate so the existing
+            # SELL threshold check (signed ``<= -50``) can still fire on
+            # strong bearish indicators without the clamp hiding it.
+            #
+            # SCORE-001 fail-closed (amend #1): if _clamp_total_score
+            # returns None (NaN/unparseable input slipped through), this
+            # function aborts with None rather than publishing a 0/100
+            # bearish score.
+            daily_raw_signed = rsi_score + sma_score + macd_score + bb_score + catalyst_score
+            daily_score = self._clamp_total_score(50.0 + daily_raw_signed)
+            if daily_score is None:
                 logging.debug(
-                    f"MTF blend {symbol}: daily={daily_score:.1f} hourly={hourly_score:.1f} "
-                    f"→ blended={total_score:.1f}"
+                    f"⏸ {symbol}: SCORE-001 fail-closed; daily_score clamp "
+                    f"received non-finite input, skipping analysis"
+                )
+                return None
+
+            if hourly_score is not None:
+                # hourly_score is also signed; blend preserves signed range.
+                blended_signed = (
+                    daily_raw_signed * (1 - self.hourly_weight)
+                    + hourly_score * self.hourly_weight
+                )
+                total_score = self._clamp_total_score(50.0 + blended_signed)
+                if total_score is None:
+                    logging.debug(
+                        f"⏸ {symbol}: SCORE-001 fail-closed; blended total "
+                        f"clamp received non-finite input, skipping analysis"
+                    )
+                    return None
+                logging.debug(
+                    f"MTF blend {symbol}: daily_signed={daily_raw_signed:.1f} "
+                    f"hourly={hourly_score:.1f} \u2192 blended_signed={blended_signed:.1f} "
+                    f"total={total_score:.1f}"
                 )
             else:
+                blended_signed = daily_raw_signed
                 total_score = daily_score
 
             # Determine signal based on schema-backed score threshold.
+            # BUY uses the published clamped 0..100 score against
+            # min_score_buy (default 50). SELL uses the internal signed
+            # blended score against the existing -50 hardcoded threshold so
+            # the corrected score scale does not silently swallow bearish
+            # signals. Threshold values are unchanged.
             if total_score >= self.min_score_buy:
                 signal = "BUY"
                 if total_score >= 65:
                     signal_strength = "STRONG"
                 else:
                     signal_strength = "MEDIUM"
-            elif total_score <= -50:
+            elif blended_signed <= -50:
                 signal = "SELL"
-                if total_score <= 20:
+                if blended_signed <= 20:
                     signal_strength = "STRONG"
                 else:
                     signal_strength = "MEDIUM"
@@ -2276,7 +2517,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     insider_score = get_insider_score(symbol)
                     if insider_score > 50:
                         # Boost signal strength for strong insider buying
-                        total_score = total_score + 10
+                        clamped = self._clamp_total_score(total_score + 10)
+                        if clamped is None:
+                            logging.debug(
+                                f"⏸ {symbol}: SCORE-001 fail-closed; insider "
+                                f"boost produced non-finite total, skipping"
+                            )
+                            return None
+                        total_score = clamped
                         logging.info(f"📋 {symbol}: Insider score {insider_score} - signal boosted")
                 except Exception as e:
                     logging.debug(f"Insider check failed: {e}")

@@ -4343,7 +4343,7 @@ Acceptance criteria:
 
 ### SCORE-001 — Normalize indicator scores
 
-Status: TODO
+Status: DONE (PR-ready on `agent/score-001-normalize-indicator-scores`)
 Owner: trading-exec
 Priority: P2
 
@@ -4353,6 +4353,29 @@ Acceptance criteria:
 - Combined score remains within 0–100.
 - MACD cannot dominate through incompatible scale.
 - Bullish, neutral, and bearish tests pass.
+
+**Completion evidence (per Josh 2026-09-10 12:53 UTC approval):**
+
+- `src/core/smart_bot.py` adds `_score_components(latest)` and
+  `_clamp_total_score(raw)` helpers.
+- Each component is individually clamped to its documented range
+  (±25) before any volatility-tier multiplier is applied.
+- MACD is now ATR-normalized: `score = (macd_histogram / ATR) * 25`,
+  dimensionless, so high-vol and low-vol symbols receive comparable
+  contribution and MACD cannot dominate via raw price scale.
+- `total_score` is always published in 0..100 via the explicit
+  `_clamp_total_score()` defense-in-depth clamp.
+- SELL detection uses an internal signed `blended_signed` score
+  against the existing hardcoded `-50` threshold (and `<= 20` for
+  STRONG SELL) so the corrected score scale does not silently swallow
+  bearish signals. Threshold values are unchanged.
+- MTF `buy_criteria` path also uses the new helpers and fixes two
+  pre-existing bugs (raw unclamped `macd_hist * 50` and
+  `BB_width`-as-position).
+- 56 new tests in `tests/test_smart_bot_score_normalization.py`
+  pass. Full safe suite: 1095/1095 pass (`git diff --check` clean).
+- `MENTOR.md` documents the new component ranges, formula, and
+  monotonicity contract.
 
 ### SCORE-002 — Separate eligibility from ranking
 
