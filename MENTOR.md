@@ -130,18 +130,37 @@ Both paths:
 3. Build a total score
 4. Determine signal: BUY / SELL / HOLD
 
-### The score components (daily, each 0-100 scale in different ranges)
+### The score components (daily, SCORE-001 normalized)
 
-| Component | Range | Description |
+The published **`total_score` is always in 0..100**, centered at 50, and
+is the result of `_clamp_total_score(50 + sum(components))` on a signed
+raw sum that is preserved internally for SELL detection.
+
+| Component | Documented range (BEFORE final clamp) | Formula |
 |---|---|---|
-| RSI | -100 to 100 | Oversold = bullish, overbought = bearish |
-| SMA | -100 to 100 | Price above SMA = bullish |
-| MACD | -100 to 100 | MACD line vs signal line |
-| Bollinger Bands | -100 to 100 | Price position within bands |
-| Regime | -20 to 20 | Market regime (VIX-based) |
-| Catalyst | 0 to ~35 | Gap up / volume surge bonus |
+| RSI | -25 .. +25 | `25 - (RSI / 2)`; RSI=0 → +25, RSI=50 → 0, RSI=100 → -25 |
+| SMA | -25 .. +25 | `% separation × 5`; ±25 at 5% separation, saturates beyond |
+| MACD | -25 .. +25 | `(macd_histogram / ATR) × 25`; 1 ATR of histogram = ±25 |
+| Bollinger Bands | -25 .. +25 | `25 - (bb_position × 50)`; lower band = +25, upper band = -25 |
+| Catalyst | 0 .. +25 | additive bonus (gap-up / volume surge) |
+| Regime | -20 .. +20 | market-regime penalty/bonus (optional) |
 
-**Total score** = RSI + SMA + MACD + BB + regime + catalyst
+After the documented low-volatility RSI multiplier (1.3x) or
+high-volatility SMA multiplier (1.3x) the affected component can
+briefly span ±32.5 in either direction. That is the documented worst
+case; the final `_clamp_total_score()` is the authoritative 0..100
+guard and keeps the published `total_score` contract intact regardless
+of intermediate inputs.
+
+The MACD formula is **dimensionless** (macd_histogram / ATR), so a
+high-volatility symbol and a low-volatility symbol receive comparable
+MACD contribution and MACD cannot dominate via raw price scale.
+
+Monotonicity contract: stronger bullish evidence (lower RSI, wider
+positive SMA separation, larger positive MACD, price closer to lower
+BB) NEVER reduces the score. Stronger bearish evidence NEVER increases
+it. See `tests/test_smart_bot_score_normalization.py` for the
+proof.
 
 ### BUY signal requirements (ALL must pass)
 - Score ≥ `min_score_buy` (default 50, loaded from settings)
@@ -1503,3 +1522,77 @@ Files changed in PR4:
   - `tests/test_dashboard_api_app.py` — pre-PR4 test mock updated for
     new durable endpoint and new near-bottom scroll behavior.
   - `tests/test_pr4_durable_chat_ui.py` — NEW 22 tests.
+
+## SCORE-001 — Normalize indicator scores
+
+**Branch:** `agent/score-001-normalize-indicator-scores`
+**Status:** PR-ready; awaiting Josh review/merge.
+
+Two new helpers in `src/core/smart_bot.py`:
+
+- `SmartTradingBot._score_components(latest)` — returns a dict with
+  individually-clamped bounded components per the documented ranges
+  above. Each component is clamped to its ±25 range BEFORE any
+  volatility-tier multiplier is applied.
+- `SmartTradingBot._clamp_total_score(raw)` — explicit defense-in-depth
+  clamp of the published `total_score` to 0..100; NaN / unparseable
+  input degrades safely to 0.
+
+Both `analyze_symbol()` and `analyze_multi_timeframe()` now route
+through these helpers. The MTF path additionally fixed two pre-existing
+bugs that were in the buy_criteria scoring block:
+
+- MACD was previously `min(30, macd_hist * 50)` — raw, unclamped, and
+  price-scale-dependent. Now uses the ATR-normalized helper.
+- BB position was reading `BB_width` (bandwidth, a percentage) instead of
+  `(price - BB_lower) / (BB_upper - BB_lower)`. Now reads the proper
+  position.
+
+### Strategy preservation
+
+- BUY threshold (`min_score_buy` default 50) is unchanged: the
+  published 0..100 score is checked directly.
+- SELL detection uses an internal signed `blended_signed` score against
+  the existing hardcoded `-50` threshold (and `<= 20` for STRONG
+  SELL). The threshold values are unchanged; only the variable being
+  checked changed (from the now-clamped `total_score` to a separate
+  signed `blended_signed`). This is the minimum-impact way to keep
+  SELL semantics working on a bounded score.
+- Volatility-tier multipliers (1.3x on RSI for low-vol, 1.3x on SMA
+  for high-vol) are preserved.
+- The insider-trading +10 boost is clamped to 0..100 after application.
+
+### SELL threshold impact (and why it is unchanged)
+
+With `total_score` clamped to 0..100, the old `total_score <= -50`
+SELL check is unreachable. Rather than change the strategy threshold
+or remove SELL detection, an internal signed `blended_signed` score
+keeps the existing SELL threshold semantics exactly. The published
+0..100 score is the only externally-visible value, and the existing
+`-50` and `20` thresholds are unchanged. If a future iteration
+wishes to migrate SELL detection to the 0..100 scale, that is a
+deliberate threshold change that requires a separate review.
+
+### Tests
+
+`tests/test_smart_bot_score_normalization.py` (NEW, 56 tests):
+
+- Component bound tests (RSI / SMA / MACD / BB each within ±25, with
+  endpoints verified)
+- MACD ATR-normalization property: identical normalized MACD gives
+  identical scores regardless of price scale
+- MACD dominance proof: 50-ATR MACD histogram alone cannot push the
+  score past 75
+- Extreme MACD bounded tests (10^3, 10^6, negative)
+- `_clamp_total_score` tests (raw=-10000 → 0; raw=10000 → 100; NaN → 0;
+  unparseable → 0)
+- Bullish / neutral / bearish scenario fixtures (custom-constructed
+  pd.Series of indicator values) with the required thresholds
+  (≥65 / 45..55 / ≤35)
+- Identical inputs deterministic (pure function, no state mutation)
+- Monotonicity: RSI lower → score higher; SMA wider → higher;
+  BB closer to lower → higher; MACD larger positive → higher
+- Realistic ranking: bullish > neutral > bearish; strong bullish
+  > mild bullish
+- Integration: full `calculate_indicators` → `_score_components` →
+  `_clamp_total_score` round-trip
