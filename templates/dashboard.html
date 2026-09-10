@@ -436,7 +436,39 @@
     <nav class="navbar">
         <div class="nav-title">
             🤖 Trading Bot
-            <span class="status-dot {% if account %}status-green{% else %}status-red{% endif %}"></span>
+            {% set _rs = runtime_status or {} %}
+            {% set _dot = (
+                'status-green' if _rs.get('fully_ready')
+                else 'status-yellow' if _rs.get('alpaca_api_reachable')
+                else 'status-red'
+            ) %}
+            {% set _dot_tooltip = (
+                'All systems go: Alpaca reachable, smartbot-runner.service active, trading session in progress'
+                if _rs.get('fully_ready')
+                else
+                'Alpaca reachable, but SmartBot is NOT running. '
+                ~ ('smartbot-runner.service is not active. ' if not _rs.get('smartbot_runner_active') else '')
+                ~ ('No active trading session. ' if _rs.get('smartbot_runner_active') and not _rs.get('active_session_id') else '')
+                ~ 'Use `systemctl --user start smartbot-runner.service` after enabling it.'
+                if _rs.get('alpaca_api_reachable')
+                else
+                'Alpaca paper API is unreachable. Check network and credentials.'
+            ) %}
+            <span class="status-dot {{ _dot }}"
+                  title="{{ _dot_tooltip }}"
+                  id="bot-status-dot"></span>
+            <span class="status-legend" id="bot-status-legend"
+                  style="font-size:11px;color:#8b949e;margin-left:6px;">
+                {%- if _rs.get('fully_ready') -%}
+                    Running
+                {%- elif _rs.get('smartbot_runner_active') -%}
+                    Runner Active, No Session
+                {%- elif _rs.get('alpaca_api_reachable') -%}
+                    API Online, Bot Off
+                {%- else -%}
+                    API Offline
+                {%- endif -%}
+            </span>
         </div>
     </nav>
 
@@ -512,8 +544,14 @@
         <!-- Actions -->
         <div class="actions">
             <button class="btn btn-primary" onclick="refresh()">🔄 Refresh</button>
-            <a href="/api/start-session" class="btn btn-secondary">▶️ Start Session</a>
+            <button class="btn btn-secondary" id="bot-start-btn"
+                    title="Records a placeholder trading_sessions row. Does NOT start SmartBot. The smartbot-runner.service unit (currently disabled) is the only way to actually start the bot."
+                    onclick="botAction('start')">▶️ Start Session</button>
+            <button class="btn btn-secondary" id="bot-stop-btn"
+                    title="Closes any stale-open trading_sessions row. Does NOT stop SmartBot (it does not run in this process)."
+                    onclick="botAction('stop')">⏹️ Stop Session</button>
         </div>
+        <div id="bot-action-result" style="font-size:12px;color:#8b949e;margin-top:4px;"></div>
 
         <!-- Positions -->
         <div class="card">
@@ -882,6 +920,37 @@
 
         function refresh() {
             window.location.reload();
+        }
+
+        // BOT-001: botAction('start'|'stop') posts to /api/start-session or
+        // /api/stop-session and renders the JSON response honestly. These
+        // endpoints do NOT spawn the bot; they only manage audit rows.
+        async function botAction(kind) {
+            const result = document.getElementById('bot-action-result');
+            const url = kind === 'start' ? '/api/start-session' : '/api/stop-session';
+            const btn = document.getElementById('bot-' + kind + '-btn');
+            if (btn) { btn.disabled = true; btn.textContent = '...'; }
+            result.textContent = 'Calling ' + url + ' ...';
+            try {
+                const resp = await fetch(url, { method: 'POST' });
+                const data = await resp.json();
+                const lines = [];
+                lines.push(data.status + ': ' + (data.message || ''));
+                lines.push('bot_started=' + data.bot_started + ', sessions_closed=' + (data.sessions_closed || 0));
+                if (data.runtime_status) {
+                    const rs = data.runtime_status;
+                    lines.push('runtime: alpaca=' + rs.alpaca_api_reachable +
+                               ', runner=' + rs.smartbot_runner_active +
+                               ', active_session=' + (rs.active_session_id || 'none'));
+                }
+                result.innerHTML = lines.join('<br>');
+                // Refresh the runtime dot/legend after the action.
+                setTimeout(refresh, 1500);
+            } catch (e) {
+                result.innerHTML = '<span style="color:#da3633">Error: ' + e.message + '</span>';
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = kind === 'start' ? '▶️ Start Session' : '⏹️ Stop Session'; }
+            }
         }
         
         // Load top opportunities

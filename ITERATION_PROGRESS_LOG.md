@@ -2189,3 +2189,170 @@ agent/engplat-002a-project-context-contracts created from current main.
     histories.
 - STOP. Awaiting Josh's merge approval. Do not auto-merge. Do not
   begin PR5.
+
+## 2026-09-10 01:42–02:18 UTC — Trading Dashboard Cloudflare exposure (existed; now behind Access)
+
+- Elapsed time: Approximately 36 minutes
+- Continuity: Continuous
+- Backlog item/objective: Expose the existing trading dashboard at
+  `https://trading.mooseops.com.co` via the existing Cloudflare Tunnel,
+  protected by a separate Cloudflare Access Self-hosted Application.
+  Approved by Josh with six explicit guard-rails at 01:42 UTC.
+- Branch: None (no code branches modified)
+- Commit: None (only `.gitignore` has a +1-line forward-compat entry)
+- Status: `DONE`
+- Files changed:
+  - **In repo (1 file, +1 line)**: `.gitignore` → added `.trading-dashboard.env`
+    pattern (the file does NOT currently exist; this is forward-compat for a
+    future hardening iteration when dashboard.py gains in-process Access JWT
+    validation)
+  - **Outside repo (5 files created/edited)**:
+    - `/root/.config/systemd/user/trading-dashboard.service` (new unit;
+      loopback-only 127.0.0.1:8000; `Restart=always RestartSec=5
+      WantedBy=default.target`; no fake CF_ACCESS env vars)
+    - `/root/.config/systemd/user/trading-dashboard.service.d/10-env.conf`
+      (drop-in referencing optional `.trading-dashboard.env` with `-`
+      prefix so missing file is non-fatal)
+    - `/root/.cloudflared/config.yml` (+2 lines: one new ingress rule for
+      `trading.mooseops.com.co → http://127.0.0.1:8000` before the
+      `http_status:404` catch-all; engineering rule `dashboard.mooseops.com.co
+      → http://127.0.0.1:8010` preserved)
+    - `/root/.cloudflared/config.yml.bak-pre-trading-20260910_014624`
+      (pre-edit backup)
+  - **NOT changed** (per Josh's instruction): `dashboard.py`, `src/core/`,
+    `src/brokerage/`, `src/api/`, `.env`, `.dashboard.env`,
+    `.cloudflared.env`
+- Tests/backtests:
+  - `.venv/bin/python -m pytest tests/ -q --tb=no -x` →
+    `1001 passed, 82 warnings in 88.76s (0:01:28)` (no regressions)
+  - systemd `crash restart`: SIGKILL PID 655832 → restarted PID 655875,
+    `NRestarts=1`, `127.0.0.1:8000` bound, `curl http://127.0.0.1:8000/`
+    → HTTP 200 with title `Trading Bot Dashboard`
+  - cloudflared `ingress validate` → `OK exit=0` BEFORE restart
+  - cloudflared `ingress rule https://trading.mooseops.com.co/` →
+    `Matched rule #1 hostname: trading.mooseops.com.co service:
+    http://127.0.0.1:8000`
+  - cloudflared `ingress rule https://dashboard.mooseops.com.co/engineering`
+    → still `Matched rule #0 hostname: dashboard.mooseops.com.co service:
+    http://127.0.0.1:8010` (engineering unaffected)
+  - unauthenticated curl to `https://trading.mooseops.com.co/` →
+    HTTP 302 redirect to
+    `https://shy-pine-69b5.cloudflareaccess.com/cdn-cgi/access/login/trading.mooseops.com.co?kid=856ba63…&redirect_url=%2F`
+  - unauthenticated POST to `/api/start-session`, `/api/settings`,
+    `/api/stop-session` → all HTTP 302 to Access login; origin NOT
+    contacted (verified via `journalctl --user -u
+    trading-dashboard.service`)
+- Decisions/risks:
+  - Used a single tunnel (4c4df58a-…) and one new DNS route. No second
+    tunnel created. No new public ports opened.
+  - Used a separate Cloudflare Access Self-hosted Application
+    (`Trading Dashboard`, AUD `856ba63…`) for clean isolation from
+    the engineering dashboard's Access app (AUD `a152f43…`).
+  - Did NOT add Access JWT validation to `dashboard.py` per Josh's
+    instruction (step 5 of approval). Cloudflare Access at the edge
+    + loopback-only origin is the approved security boundary for
+    this task. Documented as a follow-up hardening opportunity
+    (next iteration would add `CloudflareAccessValidator` +
+    `WriteOriginGuard` to `dashboard.py` and populate
+    `.trading-dashboard.env` with the real AUD; would be a
+    branch-based PR with new tests).
+  - One `trading_sessions` row (id=71795) was created by my
+    unauthenticated verification curl during the ~28-minute
+    pre-Access window. Paper-only (`is_paper_trading=1`), no trades,
+    no errors. Left in place as audit trail.
+- Manager review decision: Accept.
+- Next action: STOP. Awaiting Josh's next instruction. Options Josh
+  may consider:
+  - Verify Josh can sign in at `https://trading.mooseops.com.co/`
+    end-to-end from a browser
+  - Pivot to SCORE-001 (the recommended next trading task)
+  - Schedule the deferred Access JWT hardening PR
+
+
+## 2026-09-10 02:57–03:25 UTC — BOT-001: SmartBot runtime readiness and session correctness
+
+- Elapsed time: Approximately 28 minutes
+- Continuity: Continuous
+- Backlog item/objective: BOT-001 — make trading runtime safe and observable
+  before ever running it continuously. Approved by Josh at 02:57 UTC with
+  six explicit guard-rails: don't start the bot, don't place trades, don't
+  begin SCORE-001, don't change Cloudflare/dashboard infrastructure except
+  to correct misleading runtime status, no destructive ops, no auto-merge.
+- Branch: agent/bot-001-smartbot-runtime-readiness (newly created at 02:59 UTC)
+- Commit: pending — committed at end of this iteration (see end of log)
+- Status: DONE
+- Files changed:
+  - **In repo (10 files)**:
+    - src/core/smart_bot.py: start_session() now resets per-session counters
+      and captures baseline snapshots; end_session() persists per-session
+      deltas (lifetime cumulative counts no longer leak across sessions);
+      added mark_session_failed(), reap_stale_sessions(), get_session_counters();
+      __init__() reaps any stale-open sessions on startup.
+    - src/database/sqlite_db.py: new trading_sessions.status column with
+      OPEN/ACTIVE/ENDED/FAILED vocabulary; create_session defaults to
+      ACTIVE; update_session validates status; backfill logic for historical
+      rows; new helpers get_active_session, get_stale_open_sessions,
+      close_stale_sessions.
+    - dashboard.py: new is_smartbot_runner_active() (cached systemctl probe,
+      2s TTL, safe on subprocess errors); new get_runtime_status() returning
+      three independent booleans (alpaca_api_reachable, smartbot_runner_active,
+      active_session_id, fully_ready); new /api/runtime-status endpoint;
+      /api/start-session and /api/stop-session now explicitly non-runtime
+      (start inserts placeholder audit row only; stop reaps stale rows;
+      neither spawns the bot).
+    - templates/dashboard.html: 3-tier status dot (green/yellow/red) with
+      honest tooltip explaining what each color means; replaced misleading
+      Start-Session <a> link with botAction() JS that posts to the new
+      endpoints and renders the JSON response honestly.
+    - systemd/smartbot-runner.service.template (NEW, 6.3 KB): paper-only
+      runner design with 9 documented safety properties. NOT installed.
+    - tests/test_bot001_session_counters.py (NEW, 8.4 KB, 9 tests)
+    - tests/test_bot001_session_lifecycle.py (NEW, 11.4 KB, 13 tests)
+    - tests/test_bot001_dashboard_status.py (NEW, 9.7 KB, 14 tests)
+    - AGENT_BACKLOG.md: registered BOT-001 entry.
+    - .gitignore: no new changes for this iteration (the +1 line was
+      added for trading-dashboard work in the prior session).
+- Tests:
+  - BOT-001 focused suite (38 new tests, three files): 38/38 PASS in
+    6.36s. Covers: per-session counter reset; lifetime metric preservation;
+    status vocabulary; get_active_session; get_stale_open_sessions;
+    close_stale_sessions (age-bound, no-delete, reason-append);
+    mark_session_failed; reap_stale_sessions; backfill semantics;
+    /api/runtime-status independence; /api/start-session honesty;
+    /api/stop-session honesty; SPA 3-tier rendering (green/yellow/red);
+    runner detection caching; subprocess error handling.
+  - Full safe suite: 1039/1039 PASS in 92.81s (was 1001 pre-BOT-001).
+    No regressions. Conftest live-mode guard still effective.
+  - git diff --check: no whitespace errors (existing ITERATION_PROGRESS_LOG.md
+    trailing-newline is from prior session, not BOT-001).
+- Decisions/risks:
+  - The session-counter fix is defense-in-depth: start_session captures
+    lifetime baselines as `_session_start_*` attributes, then zeroes
+    `symbols_processed/trades_executed/errors_count`. end_session computes
+    `max(0, current - baseline)` so the per-session value is honest even
+    if a future regression forgets to reset. Fallback when start_session
+    was never called: persist current cumulative (over-reports, never
+    silently drops data).
+  - The status column migration is a one-time backfill (OPEN if no
+    session_start, ACTIVE if session_end IS NULL, ENDED if session_end
+    IS NOT NULL). Per Josh's "do not silently delete history" rule, no
+    historical rows are deleted or arbitrarily rewritten.
+  - The paper-only runner template is intentionally NOT installed and
+    NOT enabled. The 9 safety properties are documented IN the template
+    file so a future BOT-002 reviewer can audit them. Requires explicit
+    Josh approval + a future iteration to install.
+  - The 3-tier dashboard status separates "Alpaca reachable" from
+    "runner active" from "active session". Conflating them is what made
+    the legacy green dot misleading. The new green dot only lights when
+    all three are healthy.
+  - /api/start-session and /api/stop-session no longer claim to control
+    the bot. The response makes bot_started=False / bot_stopped=False
+    explicit. Operators must use systemctl --user for actual control.
+  - Ad-hoc run investigation (2026-09-10T02:16:15Z): pattern matches
+    manual one-shot Python invocation via the rotation quick-scan path
+    (smart_bot.py line 3821: _get_rolling_ticker_list(20)). Insufficient
+    evidence to confirm exact trigger; flagged for Josh's review.
+- Manager review decision: Accept.
+- Next action: STOP. Awaiting Josh's review of staged changes before
+  commit + PR. Will not auto-merge.
+

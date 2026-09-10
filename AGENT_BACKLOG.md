@@ -5173,3 +5173,92 @@ Regression coverage added (4 new tests in
   22. durable history remains visible throughout status recovery
 
 Test results: 1001/1001 full safe suite pass (979 pre-PR4 + 22 PR4).
+
+---
+
+## BOT-001 — SmartBot runtime readiness and session correctness (PR-ready)
+
+**Owner:** trading-manager
+**Branch:** `agent/bot-001-smartbot-runtime-readiness`
+**Status:** Complete, awaiting Josh review/merge approval.
+**Constraint:** No bot started, no live trading, no SCORE-001 yet, no Cloudflare/dashboard infra changes beyond what's required to correct misleading runtime status.
+
+Scope (per Josh 2026-09-10 02:57 UTC approval):
+
+1. **Session counter correctness.** Per-session counters
+   (symbols_processed, trades_executed, errors_count) reset at
+   start_session() and end_session() persists per-session deltas
+   (lifetime cumulative counts no longer leak across sessions).
+   Lifetime / account-level metrics (peak_portfolio_value,
+   daily_starting_value, daily_loss_pct) are NOT reset.
+
+2. **Session state correctness.** New `trading_sessions.status`
+   column with lifecycle vocabulary OPEN/ACTIVE/ENDED/FAILED.
+   - create_session defaults to status='ACTIVE'.
+   - end_session transitions to 'ENDED'.
+   - mark_session_failed transitions to 'FAILED' with reason
+     appended to notes.
+   - get_active_session / get_stale_open_sessions / close_stale_sessions
+     helpers added.
+   - Historical rows backfilled using only session_end IS NULL
+     heuristic (no arbitrary rewrites).
+
+3. **Dashboard truthfulness.** New /api/runtime-status endpoint
+   reports three independent booleans (alpaca_api_reachable,
+   smartbot_runner_active, active_session_id). SPA renders a 3-tier
+   status dot (green/yellow/red) with honest tooltip + legend.
+   /api/start-session and /api/stop-session explicitly marked as
+   non-runtime; start-session inserts placeholder audit row, stop-session
+   reaps stale rows. Neither spawns the bot.
+
+4. **Paper-only runner design.** smartbot-runner.service.template
+   written (NOT installed). Has all 9 required safety properties
+   documented in-file. Installation requires a future iteration
+   (BOT-002 or higher) with explicit Josh approval.
+
+5. **Unexplained ad-hoc run.** Investigated the 2026-09-10T02:16:15Z
+   analyzed_stocks writes (20 symbols, no trading_sessions row,
+   ~150ms sequential timing). Most likely explanation: manual
+   one-shot Python invocation by Josh or a prior session.
+   Pattern matches the rotation quick-scan path in
+   src/core/smart_bot.py line 3821 (`_get_rolling_ticker_list(20)`).
+   Insufficient evidence to confirm exact trigger; flagged in audit.
+
+**Files changed:**
+- src/core/smart_bot.py (+159 lines): start_session/end_session reset +
+  per-session delta persistence; mark_session_failed; reap_stale_sessions;
+  __init__ reap.
+- src/database/sqlite_db.py (+169 lines): status column + migration +
+  backfill; get_active_session / get_stale_open_sessions /
+  close_stale_sessions; update_session validates status; create_session
+  defaults to status='ACTIVE'.
+- dashboard.py (+158 lines): is_smartbot_runner_active() (cached
+  systemctl probe, 2s); get_runtime_status(); new /api/runtime-status;
+  /api/start-session / /api/stop-session now honest about not
+  spawning the bot; root route passes runtime_status to template.
+- templates/dashboard.html (+71 lines): 3-tier status dot + legend
+  in navbar; replaced misleading Start-Session link with botAction()
+  JS that renders the JSON response honestly.
+- systemd/smartbot-runner.service.template (new, 6.3 KB): paper-only
+  runner design with 9 safety properties documented in-file.
+  NOT installed.
+- tests/test_bot001_session_counters.py (new, 8.4 KB): 9 tests
+  covering per-session counter reset, lifetime metric preservation,
+  fallback safety, DB unavailability paths.
+- tests/test_bot001_session_lifecycle.py (new, 11.4 KB): 13 tests
+  covering status vocabulary, get_active_session, get_stale_open,
+  close_stale (age-bound, no-delete, reason-append), mark_session_failed,
+  reap_stale_sessions, backfill semantics.
+- tests/test_bot001_dashboard_status.py (new, 9.7 KB): 14 tests
+  covering /api/runtime-status independence, /api/start-session and
+  /api/stop-session honesty, SPA 3-tier rendering, runner detection
+  caching, subprocess error handling.
+
+**Tests:** 1039/1039 pass (1001 pre-BOT-001 + 38 BOT-001). Full safe
+suite runtime: 92.81s. No regressions.
+
+**Branch:** `agent/bot-001-smartbot-runtime-readiness` (no commits
+yet — awaiting Josh's review of staged changes before commit + PR).
+
+**PR:** NOT created yet. Will be created on Josh's review signal.
+Will not auto-merge.

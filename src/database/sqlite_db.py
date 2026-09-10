@@ -154,6 +154,52 @@ class SQLiteDB:
                     if "duplicate column name" not in str(e):
                         raise
 
+                # ── BOT-001: trading_sessions.status column (session lifecycle) ──────────
+                # Lifecycle states (canonical):
+                #   OPEN     — row created, no work has begun yet (rare in practice;
+                #              typically only seen immediately after create_session).
+                #   ACTIVE   — start_session() has run and the bot is currently
+                #              executing this session. session_end IS NULL.
+                #   ENDED    — end_session() persisted normally. session_end IS NOT NULL.
+                #   FAILED   — end_session() or the surrounding try/except marked the
+                #              session as failed (e.g., crash loop). session_end
+                #              IS NOT NULL but status='FAILED'.
+                # Values used in code MUST be uppercase string literals to match the
+                # values stored by create_session / update_session. Schema defaults
+                # to 'OPEN' for any new row; existing rows that pre-date this column
+                # are backfilled below using the legacy `session_end IS NULL` heuristic.
+                try:
+                    conn.execute(
+                        "ALTER TABLE trading_sessions ADD COLUMN status TEXT DEFAULT 'OPEN';"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                # Backfill: any historical row missing status gets a sensible value
+                # derived from session_end (legacy data only; new rows always set it
+                # explicitly). Do not silently rewrite history beyond this one-time
+                # classification. (BOT-001 explicit requirement.)
+                conn.execute(
+                    "UPDATE trading_sessions SET status = 'ACTIVE' "
+                    "WHERE status IS NULL AND session_end IS NULL;"
+                )
+                conn.execute(
+                    "UPDATE trading_sessions SET status = 'ENDED' "
+                    "WHERE status IS NULL AND session_end IS NOT NULL;"
+                )
+                conn.execute(
+                    "UPDATE trading_sessions SET status = 'OPEN' "
+                    "WHERE status IS NULL;"
+                )
+                # Index helps the dashboard /api/sessions listing filter by lifecycle.
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_trading_sessions_status "
+                        "ON trading_sessions(status);"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # index may already exist
+
                 # ── failed_analyses: why BUY/SELL signals were rejected ──────────────────
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS failed_analyses (
@@ -206,32 +252,58 @@ class SQLiteDB:
     def create_session(self, bot_version: str = "2.0.0",
                        configuration: Dict = None,
                        is_paper_trading: bool = True,
-                       notes: str = None) -> Optional[int]:
+                       notes: str = None,
+                       status: str = "ACTIVE") -> Optional[int]:
+        """Insert a new trading_sessions row.
+
+        status defaults to 'ACTIVE' because create_session is only ever called
+        from SmartTradingBot.start_session(), at which point work is about to
+        begin. The legacy 'OPEN' value is reserved for rows that exist with
+        no work and no end_session call (rare). FAILED transitions happen via
+        update_session(... status='FAILED'). Validated against the lifecycle
+        vocabulary to keep dashboards honest.
+        """
+        if status not in ("OPEN", "ACTIVE", "ENDED", "FAILED"):
+            raise ValueError(
+                f"create_session: invalid status {status!r}; "
+                "must be one of OPEN/ACTIVE/ENDED/FAILED"
+            )
         try:
             with _get_conn() as conn:
                 cur = conn.execute(
                     """INSERT INTO trading_sessions
                        (session_start, bot_version, configuration, is_paper_trading, notes,
-                        total_symbols_processed, total_trades_executed, session_pnl, error_count)
-                       VALUES (?, ?, ?, ?, ?, 0, 0, 0.0, 0)""",
+                        total_symbols_processed, total_trades_executed, session_pnl, error_count,
+                        status)
+                       VALUES (?, ?, ?, ?, ?, 0, 0, 0.0, 0, ?)""",
                     (
                         datetime.utcnow().isoformat(),
                         bot_version,
                         json.dumps(configuration) if configuration else None,
                         1 if is_paper_trading else 0,
                         notes,
+                        status,
                     ),
                 )
                 session_id = cur.lastrowid
                 self.current_session_id = session_id
-                logging.info(f"✅ Created session {session_id}")
+                logging.info(f"✅ Created session {session_id} (status={status})")
                 return session_id
         except Exception as e:
             logging.error(f"Exception creating session: {e}")
             return None
 
+    _SESSION_STATUS_VALUES = ("OPEN", "ACTIVE", "ENDED", "FAILED")
+
     def update_session(self, session_id: int, updates: Dict) -> bool:
         if not updates:
+            return False
+        # Validate status transitions (BOT-001). Only allow lifecycle vocabulary.
+        if "status" in updates and updates["status"] not in self._SESSION_STATUS_VALUES:
+            logging.warning(
+                f"update_session({session_id}): rejected invalid status "
+                f"{updates['status']!r}; must be one of {self._SESSION_STATUS_VALUES}"
+            )
             return False
         try:
             cols = ", ".join(f"{k} = ?" for k in updates)
@@ -256,6 +328,96 @@ class SQLiteDB:
         except Exception as e:
             logging.warning(f"Exception getting sessions: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # Session lifecycle helpers (BOT-001)
+    # ------------------------------------------------------------------
+
+    def get_active_session(self) -> Optional[Dict]:
+        """Return the most recent ACTIVE row (session_end IS NULL and status='ACTIVE').
+
+        ACTIVE is the only lifecycle state that may legitimately have
+        session_end IS NULL. Any other state with session_end IS NULL is a
+        stale-open anomaly and should be reaped via close_stale_sessions().
+        """
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM trading_sessions "
+                    "WHERE status='ACTIVE' AND session_end IS NULL "
+                    "ORDER BY session_start DESC LIMIT 1"
+                ).fetchone()
+                return _row_to_dict(row) if row else None
+        except Exception as e:
+            logging.warning(f"Exception getting active session: {e}")
+            return None
+
+    def get_stale_open_sessions(self) -> List[Dict]:
+        """Return rows that look open (session_end IS NULL) but are NOT ACTIVE.
+
+        These are anomalies: rows that were created but never properly ended.
+        Most commonly seen after a bot crash, host reboot, or process kill.
+        """
+        try:
+            with _get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM trading_sessions "
+                    "WHERE session_end IS NULL AND status != 'ACTIVE'"
+                ).fetchall()
+                return [_row_to_dict(r) for r in rows]
+        except Exception as e:
+            logging.warning(f"Exception getting stale-open sessions: {e}")
+            return []
+
+    def close_stale_sessions(
+        self,
+        cutoff_iso: str,
+        reason: str = "stale-reaped",
+    ) -> int:
+        """Close any session whose session_start is older than cutoff_iso AND
+        whose status is not yet ENDED/FAILED.
+
+        Returns the number of rows closed. Used at SmartTradingBot startup
+        to clean up after crashes/reboots. Does NOT delete rows; only
+        transitions them to FAILED with a notes suffix so the audit trail
+        is preserved.
+
+        cutoff_iso must be an ISO-8601 timestamp string; older rows are closed.
+        """
+        closed = 0
+        try:
+            with _get_conn() as conn:
+                # Find candidates first so we can append to notes.
+                rows = conn.execute(
+                    "SELECT id, notes FROM trading_sessions "
+                    "WHERE session_end IS NULL AND status IN ('OPEN','ACTIVE') "
+                    "AND session_start < ?",
+                    (cutoff_iso,),
+                ).fetchall()
+                for row in rows:
+                    session_id = row["id"]
+                    existing_notes = row["notes"] or ""
+                    new_notes = (
+                        f"{existing_notes} [{reason}]" if existing_notes else reason
+                    )
+                    ok = self.update_session(
+                        session_id,
+                        {
+                            "session_end": datetime.utcnow().isoformat(),
+                            "status": "FAILED",
+                            "notes": new_notes,
+                        },
+                    )
+                    if ok:
+                        closed += 1
+                if closed:
+                    logging.info(
+                        f"close_stale_sessions: reaped {closed} stale-open "
+                        f"rows older than {cutoff_iso}"
+                    )
+        except Exception as e:
+            logging.warning(f"Exception closing stale sessions: {e}")
+        return closed
 
     def get_database_info(self) -> Dict[str, Any]:
         info = {

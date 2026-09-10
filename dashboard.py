@@ -179,6 +179,93 @@ def get_account_info() -> Dict:
         return {"error": str(e)}
 
 
+def is_smartbot_runner_active() -> bool:
+    """Return True if the smartbot-runner.service is currently active on this host.
+
+    Detection is by checking the systemd user-level unit. We do NOT check
+    for the SmartTradingBot Python process directly because the runner may
+    have crashed silently, leaving the process gone but the unit not
+    noticing yet; systemd's view of "active" is the right authority here.
+
+    This function deliberately does NOT spawn a bot. It only reports.
+    Returns False if systemctl is unavailable, the unit is unknown, or the
+    unit is not active. Caches the result for 2 seconds to avoid hammering
+    systemd on every dashboard poll.
+    """
+    import subprocess
+    import time
+    cache_key = "_smartbot_runner_active_cache"
+    cache_ts_key = "_smartbot_runner_active_cache_ts"
+    cache = globals()
+    now = time.time()
+    cached_ts = cache.get(cache_ts_key)
+    if cached_ts is not None and (now - cached_ts) < 2.0:
+        return cache.get(cache_key, False)
+    result = False
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", "smartbot-runner.service"],
+            capture_output=True, text=True, timeout=2,
+        )
+        result = out.stdout.strip() == "active"
+    except Exception:
+        result = False
+    cache[cache_key] = result
+    cache[cache_ts_key] = now
+    return result
+
+
+def get_runtime_status() -> Dict:
+    """Three-tier runtime status for the dashboard SPA.
+
+    Returns a dict with three independent booleans so the UI can present
+    each level honestly without conflating them:
+
+      alpaca_api_reachable: True iff /api/account returned a populated dict.
+        This is what the legacy green/red dot encoded.
+
+      smartbot_runner_active: True iff the smartbot-runner.service systemd
+        unit is currently active. False means the bot is NOT running,
+        even if Alpaca is reachable.
+
+      active_session_id: integer session id of the current ACTIVE row in
+        trading_sessions, or None if none is active.
+
+    These three are independent. Today (BOT-001), all three should normally
+    be False in production until the runner is enabled in a later iteration.
+    """
+    # Tier 1: Alpaca API reachable
+    account = get_account_info()
+    alpaca_ok = bool(account) and "error" not in account and "portfolio_value" in account
+
+    # Tier 2: smartbot-runner.service active
+    runner_active = is_smartbot_runner_active()
+
+    # Tier 3: active session in DB
+    active_session_id = None
+    active_session_start = None
+    try:
+        active = simple_rest.get_active_session()
+        if active:
+            active_session_id = active.get("id")
+            active_session_start = active.get("session_start")
+    except Exception as e:
+        logger.debug(f"get_runtime_status: get_active_session failed: {e}")
+
+    # Summary booleans for backward-compatible SPA rendering.
+    return {
+        "alpaca_api_reachable": alpaca_ok,
+        "smartbot_runner_active": runner_active,
+        "active_session_id": active_session_id,
+        "active_session_start": active_session_start,
+        # Convenience: fully_ready means everything is green AND an active
+        # session is running. This is the strongest signal the bot is
+        # currently doing work. Used by the dot legend.
+        "fully_ready": alpaca_ok and runner_active and active_session_id is not None,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def get_trading_status() -> Dict:
     """Get current trading rules status"""
     status = {
@@ -471,20 +558,22 @@ def dashboard():
         db_trades = get_trades_from_db(10)
         sessions = get_recent_sessions(5)
         trading_status = get_trading_status()
-        
+        runtime_status = get_runtime_status()
+
         # Get positions (returns dict with 'positions' and 'by_sector')
         positions_data = get_positions()
         positions = positions_data.get("positions", [])
         positions_by_sector = positions_data.get("by_sector", {})
-        
+
         # Calculate totals
         total_position_value = sum(p["market_value"] for p in positions)
         total_unrealized_pl = sum(p["unrealized_pl"] for p in positions)
-        
+
         template = jinja_env.get_template("dashboard.html")
         return template.render(
             account=account,
             trading_status=trading_status,
+            runtime_status=runtime_status,
             positions=positions,
             positions_by_sector=positions_by_sector,
             orders=orders,
@@ -895,26 +984,91 @@ def api_logs(session_id: int = None, lines: int = 200):
         return {"logs": [], "error": str(e)}
 
 
+@app.get("/api/runtime-status")
+def api_runtime_status():
+    """Three-tier runtime status (BOT-001).
+
+    Independent booleans so the UI never conflates them:
+
+      alpaca_api_reachable     - Alpaca paper API returned a populated account.
+      smartbot_runner_active   - smartbot-runner.service systemd unit active.
+      active_session_id        - id of the current ACTIVE row (None if none).
+      fully_ready              - all three true (bot is genuinely running).
+
+    See get_runtime_status() in this module for the detection logic.
+    """
+    return get_runtime_status()
+
+
 @app.post("/api/start-session")
 def api_start_session():
-    """Start a new trading session"""
+    """Insert a placeholder trading_sessions row.
+
+    BOT-001 NOTE: This endpoint does NOT start SmartBot. It only inserts
+    an audit-row in trading_sessions so the operator can see when a manual
+    run was attempted. The actual bot loop is started by the
+    smartbot-runner.service systemd unit (see BOT-001 audit). When the
+    runner is not active, calling this endpoint is a no-op for runtime
+    control: it does not spawn a process, does not start analyzing, and
+    does not place trades.
+
+    The response makes this contract explicit so the SPA can render an
+    honest "Not Started" state instead of implying the bot is running.
+    """
     if not db.is_available():
         raise HTTPException(status_code=400, detail="Database not available")
-    
+
     session_id = db.create_session(
         bot_version="2.1.0",
         configuration={},
         is_paper_trading=True,
-        notes="Started from dashboard"
+        notes="Started from dashboard (placeholder; smartbot-runner.service does not start SmartBot)",
     )
-    return {"status": "ok", "session_id": session_id}
+    return {
+        "status": "recorded",
+        "session_id": session_id,
+        "bot_started": False,
+        "message": (
+            "Recorded a placeholder trading_sessions row. SmartBot is NOT "
+            "running. The smartbot-runner.service unit (currently disabled) "
+            "is the only way to actually start the bot."
+        ),
+        "runtime_status": get_runtime_status(),
+    }
 
 
 @app.post("/api/stop-session")
 def api_stop_session():
-    """Stop the current trading session"""
-    # This would need the session ID - simplified for now
-    return {"status": "ok", "message": "Session stopped"}
+    """Reap any stale-open ACTIVE row owned by the dashboard.
+
+    BOT-001 NOTE: This endpoint does NOT stop SmartBot (the bot does not
+    run inside this process). It only marks the most recent ACTIVE row
+    FAILED with a notes suffix so operators can clean up phantom rows
+    after a crash. The actual bot loop is killed by stopping the
+    smartbot-runner.service systemd unit, which is intentionally NOT
+    wired here because the runner is currently disabled by policy.
+    """
+    closed = 0
+    try:
+        cutoff = datetime.now(timezone.utc).isoformat()
+        closed = simple_rest.close_stale_sessions(
+            cutoff_iso=cutoff,
+            reason="stopped-from-dashboard",
+        )
+    except Exception as e:
+        logger.debug(f"api_stop_session: close_stale_sessions failed: {e}")
+    return {
+        "status": "ok",
+        "sessions_closed": closed,
+        "bot_stopped": False,
+        "message": (
+            "Closed {n} stale-open trading_sessions row(s). SmartBot was "
+            "not running in this process; if smartbot-runner.service is "
+            "active elsewhere, stop it with `systemctl --user stop "
+            "smartbot-runner.service`.".format(n=closed)
+        ),
+        "runtime_status": get_runtime_status(),
+    }
 
 
 @app.get("/api/analytics/overview")

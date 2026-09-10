@@ -1,0 +1,144 @@
+# smartbot-runner.service.template
+#
+# BOT-001 PAPER-ONLY RUNNER DESIGN
+#
+# This file is a REVIEWABLE TEMPLATE only. It is NOT installed and the
+# smartbot-runner.service unit is NOT registered with systemd on any host
+# as a result of BOT-001 landing. To install and enable later (a future
+# BOT-002 or higher-tier decision, NOT this iteration):
+#
+#   1. Copy this template to your user systemd directory:
+#        cp systemd/smartbot-runner.service.template \
+#           ~/.config/systemd/user/smartbot-runner.service
+#   2. Edit the WorkingDirectory / ExecStart / Environment paths if the
+#      repo path differs from /root/.openclaw/workspace/trading-bot.
+#   3. systemctl --user daemon-reload
+#   4. systemctl --user enable --now smartbot-runner.service
+#   5. journalctl --user -u smartbot-runner.service -f
+#
+# Do NOT enable this service until:
+#   - BOT-002 (or equivalent) has been approved by Josh.
+#   - The conftest live-mode guard is confirmed to remain effective.
+#   - /workspace/trading-bot/.env still points at the paper API URL.
+#   - The bot's session-counter fix (BOT-001) has been merged and is live.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# SAFETY PROPERTIES (designed for, not enforced at the unit level alone)
+#
+# 1. Loop-independent persistent process.
+#    ExecStart runs scripts/run_continuous.py which calls
+#    SmartTradingBot.run_continuous_loop() with the persistent
+#    settings (loop_delay_seconds) from the database. The bot is
+#    designed to loop indefinitely; the unit restarts on exit.
+#
+# 2. Restart=always + RestartSec=30.
+#    Restart=always keeps the bot running across transient failures.
+#    RestartSec=30 prevents thrashing if the bot crashes in a tight
+#    loop (June 28 historical crash loops had 6-second per-iteration
+#    durations; 30s restart prevents amplifying those).
+#
+# 3. WantedBy=default.target.
+#    Combined with `systemctl --user enable`, this ensures the
+#    runner starts after user session boot. The root user has
+#    Linger=yes (verified in this repo's trading-dashboard.service
+#    setup on 2026-09-10) so the runner survives logout.
+#
+# 4. Journald logging.
+#    StandardOutput=journal / StandardError=journal make every bot
+#    log line available via journalctl --user -u smartbot-runner.
+#    The bot's `logging.info(...)` calls (e.g. "Effective strategy
+#    settings", "Smart Trading Bot initialized") will appear there.
+#    A separate log file at smartbot-runner.log is kept as a
+#    file-system fallback in case journald is unavailable.
+#
+# 5. Single-instance protection.
+#    The bot itself uses /tmp/trading_bot.lock (main.py lines 9-39).
+#    A second invocation will exit cleanly. Combined with
+#    Restart=always, this means at most ONE bot process is ever
+#    running per host, even after restart.
+#
+# 6. Explicit paper-only guard (the SAFETY BOUNDARY).
+#    Environment=ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2
+#    is hard-coded in the unit so a .env edit cannot accidentally
+#    promote the bot to live trading. The bot's SmartTradingBot
+#    __init__ also constructs TradingClient with paper=True
+#    (src/core/smart_bot.py:101) — a defense-in-depth second guard.
+#
+# 7. Fail closed.
+#    OnStartupFailure=shutdown means systemd will mark the unit
+#    failed at boot if the bot cannot start (e.g. missing
+#    credentials). Combined with RestartPreventExitStatus=78
+#    (used for code-driven intentional stops), this prevents
+#    zombie-runner states.
+#
+# 8. No live brokerage client.
+#    src/brokerage/ contains only base.py + mock.py at the time
+#    of BOT-001 (verified 2026-09-10). Any future commit that adds
+#    a live Alpaca client must be paired with a corresponding
+#    guard in this unit, otherwise the conftest live-mode guard
+#    blocks test collection but production is still exposed.
+#
+# 9. No live endpoint configuration.
+#    All API URLs come from ALPACA_BASE_URL (paper URL above) or
+#    from .env. The runner does NOT read or accept any other
+#    live-mode endpoint. Verified by reading src/core/smart_bot.py
+#    and src/database/sqlite_db.py.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# DESIGN (NOT enabled by default — see header)
+
+[Unit]
+Description=SmartBot Continuous Paper-Only Trading Runner (BOT-001 design)
+Documentation=file:%h/.local/share/trading-bot/smartbot-runner.README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=300
+OnStartupFailure=shutdown
+# Fail-closed: if startup fails (missing creds, DB unavailable), do not
+# keep restarting indefinitely. Surface the failure to journalctl.
+RestartPreventExitStatus=78
+
+[Service]
+WorkingDirectory=/root/.openclaw/workspace/trading-bot
+
+# Hard-coded paper URL (guard #6). The .env file is consulted by dotenv
+# inside run_continuous.py, but THIS environment variable overrides it
+# because the bot reads os.getenv("ALPACA_BASE_URL") and the unit env
+# wins over .env on Linux systemd. If a future commit adds a way to
+# bypass this guard, the conftest live-mode blocks must also be updated.
+Environment=ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2
+Environment=TRADING_BOT_PAPER_ONLY=1
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONHASHSEED=random
+Environment=HOME=/root
+Environment=TMPDIR=/tmp
+Environment=PATH=/usr/bin:/root/.local/bin:/root/bin:/usr/local/bin:/bin
+
+# Single-instance lock is implemented inside main.py (lock file at
+# /tmp/trading_bot.lock). A second start will fail fast, which is
+# fine: Restart=always handles the single-instance case correctly.
+ExecStart=/root/.openclaw/workspace/trading-bot/.venv/bin/python \
+    -u \
+    /root/.openclaw/workspace/trading-bot/scripts/run_continuous.py
+
+# Loop-independent persistence (property #1).
+Restart=always
+RestartSec=30
+SuccessExitStatus=0 143
+
+# Journald logging (property #4). StandardOutput keeps every bot
+# log line queryable via journalctl --user -u smartbot-runner.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=smartbot-runner
+
+# Bounded start timeout. The bot may need 30-60s to initialize
+# (RS ranking, AI provider handshake). 90s is generous.
+TimeoutStartSec=90
+# Bound shutdown. SIGTERM (exit 143) is normal stop.
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

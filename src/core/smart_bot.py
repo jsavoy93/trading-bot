@@ -124,6 +124,13 @@ class SmartTradingBot:
         self.symbols_processed = 0
         self.errors_count = 0
 
+        # Per-session counter baselines. Captured at start_session() so that
+        # end_session() can compute a true per-session delta even on long-lived
+        # SmartTradingBot instances. Initialized to 0 at construction.
+        self._session_start_symbols = 0
+        self._session_start_trades = 0
+        self._session_start_errors = 0
+
         # AI integration
         self.ai = ai_agent
 
@@ -231,6 +238,24 @@ class SmartTradingBot:
         # (persisted via dashboard settings API) after all schema-backed defaults
         # exist as attributes.
         self._load_effective_strategy_settings()
+
+        # BOT-001: reap any stale-open sessions from previous crashes/reboots
+        # so the trading_sessions table never carries phantom ACTIVE rows.
+        # max_age_seconds=60 means a session that has been "active" for over
+        # a minute before THIS process started is suspicious and is reaped.
+        # Tests can pass BOT-001_REAP_DISABLE=1 to opt out (e.g., the test
+        # suite constructs throwaway bots and does not want reap noise).
+        try:
+            if os.environ.get("BOT001_REAP_DISABLE", "").lower() not in (
+                "1", "true", "yes"
+            ):
+                reaped = self.reap_stale_sessions(max_age_seconds=60)
+                if reaped:
+                    logging.info(
+                        f"BOT-001: reaped {reaped} stale-open session(s) at startup"
+                    )
+        except Exception as e:
+            logging.debug(f"BOT-001 reap at startup skipped: {e}")
 
         # Simple sector mapping for common stocks (expand as needed)
         self.stock_sector_map = {
@@ -446,8 +471,40 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             print("5. After running the SQL, restart the bot")
             print("="*80)
 
+    # Per-session counter snapshots. Captured at start_session() so that
+    # end_session() can compute a true per-session delta even if the bot
+    # instance is long-lived and accumulates lifetime counters. Also
+    # initialized in __init__() with the same defaults; both locations
+    # must agree so attribute access works even before __init__() runs
+    # (e.g., during Mock-based tests that bypass __init__).
+    _session_start_symbols: int = 0
+    _session_start_trades: int = 0
+    _session_start_errors: int = 0
+
     def start_session(self):
-        """Start a new trading session"""
+        """Start a new trading session.
+
+        Resets per-session counters so end_session() captures this session's
+        work, not lifetime cumulative counts. Without this, a long-lived
+        SmartTradingBot instance re-entering the loop would write misleading
+        per-session totals (see BOT-001 / audit
+        2026-09-10_024500_smartbot-runtime-state-read-only-investigation.md).
+
+        True lifetime / account-level metrics (peak_portfolio_value,
+        daily_starting_value, etc.) are NOT reset.
+        """
+        # Capture lifetime totals at session start so end_session() can compute
+        # a defensive per-session delta even if a future regression forgets
+        # to call this method's reset path.
+        self._session_start_symbols = self.symbols_processed
+        self._session_start_trades = self.trades_executed
+        self._session_start_errors = self.errors_count
+
+        # Authoritative reset: per-session counters start at zero.
+        self.symbols_processed = 0
+        self.trades_executed = 0
+        self.errors_count = 0
+
         if self.db.is_available():
             self.session_id = self.db.create_session(
                 bot_version="2.1.0",
@@ -464,16 +521,107 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         logging.info(f"🚀 Started session {self.session_id or 'LOCAL-MODE'}")
 
     def end_session(self):
-        """End the current trading session"""
+        """End the current trading session.
+
+        Persists per-session deltas computed from the snapshot captured by
+        start_session(). If start_session() was never called, the defensive
+        delta falls back to the current cumulative value (which is the best
+        estimate available). Either way, the value persisted to the database
+        is this session's work, not lifetime cumulative counts.
+        """
+        # Per-session deltas. If start_session() was not called, snapshot
+        # baselines default to 0 (set as class-level defaults above), so the
+        # delta is the cumulative count. This is the safe fallback: it
+        # over-reports rather than silently dropping data.
+        symbols_delta = max(0, self.symbols_processed - self._session_start_symbols)
+        trades_delta = max(0, self.trades_executed - self._session_start_trades)
+        errors_delta = max(0, self.errors_count - self._session_start_errors)
+
         if self.db.is_available() and self.session_id:
             self.db.update_session(self.session_id, {
                 "session_end": datetime.now(timezone.utc).isoformat(),
-                "total_symbols_processed": self.symbols_processed,
-                "total_trades_executed": self.trades_executed,
-                "error_count": self.errors_count
+                "total_symbols_processed": symbols_delta,
+                "total_trades_executed": trades_delta,
+                "error_count": errors_delta,
+                "status": "ENDED",
             })
 
-        logging.info(f"🏁 Session ended: {self.symbols_processed} symbols, {self.trades_executed} trades")
+        logging.info(
+            f"🏁 Session ended: {symbols_delta} symbols, {trades_delta} trades, "
+            f"{errors_delta} errors"
+        )
+
+    def mark_session_failed(self, reason: str = "exception") -> None:
+        """Mark the current session FAILED without resetting counters.
+
+        Use this from a top-level except handler that catches a crash while
+        a session is active. The session_end timestamp and reason are
+        persisted, but counters are persisted too (best-effort) so an
+        operator can see how much work was done before the failure.
+        """
+        if not (self.db and self.db.is_available() and self.session_id):
+            return
+        try:
+            symbols_delta = max(0, self.symbols_processed - self._session_start_symbols)
+            trades_delta = max(0, self.trades_executed - self._session_start_trades)
+            errors_delta = max(0, self.errors_count - self._session_start_errors)
+            # Read the existing notes so we can append the failure reason
+            # without losing the original session context.
+            existing = ""
+            try:
+                sessions = self.db.get_sessions(limit=200)
+                for s in sessions:
+                    if s.get("id") == self.session_id:
+                        existing = s.get("notes") or ""
+                        break
+            except Exception:
+                pass
+            new_notes = (
+                f"{existing} [FAILED: {reason}]" if existing else f"[FAILED: {reason}]"
+            )
+            self.db.update_session(
+                self.session_id,
+                {
+                    "session_end": datetime.now(timezone.utc).isoformat(),
+                    "total_symbols_processed": symbols_delta,
+                    "total_trades_executed": trades_delta,
+                    "error_count": errors_delta,
+                    "status": "FAILED",
+                    "notes": new_notes,
+                },
+            )
+        except Exception as e:
+            logging.warning(f"mark_session_failed could not persist FAILED state: {e}")
+
+    def reap_stale_sessions(self, max_age_seconds: int = 86400) -> int:
+        """At startup, transition any stale-open sessions to FAILED.
+
+        Returns the number of rows reaped. Called from SmartTradingBot.__init__
+        so that crashes/reboots never leave behind phantom ACTIVE rows.
+        max_age_seconds bounds the reaper to rows older than that; sessions
+        started very recently are left alone so a normal startup does not
+        reap its own just-created session.
+        """
+        if not self.db or not self.db.is_available():
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+        return self.db.close_stale_sessions(cutoff.isoformat(), reason="startup-reap")
+
+    def get_session_counters(self) -> Dict[str, int]:
+        """Return the current per-session counters and their lifetime baselines.
+
+        Exposed for tests and operational observability. The deltas are what
+        will be persisted on the next end_session() call.
+        """
+        return {
+            "symbols_processed": self.symbols_processed,
+            "trades_executed": self.trades_executed,
+            "errors_count": self.errors_count,
+            "session_start_symbols": self._session_start_symbols,
+            "session_start_trades": self._session_start_trades,
+            "session_start_errors": self._session_start_errors,
+            "session_id": self.session_id,
+        }
 
     def _load_effective_strategy_settings(self):
         """
