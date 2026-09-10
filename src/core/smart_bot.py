@@ -86,9 +86,103 @@ logger.addHandler(stream_handler)
 # Also set root logger
 logging.getLogger().setLevel(logging.INFO)
 
+# BOT-002 paper-only fail-closed guard (runner-level).
+# This module-level function is called by SmartTradingBot.__init__ BEFORE
+# the trading client is constructed. It MUST raise a RuntimeError (with
+# a clear non-zero exit code) if the environment is not provably
+# paper-only. The TradingClient below has a defense-in-depth paper=True
+# flag, but this guard is the explicit runner-level boundary that the
+# BOT-002 systemd unit relies on.
+#
+# Required for SmartTradingBot() construction:
+#   1. Environment variable TRADING_BOT_PAPER_ONLY == "1"
+#   2. ALPACA_BASE_URL resolves to the approved paper endpoint
+#      (paper-api.alpaca.markets, case-insensitive, trailing slash optional)
+#   3. ALPACA_API_KEY starts with the paper-key prefix "PK" (paper keys
+#      start with PK; live keys start with AK).
+#
+# If any condition fails, raise RuntimeError. Do NOT log the secret
+# values, only the failing condition.
+_ALLOWED_PAPER_BASE_URL_SUFFIXES = (
+    "paper-api.alpaca.markets",
+    "paper-api.alpaca.markets/v2",
+)
+_LIVE_ALPACA_BASE_URL_DENYLIST = (
+    "api.alpaca.markets",
+    "api.alpaca.markets/v2",
+)
+
+
+def trading_bot_paper_only_guard() -> None:
+    """Fail-closed paper-only check. Must run BEFORE TradingClient init.
+
+    Reads TRADING_BOT_PAPER_ONLY and ALPACA_BASE_URL / ALPACA_API_KEY
+    from the environment. Raises RuntimeError (with a non-zero exit
+    signal suitable for systemd failure) if any condition is not met.
+
+    Logs only the failing condition name; never logs secret values.
+    """
+    paper_only = os.getenv("TRADING_BOT_PAPER_ONLY")
+    if paper_only != "1":
+        raise RuntimeError(
+            "PAPER-ONLY GUARD FAILED: TRADING_BOT_PAPER_ONLY environment "
+            f"variable is not set to '1' (got: {paper_only!r}). "
+            "The BOT-002 runner refuses to start without an explicit "
+            "paper-only declaration. Set TRADING_BOT_PAPER_ONLY=1 in "
+            "the systemd unit Environment= block."
+        )
+
+    base_url = (os.getenv("ALPACA_BASE_URL") or "").rstrip("/").lower()
+    if not base_url:
+        raise RuntimeError(
+            "PAPER-ONLY GUARD FAILED: ALPACA_BASE_URL is not set. "
+            "Refusing to construct TradingClient with an ambiguous "
+            "endpoint. The BOT-002 runner requires ALPACA_BASE_URL "
+            "to be set explicitly to the paper endpoint."
+        )
+
+    normalized = base_url.replace("https://", "").replace("http://", "")
+    if normalized in (s.lower().rstrip("/") for s in _LIVE_ALPACA_BASE_URL_DENYLIST):
+        raise RuntimeError(
+            "PAPER-ONLY GUARD FAILED: ALPACA_BASE_URL points to a "
+            f"live Alpaca endpoint ({normalized!r}). Refusing to "
+            "construct TradingClient against a live endpoint. The "
+            "BOT-002 runner requires the paper endpoint only."
+        )
+
+    allowed = tuple(s.lower().rstrip("/") for s in _ALLOWED_PAPER_BASE_URL_SUFFIXES)
+    if normalized not in allowed:
+        raise RuntimeError(
+            "PAPER-ONLY GUARD FAILED: ALPACA_BASE_URL does not match "
+            f"the approved paper endpoint (got: {normalized!r}, "
+            f"expected one of: {allowed}). Refusing to construct "
+            "TradingClient with an unrecognized endpoint."
+        )
+
+    api_key = os.getenv("ALPACA_API_KEY") or ""
+    if not api_key:
+        raise RuntimeError(
+            "PAPER-ONLY GUARD FAILED: ALPACA_API_KEY is not set. "
+            "Refusing to construct TradingClient without credentials."
+        )
+    if not api_key.startswith("PK"):
+        raise RuntimeError(
+            "PAPER-ONLY GUARD FAILED: ALPACA_API_KEY does not start "
+            "with the paper-key prefix 'PK' (got prefix: "
+            f"{api_key[:4]!r}). Live Alpaca keys start with 'AK'. "
+            "Refusing to construct TradingClient with a non-paper key."
+        )
+
+
 class SmartTradingBot:
     def __init__(self):
         """Initialize the smart trading bot"""
+        # BOT-002 paper-only fail-closed guard (must run BEFORE
+        # TradingClient construction). Raises RuntimeError on any
+        # ambiguity or live-mode indicator; the systemd unit will
+        # treat RuntimeError as a startup failure (RestartPreventExitStatus).
+        trading_bot_paper_only_guard()
+
         # Alpaca API setup
         self.api_key = os.getenv("ALPACA_API_KEY")
         self.api_secret = os.getenv("ALPACA_API_SECRET")  # Fixed variable name
@@ -101,7 +195,7 @@ class SmartTradingBot:
         self.trading_client = TradingClient(
             api_key=self.api_key,
             secret_key=self.api_secret,
-            paper=True  # Always use paper trading for safety
+            paper=True  # Always use paper trading for safety (defense-in-depth)
         )
 
         self.data_client = StockHistoricalDataClient(
@@ -593,6 +687,39 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             )
         except Exception as e:
             logging.warning(f"mark_session_failed could not persist FAILED state: {e}")
+
+    def _finalize_active_session_on_shutdown(self, reason: str = "shutdown") -> None:
+        """BOT-002: finalize the in-progress session on graceful shutdown.
+
+        Called from run_continuous_loop's KeyboardInterrupt / SystemExit
+        handlers so the in-progress session row in trading_sessions is
+        always closed (status=ENDED) before the process exits. Without
+        this, systemd's SIGTERM would leave the session ACTIVE in the DB
+        with no session_end timestamp; the BOT-001 reap-at-startup logic
+        would close it on the next boot, but the audit trail loses the
+        exact shutdown moment.
+
+        Idempotent: if no session_id is set, this is a no-op. If
+        end_session has already run for this session, it is also a
+        no-op (the DB write will overwrite the same row but with the
+        same values).
+        """
+        if not self.session_id:
+            return
+        try:
+            logging.info(
+                f"🛑 Finalizing session {self.session_id} on shutdown ({reason})"
+            )
+            self.end_session()
+        except Exception as e:
+            logging.warning(
+                f"Shutdown session finalize failed for {self.session_id}: {e}; "
+                f"falling back to mark_session_failed"
+            )
+            try:
+                self.mark_session_failed(reason=f"shutdown: {reason}")
+            except Exception as ee:
+                logging.warning(f"mark_session_failed fallback also failed: {ee}")
 
     def reap_stale_sessions(self, max_age_seconds: int = 86400) -> int:
         """At startup, transition any stale-open sessions to FAILED.
@@ -5606,6 +5733,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             print(f"\n\n🛑 CONTINUOUS MODE STOPPED BY USER")
             print(f"📈 Final Stats: {loop_count} loops, {total_trades} trades, {total_opportunities} opportunities")
             self._show_performance_summary(loop_count, loop_performance, total_trades, total_opportunities, start_time, ticker_positions, ticker_transactions, final=True)
+            self._finalize_active_session_on_shutdown(reason="user-keyboard-interrupt")
+        # BOT-002: systemd sends SIGTERM (not SIGINT) when `systemctl
+        # stop` runs. KeyboardInterrupt does NOT fire on SIGTERM, so
+        # the bot would die mid-loop with the in-progress session left
+        # ACTIVE in the DB. Translate SIGTERM into the same graceful
+        # shutdown path so end_session() always runs and the session
+        # row is finalized cleanly.
+        except SystemExit as _exc:
+            self._finalize_active_session_on_shutdown(reason="system-exit")
+            raise
 
     def _show_ai_status(self, loop_count: int):
         """Show AI provider status and health check"""

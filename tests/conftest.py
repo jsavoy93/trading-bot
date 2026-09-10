@@ -20,6 +20,18 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+# Demo scripts that live under tests/ for historical reasons but are
+# runnable smoke-test scripts, not pytest test modules. They construct
+# SmartTradingBot() at module-import time which is incompatible with
+# pytest's collection (and now also with the BOT-002 paper-only guard
+# that runs at SmartTradingBot.__init__). Skip them here so pytest's
+# test collection does not import them.
+collect_ignore = [
+    "test_no_trade_reasons.py",
+    "test_ticker_criteria.py",
+]
+
+
 @pytest.fixture(scope='session')
 def project_root_path():
     """Return the project root path."""

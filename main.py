@@ -5,6 +5,7 @@ Enhanced trading bot with intelligent position management.
 """
 import sys
 import os
+import signal
 from pathlib import Path
 
 # Add src to path for imports
@@ -38,14 +39,40 @@ def check_single_instance():
                 os.remove(LOCK_FILE)
             except:
                 pass
-    
+
     # Create lock file with current PID
     with open(LOCK_FILE, 'w') as f:
         f.write(str(os.getpid()))
-    
+
     # Register cleanup on exit
     import atexit
     atexit.register(lambda: os.path.exists(LOCK_FILE) and os.remove(LOCK_FILE))
+
+
+# BOT-002: Install SIGTERM / SIGINT handlers that translate the signal
+# into a SystemExit so the run_continuous_loop KeyboardInterrupt / new
+# SystemExit handler can finalize the in-progress session cleanly. Without
+# this, systemd's SIGTERM would kill the bot mid-time.sleep() and the
+# session row would be left ACTIVE in the DB. The first SIGTERM raises
+# SystemExit; if it arrives during a long-running operation, a second
+# SIGTERM (the TimeoutStopSec=30 escalation from systemd) exits hard.
+_shutdown_signaled = False
+
+
+def _signal_handler(signum, frame):
+    global _shutdown_signaled
+    if _shutdown_signaled:
+        # Second signal during shutdown — exit hard.
+        os._exit(1)
+    _shutdown_signaled = True
+    sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    print(f"\n🛑 Received {sig_name}; initiating graceful shutdown...")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+
 
 # Check for single instance before importing
 check_single_instance()

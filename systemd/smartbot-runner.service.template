@@ -1,32 +1,42 @@
 # smartbot-runner.service.template
 #
-# BOT-001 PAPER-ONLY RUNNER DESIGN
+# BOT-002 PAPER-ONLY RUNNER UNIT
 #
-# This file is a REVIEWABLE TEMPLATE only. It is NOT installed and the
-# smartbot-runner.service unit is NOT registered with systemd on any host
-# as a result of BOT-001 landing. To install and enable later (a future
-# BOT-002 or higher-tier decision, NOT this iteration):
+# This file is the INSTALLED UNIT after BOT-002 approval (Josh approved
+# BOT-002 at 2026-09-10 22:15 UTC). The unit targets `main.py
+# --continuous` (NOT `scripts/run_continuous.py`) because `main.py`:
+#   - Acquires the /tmp/trading_bot.lock single-instance guard so manual
+#     and systemd invocations cannot collide.
+#   - Defaults loop_delay to None which routes through
+#     `SmartTradingBot._resolve_loop_delay(None)` and uses the schema-
+#     backed `loop_delay_seconds` value (default 300s).
+#   - Provides the same CLI surface for both manual and systemd runs.
 #
+# The unit is intentionally NOT enabled at install time. Install +
+# daemon-reload + a bounded smoke test run are performed first; only
+# after all post-smoke verification checks pass will the unit be
+# enabled for continuous operation.
+#
+# Install procedure (BOT-002):
 #   1. Copy this template to your user systemd directory:
 #        cp systemd/smartbot-runner.service.template \
 #           ~/.config/systemd/user/smartbot-runner.service
-#   2. Edit the WorkingDirectory / ExecStart / Environment paths if the
-#      repo path differs from /root/.openclaw/workspace/trading-bot.
-#   3. systemctl --user daemon-reload
-#   4. systemctl --user enable --now smartbot-runner.service
-#   5. journalctl --user -u smartbot-runner.service -f
-#
-# Do NOT enable this service until:
-#   - BOT-002 (or equivalent) has been approved by Josh.
-#   - The conftest live-mode guard is confirmed to remain effective.
-#   - /workspace/trading-bot/.env still points at the paper API URL.
-#   - The bot's session-counter fix (BOT-001) has been merged and is live.
+#   2. systemctl --user daemon-reload
+#   3. systemctl --user start --no-block smartbot-runner.service
+#      (--no-block returns immediately; the smoke test observes the
+#      journal for at least a few loop iterations)
+#   4. Observe via:
+#        journalctl --user -u smartbot-runner.service -f
+#        systemctl --user status smartbot-runner.service
+#   5. After smoke verification passes, enable for continuous:
+#        systemctl --user enable smartbot-runner.service
 #
 # ─────────────────────────────────────────────────────────────────────────
 # SAFETY PROPERTIES (designed for, not enforced at the unit level alone)
 #
 # 1. Loop-independent persistent process.
-#    ExecStart runs scripts/run_continuous.py which calls
+#    ExecStart runs `main.py --continuous` which acquires the
+#    /tmp/trading_bot.lock single-instance guard and then calls
 #    SmartTradingBot.run_continuous_loop() with the persistent
 #    settings (loop_delay_seconds) from the database. The bot is
 #    designed to loop indefinitely; the unit restarts on exit.
@@ -65,11 +75,13 @@
 #    (src/core/smart_bot.py:101) — a defense-in-depth second guard.
 #
 # 7. Fail closed.
-#    OnStartupFailure=shutdown means systemd will mark the unit
-#    failed at boot if the bot cannot start (e.g. missing
-#    credentials). Combined with RestartPreventExitStatus=78
-#    (used for code-driven intentional stops), this prevents
-#    zombie-runner states.
+#    RestartPreventExitStatus=78 means systemd will NOT restart
+#    the unit when it exits with code 78 (a code-driven intentional
+#    stop signal). Combined with StartLimitBurst=5 over
+#    StartLimitIntervalSec=300, a tight crash loop is bounded at
+#    5 restarts per 5 minutes; if exceeded, the unit fails and
+#    must be re-armed manually. This prevents zombie-runner states
+#    where a crash-loop amplifies damage.
 #
 # 8. No live brokerage client.
 #    src/brokerage/ contains only base.py + mock.py at the time
@@ -83,30 +95,54 @@
 #    from .env. The runner does NOT read or accept any other
 #    live-mode endpoint. Verified by reading src/core/smart_bot.py
 #    and src/database/sqlite_db.py.
+# ─────────────────────────────────────────────────────────────────────────
+# BOT-002 UPDATES
+#
+# A. ExecStart now targets `main.py --continuous` (was
+#    `scripts/run_continuous.py` in the BOT-001 design). `main.py`
+#    owns the /tmp/trading_bot.lock single-instance guard so manual
+#    and systemd invocations are mutually exclusive.
+#
+# B. The BOT-002 paper-only fail-closed guard is enforced in
+#    `SmartTradingBot.__init__` (src/core/smart_bot.py) BEFORE
+#    TradingClient construction. The guard requires:
+#      - TRADING_BOT_PAPER_ONLY == "1"  (hard fail if not)
+#      - ALPACA_BASE_URL matches the approved paper endpoint
+#        (hard fail if live or unrecognized)
+#      - ALPACA_API_KEY starts with "PK"  (hard fail if "AK" prefix)
+#    The systemd unit sets TRADING_BOT_PAPER_ONLY=1 and
+#    ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2 explicitly
+#    so a .env edit cannot accidentally promote the bot.
+#
+# C. `scripts/run_continuous.py` is preserved for manual smoke testing
+#    and now also acquires /tmp/trading_bot.lock. It defaults
+#    `loop_delay=None` so the schema-backed value is used.
 #
 # ─────────────────────────────────────────────────────────────────────────
-# DESIGN (NOT enabled by default — see header)
+# DESIGN (NOT enabled at install time — see header)
 
 [Unit]
-Description=SmartBot Continuous Paper-Only Trading Runner (BOT-001 design)
+Description=SmartBot Continuous Paper-Only Trading Runner (BOT-002)
 Documentation=file:%h/.local/share/trading-bot/smartbot-runner.README.md
 After=network-online.target
 Wants=network-online.target
 StartLimitBurst=5
 StartLimitIntervalSec=300
-OnStartupFailure=shutdown
-# Fail-closed: if startup fails (missing creds, DB unavailable), do not
-# keep restarting indefinitely. Surface the failure to journalctl.
-RestartPreventExitStatus=78
 
 [Service]
 WorkingDirectory=/root/.openclaw/workspace/trading-bot
 
+# Fail-closed: if startup fails (missing creds, DB unavailable), do not
+# keep restarting indefinitely. Surface the failure to journalctl.
+# This is a [Service] key (not [Unit]); the previous BOT-001 template
+# placed it under [Unit] which generated "Unknown key name" warnings.
+RestartPreventExitStatus=78
+
 # Hard-coded paper URL (guard #6). The .env file is consulted by dotenv
-# inside run_continuous.py, but THIS environment variable overrides it
-# because the bot reads os.getenv("ALPACA_BASE_URL") and the unit env
-# wins over .env on Linux systemd. If a future commit adds a way to
-# bypass this guard, the conftest live-mode blocks must also be updated.
+# inside main.py, but THIS environment variable overrides it because the
+# bot reads os.getenv("ALPACA_BASE_URL") and the unit env wins over
+# .env on Linux systemd. If a future commit adds a way to bypass this
+# guard, the conftest live-mode blocks must also be updated.
 Environment=ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2
 Environment=TRADING_BOT_PAPER_ONLY=1
 Environment=PYTHONUNBUFFERED=1
@@ -120,7 +156,7 @@ Environment=PATH=/usr/bin:/root/.local/bin:/root/bin:/usr/local/bin:/bin
 # fine: Restart=always handles the single-instance case correctly.
 ExecStart=/root/.openclaw/workspace/trading-bot/.venv/bin/python \
     -u \
-    /root/.openclaw/workspace/trading-bot/scripts/run_continuous.py
+    /root/.openclaw/workspace/trading-bot/main.py --continuous
 
 # Loop-independent persistence (property #1).
 Restart=always
