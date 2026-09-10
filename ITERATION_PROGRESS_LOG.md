@@ -2357,3 +2357,47 @@ agent/engplat-002a-project-context-contracts created from current main.
   commit + PR. Will not auto-merge.
 
 
+
+
+## 2026-09-10 11:36 UTC — BOT-001 audit archive committed (resumed)
+
+- UTC start: 11:36 UTC
+- UTC end: 11:42 UTC (estimated)
+- Elapsed time: ~6 minutes
+- Continuity: Resumed. The prior iteration's ITERATION_PROGRESS_LOG entry
+  ended "STOP. Awaiting Josh's review of staged changes before commit + PR.
+  Will not auto-merge." Josh instructed to "continue where you left off from
+  failing." Investigation found BOT-001 was already committed (f505557,
+  ea807c6), PR #75 was OPEN and MERGEABLE, the full safe suite was 1039/1039
+  green, and the working tree was clean.
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: BOT-001 — close the audit-trail gap left by the
+  prior iteration: the implementation report archive
+  `reports/2026-09-10_032500_bot001-smartbot-runtime-readiness.md` was
+  untracked. AGENTS.md designates `reports/` as the authoritative audit
+  record; PR4 (commit 5f0ac80) followed the pattern of a separate
+  "in-repo reviewable archive" commit.
+- Branch: `agent/bot-001-smartbot-runtime-readiness`
+- Commit: `71a2739` (audit archive commit); pushed to origin so PR #75
+  now carries the complete authoritative record.
+- Status: `DONE`
+- Files changed:
+  - `reports/2026-09-10_032500_bot001-smartbot-runtime-readiness.md` (added
+    in commit 71a2739)
+  - `ITERATION_PROGRESS_LOG.md` (this entry)
+- Tests/backtests: full safe suite re-verified
+  `TESTING=1 UNIT_TESTING=1 .venv/bin/python -m pytest -q --tb=no`
+  passed `1039 passed, 107 warnings in 96.68s (0:01:36)`.
+- Decisions/risks:
+  - PR #75 now MERGEABLE on the origin branch with all four expected
+    commits (implementation, conflict-resolution, archive). No new code
+    changes; no scope expansion.
+  - The `mergeable: UNKNOWN` reported immediately after push was a transient
+    GitHub recomputation; subsequent query returned `MERGEABLE`.
+  - No auto-merge. No new task started. The next bounded iteration
+    (BOT-002 install/enable, SCORE-001 normalize indicator scores, or
+    the deferred in-process Access JWT validation) still requires
+    explicit Josh approval per AGENTS.md and AGENT_OPERATING_PLAN.md.
+- Manager review decision: Accept.
+- Next action: STOP. Awaiting Josh's instruction. PR #75 is ready for
+  review at https://github.com/jsavoy93/trading-bot/pull/75.
