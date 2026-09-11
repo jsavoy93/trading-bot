@@ -162,14 +162,33 @@ BB) NEVER reduces the score. Stronger bearish evidence NEVER increases
 it. See `tests/test_smart_bot_score_normalization.py` for the
 proof.
 
-### BUY signal requirements (ALL must pass)
-- Score ≥ `min_score_buy` (default 50, loaded from settings)
+### BUY signal requirements (SCORE-002 — non-score strategy gates)
 - RSI < `rsi_buy_threshold` (oversold, default 30)
-- SMA in uptrend
-- MACD positive
-- Volume ≥ average
+- SMA in uptrend (fast > slow)
+- MACD histogram positive
+- Volume ≥ average (when `enable_volume_confirmation` is True)
 
-If ALL pass → BUY signal. If ANY fail → HOLD (logged to `failed_analyses`).
+If ALL of these pass → candidate is **BUY-eligible**. Score does
+**not** gate eligibility; total_score only ranks otherwise-eligible
+BUY candidates. min_score_buy is preserved in the schema as a
+deprecated setting for backward compatibility but is no longer
+consulted by the BUY/SELL/HOLD decision.
+
+If ANY non-score gate fails → HOLD (logged to `failed_analyses`).
+
+### Score as rank (SCORE-002)
+- total_score (published 0..100) is the quality rank for eligible BUY
+  candidates.
+- Eligible BUY candidates are sorted by total_score DESC, then symbol
+  ASC for deterministic tiebreak.
+- The top `max_trades` of the sorted list are executed; the rest are
+  skipped (`no_trade_reasons['max_trades_reached']`).
+
+### Score as sizing (unchanged)
+- total_score still derives STRONG (≥65) / MEDIUM (<65) signal
+  strength.
+- calculate_position_size() maps STRONG→2.0%, MEDIUM→1.5%, WEAK→1.0%
+  of portfolio. Sizing is rank-derived, not a duplicate gate.
 
 ---
 
@@ -225,7 +244,7 @@ Each loop processes 30 symbols from the queue, then sleeps 5 minutes.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `min_score_buy` | **50** | Minimum score for BUY signal |
+| `min_score_buy` | **50** | **[DEPRECATED by SCORE-002]** Preserved in schema for compatibility; no longer gates BUY eligibility. |
 | `min_score_sell` | 65 | Minimum score for SELL signal |
 | `rsi_buy_threshold` | 30 | RSI must be below this for BUY |
 | `rsi_sell_threshold` | 70 | RSI must be above this for SELL |
@@ -244,7 +263,7 @@ Each loop processes 30 symbols from the queue, then sleeps 5 minutes.
 
 3. **`analyzed_stocks.analysis_failures` and `failed_analyses` are completely independent tables** with different purposes.
 
-4. **The bot is working correctly when most symbols score 0-30** — that's just the market. The score threshold (`min_score_buy`) is the real trade trigger.
+4. **SCORE-002: `min_score_buy` is no longer the trade trigger.** Non-score strategy gates (RSI / SMA / MACD / Volume) determine eligibility; total_score only ranks otherwise-eligible BUY candidates. Most symbols still HOLD (97%+) because the non-score gates are narrow.
 
 5. **Alpaca API is fine** — the 97% figure was HOLD signals. Only "No market data" records indicate a data problem.
 
@@ -732,9 +751,11 @@ default attributes exist, apply schema-backed values to matching bot attributes,
 and log a bounded non-secret deterministic line using
 `format_effective_strategy_settings_for_log()`.
 
-The schema default for `min_score_buy` is `50`, matching the existing bot BUY
-threshold behavior. Dashboard metadata now uses that same default instead of the
-old duplicated dashboard-only `65` value.
+The schema default for `min_score_buy` is `50`. SCORE-002 marks this
+setting deprecated; the bot no longer consults it for BUY eligibility
+but the schema entry is preserved for backward compatibility with
+existing persisted overrides and dashboard renders. Dashboard metadata
+uses that same default.
 
 Dashboard setting updates must validate the full submitted batch before any
 write. If any known submitted value is invalid, the API returns HTTP 400 and no
@@ -1548,10 +1569,14 @@ bugs that were in the buy_criteria scoring block:
   `(price - BB_lower) / (BB_upper - BB_lower)`. Now reads the proper
   position.
 
-### Strategy preservation
+### Strategy preservation (SCORE-002 amendments)
 
-- BUY threshold (`min_score_buy` default 50) is unchanged: the
-  published 0..100 score is checked directly.
+- BUY eligibility is determined by non-score strategy gates (RSI /
+  SMA / MACD / Volume). `min_score_buy` is no longer consulted for
+  eligibility; the setting is preserved in the schema as
+  deprecated.
+- BUY ranking: eligible candidates are sorted by `total_score DESC,
+  symbol ASC` and the top `max_trades` are executed.
 - SELL detection uses an internal signed `blended_signed` score against
   the existing hardcoded `-50` threshold (and `<= 20` for STRONG
   SELL). The threshold values are unchanged; only the variable being

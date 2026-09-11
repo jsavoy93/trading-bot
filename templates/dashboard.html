@@ -492,7 +492,7 @@
                 style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px 12px;border-radius:6px;font-size:14px;"
                 onkeydown="if(event.key==='Enter')doSymbolSearch()">
             <button type="button" class="btn btn-primary" id="searchBtn"
-                onclick="var s=document.getElementById('searchInput').value.trim().toUpperCase();if(!s)return;var r=document.getElementById('searchResults');var b=document.getElementById('searchBtn');r.style.display='block';r.innerHTML='<div style=color:#f0883e>Looking up '+s+'...</div>';b.textContent='Loading';b.disabled=true;fetch('/api/search/'+s).then(function(resp){return resp.json()}).then(function(data){if(data.error){r.innerHTML='<div style=color:#da3633>'+data.error+'</div>'}else{var c=data.buy_criteria&&data.buy_criteria.length?data.buy_criteria.map(function(x){return'<span style=color:'+(x.passed?'#2ea043':'#da3633')+';font-size:12px;display:block>'+(x.passed?'✓':'✗')+' '+x.name+': '+x.detail+'</span>'}).join(''):'<span style=color:#8b949e>No criteria</span>';r.innerHTML='<div><h3 style=margin:0>'+data.symbol+' - '+data.signal+'</h3><p style=color:#8b949e>Price: $'+(data.price?data.price.toFixed(2):'N/A')+'</p><p style=font-size:24px;font-weight:bold>'+data.total_score+'</p></div><div><h4>Components</h4><div>RSI: '+(data.rsi_score?data.rsi_score.toFixed(1):'N/A')+' SMA: '+(data.sma_score?data.sma_score.toFixed(1):'N/A')+' MACD: '+(data.macd_score?data.macd_score.toFixed(1):'N/A')+' BB: '+(data.bb_score?data.bb_score.toFixed(1):'N/A')+'</div></div><div style=margin-top:10px><h4>Buy Criteria</h4>'+c+'</div><div style=margin-top:10px;color:#8b949e;font-size:12px>Updated: '+(data.last_analyzed?data.last_analyzed:'N/A')+'</div>';}b.textContent='Search';b.disabled=false}).catch(function(e){r.innerHTML='<div style=color:#da3633>Error: '+e.message+'</div>';b.textContent='Search';b.disabled=false})">Search</button>
+                onclick="var s=document.getElementById('searchInput').value.trim().toUpperCase();if(!s)return;var r=document.getElementById('searchResults');var b=document.getElementById('searchBtn');r.style.display='block';r.innerHTML='<div style=color:#f0883e>Looking up '+s+'...</div>';b.textContent='Loading';b.disabled=true;fetch('/api/search/'+s).then(function(resp){return resp.json()}).then(function(data){if(data.error){r.innerHTML='<div style=color:#da3633>'+data.error+'</div>'}else{var c=data.buy_criteria&&data.buy_criteria.length?data.buy_criteria.map(function(x){if(x.kind==='rank'||x.passed===null){return'<span style=color:#8b949e;font-size:12px;display:block>· '+x.name+': '+(x.detail||'')+'</span>';}return'<span style=color:'+(x.passed?'#2ea043':'#da3633')+';font-size:12px;display:block>'+(x.passed?'✓':'✗')+' '+x.name+': '+x.detail+'</span>'}).join(''):'<span style=color:#8b949e>No criteria</span>';r.innerHTML='<div><h3 style=margin:0>'+data.symbol+' - '+data.signal+'</h3><p style=color:#8b949e>Price: $'+(data.price?data.price.toFixed(2):'N/A')+'</p><p style=font-size:24px;font-weight:bold>'+data.total_score+'</p></div><div><h4>Components</h4><div>RSI: '+(data.rsi_score?data.rsi_score.toFixed(1):'N/A')+' SMA: '+(data.sma_score?data.sma_score.toFixed(1):'N/A')+' MACD: '+(data.macd_score?data.macd_score.toFixed(1):'N/A')+' BB: '+(data.bb_score?data.bb_score.toFixed(1):'N/A')+'</div></div><div style=margin-top:10px><h4>Buy Criteria</h4>'+c+'</div><div style=margin-top:10px;color:#8b949e;font-size:12px>Updated: '+(data.last_analyzed?data.last_analyzed:'N/A')+'</div>';}b.textContent='Search';b.disabled=false}).catch(function(e){r.innerHTML='<div style=color:#da3633>Error: '+e.message+'</div>';b.textContent='Search';b.disabled=false})">Search</button>
         </div>
         <div id="searchResults" style="margin-top:12px;display:none;"></div>
     </div>
@@ -1033,6 +1033,10 @@
                     </div>`;
 
                     // Buy criteria cell — show each criterion with its status.
+                    // SCORE-002: rank entries (c.kind === 'rank', c.passed === null)
+                    // render in a neutral color and are NOT passed/failed markers.
+                    // Old historical rows without `kind` use the prior pass/fail
+                    // coloring for legacy entries (e.g. 'Score ≥ 65').
                     const criteria = opp.buy_criteria || [];
                     let criteriaHtml;
                     if (criteria.length === 0) {
@@ -1040,11 +1044,14 @@
                     } else if (opp.passes_all_buy_criteria) {
                         criteriaHtml = '<span style="color:#2ea043;font-weight:600">✓ All</span>';
                     } else {
-                        criteriaHtml = criteria.map(c =>
-                            c.passed
+                        criteriaHtml = criteria.map(c => {
+                            if (c.kind === 'rank' || c.passed === null) {
+                                return `<span style="color:#8b949e;font-size:11px">\u00B7 ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`;
+                            }
+                            return c.passed
                                 ? `<span style="color:#2ea043;font-size:11px">✓ ${c.name}</span>`
-                                : `<span style="color:#da3633;font-size:11px">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`
-                        ).join('<br>');
+                                : `<span style="color:#da3633;font-size:11px">✗ ${c.name}${c.detail ? ': ' + c.detail : ''}</span>`;
+                        }).join('<br>');
                     }
 
                     return `<tr>

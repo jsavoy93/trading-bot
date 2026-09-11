@@ -698,9 +698,18 @@ def api_opportunities(limit: int = 30):
                 passes_all = bool(row['passes_all_buy_criteria'])
             except Exception as e:
                 logger.debug(f"Error parsing buy_criteria for {row['symbol']}: {e}")
-            
-            failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
-            
+
+            # SCORE-002: rank entries (kind='rank', passed=None) are not
+            # gates and must not appear in failed_criteria. Old historical
+            # rows without `kind` keep the prior behavior naturally (their
+            # 'Score ≥ 65' entry still passes when score >= 65 and is
+            # absent from this list when below 65).
+            failed_criteria = [
+                c['name'] for c in buy_criteria
+                if c.get('passed') is False
+                and c.get('kind') != 'rank'
+            ]
+
             opportunities.append({
                 'symbol': row['symbol'],
                 'price': row['price'],
