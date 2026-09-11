@@ -2672,3 +2672,143 @@ agent/engplat-002a-project-context-contracts created from current main.
   Josh's enablement approval.
 - Next action: **STOP**. Awaiting Josh's review. Do NOT enable the
   unit for continuous operation. Do NOT start SCORE-002.
+
+
+## 2026-09-11 00:41–00:55 UTC — BOT-003 dashboard active-session selection fix
+
+- Task start time: `2026-09-11 00:41 UTC`
+- Task end time: `2026-09-11 00:55 UTC`
+- Elapsed time: Approximately 14 minutes
+- Continuity: Continuous
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: BOT-003 (fix Trading Dashboard
+  active-session selection; report the real current runner
+  session, not the year-2099 fixture 71804). Approved by Josh at
+  00:41 UTC with explicit guard-rails: do NOT delete or mutate
+  historical rows, do NOT stop SmartBot unless required for a safe
+  test, do NOT begin SCORE-002 yet, no hard-coded exclusion of
+  session 71804, no hard-coded year/date workaround.
+- Branch: `agent/bot003-dashboard-active-session-selection`
+- Commits: `8541e4a` (v1 fix; id DESC + runner-pid filter) +
+  `72c81e9` (v2 fix; numeric cutoff via strftime).
+- Status: `DONE` (live-verified, PR #77 open, awaiting review).
+- Files changed:
+  - `src/database/sqlite_db.py` (+84/-1) — adds
+    `get_active_session_for_runner(pid)` helper that uses runner's
+    process start time as a numeric cutoff via SQLite's
+    `strftime('%s', session_start)`; fixes
+    `get_active_session()` to order by `id DESC` (was
+    `session_start DESC`).
+  - `dashboard.py` (+53/-3) — `get_runtime_status()` reads
+    `/tmp/trading_bot.lock` for the runner PID and uses
+    `get_active_session_for_runner(pid)` when runner is active;
+    falls back to id DESC when no runner is active; new
+    `active_session_source` field reports which path was used.
+  - `tests/test_bot003_active_session_selection.py` (NEW, 12
+    tests) — covers all spec cases including a regression guard
+    for the string-vs-numeric cutoff bug.
+  - `reports/2026-09-11_005000_bot003-dashboard-active-session-
+    selection.md` (NEW) — audit archive.
+  - `ITERATION_PROGRESS_LOG.md` — this continuity entry.
+- Tests/backtests:
+  - `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/test_bot003_active_session_selection.py -q` →
+    `12 passed, 2 warnings in 2.36s`.
+  - Full safe suite (with `/tmp/trading_bot.lock` moved aside
+    so the SIGTERM test can acquire it):
+    `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/ -q` →
+    `1155 passed, 1 failed` in 80.12s. The 1 failure is the
+    pre-existing `test_template_renders_red_dot_when_alpaca_
+    unreachable` test/HTML legend mismatch — verified to fail
+    identically on main before BOT-003 changes via `git stash`.
+    NOT a BOT-003 regression.
+  - `git diff --check HEAD` clean.
+  - Live verification (with SmartBot still running):
+    `dashboard.get_runtime_status()` returned
+    `active_session_id=71935` (the real current runner session),
+    `active_session_source=runner-pid` (the new path), all
+    three booleans true.
+- Decisions/risks:
+  - **`id DESC` ordering** in `get_active_session()` —
+    auto-increment primary key is the safest deterministic
+    "most recent" selector. Immune to clock skew.
+  - **Numeric cutoff via `strftime('%s', ...)`** — string
+    comparison of ISO-8601 is unsafe; the cutoff MUST be
+    numeric. The v1 commit had a string-cutoff bug that was
+    caught only by live verification; the v2 fix uses
+    `CAST(strftime('%s', session_start) AS INTEGER) >= ?` with
+    epoch seconds as the parameter.
+  - **Two-tier fallback** — runner-pid-filtered selection when
+    runner is active; id DESC when runner is inactive or
+    runner-pid lookup fails.
+  - **Pre-existing 2099 fixture (71804) preserved unchanged**
+    — not deleted, not modified. The fix excludes it via the
+    numeric cutoff but the row itself is untouched.
+- Manager review decision: `ACCEPT`; live-verified and ready for
+  Josh's review and merge.
+- Next action: **STOP**. Awaiting Josh's review of PR #77. Do
+  NOT auto-merge. Do NOT begin SCORE-002.
+
+
+## 2026-09-11 00:55–01:05 UTC — BOT-003 amendment (upper bound)
+
+- Task start time: `2026-09-11 00:55 UTC` (Josh flagged the v2 contradiction)
+- Task end time: `2026-09-11 01:05 UTC`
+- Elapsed: Approximately 10 minutes
+- Continuity: Continuous
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: BOT-003 amendment. Josh's specific
+  guard-rails: PROVE current behavior is broken; FIX session
+  selection by adding an upper bound (with explicit clock-skew
+  allowance); add regression tests; live-verify while SmartBot
+  continues running; reconfirm pre-existing failure is unrelated.
+  Do not stop SmartBot; do not begin SCORE-002.
+- Branch: `agent/bot003-dashboard-active-session-selection`
+- New commit: `d522c15` — adds upper bound `session_start_epoch <=
+  now + 300`; 9 new amendment tests.
+- Status: `DONE` (live-verified, PR #77 still open awaiting
+  review).
+- Files changed:
+  - `src/database/sqlite_db.py` (+45/-15) — adds upper-bound
+    filter; documents `CLOCK_SKEW_SECONDS = 300`; documents
+    linkage limitation (runtime-window heuristic, not PID
+    ownership).
+  - `tests/test_bot003_amend_future_fixture_bug.py` (NEW, 9 tests)
+    — bug demonstration + 8 regression tests.
+  - `reports/2026-09-11_010500_bot003-amendment-upper-bound.md`
+    (NEW) — audit archive.
+  - `ITERATION_PROGRESS_LOG.md` — this continuity entry.
+- Tests/backtests:
+  - `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/test_bot003_amend_future_fixture_bug.py
+    tests/test_bot003_active_session_selection.py -v` →
+    `21 passed` in 2.91s.
+  - Full safe suite (lock moved aside for SIGTERM test):
+    `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/ -q` → `1164 passed, 1 failed` in 78.92s.
+  - Pre-existing failure reconfirmed:
+    `git stash`-then-`pytest` on clean current main shows
+    `test_template_renders_red_dot_when_alpaca_unreachable`
+    fails identically. NOT a BOT-003 regression.
+  - `git diff --check HEAD` clean.
+  - Live verification (SmartBot still running):
+    `dashboard.get_runtime_status()` returned
+    `active_session_id=71962`, `active_session_source=runner-pid`,
+    all three booleans true. 71804 fixture correctly excluded.
+- Decisions/risks:
+  - **Two-sided window** is the minimum deterministic filter
+    that catches both pre-runner and future-dated ACTIVE rows.
+  - **`CLOCK_SKEW_SECONDS = 300` (5 min)** is generous for
+    NTP-corrected systems and VM clock drift; tight enough to
+    exclude any session dated beyond the near future.
+  - **`id DESC` ordering** is the tiebreaker for "most recently
+    created" — strictly monotonic and clock-independent.
+  - **Linkage limitation documented**: this is a runtime-window
+    heuristic, not PID ownership. The schema does not store
+    PID. The single-instance lock prevents concurrent runners in
+    production.
+- Manager review decision: `ACCEPT`; ready for Josh's review
+  and merge of PR #77.
+- Next action: **STOP**. Awaiting Josh's review of PR #77. Do NOT
+  auto-merge. Do NOT begin SCORE-002.

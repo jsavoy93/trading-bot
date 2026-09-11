@@ -229,10 +229,22 @@ def get_runtime_status() -> Dict:
         even if Alpaca is reachable.
 
       active_session_id: integer session id of the current ACTIVE row in
-        trading_sessions, or None if none is active.
+        trading_sessions that belongs to the running runner, or None if
+        none is active.
 
-    These three are independent. Today (BOT-001), all three should normally
-    be False in production until the runner is enabled in a later iteration.
+    These three are independent. Today (BOT-001/BOT-002), all three
+    should normally be True in production when the SmartBot runner is
+    enabled and operational.
+
+    BOT-003 deterministic active-session selection: when the runner is
+    active, the active session is selected via process-start-time
+    linkage to the runner PID (read from /tmp/trading_bot.lock + read
+    /proc/<pid>/stat). This excludes stale/fixture rows whose
+    session_start is before the current runner's process start time,
+    regardless of whether the row's timestamp is in the past, the
+    future, or otherwise skewed. When the runner is NOT active, the
+    function falls back to the most recently created ACTIVE row (id
+    DESC) for backward compatibility.
     """
     # Tier 1: Alpaca API reachable
     account = get_account_info()
@@ -244,8 +256,41 @@ def get_runtime_status() -> Dict:
     # Tier 3: active session in DB
     active_session_id = None
     active_session_start = None
+    active_session_source = None  # "runner-pid" or "id-desc" (diagnostic)
+
     try:
-        active = simple_rest.get_active_session()
+        active = None
+        if runner_active:
+            # BOT-003: when the runner is active, prefer the
+            # process-start-time-filtered selection. Read the runner
+            # PID from /tmp/trading_bot.lock and ask the DB to filter
+            # ACTIVE rows by the runner's process start time. This
+            # deterministically excludes stale/fixture rows.
+            try:
+                runner_pid = None
+                lock_path = "/tmp/trading_bot.lock"
+                if os.path.exists(lock_path):
+                    with open(lock_path, "r") as f:
+                        pid_text = f.read().strip()
+                    if pid_text.isdigit():
+                        runner_pid = int(pid_text)
+                if runner_pid:
+                    active = simple_rest.get_active_session_for_runner(runner_pid)
+                    if active:
+                        active_session_source = "runner-pid"
+            except Exception as e:
+                logger.debug(
+                    f"get_runtime_status: runner-pid lookup failed: {e}"
+                )
+        if not active:
+            # Fallback: most recently created ACTIVE row by id DESC.
+            # Still immune to clock-skewed fixtures because id is
+            # auto-increment. This handles the case where the runner
+            # is not active (so we have no PID to filter by), or the
+            # runner-pid lookup failed.
+            active = simple_rest.get_active_session()
+            if active:
+                active_session_source = "id-desc"
         if active:
             active_session_id = active.get("id")
             active_session_start = active.get("session_start")
@@ -258,6 +303,7 @@ def get_runtime_status() -> Dict:
         "smartbot_runner_active": runner_active,
         "active_session_id": active_session_id,
         "active_session_start": active_session_start,
+        "active_session_source": active_session_source,
         # Convenience: fully_ready means everything is green AND an active
         # session is running. This is the strongest signal the bot is
         # currently doing work. Used by the dot legend.
