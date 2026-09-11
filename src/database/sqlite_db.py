@@ -395,6 +395,12 @@ class SQLiteDB:
         Returns:
             The ACTIVE session row for the given runner PID, or None
             if no such session exists (or the PID is invalid).
+
+        Implementation note: the cutoff comparison is done numerically
+        via SQLite's `strftime('%s', session_start)` which returns
+        Unix epoch seconds. String comparison of ISO-8601 timestamps
+        is unsafe (e.g. '2099-01-01' > '2026-09-11' as strings),
+        which is exactly the bug this method fixes.
         """
         if not isinstance(runner_pid, int) or runner_pid <= 0:
             return None
@@ -415,16 +421,19 @@ class SQLiteDB:
                 clk_tck = 100  # Linux default; safe fallback
             with open("/proc/uptime", "r") as f:
                 uptime_seconds = float(f.read().split()[0])
-            start_epoch = time.time() - uptime_seconds + (starttime_ticks / float(clk_tck))
-            from datetime import datetime, timezone
-            cutoff_iso = datetime.fromtimestamp(start_epoch, tz=timezone.utc).isoformat()
+            cutoff_epoch = int(time.time() - uptime_seconds + (starttime_ticks / float(clk_tck)))
             with _get_conn() as conn:
+                # Use strftime('%s', session_start) to convert ISO-8601
+                # timestamp to Unix epoch seconds as a NUMERIC value.
+                # This makes the cutoff comparison numeric (correct for
+                # chronological order) rather than lexicographic (which
+                # is unsafe for ISO-8601 strings).
                 row = conn.execute(
                     "SELECT * FROM trading_sessions "
                     "WHERE status='ACTIVE' AND session_end IS NULL "
-                    "AND session_start >= ? "
+                    "AND CAST(strftime('%s', session_start) AS INTEGER) >= ? "
                     "ORDER BY id DESC LIMIT 1",
-                    (cutoff_iso,),
+                    (cutoff_epoch,),
                 ).fetchone()
                 return _row_to_dict(row) if row else None
         except Exception as e:

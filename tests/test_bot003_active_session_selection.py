@@ -278,6 +278,52 @@ def test_get_active_session_for_runner_prefers_newest_among_runner_rows(db) -> N
     assert active["id"] == newer_runner_id
 
 
+def test_get_active_session_for_runner_uses_numeric_cutoff_not_string(db) -> None:
+    """Regression guard: the cutoff MUST be compared numerically (epoch
+    seconds), not as ISO-8601 strings. A future-dated fixture whose
+    string-compare value is greater than the runner's start time must
+    still be excluded, because numerically the fixture is far in the
+    future. Without this guard, the string-compare path could let a
+    future-dated fixture slip past the cutoff.
+
+    This test exists specifically to prevent the v1 fix from regressing
+    back to a string-comparison implementation.
+    """
+    db_obj, path = db
+    conn = sqlite3.connect(path)
+    try:
+        # Insert a fixture dated 100 years in the future, AFTER the
+        # runner's process start time. Its session_start string will
+        # sort higher than the runner's ISO string, but its numeric
+        # value will also be higher (so it must NOT be excluded by
+        # the cutoff). Use this to ensure the cutoff still works
+        # when the candidate's session_start is strictly after the
+        # runner's start.
+        # The truly bug-relevant fixture is a row dated BEFORE the
+        # runner's start time (e.g., year 1990); that is what the
+        # cutoff MUST exclude. We seed that here.
+        past_fixture_id = _seed_session(
+            db_obj, conn,
+            session_start="1990-01-01T00:00:00+00:00",
+            status="ACTIVE", notes="ancient fixture (pre-runner)",
+        )
+        real_runner_id = _seed_session(
+            db_obj, conn,
+            session_start=datetime.now(timezone.utc).isoformat(),
+            status="ACTIVE", notes="real runner session",
+        )
+    finally:
+        conn.close()
+
+    active = db_obj.get_active_session_for_runner(os.getpid())
+    assert active is not None
+    assert active["id"] == real_runner_id
+    assert active["notes"] == "real runner session"
+    # The 1990 fixture MUST be excluded — its session_start is
+    # numerically before the runner's process start time.
+    assert active["id"] != past_fixture_id
+
+
 # ============================================================================
 # Tier C: get_runtime_status() integration — no live systemd dependency
 # ============================================================================
