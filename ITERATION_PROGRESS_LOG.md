@@ -2749,3 +2749,66 @@ agent/engplat-002a-project-context-contracts created from current main.
   Josh's review and merge.
 - Next action: **STOP**. Awaiting Josh's review of PR #77. Do
   NOT auto-merge. Do NOT begin SCORE-002.
+
+
+## 2026-09-11 00:55–01:05 UTC — BOT-003 amendment (upper bound)
+
+- Task start time: `2026-09-11 00:55 UTC` (Josh flagged the v2 contradiction)
+- Task end time: `2026-09-11 01:05 UTC`
+- Elapsed: Approximately 10 minutes
+- Continuity: Continuous
+- Stale/blocked status: Not stale and not blocked.
+- Backlog item/objective: BOT-003 amendment. Josh's specific
+  guard-rails: PROVE current behavior is broken; FIX session
+  selection by adding an upper bound (with explicit clock-skew
+  allowance); add regression tests; live-verify while SmartBot
+  continues running; reconfirm pre-existing failure is unrelated.
+  Do not stop SmartBot; do not begin SCORE-002.
+- Branch: `agent/bot003-dashboard-active-session-selection`
+- New commit: `d522c15` — adds upper bound `session_start_epoch <=
+  now + 300`; 9 new amendment tests.
+- Status: `DONE` (live-verified, PR #77 still open awaiting
+  review).
+- Files changed:
+  - `src/database/sqlite_db.py` (+45/-15) — adds upper-bound
+    filter; documents `CLOCK_SKEW_SECONDS = 300`; documents
+    linkage limitation (runtime-window heuristic, not PID
+    ownership).
+  - `tests/test_bot003_amend_future_fixture_bug.py` (NEW, 9 tests)
+    — bug demonstration + 8 regression tests.
+  - `reports/2026-09-11_010500_bot003-amendment-upper-bound.md`
+    (NEW) — audit archive.
+  - `ITERATION_PROGRESS_LOG.md` — this continuity entry.
+- Tests/backtests:
+  - `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/test_bot003_amend_future_fixture_bug.py
+    tests/test_bot003_active_session_selection.py -v` →
+    `21 passed` in 2.91s.
+  - Full safe suite (lock moved aside for SIGTERM test):
+    `TESTING=1 UNIT_TESTING=1 ./.venv/bin/python -m pytest
+    tests/ -q` → `1164 passed, 1 failed` in 78.92s.
+  - Pre-existing failure reconfirmed:
+    `git stash`-then-`pytest` on clean current main shows
+    `test_template_renders_red_dot_when_alpaca_unreachable`
+    fails identically. NOT a BOT-003 regression.
+  - `git diff --check HEAD` clean.
+  - Live verification (SmartBot still running):
+    `dashboard.get_runtime_status()` returned
+    `active_session_id=71962`, `active_session_source=runner-pid`,
+    all three booleans true. 71804 fixture correctly excluded.
+- Decisions/risks:
+  - **Two-sided window** is the minimum deterministic filter
+    that catches both pre-runner and future-dated ACTIVE rows.
+  - **`CLOCK_SKEW_SECONDS = 300` (5 min)** is generous for
+    NTP-corrected systems and VM clock drift; tight enough to
+    exclude any session dated beyond the near future.
+  - **`id DESC` ordering** is the tiebreaker for "most recently
+    created" — strictly monotonic and clock-independent.
+  - **Linkage limitation documented**: this is a runtime-window
+    heuristic, not PID ownership. The schema does not store
+    PID. The single-instance lock prevents concurrent runners in
+    production.
+- Manager review decision: `ACCEPT`; ready for Josh's review
+  and merge of PR #77.
+- Next action: **STOP**. Awaiting Josh's review of PR #77. Do NOT
+  auto-merge. Do NOT begin SCORE-002.
