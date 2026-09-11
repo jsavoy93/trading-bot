@@ -339,17 +339,98 @@ class SQLiteDB:
         ACTIVE is the only lifecycle state that may legitimately have
         session_end IS NULL. Any other state with session_end IS NULL is a
         stale-open anomaly and should be reaped via close_stale_sessions().
+
+        BOT-003 fix: ordered by `id DESC` (auto-increment primary key)
+        rather than `session_start DESC` (string compare). The auto-
+        increment id is strictly monotonic and set by SQLite at row
+        creation time, so it is immune to clock-skewed test fixtures
+        or intentionally-wrong dates. The current runner's session is
+        always the most recent row created, so id-DESC ordering
+        reliably returns the runner's ACTIVE session when one exists,
+        regardless of any clock-skewed or fixture rows that may also
+        be ACTIVE.
+
+        NOTE: This method is intentionally NOT runner-aware (it does
+        not filter by a specific PID). For runtime-status callers
+        that can identify the runner PID, prefer
+        `get_active_session_for_runner(pid)` which additionally
+        filters by the runner's process start time.
         """
         try:
             with _get_conn() as conn:
                 row = conn.execute(
                     "SELECT * FROM trading_sessions "
                     "WHERE status='ACTIVE' AND session_end IS NULL "
-                    "ORDER BY session_start DESC LIMIT 1"
+                    "ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 return _row_to_dict(row) if row else None
         except Exception as e:
             logging.warning(f"Exception getting active session: {e}")
+            return None
+
+    def get_active_session_for_runner(self, runner_pid: int) -> Optional[Dict]:
+        """Return the ACTIVE session belonging to the given runner PID.
+
+        BOT-003 deterministic linkage: the runner PID's process start
+        time (read from /proc/<pid>/stat field 22) is used as a
+        cutoff; only ACTIVE rows whose session_start is at or after
+        that cutoff can belong to the current runner. Any ACTIVE row
+        with session_start strictly before the runner's process
+        start time is either:
+          - a stale row from a previous runner, OR
+          - a test fixture with an intentionally-wrong date, OR
+          - a clock-skewed anomaly.
+
+        Among the surviving candidates, the most recently created
+        one (id DESC) is selected because the runner only has one
+        ACTIVE row at a time (each loop opens-then-closes a session).
+
+        Args:
+            runner_pid: The PID of the SmartBot runner process (read
+                from /tmp/trading_bot.lock). If the PID is not
+                positive or the process is not running, this returns
+                None and the caller should fall back to
+                get_active_session().
+
+        Returns:
+            The ACTIVE session row for the given runner PID, or None
+            if no such session exists (or the PID is invalid).
+        """
+        if not isinstance(runner_pid, int) or runner_pid <= 0:
+            return None
+        try:
+            import os
+            import time
+            # Read process start time from /proc/<pid>/stat.
+            # field 22 (1-indexed) is starttime in clock ticks since boot.
+            try:
+                with open(f"/proc/{runner_pid}/stat", "r") as f:
+                    stat_parts = f.read().split()
+                starttime_ticks = int(stat_parts[21])
+            except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
+                # Process not running or stat not parseable.
+                return None
+            clk_tck = os.sysconf("SC_CLK_TCK")
+            if not clk_tck or clk_tck <= 0:
+                clk_tck = 100  # Linux default; safe fallback
+            with open("/proc/uptime", "r") as f:
+                uptime_seconds = float(f.read().split()[0])
+            start_epoch = time.time() - uptime_seconds + (starttime_ticks / float(clk_tck))
+            from datetime import datetime, timezone
+            cutoff_iso = datetime.fromtimestamp(start_epoch, tz=timezone.utc).isoformat()
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM trading_sessions "
+                    "WHERE status='ACTIVE' AND session_end IS NULL "
+                    "AND session_start >= ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (cutoff_iso,),
+                ).fetchone()
+                return _row_to_dict(row) if row else None
+        except Exception as e:
+            logging.warning(
+                f"Exception getting active session for runner pid {runner_pid}: {e}"
+            )
             return None
 
     def get_stale_open_sessions(self) -> List[Dict]:
