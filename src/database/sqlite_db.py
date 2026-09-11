@@ -371,19 +371,37 @@ class SQLiteDB:
     def get_active_session_for_runner(self, runner_pid: int) -> Optional[Dict]:
         """Return the ACTIVE session belonging to the given runner PID.
 
-        BOT-003 deterministic linkage: the runner PID's process start
-        time (read from /proc/<pid>/stat field 22) is used as a
-        cutoff; only ACTIVE rows whose session_start is at or after
-        that cutoff can belong to the current runner. Any ACTIVE row
-        with session_start strictly before the runner's process
-        start time is either:
-          - a stale row from a previous runner, OR
-          - a test fixture with an intentionally-wrong date, OR
-          - a clock-skewed anomaly.
+        BOT-003 amendment linkage: a real session row created by the
+        current runner must have a session_start timestamp that is
+        chronologically consistent with the runner's process lifetime:
 
-        Among the surviving candidates, the most recently created
-        one (id DESC) is selected because the runner only has one
-        ACTIVE row at a time (each loop opens-then-closes a session).
+            runner_start_epoch <= session_start_epoch <= now + SKEW
+
+        where:
+          - runner_start_epoch is read from /proc/<pid>/stat field 22
+            (starttime in clock ticks since boot) and converted to
+            Unix epoch seconds via /proc/uptime.
+          - now is the current Unix epoch seconds at lookup time.
+          - SKEW is a documented tolerance for clock drift between
+            the runner process and the lookup process, plus a small
+            buffer for in-flight scheduling.
+
+        The LOWER bound excludes:
+          - stale ACTIVE rows from prior runners,
+          - test fixtures dated before the runner started.
+
+        The UPPER bound excludes:
+          - test fixtures dated far in the future (e.g. 2099-01-01),
+          - clock-skewed anomalies that produce post-now timestamps.
+
+        A future-dated row's epoch seconds are numerically GREATER
+        than any realistic current time, so the upper bound catches
+        it. (The single-bound v2 implementation only had the lower
+        bound, which future-dated rows trivially satisfy; that left
+        the bug class alive.)
+
+        Among survivors, id DESC selects the most recently created
+        row, which is the current loop's session.
 
         Args:
             runner_pid: The PID of the SmartBot runner process (read
@@ -396,12 +414,28 @@ class SQLiteDB:
             The ACTIVE session row for the given runner PID, or None
             if no such session exists (or the PID is invalid).
 
-        Implementation note: the cutoff comparison is done numerically
-        via SQLite's `strftime('%s', session_start)` which returns
-        Unix epoch seconds. String comparison of ISO-8601 timestamps
-        is unsafe (e.g. '2099-01-01' > '2026-09-11' as strings),
-        which is exactly the bug this method fixes.
+        LINKAGE LIMITATION:
+            This is a RUNTIME-WINDOW HEURISTIC, not PID ownership.
+            The current database schema does NOT store the runner
+            PID in trading_sessions, so we cannot assert that any
+            specific row was created by this specific PID. We can
+            only assert that the row's session_start timestamp is
+            chronologically consistent with the runner's process
+            lifetime. If two runners run concurrently (e.g. a test
+            harness and the live runner), this heuristic cannot
+            distinguish their rows. The SmartBot's single-instance
+            lock (/tmp/trading_bot.lock) prevents that scenario
+            in production.
         """
+        # Documented clock-skew tolerance. The runner's wall clock
+        # and the lookup process's wall clock can drift by a small
+        # amount (NTP-corrected systems typically drift <1s;
+        # uncorrected virtual machines can drift tens of seconds).
+        # 300s = 5 minutes is a generous upper bound that catches
+        # any realistic fixture dated in the future while still
+        # tolerating clock drift and test-environment noise.
+        CLOCK_SKEW_SECONDS = 300
+
         if not isinstance(runner_pid, int) or runner_pid <= 0:
             return None
         try:
@@ -421,19 +455,24 @@ class SQLiteDB:
                 clk_tck = 100  # Linux default; safe fallback
             with open("/proc/uptime", "r") as f:
                 uptime_seconds = float(f.read().split()[0])
-            cutoff_epoch = int(time.time() - uptime_seconds + (starttime_ticks / float(clk_tck)))
+            runner_start_epoch = int(time.time() - uptime_seconds + (starttime_ticks / float(clk_tck)))
+            upper_bound_epoch = int(time.time()) + CLOCK_SKEW_SECONDS
             with _get_conn() as conn:
-                # Use strftime('%s', session_start) to convert ISO-8601
-                # timestamp to Unix epoch seconds as a NUMERIC value.
-                # This makes the cutoff comparison numeric (correct for
-                # chronological order) rather than lexicographic (which
-                # is unsafe for ISO-8601 strings).
+                # Both bounds use strftime('%s', session_start) so the
+                # comparison is NUMERIC (Unix epoch seconds), not
+                # lexicographic. A future-dated session_start
+                # (e.g. '2099-01-01...') has epoch seconds far in
+                # the future; the upper bound filters it out. A
+                # pre-runner session_start (e.g. '1990-01-01...')
+                # has epoch seconds far in the past; the lower bound
+                # filters it out.
                 row = conn.execute(
                     "SELECT * FROM trading_sessions "
                     "WHERE status='ACTIVE' AND session_end IS NULL "
                     "AND CAST(strftime('%s', session_start) AS INTEGER) >= ? "
+                    "AND CAST(strftime('%s', session_start) AS INTEGER) <= ? "
                     "ORDER BY id DESC LIMIT 1",
-                    (cutoff_epoch,),
+                    (runner_start_epoch, upper_bound_epoch),
                 ).fetchone()
                 return _row_to_dict(row) if row else None
         except Exception as e:
