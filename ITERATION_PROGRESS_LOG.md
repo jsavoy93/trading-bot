@@ -2812,3 +2812,70 @@ agent/engplat-002a-project-context-contracts created from current main.
   and merge of PR #77.
 - Next action: **STOP**. Awaiting Josh's review of PR #77. Do NOT
   auto-merge. Do NOT begin SCORE-002.
+
+## 2026-09-11 12:00 UTC — SCORE-002 IMPLEMENTATION COMPLETE (awaiting review)
+
+- Branch: `agent/score-002-separate-eligibility-from-ranking`
+- Commit: `7911f13`
+- Backlog: SCORE-002 — Separate eligibility from ranking
+- Owner: trading-exec (Josh-approved design 2026-09-11 11:33 UTC)
+- Status: `DONE` (implementation); `IN_PROGRESS` (awaiting Josh merge)
+- Design contract:
+  1. non-score strategy gates determine BUY eligibility
+     (RSI < rsi_buy_threshold; SMA fast > slow; MACD > 0;
+     Volume >= avg when enable_volume_confirmation is True)
+  2. total_score ranks otherwise-eligible BUY candidates
+     (DESC, then symbol ASC tiebreak)
+  3. score may still affect sizing / signal-strength metadata
+     (STRONG >= 65 / MEDIUM < 65 / WEAK -> 2.0% / 1.5% / 1.0% of portfolio)
+  4. score must NOT independently turn an otherwise eligible BUY into HOLD
+  5. min_score_buy preserved as deprecated schema entry; no longer gates BUY
+  6. SELL logic, SELL thresholds, position-exit ordering unchanged
+  7. additive buy_criteria rank disclosure (kind='rank', passed=None)
+- Files changed (1027 insertions, 64 deletions, 7 files):
+  - `src/core/smart_bot.py` — eligibility refactor + ranking step + defensive inits
+  - `src/core/settings_service.py` — min_score_buy marked DEPRECATED
+  - `dashboard.py` — failed_criteria filter skips rank entries
+  - `templates/dashboard.html` — rank entries render neutrally (no green/red)
+  - `tests/test_score_002_eligibility_and_ranking.py` — NEW (24 tests, all pass)
+  - `tests/test_settings_service.py` — dashboard metadata test updated for new description
+  - `MENTOR.md` — BUY signal requirements section rewritten; common-mistake #4 updated
+- Tests run:
+  - New SCORE-002 suite: 24/24 PASS
+  - SCORE-001 invariant suite (`test_smart_bot_score_normalization.py`): 86/86 PASS
+  - Settings service suite: 38/38 PASS
+  - Full safe suite: 1187 PASS, 2 FAIL (both pre-existing on clean main)
+- Pre-existing failures (confirmed via `git stash` on clean main):
+  - `test_template_renders_red_dot_when_alpaca_unreachable`
+    (BOT-001 dashboard legend update; unrelated to SCORE-002)
+  - `test_main_py_installs_sigterm_handler`
+    (BOT-002 sigterm handler; unrelated to SCORE-002)
+- Decisions/risks:
+  - **Pre-existing latent bugs**: SCORE-002's expanded eligibility surface
+    surfaces four NameError/UnboundLocalError paths in `analyze_symbol`
+    that previously only triggered if Path 1 had exited cleanly. Path 2
+    references `filter_results`, `mtf_conflict_blocked`,
+    `volume_downgrade`, `volume_ratio`, `ai_research`, `daily_signal`,
+    `hourly_signal`, `rsi_score_daily`, `news_score`, `squeeze_score`,
+    `insider_boosted`, `trading_window_warning`. Each is now initialized
+    with safe defaults in Path 2's start. Documented inline as
+    "SCORE-002 defensive" so the rationale is durable.
+  - **Defensive defaults are independent of the SCORE-002 semantic change.**
+    They are bug fixes that allow Path 2 to complete; they do not alter
+    strategy semantics.
+  - **Path 2 also gains a buy_criteria + passes_all_buy_criteria block**
+    so the dashboard and search API have a consistent shape across MTF
+    and single-timeframe paths. This is a parity fix, not a semantic change.
+  - **`buy_criteria` shape migration**: new rows write
+    `{name: "Score", passed: None, kind: "rank", detail: "N/100"}` for the
+    first entry. Old rows keep the legacy `{name: "Score ≥ 65", passed: bool}`
+    shape. The dashboard's failed_criteria filter
+    (`c.get('passed') is False and c.get('kind') != 'rank'`) tolerates
+    both shapes. **No DB migration is required.**
+  - **No live trading**: BOT-002 paper-only guard intact.
+    `ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2`,
+    `TRADING_BOT_PAPER_ONLY=1` preserved.
+- Manager review decision: `ACCEPT`; ready for Josh's review of PR
+  (after PR is opened by `git push`).
+- **Next action**: **STOP**. Awaiting Josh's review and merge. Do NOT
+  auto-merge. Do NOT push without explicit approval.

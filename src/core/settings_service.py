@@ -56,7 +56,17 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
     ),
     "min_score_buy": StrategySetting(
         "min_score_buy", 50, "int", 0, 100, 1,
-        "Minimum total score required for a BUY signal.", "Signal Thresholds"
+        # SCORE-002: DEPRECATED. min_score_buy is no longer consulted by
+        # the BUY-eligibility decision. Non-score strategy gates (RSI /
+        # SMA / MACD / Volume) determine eligibility; total_score ranks
+        # otherwise eligible candidates. The setting is preserved in the
+        # schema for backward compatibility (existing dashboard renders,
+        # persisted overrides, tests) but must not be allowed to gate
+        # BUY eligibility in SmartTradingBot.
+        "Minimum total score required for a BUY signal. "
+        "[DEPRECATED by SCORE-002 — preserved for schema compatibility; "
+        "no longer gates BUY eligibility.]",
+        "Signal Thresholds (Legacy)"
     ),
     "rotation_threshold": StrategySetting(
         "rotation_threshold", 20, "int", 0, 50, 1,

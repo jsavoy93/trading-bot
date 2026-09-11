@@ -205,8 +205,12 @@ def test_dashboard_metadata_is_derived_from_schema_and_effective_values(
         "step": 1,
         "type": "int",
         "default": 50,
-        "description": "Minimum total score required for a BUY signal.",
-        "category": "Signal Thresholds",
+        "description": (
+            "Minimum total score required for a BUY signal. "
+            "[DEPRECATED by SCORE-002 \u2014 preserved for schema compatibility; "
+            "no longer gates BUY eligibility.]"
+        ),
+        "category": "Signal Thresholds (Legacy)",
     }
     assert metadata["hourly_weight"]["default"] == 0.30
     assert metadata["hourly_weight"]["type"] == "float"

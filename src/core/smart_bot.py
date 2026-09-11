@@ -210,6 +210,13 @@ class SmartTradingBot:
         self.rsi_period = 14
         self.rsi_buy_threshold = 30
         self.rsi_sell_threshold = 70
+        # SCORE-002: min_score_buy is deprecated. BUY eligibility is no
+        # longer determined by total_score; non-score strategy gates
+        # (RSI / SMA / MACD / Volume) determine eligibility, and
+        # total_score ranks otherwise eligible candidates. The
+        # attribute is preserved here (and in the schema) for backward
+        # compatibility with existing persisted settings, dashboards,
+        # and tests, but it is NOT consulted by BUY/SELL/HOLD logic.
         self.min_score_buy = 50
 
         # Database integration
@@ -1851,11 +1858,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 )
                 return None
 
-            # Build buy_criteria for storage
+            # Build buy_criteria for storage.
+            #
+            # SCORE-002: the first entry is a *rank disclosure*, not a gate.
+            # total_score is no longer consulted by the BUY-eligibility
+            # decision; it ranks otherwise eligible candidates. Consumers
+            # must treat `passed is None` as "not a gate" and must NOT add
+            # it to `failed_criteria`. `kind='rank'` is added (additive)
+            # so renderers can colour it neutrally.
             buy_criteria = [
                 {
-                    'name': 'Score ≥ 65',
-                    'passed': bool(total_score >= 65),
+                    'name': 'Score',
+                    'passed': None,
+                    'kind': 'rank',
                     'detail': f'{total_score:.0f}/100',
                 },
                 {
@@ -1881,8 +1896,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     'detail': f'{float(volume_ratio):.2f}x',
                 })
 
-            failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
-            passes_all_buy_criteria = len(failed_criteria) == 0
+            # SCORE-002: only gate entries (passed is True/False) can fail.
+            # Rank entries have passed=None and are excluded from
+            # failed_criteria regardless of value.
+            failed_criteria = [
+                c['name'] for c in buy_criteria
+                if c.get('passed') is False
+            ]
+            passes_all_buy_criteria = all(
+                c.get('passed') is True
+                for c in buy_criteria
+                if c.get('kind') != 'rank'
+            ) and any(
+                c.get('kind') != 'rank' for c in buy_criteria
+            )
 
             analysis_result = {
                 'symbol': symbol,
@@ -2340,6 +2367,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             signal_strength = "WEAK"
             ai_insight = None
 
+            # SCORE-002 defensive: filter_results is initialized here
+            # so the filter entries assembled further down always have
+            # a dict to mutate. Pre-SCORE-002 this was a latent binding
+            # only triggered when the prior MTF path (Path 1) had
+            # already exited, but the analyze_symbol function continues
+            # to populate filter_results below. SCORE-002's expanded
+            # eligibility surface increases the trigger rate for this
+            # latent bug; the fix is independent of the SCORE-002
+            # semantic change.
+            filter_results: Dict = {}
+            # SCORE-002 defensive: the second analysis path (Path 2)
+            # below references locals initialized only in Path 1
+            # (mtf_conflict_blocked, volume_downgrade, volume_ratio,
+            # ai_research, daily_signal, hourly_signal). Initialize
+            # them with safe defaults so Path 2 doesn't NameError.
+            mtf_conflict_blocked = False
+            volume_downgrade = False
+            volume_ratio = latest.get('volume_ratio', 1.0)
+            ai_research = None
+            daily_signal = None
+            hourly_signal = None
+
             # SCORE-001: compute bounded component scores from the indicators
             # produced by calculate_indicators(). Each component is individually
             # clamped to its documented range (±25). The dimensionless MACD
@@ -2367,6 +2416,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             macd_score = components['macd_score']
             bb_score = components['bb_score']
             macd_atr_ratio = components['macd_atr_ratio']
+
+            # SCORE-002 defensive: Path 2's analysis_result also
+            # references MTF-specific score locals
+            # (rsi_score_daily, _sma_score_daily, _macd_score_daily,
+            # _bb_score_daily) that were only defined in Path 1.
+            rsi_score_daily = rsi_score
+            _sma_score_daily = sma_score
+            _macd_score_daily = macd_score
+            _bb_score_daily = bb_score
 
             # Get volatility tier and adjust scoring
             # Low volatility = mean-reversion works better
@@ -2458,15 +2516,57 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 blended_signed = daily_raw_signed
                 total_score = daily_score
 
-            # Determine signal based on schema-backed score threshold.
-            # BUY uses the published clamped 0..100 score against
-            # min_score_buy (default 50). SELL uses the internal signed
-            # blended score against the existing -50 hardcoded threshold so
-            # the corrected score scale does not silently swallow bearish
-            # signals. Threshold values are unchanged.
-            if total_score >= self.min_score_buy:
+            # Determine signal.
+            #
+            # SCORE-002 (PR-ready): BUY eligibility is determined entirely
+            # by non-score strategy gates. total_score is the published
+            # 0..100 quality rank and may NOT independently turn an
+            # otherwise eligible BUY into HOLD. The non-score BUY gates
+            # are the documented indicator set:
+            #
+            #   - RSI < rsi_buy_threshold (oversold, default 30)
+            #   - SMA fast > SMA slow (uptrend)
+            #   - MACD histogram > 0
+            #   - Volume >= average (when enable_volume_confirmation is True)
+            #
+            # Volume confirmation is also a downstream BUY->HOLD filter
+            # (see enable_volume_confirmation block below); it is checked
+            # here too as part of the documented BUY requirements so a
+            # candidate does not pass eligibility and immediately fail
+            # the volume filter downstream (which would silently couple
+            # the two paths).
+            #
+            # Signal strength STRONG/MEDIUM continues to derive from
+            # total_score (rank-derived), preserving the existing
+            # calculate_position_size allocation mapping.
+            #
+            # SELL uses the internal signed blended score against the
+            # existing -50 hardcoded threshold so the corrected score
+            # scale does not silently swallow bearish signals. SCORE-002
+            # does NOT change SELL logic, SELL thresholds, or position
+            # sizing. min_score_buy (default 50) is preserved in the
+            # settings schema for backward compatibility but is no
+            # longer consulted here; SCORE-002 forbids score from
+            # independently gating BUY eligibility.
+            macd_hist_for_gate = latest.get('MACD_histogram', None)
+            volume_ratio_for_gate = latest.get('volume_ratio', None)
+            buy_eligible = (
+                (rsi is not None and pd.notna(rsi) and rsi < self.rsi_buy_threshold)
+                and (sma_fast is not None and sma_slow is not None and sma_fast > sma_slow)
+                and (macd_hist_for_gate is not None and pd.notna(macd_hist_for_gate) and float(macd_hist_for_gate) > 0)
+                and (
+                    not self.enable_volume_confirmation
+                    or (
+                        volume_ratio_for_gate is not None
+                        and pd.notna(volume_ratio_for_gate)
+                        and float(volume_ratio_for_gate) >= 1.0
+                    )
+                )
+            )
+
+            if buy_eligible:
                 signal = "BUY"
-                if total_score >= 65:
+                if total_score is not None and total_score >= 65:
                     signal_strength = "STRONG"
                 else:
                     signal_strength = "MEDIUM"
@@ -2480,7 +2580,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 signal = "HOLD"
                 signal_strength = "WEAK"
 
-            # Apply market regime modifiers (if enabled)
+            # Apply market regime modifiers (if enabled).
+            # SCORE-002: the previous score-derived sub-gate inside the
+            # regime filter was a BUY->HOLD suppression and is removed.
+            # The non-score regime behavior (require a stronger RSI
+            # threshold in trending markets) is preserved.
             regime_info = None
             regime_blocked = False
             if self.enable_regime_filter:
@@ -2489,15 +2593,17 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     mods = regime_info.get('modifiers', {})
 
                     if regime_info.get('regime') in ['TRENDING_BULLISH', 'TRENDING_BEARISH']:
-                        # In trending markets, be more selective about BUY signals
-                        # Require stronger RSI for buy signals in trending
-                        if signal == "BUY" and rsi >= mods.get('rsi_buy_threshold', 30):
-                            # But only block if we have data and signal is weak
-                            if total_score < 65:
-                                signal = "HOLD"
-                                signal_strength = "WEAK"
-                                logging.debug(f"📊 {symbol}: Blocked by regime filter ({regime_info['regime']}, RSI: {rsi:.1f})")
-                                regime_blocked = True
+                        # In trending markets, be more selective about BUY signals.
+                        # SCORE-002: non-score-only regime gate — block BUY only if
+                        # RSI exceeds the regime-modified oversold threshold.
+                        # (Previously also required score below the
+                        # STRONG/MEDIUM boundary; that score-derived
+                        # sub-gate was removed by SCORE-002.)
+                        if signal == "BUY" and rsi is not None and rsi >= mods.get('rsi_buy_threshold', self.rsi_buy_threshold):
+                            signal = "HOLD"
+                            signal_strength = "WEAK"
+                            logging.debug(f"📊 {symbol}: Blocked by regime filter ({regime_info['regime']}, RSI: {rsi:.1f})")
+                            regime_blocked = True
 
                     # Add regime info to result
                     if regime_info:
@@ -2559,8 +2665,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # Volume Confirmation filter - require above-average volume for BUY signals
             volume_warning = None
             volume_blocked = False
+            # SCORE-002 defensive: initialize volume_ratio before the
+            # gated branch so the filter_results entry below can
+            # always serialize it. Pre-SCORE-002 this was a latent bug
+            # only triggered when the SP filter or another filter
+            # downgraded a candidate to HOLD before the volume filter
+            # ran. SCORE-002's expanded eligibility surface increases
+            # the trigger rate; the latent fix is independent of the
+            # SCORE-002 semantic change.
+            volume_ratio = latest.get('volume_ratio', 1.0)
             if signal == "BUY" and self.enable_volume_confirmation:
-                volume_ratio = latest.get('volume_ratio', 1.0)
                 if pd.notna(volume_ratio) and volume_ratio < 1.0:
                     signal = "HOLD"
                     signal_strength = "WEAK"
@@ -2585,6 +2699,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 except Exception as e:
                     logging.debug(f"Trading window check failed: {e}")
             trading_window_blocked = True
+            # SCORE-002 defensive: trading_window_warning was previously
+            # only assigned inside the conditional branch; if signal was
+            # downgraded to HOLD before this point, the local was never
+            # defined. Initialize it explicitly so the filter_results
+            # entry below always serializes.
+            trading_window_warning = None
             filter_results["trading_window"] = {
                 "passed": not trading_window_blocked,
                 "blocked": trading_window_blocked,
@@ -2594,6 +2714,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # News Sentiment filter (Phase 7.1) - skip if strongly negative
             news_warning = None
             news_blocked = False
+            # SCORE-002 defensive: news_score is referenced later even
+            # when the BUY branch is skipped (e.g. signal already HOLD).
+            news_score = None
             if signal == "BUY":
                 try:
                     from src.analysis.news_sentiment import filter_signal_by_sentiment
@@ -2617,6 +2740,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             short_warning = None
             short_blocked = False
+            # SCORE-002 defensive: squeeze_score is referenced in the
+            # filter entry below even when the BUY branch is skipped.
+            squeeze_score = None
             if signal == "BUY":
                 try:
                     from src.analysis.short_interest import filter_by_short_interest
@@ -2638,6 +2764,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             }
 
             insider_score = 0
+            # SCORE-002 defensive: insider_boosted was only assigned
+            # inside the BUY branch; preserve a default.
+            insider_boosted = False
             if signal == "BUY":
                 try:
                     from src.analysis.insider_trading import get_insider_score
@@ -2758,6 +2887,51 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             filter_results, blocked_by, blocked_count = self._finalize_filter_results(filter_results)
 
+            # SCORE-002: Path 2 also needs to publish buy_criteria and
+            # passes_all_buy_criteria (Path 1 already does this for the
+            # MTF-enabled flow). Pre-SCORE-002 Path 2 silently omitted
+            # these fields, leaving them null for non-MTF analyses.
+            buy_criteria_p2 = [
+                {
+                    'name': 'Score',
+                    'passed': None,
+                    'kind': 'rank',
+                    'detail': f'{total_score:.0f}/100',
+                },
+                {
+                    'name': 'RSI not overbought',
+                    'passed': bool(rsi < 70),
+                    'detail': f'{rsi:.1f}',
+                },
+                {
+                    'name': 'SMA uptrend',
+                    'passed': bool(sma_fast > sma_slow),
+                    'detail': 'uptrend' if sma_fast > sma_slow else 'downtrend',
+                },
+                {
+                    'name': 'MACD positive',
+                    'passed': bool(latest.get('MACD_histogram') is not None and float(latest.get('MACD_histogram')) > 0),
+                    'detail': f'{float(latest.get("MACD_histogram")):.3f}' if latest.get('MACD_histogram') is not None else 'N/A',
+                },
+            ]
+            vratio_p2 = latest.get('volume_ratio', None)
+            if vratio_p2 is not None and pd.notna(vratio_p2):
+                buy_criteria_p2.append({
+                    'name': 'Volume ≥ avg',
+                    'passed': bool(float(vratio_p2) >= 1.0),
+                    'detail': f'{float(vratio_p2):.2f}x',
+                })
+            failed_criteria_p2 = [
+                c['name'] for c in buy_criteria_p2
+                if c.get('passed') is False
+            ]
+            passes_all_buy_criteria_p2 = all(
+                c.get('passed') is True for c in buy_criteria_p2
+                if c.get('kind') != 'rank'
+            ) and any(
+                c.get('kind') != 'rank' for c in buy_criteria_p2
+            )
+
             analysis_result = {
                 'symbol': symbol,
                 'price': price,
@@ -2791,6 +2965,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'filter_results': filter_results,
                 'blocked_by': blocked_by,
                 'blocked_count': blocked_count,
+                'buy_criteria': buy_criteria_p2,
+                'passes_all_buy_criteria': passes_all_buy_criteria_p2,
+                'failed_criteria': failed_criteria_p2,
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc))
             }
 
@@ -4204,6 +4381,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         trades_executed_details = []  # Track trade details for summary
         self._current_trades_details = trades_executed_details  # Make accessible to execute_trade
 
+        # SCORE-002: collect eligible BUY candidates first, then rank by
+        # total_score DESC and execute only the top remaining max_trades.
+        # No execution happens during the discovery/analysis loop.
+        buy_candidates: List[Dict] = []
+
         # Track reasons for no trades
         no_trade_reasons = {
             'no_signal': 0,  # No buy/sell signal detected
@@ -4350,7 +4532,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         continue
 
                     analysis = self.analyze_symbol(symbol, use_ai=False)
-                    if analysis and analysis.get('signal') == 'BUY' and analysis.get('total_score', 0) >= 60:
+                    # SCORE-002: rotation preview collects all eligible BUY
+                    # candidates; the previous score-derived quick-filter
+                    # was a BUY exclusion and was removed by SCORE-002.
+                    # was a score-derived gate. The real rotation guard is
+                    # `score_diff >= rotation_threshold` in
+                    # `evaluate_rotation`, which compares total_score between
+                    # candidates and positions and is preserved.
+                    if analysis and analysis.get('signal') == 'BUY':
                         temp_candidates.append(analysis)
 
                 # Evaluate rotation
@@ -4589,13 +4778,17 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         # Calculate total score with regime and catalyst
                         total = rsi_score + sma_score + macd_score + bb_score + regime_score + catalyst_score
 
-                        # Build buy_criteria for this analysis
+                        # Build buy_criteria for this analysis.
+                        # SCORE-002: the first entry is a *rank disclosure*,
+                        # not a gate. total_score ranks otherwise eligible
+                        # candidates; it does not gate BUY eligibility.
                         vol_ratio = latest.get('volume_ratio', None)
                         macd_hist = latest.get('MACD_histogram', 0)
                         buy_criteria = [
                             {
-                                'name': 'Score ≥ 65',
-                                'passed': bool(total >= 65),
+                                'name': 'Score',
+                                'passed': None,
+                                'kind': 'rank',
                                 'detail': f'{total:.0f}/100',
                             },
                             {
@@ -4621,8 +4814,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                 'detail': f'{float(vol_ratio):.2f}x',
                             })
 
-                        failed_criteria = [c['name'] for c in buy_criteria if not c['passed']]
-                        passes_all = len(failed_criteria) == 0
+                        # SCORE-002: rank entries (passed=None) are
+                        # excluded from failed_criteria.
+                        failed_criteria = [
+                            c['name'] for c in buy_criteria
+                            if c.get('passed') is False
+                        ]
+                        passes_all = all(
+                            c.get('passed') is True
+                            for c in buy_criteria
+                            if c.get('kind') != 'rank'
+                        ) and any(
+                            c.get('kind') != 'rank' for c in buy_criteria
+                        )
 
                         # One-line summary: Symbol | Price | RSI | MACD | BB% | VWAP% | Score
                         logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
@@ -4688,14 +4892,29 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     if analysis.get('ai_insight'):
                         logging.info(f"   🧠 AI Insight: {analysis['ai_insight']}")
 
-                    if trades_executed < max_trades:
-                        logging.info(f"   ➡️  Executing {analysis['signal']} trade...")
-                        if self.execute_trade(analysis):
-                            trades_executed += 1
-                        time.sleep(1)  # Rate limiting
-                    else:
-                        logging.info(f"   ⏸️  Signal detected but max trades reached ({max_trades})")
-                        no_trade_reasons['max_trades_reached'] += 1
+                    if analysis['signal'] == 'BUY':
+                        # SCORE-002: collect this eligible BUY candidate
+                        # for ranking. Execution happens after the analysis
+                        # loop completes (see "Execute ranked BUY candidates"
+                        # block below). total_score is the rank key.
+                        buy_candidates.append(analysis)
+                        logging.info(
+                            f"   📋 Queued for ranking (eligible BUY, "
+                            f"score={analysis.get('total_score', 0):.1f})"
+                        )
+                    elif analysis['signal'] == 'SELL':
+                        # SCORE-002: SELL ranking is out of scope. SELL
+                        # logic, SELL thresholds, and position-exit ordering
+                        # are unchanged. Execute SELLs inline when a slot is
+                        # available, matching the previous behavior.
+                        if trades_executed < max_trades:
+                            logging.info(f"   ➡️  Executing {analysis['signal']} trade...")
+                            if self.execute_trade(analysis):
+                                trades_executed += 1
+                            time.sleep(1)  # Rate limiting
+                        else:
+                            logging.info(f"   ⏸️  Signal detected but max trades reached ({max_trades})")
+                            no_trade_reasons['max_trades_reached'] += 1
 
                 elif analysis:
                     # Has analysis but no actionable signal (HOLD)
@@ -4746,6 +4965,49 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             except Exception as e:
                 logging.error(f"❌ Error with {symbol}: {e}")
                 self.errors_count += 1
+
+        # ─────────────────────────────────────────────────────────────────
+        # SCORE-002: Execute ranked BUY candidates
+        #
+        # At this point `buy_candidates` holds every eligible BUY candidate
+        # produced by the analysis loop above. Eligibility is determined by
+        # non-score strategy gates inside `analyze_symbol()` /
+        # `analyze_multi_timeframe()`. We rank now and execute only the
+        # top remaining `max_trades` slots, so a low-scoring eligible BUY
+        # does not pre-empt a higher-scoring eligible BUY simply because
+        # it was discovered first.
+        # ─────────────────────────────────────────────────────────────────
+        if buy_candidates:
+            ranked = sorted(
+                buy_candidates,
+                key=lambda a: (
+                    -float(a.get('total_score', 0.0)),
+                    a.get('symbol', ''),
+                ),
+            )
+            slots_remaining = max_trades - trades_executed
+            chosen = ranked[: max(0, slots_remaining)]
+            skipped = ranked[max(0, slots_remaining):]
+            logging.info(
+                f"\n📊 SCORE-002 RANKING: {len(ranked)} eligible BUY candidates "
+                f"for {max(0, slots_remaining)} slot(s)"
+            )
+            for rank, cand in enumerate(ranked, 1):
+                marker = "✅ EXEC" if rank <= len(chosen) else "⏸️  QUEUED"
+                logging.info(
+                    f"   #{rank:>2}  score={cand.get('total_score', 0):6.1f}  "
+                    f"{cand.get('symbol', '?'):<6}  {marker}"
+                )
+            for cand in chosen:
+                logging.info(
+                    f"   ➡️  Executing BUY (ranked): {cand['symbol']} "
+                    f"(score={cand.get('total_score', 0):.1f})"
+                )
+                if self.execute_trade(cand):
+                    trades_executed += 1
+                time.sleep(1)  # Rate limiting
+            if skipped:
+                no_trade_reasons['max_trades_reached'] += len(skipped)
 
         # Enhanced completion summary
         ai_summary = f", {ai_enhanced_trades} AI-enhanced" if ai_enabled else ""
