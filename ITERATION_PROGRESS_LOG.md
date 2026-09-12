@@ -3117,3 +3117,75 @@ if called twice. This contradicted Josh's immutability requirement.
 
 ### Next action
 Push branch to origin; open PR; STOP for Josh's final merge approval.
+
+## 2026-09-12 03:50 UTC — OBS-001 PHASE A CONTROLLED ACTIVATION
+
+Josh authorized OBS-001 Phase A controlled activation. PR #78 merged.
+Performed PRE-RESTART, restart of SmartBot + both dashboards, DB
+migration verification, waited for real cycle, validated funnel,
+audited 6 stocks.
+
+### BEFORE state (2026-09-12 03:41 UTC)
+- local main = origin/main = eefd7e9 (PR #78 merged)
+- working tree clean
+- SmartBot PID 702290, smartbot-runner.service active/enabled
+- dashboard.service PID 644244, port 8010, active/enabled
+- trading-dashboard.service PID 655875, port 8000, active/enabled
+- Paper-only env intact
+
+### ACTION: restart SmartBot
+- systemctl --user stop smartbot-runner.service
+- systemctl --user start --no-block smartbot-runner.service
+- New PID 761649, paper-only env preserved
+- /tmp/trading_bot.lock owned by 761649
+- NRestarts=0
+
+### ACTION: restart both dashboards
+- trading-dashboard.service: new PID 761736, port 8000
+- dashboard.service: new PID 761807, port 8010
+- All OBS-001 endpoints responding (api/decision, api/decision-history,
+  api/actionability-summary, api/opportunities)
+- NRestarts=0 for both
+
+### Migration verified
+- analyzed_stocks.decision_snapshot + decision_schema_version present
+- decision_history UNIQUE(cycle_id, symbol) — 0 duplicates
+- cycle_funnel UNIQUE(cycle_id) — 0 duplicates
+- 13,749 analyzed_stocks rows preserved
+- 10,352 pre-OBS rows still NULL where appropriate
+- 16+ cycles completed post-restart writing decision_snapshot
+
+### Cycle validated: cycle_76247_2026-09-12T03-47-01
+- 30 analyzed, 30 decision_history rows, all HOLD_INELIGIBLE
+- INV-1: analyzed_count = N(decision_history rows) = 30 ✓
+- No BUY/SELL/EXECUTION-BLOCKED cycles today (degenerate market)
+- INV-2 vacuous (no exec_attempts)
+
+### Audited 6 stocks: MNST, VCOB, RAVI, MNR, RBIL, ALRS
+All HOLD_INELIGIBLE. Cross-checked:
+- runtime journal (RSI/Score)
+- analyzed_stocks columns
+- decision_snapshot (latest) in analyzed_stocks
+- decision_history (immutable) snapshot
+- dashboard API /api/decision/MODD (worked example)
+- dashboard API /api/opportunities (legacy + OBS rows)
+
+### Cross-source agreement (MODD example)
+- runtime: MODD: $2.54 | RSI:34 | MACD:+0.00 | BB:50% | Score:96/100
+- analyzed_stocks: rsi=34.47, total_score=96.49
+- decision_history: cycle_id=cycle_76246, outcome=HOLD_INELIGIBLE,
+  failed gate=rsi_oversold (RSI 34.5 >= threshold 20.0)
+- dashboard /api/decision/MODD: identical to decision_history
+- dashboard /api/opportunities MODD row: outcome=HOLD_INELIGIBLE
+
+### Notable items
+- /api/actionability-summary returns latest cycle_funnel row verbatim
+- Legacy rows (decision_snapshot IS NULL) correctly render with
+  decision_outcome=None; signal/signal_strength read from columns
+- Dashboard "Failed to get positions" error: PRE-EXISTING (trading
+  dashboard's SmartTradingBot() guard failure when called without
+  TRADING_BOT_PAPER_ONLY env). Out of OBS-001 scope; non-critical.
+
+### Manager decision
+ACCEPT. OBS-001 Phase A is observably live in the running PAPER
+environment. All 6 audit items agree across all 4 sources.
