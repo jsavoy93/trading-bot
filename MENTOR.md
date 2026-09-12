@@ -227,7 +227,135 @@ Columns:
 
 ---
 
-## Symbol Selection — The Rolling Queue
+## OBS-001 Phase A — Decision Snapshot & Dashboard Observability
+
+**OBS-001 Phase A is OBSERVABILITY ONLY. No new trading gates.
+No changes to candidate population, ranks, attempt order,
+strategy gates, risk limits, sizing, slot semantics, SELL
+behavior, or brokerage behavior.**
+
+The bot persists a structured `decision_snapshot` for every
+analysis and a `cycle_funnel` row at the end of each cycle.
+The dashboard reads the snapshot rather than recomputing from
+raw indicators. This makes the bot's actual decision process
+auditable, including for historical rows that pre-date Phase A.
+
+### Snapshot schema (deployed version)
+
+`decision_snapshot` is a JSON blob stored in
+`analyzed_stocks.decision_snapshot`. The deployed schema version
+is `1`. Legacy rows have `decision_snapshot IS NULL` and render
+as "Legacy analysis — detailed decision trace unavailable".
+
+Snapshot blocks:
+
+| Block | What it records |
+|---|---|
+| `identity` | symbol, timestamp, session_id, bot_version, timeframe_mode, cycle_id |
+| `strategy_eligibility` | non-score strategy gates; signal/strength from the bot |
+| `scoring` | SCORE-001 components, total_score, score_invalid_data |
+| `ranking` | SCORE-002 candidate_rank, eligible_candidate_count, tiebreak_basis |
+| `selection` | attempted flag, slots_available_at_attempt |
+| `execution_checks` | current state at attempt + 9 ordered checks with `_gap_note` |
+| `order` | submit_order outcome, slot_consumed, fill_confirmed=False |
+| `decision` | canonical outcome enum + primary_reason |
+| `baseline_diagnostics` | OBSERVED-ONLY baseline; never affects trading |
+
+### Outcome enum
+
+Currently reachable (10 values): `BUY_ORDER_SUBMITTED`,
+`BUY_ORDER_FAILED`, `BUY_ELIGIBLE_NOT_SELECTED`,
+`BUY_BLOCKED_DYNAMIC`, `HOLD_INELIGIBLE`,
+`SELL_ORDER_SUBMITTED`, `SELL_ORDER_FAILED`,
+`SELL_BLOCKED_NO_POSITION`, `SELL_BLOCKED_DYNAMIC`,
+`SKIPPED_INVALID_DATA`.
+
+Reserved (5 values; NEVER produced by current code):
+`BUY_FILLED`, `SELL_FILLED`, `BUY_BLOCKED_PRE_RANK`,
+`SELL_BLOCKED_PRE_RANK`, `BUY_PRE_RANK_EXCLUDED`.
+
+### Slot-consumption semantics (v1)
+
+`slot_consumed=True` iff `submit_order` returned an order
+object. NOT a fill confirmation. Future fill-polling would bump
+`slot_consumed_semantics_version` to 2. `fill_confirmed` is
+always `False` in Phase A.
+
+### Cycle funnel (current behavior, no invented counters)
+
+| Counter | Definition |
+|---|---|
+| `analyzed_count` | Symbols that completed L1 analysis |
+| `strategy_eligible_count` | BUY or SELL signal produced |
+| `ranked_candidate_count` | Added to `buy_candidates` (BUY only) |
+| `execution_attempt_count` | `execute_trade` was called |
+| `execution_blocked_count` | `execute_trade` returned False |
+| `order_submission_attempt_count` | `submit_order` was reached |
+| `order_submitted_count` | `submit_order` returned an order |
+| `order_failed_count` | `submit_order` raised or returned None |
+| `not_attempted_count` | Ranked but never reached `execute_trade` |
+| `not_attempted_reason` | Only `slots_filled` is currently proven |
+
+Invariants (mathematically true for current runtime):
+- `analyzed_count >= strategy_eligible_count >= ranked_candidate_count`
+- `ranked_candidate_count == execution_attempt_count + not_attempted_count`
+- `execution_attempt_count == execution_blocked_count + order_submission_attempt_count`
+- `order_submission_attempt_count == order_submitted_count + order_failed_count`
+
+`pre_rank_actionable_count` is intentionally NOT a column.
+There is no active pre-rank gate in current code.
+
+### exposure-fidelity gaps (current behavior, not bugs)
+
+Each `_gap_note` on `execution_checks.checks[]` documents where
+current code does NOT include pending exposure:
+
+- `position_concentration_check`: reads `get_open_position(symbol)`;
+  does NOT include pending adds from earlier candidates.
+- `sector_concentration_check`: reads `get_all_positions()` via
+  `get_sector_allocation()`; does NOT include pending exposure.
+- `correlation_check`: reads `get_all_positions()`; does NOT include
+  pending exposure.
+- `beta_check`: reads `get_all_positions()` via
+  `get_portfolio_beta()`; does NOT include pending exposure.
+- `buying_power_check`: reads `account.cash`; whether cash is reserved
+  after `submit_order` is NOT empirically tested.
+
+These gaps are documented honestly. They are NOT patched inside
+OBS-001 Phase A; patching requires separate Josh-approved tasks.
+
+### PROPOSED FOLLOW-UP PIPELINE ARCHITECTURE (documentation only)
+
+```
+L1 Strategy Eligibility
+  → L2 Pre-Rank Portfolio Actionability   [FUTURE — PIPELINE-001]
+  → L3 Actionable Ranking
+  → L4 Sequential Selection
+  → L5 Dynamic Rechecks
+  → L6 Order Result
+```
+
+L2 is documented here as a PROPOSED FOLLOW-UP. It is NOT active.
+Phase A's `baseline_diagnostics.potential_l2_blockers_for_this_symbol`
+captures OBSERVED-ONLY evidence to inform the future L2 decision.
+
+### Dashboard endpoints
+
+- `GET /api/opportunities` — reads `decision_snapshot` when
+  present; falls back to legacy score-derivation for snapshot=NULL
+  rows. Renders canonical decision outcome and rank.
+- `GET /api/decision/{symbol}` — full snapshot detail.
+- `GET /api/decision-history/{symbol}` — cycle-over-cycle history.
+- `GET /api/actionability-summary` — latest cycle_funnel row.
+
+### Storage
+
+- `analyzed_stocks.decision_snapshot TEXT` (nullable; legacy = NULL)
+- `analyzed_stocks.decision_schema_version INTEGER DEFAULT 0`
+- `decision_history` table (one row per (cycle_id, symbol);
+  UNIQUE constraint; INSERT-only)
+- `cycle_funnel` table (one row per cycle; UNIQUE constraint;
+  INSERT-only)
 
 `_get_rolling_ticker_list()` builds the analysis queue at the start of each cycle:
 

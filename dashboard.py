@@ -649,45 +649,84 @@ def api_positions():
 
 @app.get("/api/opportunities")
 def api_opportunities(limit: int = 30):
-    """Get top stock opportunities from SQLite database"""
+    """Get top stock opportunities from SQLite database.
+
+    OBS-001 Phase A: read decision_snapshot when present and use the
+    bot's stored signal/signal_strength rather than recomputing them
+    from total_score. For legacy rows (decision_snapshot IS NULL) the
+    behavior is unchanged from pre-OBS-001: derive signal from score
+    thresholds (legacy backward-compatible pathway).
+    """
     import sqlite3
-    
+
     try:
         db_path = Path(__file__).parent / "trading_bot.db"
-        
+
         if not db_path.exists():
             return {"opportunities": [], "error": "Database not found", "analyzed": 0}
-        
+
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT symbol, price, total_score, rsi, rsi_score, sma_score, 
-                   macd_score, bb_score, regime_score, catalyst_score, 
-                   buy_criteria, passes_all_buy_criteria, last_analyzed
+            SELECT symbol, price, total_score, signal, signal_strength,
+                   rsi, rsi_score, sma_score,
+                   macd_score, bb_score, regime_score, catalyst_score,
+                   buy_criteria, passes_all_buy_criteria,
+                   decision_snapshot, decision_schema_version,
+                   last_analyzed
             FROM analyzed_stocks
             ORDER BY total_score DESC
             LIMIT ?
         """, (limit,))
-        
+
         rows = cursor.fetchall()
         conn.close()
-        
+
         opportunities = []
         for row in rows:
             score = row['total_score'] or 0
-            
-            if score >= 65:
-                signal = 'BUY'
-                strength = 'STRONG' if score >= 80 else 'MEDIUM'
-            elif score <= 35:
-                signal = 'SELL'
-                strength = 'STRONG' if score <= 20 else 'MEDIUM'
+
+            # Parse decision_snapshot if present (OBS-001 Phase A row)
+            snapshot = None
+            schema_version = row['decision_schema_version'] or 0
+            if row['decision_snapshot']:
+                try:
+                    snapshot = json.loads(row['decision_snapshot'])
+                except Exception as e:
+                    logger.debug(f"Error parsing decision_snapshot for {row['symbol']}: {e}")
+
+            if snapshot is not None and schema_version >= 1:
+                # OBS-001 Phase A row: read the bot's actual stored decision.
+                signal = snapshot.get('strategy_eligibility', {}).get('signal') \
+                    or row['signal'] or 'HOLD'
+                strength = snapshot.get('strategy_eligibility', {}).get('signal_strength') \
+                    or row['signal_strength'] or 'WEAK'
+                decision_outcome = snapshot.get('decision', {}).get('outcome')
+                decision_primary_reason = snapshot.get('decision', {}).get('primary_reason')
+                ranking_block = snapshot.get('ranking', {}) or {}
+                execution_block = snapshot.get('execution_checks', {}) or {}
+                order_block = snapshot.get('order', {}) or {}
             else:
-                signal = 'HOLD'
-                strength = 'WEAK'
-            
+                # Legacy row (decision_snapshot IS NULL): preserve the
+                # pre-OBS-001 score-derivation pathway for backward
+                # compatibility with rows written before Phase A shipped.
+                if score >= 65:
+                    signal = 'BUY'
+                    strength = 'STRONG' if score >= 80 else 'MEDIUM'
+                elif score <= 35:
+                    signal = 'SELL'
+                    strength = 'STRONG' if score <= 20 else 'MEDIUM'
+                else:
+                    signal = 'HOLD'
+                    strength = 'WEAK'
+                decision_outcome = None
+                decision_primary_reason = None
+                ranking_block = {}
+                execution_block = {}
+                order_block = {}
+
             # Parse buy_criteria from JSON string
             buy_criteria = []
             passes_all = False
@@ -701,9 +740,7 @@ def api_opportunities(limit: int = 30):
 
             # SCORE-002: rank entries (kind='rank', passed=None) are not
             # gates and must not appear in failed_criteria. Old historical
-            # rows without `kind` keep the prior behavior naturally (their
-            # 'Score ≥ 65' entry still passes when score >= 65 and is
-            # absent from this list when below 65).
+            # rows without `kind` keep the prior behavior naturally.
             failed_criteria = [
                 c['name'] for c in buy_criteria
                 if c.get('passed') is False
@@ -727,13 +764,152 @@ def api_opportunities(limit: int = 30):
                 'passes_all_buy_criteria': passes_all,
                 'failed_criteria': failed_criteria,
                 'analyzed_at': row['last_analyzed'],
+                # OBS-001 Phase A fields (None for legacy rows)
+                'decision_schema_version': schema_version,
+                'decision_outcome': decision_outcome,
+                'decision_primary_reason': decision_primary_reason,
+                'rank': ranking_block.get('candidate_rank'),
+                'eligible_candidate_count': ranking_block.get('eligible_candidate_count'),
+                'fill_confirmed': order_block.get('fill_confirmed', False) if order_block else False,
             })
-        
+
         return {"opportunities": opportunities, "analyzed": len(opportunities)}
 
     except Exception as e:
         logger.error(f"Failed to get opportunities: {e}")
         return {"opportunities": [], "error": str(e), "analyzed": 0}
+
+
+@app.get("/api/decision/{symbol}")
+def api_decision(symbol: str):
+    """OBS-001 Phase A: full decision_snapshot for one symbol.
+
+    Returns the latest decision_snapshot from analyzed_stocks.
+    Legacy rows (decision_snapshot IS NULL) return a sentinel.
+    """
+    import sqlite3
+    from pathlib import Path as _P
+    db_path = _P(__file__).parent / "trading_bot.db"
+    if not db_path.exists():
+        return {"error": "Database not found"}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT decision_snapshot, decision_schema_version, signal,
+                   signal_strength, total_score, last_analyzed
+            FROM analyzed_stocks WHERE symbol = ?
+        """, (symbol.upper(),))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return {"error": f"Symbol {symbol} not found"}
+        if not row['decision_snapshot']:
+            return {
+                "symbol": symbol.upper(),
+                "decision_schema_version": 0,
+                "is_legacy": True,
+                "legacy_message": "Legacy analysis — detailed decision trace unavailable",
+                "signal": row['signal'],
+                "signal_strength": row['signal_strength'],
+                "total_score": row['total_score'],
+                "analyzed_at": row['last_analyzed'],
+            }
+        snapshot = json.loads(row['decision_snapshot'])
+        return {
+            "symbol": symbol.upper(),
+            "decision_schema_version": row['decision_schema_version'],
+            "is_legacy": False,
+            "snapshot": snapshot,
+            "analyzed_at": row['last_analyzed'],
+        }
+    except Exception as e:
+        logger.error(f"api_decision failed for {symbol}: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/decision-history/{symbol}")
+def api_decision_history(symbol: str, limit: int = 50):
+    """OBS-001 Phase A: cycle-over-cycle decision_history rows for symbol."""
+    import sqlite3
+    from pathlib import Path as _P
+    db_path = _P(__file__).parent / "trading_bot.db"
+    if not db_path.exists():
+        return {"error": "Database not found"}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT cycle_id, cycle_start, session_id, decision_schema_version,
+                   decision_snapshot
+            FROM decision_history
+            WHERE symbol = ?
+            ORDER BY cycle_start DESC
+            LIMIT ?
+        """, (symbol.upper(), limit))
+        rows = cur.fetchall()
+        conn.close()
+        out = []
+        for r in rows:
+            out.append({
+                "cycle_id": r['cycle_id'],
+                "cycle_start": r['cycle_start'],
+                "session_id": r['session_id'],
+                "decision_schema_version": r['decision_schema_version'],
+                "snapshot": json.loads(r['decision_snapshot']) if r['decision_snapshot'] else None,
+            })
+        return {"symbol": symbol.upper(), "history": out, "count": len(out)}
+    except Exception as e:
+        logger.error(f"api_decision_history failed for {symbol}: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/actionability-summary")
+def api_actionability_summary():
+    """OBS-001 Phase A: cycle funnel from the latest cycle_funnel row."""
+    import sqlite3
+    from pathlib import Path as _P
+    db_path = _P(__file__).parent / "trading_bot.db"
+    if not db_path.exists():
+        return {"error": "Database not found"}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT * FROM cycle_funnel
+            ORDER BY cycle_start DESC LIMIT 1
+        """)
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return {"error": "No cycle_funnel rows yet", "funnel": None}
+        d = dict(row)
+        return {
+            "funnel": {
+                "cycle_id": d['cycle_id'],
+                "session_id": d['session_id'],
+                "cycle_start": d['cycle_start'],
+                "cycle_end": d['cycle_end'],
+                "analyzed_count": d['analyzed_count'],
+                "strategy_eligible_count": d['strategy_eligible_count'],
+                "ranked_candidate_count": d['ranked_candidate_count'],
+                "execution_attempt_count": d['execution_attempt_count'],
+                "execution_blocked_count": d['execution_blocked_count'],
+                "order_submission_attempt_count": d['order_submission_attempt_count'],
+                "order_submitted_count": d['order_submitted_count'],
+                "order_failed_count": d['order_failed_count'],
+                "not_attempted_count": d['not_attempted_count'],
+                "not_attempted_reason": d['not_attempted_reason'],
+                "bot_version": d['bot_version'],
+                "schema_version": d['schema_version'],
+            }
+        }
+    except Exception as e:
+        logger.error(f"api_actionability_summary failed: {e}")
+        return {"error": str(e)}
 
 
 @app.get("/api/filter-dashboard")

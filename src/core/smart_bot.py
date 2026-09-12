@@ -24,6 +24,62 @@ import yfinance as yf
 # Import our simple REST API manager and AI agent
 import sys
 from pathlib import Path
+
+# ── OBS-001 Phase A constants ──────────────────────────────────────────
+# Phase A is observability-only. These constants define the deployed
+# schema version and the canonical outcome enum. NEVER mutate at runtime;
+# any change to schema or outcomes is a deliberate, Josh-approved bump
+# with its own migration, renderer pathway, and test suite.
+OBS_001_SCHEMA_VERSION = 1
+
+# Canonical outcome enum. CURRENTLY_REACHABLE values are the ones the
+# current synchronous bot path can produce. RESERVED values exist in the
+# enum but are NEVER produced by current code; they are reserved for
+# future fill-confirmation or pre-rank-actionability implementations
+# and must never appear in snapshots unless the producing feature
+# exists.
+OBS_001_OUTCOMES_CURRENTLY_REACHABLE = frozenset({
+    "BUY_ORDER_SUBMITTED",          # L6: submit_order returned an order object
+    "BUY_ORDER_FAILED",             # L6: submit_order raised/returned None
+    "BUY_ELIGIBLE_NOT_SELECTED",    # L4: ranked beyond slots_remaining slice
+    "BUY_BLOCKED_DYNAMIC",          # L5: execute_trade returned False
+    "HOLD_INELIGIBLE",              # L1: strategy_eligible=False
+    "SELL_ORDER_SUBMITTED",
+    "SELL_ORDER_FAILED",
+    "SELL_BLOCKED_NO_POSITION",     # L5 (pre-existing): no position to sell
+    "SELL_BLOCKED_DYNAMIC",         # L5: execute_trade returned False for SELL
+    "SKIPPED_INVALID_DATA",         # fail-closed: missing MACD/ATR/etc.
+})
+
+OBS_001_OUTCOMES_RESERVED = frozenset({
+    "BUY_FILLED",                   # RESERVED for future fill-polling only
+    "SELL_FILLED",                  # RESERVED for future fill-polling only
+    "BUY_BLOCKED_PRE_RANK",         # RESERVED for PIPELINE-001 (future)
+    "SELL_BLOCKED_PRE_RANK",        # RESERVED for PIPELINE-001 (future)
+    "BUY_PRE_RANK_EXCLUDED",        # RESERVED for PIPELINE-001 (future)
+})
+
+OBS_001_ALL_OUTCOMES = (
+    OBS_001_OUTCOMES_CURRENTLY_REACHABLE | OBS_001_OUTCOMES_RESERVED
+)
+
+# Slot-consumption semantics. v1 = consumed when submit_order returns.
+# A future fill-polling implementation would bump this to v2.
+OBS_001_SLOT_SEMANTICS_VERSION = 1
+
+# Execution-check evaluation order (must match current execute_trade).
+OBS_001_EXECUTION_CHECK_ORDER = (
+    "margin_check",
+    "pending_order_check",
+    "cooldown_check",
+    "position_concentration_check",
+    "sector_concentration_check",
+    "correlation_check",
+    "beta_check",
+    "buying_power_check",
+    "quantity_post_sizing_check",
+)
+
 # Add the parent directory to path to access database module
 sys.path.append(str(Path(__file__).parent.parent))
 from database.simple_rest import simple_rest
@@ -1267,6 +1323,645 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             'price': analysis.get('price'),
         }
         self.db.save_analysis_result(symbol, analysis)
+
+    # ── OBS-001 Phase A: decision-snapshot builder ──────────────────────
+    # Observability only. The builder returns a JSON-serializable dict
+    # matching the Phase A schema (schema_version=OBS_001_SCHEMA_VERSION).
+    # It does NOT mutate any trading state, ranking, attempt order, or
+    # selection behavior. All numbers are read-only captures of state
+    # already computed by the existing pipeline.
+    def _build_decision_snapshot(
+        self,
+        symbol: str,
+        analysis: Dict,
+        cycle_id: Optional[str] = None,
+        ranking_state: Optional[Dict] = None,
+        selection_state: Optional[Dict] = None,
+        execution_state: Optional[Dict] = None,
+        order_state: Optional[Dict] = None,
+        baseline_diagnostics: Optional[Dict] = None,
+    ) -> Dict:
+        """Build a Phase A decision_snapshot dict matching schema_version=1."""
+        from datetime import datetime as _dt, timezone as _tz
+        now_iso = _dt.now(_tz.utc).isoformat()
+
+        signal = analysis.get("signal", "HOLD")
+        signal_strength = analysis.get("signal_strength", "WEAK")
+        strategy_eligible = signal in ("BUY", "SELL")
+
+        gates: List[Dict] = []
+        rsi = analysis.get("rsi")
+        sma_fast = analysis.get("sma_fast")
+        sma_slow = analysis.get("sma_slow")
+        macd_hist_for_gate = analysis.get("macd_histogram")
+        if macd_hist_for_gate is None and isinstance(analysis.get("latest"), dict):
+            macd_hist_for_gate = analysis["latest"].get("MACD_histogram")
+        volume_ratio = analysis.get("volume_ratio")
+
+        def _add_gate(name, passed, observed, threshold, reason):
+            gates.append({
+                "name": name,
+                "category": "strategy_gate",
+                "applied": True,
+                "passed": passed,
+                "observed_value": observed,
+                "threshold_value": threshold,
+                "reason": reason,
+            })
+
+        if rsi is not None and pd.notna(rsi):
+            rsi_pass = bool(rsi < self.rsi_buy_threshold)
+            _add_gate(
+                "rsi_oversold",
+                rsi_pass,
+                float(rsi),
+                float(self.rsi_buy_threshold),
+                f"RSI {float(rsi):.1f} {'<' if rsi_pass else '>='} threshold {float(self.rsi_buy_threshold):.1f}",
+            )
+        if sma_fast is not None and sma_slow is not None:
+            sma_pass = bool(sma_fast > sma_slow)
+            _add_gate(
+                "sma_uptrend",
+                sma_pass,
+                float(sma_fast) if sma_fast is not None else None,
+                float(sma_slow) if sma_slow is not None else None,
+                f"SMA fast {'>' if sma_pass else '<='} SMA slow",
+            )
+        if macd_hist_for_gate is not None and pd.notna(macd_hist_for_gate):
+            macd_pass = bool(float(macd_hist_for_gate) > 0)
+            _add_gate(
+                "macd_positive",
+                macd_pass,
+                float(macd_hist_for_gate),
+                0.0,
+                f"MACD histogram {float(macd_hist_for_gate):.3f} {'>' if macd_pass else '<='} 0",
+            )
+        if self.enable_volume_confirmation and volume_ratio is not None and pd.notna(volume_ratio):
+            vol_pass = bool(float(volume_ratio) >= 1.0)
+            _add_gate(
+                "volume_confirmation",
+                vol_pass,
+                float(volume_ratio),
+                1.0,
+                f"Volume ratio {float(volume_ratio):.2f}x {'>=' if vol_pass else '<'} 1.0x avg",
+            )
+
+        strategy_reason = None
+        if not strategy_eligible:
+            failed = [g["name"] for g in gates if g.get("passed") is False]
+            if failed:
+                strategy_reason = f"Strategy ineligible: failed gates: {', '.join(failed)}"
+            else:
+                strategy_reason = "Strategy ineligible (no actionable signal)"
+
+        strategy_eligibility_block = {
+            "strategy_eligible": strategy_eligible,
+            "strategy_reason": strategy_reason,
+            "evaluated_at": now_iso,
+            "gates": gates,
+            "signal": signal,
+            "signal_strength": signal_strength,
+        }
+
+        scoring_block = {
+            "components": {
+                "rsi_score": analysis.get("rsi_score"),
+                "sma_score": analysis.get("sma_score"),
+                "macd_score": analysis.get("macd_score"),
+                "bb_score": analysis.get("bb_score"),
+                "catalyst_score": analysis.get("catalyst_score"),
+                "regime_score": analysis.get("regime_score"),
+            },
+            "volatility_tier": analysis.get("volatility_tier"),
+            "volatility_multiplier_rsi": analysis.get("volatility_multiplier_rsi"),
+            "volatility_multiplier_sma": analysis.get("volatility_multiplier_sma"),
+            "insider_boost_applied": bool(analysis.get("insider_boosted")),
+            "insider_score": analysis.get("insider_score", 0),
+            "blended_signed": analysis.get("blended_signed"),
+            "total_score": analysis.get("total_score"),
+            "score_invalid_data": analysis.get("score_invalid_data", False),
+        }
+
+        if ranking_state is None:
+            ranking_state = {}
+        ranking_block = {
+            "applicable": bool(ranking_state.get("applicable", False)),
+            "ranked_candidate": bool(ranking_state.get("ranked_candidate", False)),
+            "eligible_candidate_count": ranking_state.get("eligible_candidate_count"),
+            "candidate_rank": ranking_state.get("candidate_rank"),
+            "tiebreak_basis": "symbol ASC",
+            "total_score": ranking_state.get("total_score", analysis.get("total_score")),
+            "eligible_count_at_l3": ranking_state.get("eligible_count_at_l3"),
+        }
+
+        if selection_state is None:
+            selection_state = {}
+        selection_block = {
+            "attempted": bool(selection_state.get("attempted", False)),
+            "selection_attempted_at": selection_state.get("selection_attempted_at"),
+            "slots_available_at_attempt": selection_state.get("slots_available_at_attempt"),
+        }
+
+        if execution_state is None:
+            execution_state = {}
+        execution_block = {
+            "current_state_at_attempt": execution_state.get("current_state_at_attempt", {}),
+            "checks": execution_state.get("checks", []),
+            "first_blocking_check": execution_state.get("first_blocking_check"),
+            "first_blocking_reason": execution_state.get("first_blocking_reason"),
+            "evaluated_in_order": list(OBS_001_EXECUTION_CHECK_ORDER),
+        }
+
+        if order_state is None:
+            order_state = {}
+        submitted = bool(order_state.get("submitted", False))
+        order_block = {
+            "submitted": submitted,
+            "alpaca_order_id": order_state.get("alpaca_order_id"),
+            "status_known": order_state.get("status_known"),
+            "submitted_at": order_state.get("submitted_at"),
+            "no_order_reason": order_state.get("no_order_reason"),
+            "fill_confirmed": False,
+            "fill_confirmation_method": None,
+            "fill_price": None,
+            "fill_quantity": None,
+            "fill_timestamp": None,
+            "slot_consumed": submitted,
+            "slot_consumed_semantics_version": OBS_001_SLOT_SEMANTICS_VERSION,
+        }
+
+        if order_block["submitted"]:
+            if signal == "BUY":
+                decision_outcome = "BUY_ORDER_SUBMITTED"
+            elif signal == "SELL":
+                decision_outcome = "SELL_ORDER_SUBMITTED"
+            else:
+                decision_outcome = "SKIPPED_INVALID_DATA"
+        elif execution_block.get("first_blocking_check") is not None:
+            # A pre-submit blocker was observed. Block reason wins over
+            # submit_attempted because submit_order was NOT reached.
+            if signal == "SELL":
+                decision_outcome = "SELL_BLOCKED_DYNAMIC"
+            else:
+                decision_outcome = "BUY_BLOCKED_DYNAMIC"
+        elif order_state.get("submit_attempted"):
+            if signal == "BUY":
+                decision_outcome = "BUY_ORDER_FAILED"
+            elif signal == "SELL":
+                decision_outcome = "SELL_ORDER_FAILED"
+            else:
+                decision_outcome = "SKIPPED_INVALID_DATA"
+        elif ranking_block.get("applicable") and not ranking_block.get("ranked_candidate"):
+            decision_outcome = "BUY_ELIGIBLE_NOT_SELECTED"
+        elif analysis.get("score_invalid_data"):
+            decision_outcome = "SKIPPED_INVALID_DATA"
+        elif signal == "SELL":
+            decision_outcome = "SELL_BLOCKED_NO_POSITION"
+        else:
+            decision_outcome = "HOLD_INELIGIBLE"
+
+        primary_reason = (
+            execution_block.get("first_blocking_reason")
+            or order_block.get("no_order_reason")
+            or strategy_reason
+            or (
+                f"Rank #{ranking_block.get('candidate_rank')}/"
+                f"{ranking_block.get('eligible_candidate_count')}; "
+                f"slots available {selection_block.get('slots_available_at_attempt')}"
+                if ranking_block.get("applicable") and not ranking_block.get("ranked_candidate")
+                else "frozen Phase A outcome"
+            )
+        )
+
+        decision_block = {
+            "outcome": decision_outcome,
+            "primary_reason": primary_reason,
+            "decision_evaluated_at": now_iso,
+        }
+
+        bd_block = None
+        if baseline_diagnostics is not None:
+            bd_block = dict(baseline_diagnostics)
+            bd_block.setdefault(
+                "_label",
+                "OBSERVED-ONLY: for future pre-rank analysis. "
+                "Phase A does NOT use this as a trading gate.",
+            )
+
+        snapshot = {
+            "schema_version": OBS_001_SCHEMA_VERSION,
+            "schema_version_notes":
+                "OBS-001 Phase A production. Observes current bot "
+                "behavior; introduces no new trading gates.",
+            "symbol": symbol,
+            "analysis_timestamp": now_iso,
+            "session_id": getattr(self, "session_id", None),
+            "bot_version": getattr(self, "bot_version", "2.1.0"),
+            "timeframe_mode": (
+                "multi_timeframe" if analysis.get("multi_timeframe") else
+                "single_timeframe" if analysis.get("signal") else None
+            ),
+            "cycle_id": cycle_id,
+            "strategy_eligibility": strategy_eligibility_block,
+            "scoring": scoring_block,
+            "ranking": ranking_block,
+            "selection": selection_block,
+            "execution_checks": execution_block,
+            "order": order_block,
+            "decision": decision_block,
+            "baseline_diagnostics": bd_block,
+        }
+        return snapshot
+
+    def _capture_l5_state_at_attempt(self, symbol: str) -> Dict:
+        """OBS-001 Phase A: capture observable broker/account state at
+        the moment execute_trade is about to run for a symbol.
+
+        OBSERVED-ONLY. The captured state is recorded into the snapshot
+        but is NOT used to alter trading semantics; the snapshot is a
+        record of what the bot saw.
+
+        Captured fields (each labeled by its source):
+          - confirmed positions: trading_client.get_all_positions()
+          - pending orders for THIS symbol: trading_client.get_orders()
+          - trade_cooldowns: trade_cooldowns DB (in-memory fallback)
+          - account.cash: trading_client.get_account()
+          - sector allocation: get_sector_allocation()
+          - portfolio beta: get_portfolio_beta()
+        """
+        observed = {
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "source_labels": {
+                "confirmed_positions": "trading_client.get_all_positions()",
+                "pending_orders": "trading_client.get_orders() (open statuses only)",
+                "trade_cooldowns": "trade_cooldowns DB / self.recent_trades fallback",
+                "cash": "trading_client.get_account().cash",
+                "sector_allocation_pct": "get_sector_allocation()",
+                "portfolio_beta": "get_portfolio_beta()",
+            },
+            "pending_orders_for_this_symbol": 0,
+            "cooldown_active": False,
+            "cooldown_remaining_minutes": None,
+            "existing_position_qty": 0.0,
+            "existing_position_value": 0.0,
+            "sector_allocation_pct": {},
+            "portfolio_beta": None,
+            "cash": None,
+            "slot_consumed_pre_attempt": getattr(self, "trades_executed", 0),
+        }
+
+        # Pending orders for THIS symbol
+        try:
+            from alpaca.trading.enums import OrderStatus as _OS
+            open_statuses = {
+                _OS.NEW, _OS.ACCEPTED, _OS.PENDING_NEW,
+                _OS.PARTIALLY_FILLED, _OS.PENDING_CANCEL,
+                _OS.PENDING_REPLACE, _OS.PENDING_REVIEW,
+            }
+            orders = list(self.trading_client.get_orders())
+            observed["pending_orders_for_this_symbol"] = sum(
+                1 for o in orders if o.symbol == symbol and o.status in open_statuses
+            )
+        except Exception:
+            observed["pending_orders_for_this_symbol"] = None
+
+        # Cooldown for this symbol (BUY only at runtime)
+        try:
+            if self.is_in_cooldown(symbol, cooldown_minutes=240):
+                observed["cooldown_active"] = True
+                last_trade_time = self.db.get_trade_cooldown(symbol) if self.db.is_available() else None
+                if last_trade_time is not None:
+                    elapsed_min = (datetime.utcnow() - last_trade_time.replace(tzinfo=None)).total_seconds() / 60.0
+                    observed["cooldown_remaining_minutes"] = max(0.0, 240.0 - elapsed_min)
+        except Exception:
+            pass
+
+        # Existing position for this symbol
+        try:
+            pos = self.trading_client.get_open_position(symbol)
+            if pos:
+                observed["existing_position_qty"] = float(pos.qty)
+                observed["existing_position_value"] = float(pos.market_value)
+        except Exception:
+            pass
+
+        # Sector allocation + portfolio beta (uses positions only; pending
+        # exposure is NOT counted by current code — preserved as gap)
+        try:
+            observed["sector_allocation_pct"] = self.get_sector_allocation() or {}
+        except Exception:
+            pass
+        try:
+            observed["portfolio_beta"] = self.get_portfolio_beta()
+        except Exception:
+            pass
+
+        # Cash
+        try:
+            account = self.trading_client.get_account()
+            observed["cash"] = float(account.cash)
+        except Exception:
+            pass
+
+        return observed
+
+    def _run_execution_checks_with_observation(
+        self,
+        symbol: str,
+        signal: str,
+        quantity: int,
+        price: float,
+        portfolio_value: float,
+    ) -> tuple:
+        """OBS-001 Phase A: run the SAME checks execute_trade performs,
+        in the SAME order, but only for OBSERVATION. Returns a tuple
+        (checks_list, first_blocking_check, first_blocking_reason).
+
+        This function does NOT return early on the first block; it runs
+        every applicable check to gather full evidence. It also does NOT
+        call submit_order. It exists so the snapshot can record what the
+        bot would have observed at this moment.
+
+        Each check entry has {name, applied, passed, observed_value,
+        threshold_value, reason, _gap_note} per the corrigendum-2
+        exposure-fidelity findings.
+        """
+        checks: List[Dict] = []
+        first_blocking_check: Optional[str] = None
+        first_blocking_reason: Optional[str] = None
+
+        def _record(name, passed, observed, threshold, reason, gap=None):
+            checks.append({
+                "name": name,
+                "applied": True,
+                "passed": passed,
+                "observed_value": observed,
+                "threshold_value": threshold,
+                "reason": reason,
+                "_gap_note": gap,
+            })
+            if first_blocking_check is None and passed is False:
+                first_blocking_check = name
+                first_blocking_reason = reason
+
+        # 1. margin_check
+        try:
+            account = self.trading_client.get_account()
+            cash = float(account.cash)
+            margin_blocked = cash < 0
+            _record(
+                "margin_check",
+                (not margin_blocked),
+                cash,
+                0.0,
+                f"Cash ${cash:.2f}; margin block {'active' if margin_blocked else 'not active'}",
+                gap=None,
+            )
+        except Exception as e:
+            _record(
+                "margin_check",
+                None,
+                None,
+                None,
+                f"Could not read account.cash: {e}",
+                gap="Reads trading_client.get_account(); whether cash is reserved after submit_order is NOT empirically tested by current code.",
+            )
+
+        # 2. pending_order_check
+        try:
+            from alpaca.trading.enums import OrderStatus as _OS
+            open_statuses = {
+                _OS.NEW, _OS.ACCEPTED, _OS.PENDING_NEW,
+                _OS.PARTIALLY_FILLED, _OS.PENDING_CANCEL,
+                _OS.PENDING_REPLACE, _OS.PENDING_REVIEW,
+            }
+            orders = list(self.trading_client.get_orders())
+            pending_count = sum(
+                1 for o in orders if o.symbol == symbol and o.status in open_statuses
+            )
+            _record(
+                "pending_order_check",
+                pending_count == 0,
+                pending_count,
+                0,
+                f"{pending_count} pending order(s) for {symbol}",
+                gap="Reads trading_client.get_orders() live; immediately observes orders submitted by earlier candidates in this cycle.",
+            )
+        except Exception as e:
+            _record(
+                "pending_order_check",
+                None,
+                None,
+                None,
+                f"Could not read orders: {e}",
+                gap=None,
+            )
+
+        # 3. cooldown_check (BUY only)
+        if signal == "BUY":
+            try:
+                cooldown_active = self.is_in_cooldown(symbol, cooldown_minutes=240)
+                minutes_remaining = None
+                if cooldown_active:
+                    last_trade_time = self.db.get_trade_cooldown(symbol) if self.db.is_available() else None
+                    if last_trade_time is not None:
+                        elapsed = (datetime.utcnow() - last_trade_time.replace(tzinfo=None)).total_seconds() / 60.0
+                        minutes_remaining = max(0.0, 240.0 - elapsed)
+                _record(
+                    "cooldown_check",
+                    (not cooldown_active),
+                    minutes_remaining if minutes_remaining is not None else 0.0,
+                    240.0,
+                    f"Cooldown {'active' if cooldown_active else 'not active'}; {minutes_remaining:.1f} min remaining" if minutes_remaining is not None else "Cooldown status determined",
+                    gap="Reads trade_cooldowns DB live; immediately observes cooldowns set by mark_recent_trade after earlier candidates' successful submits.",
+                )
+            except Exception as e:
+                _record(
+                    "cooldown_check",
+                    None,
+                    None,
+                    240.0,
+                    f"Could not read cooldown: {e}",
+                    gap=None,
+                )
+        else:
+            checks.append({
+                "name": "cooldown_check",
+                "applied": False,
+                "passed": None,
+                "observed_value": None,
+                "threshold_value": 240.0,
+                "reason": "Cooldown only applies to BUY signals",
+                "_gap_note": None,
+            })
+
+        # 4. position_concentration_check (BUY only)
+        if signal == "BUY":
+            try:
+                current_value = self.get_current_position_value(symbol)
+                new_trade_value = quantity * price
+                total_position_value = current_value + new_trade_value
+                position_pct = (total_position_value / portfolio_value) * 100 if portfolio_value > 0 else 0.0
+                _record(
+                    "position_concentration_check",
+                    position_pct <= 10.0,
+                    position_pct,
+                    10.0,
+                    f"Projected position {position_pct:.1f}% of portfolio (cap 10%)",
+                    gap="Reads get_open_position(symbol).market_value; does NOT include pending adds from earlier candidates in this cycle. CURRENT BEHAVIOR GAP.",
+                )
+            except Exception as e:
+                _record(
+                    "position_concentration_check",
+                    None,
+                    None,
+                    10.0,
+                    f"Could not compute: {e}",
+                    gap=None,
+                )
+        else:
+            checks.append({
+                "name": "position_concentration_check",
+                "applied": False,
+                "passed": None,
+                "observed_value": None,
+                "threshold_value": 10.0,
+                "reason": "Position concentration only applies to BUY",
+                "_gap_note": None,
+            })
+
+        # 5. sector_concentration_check (BUY only)
+        if signal == "BUY":
+            try:
+                position_size_dollars = quantity * price
+                passes, current_pct, projected_pct, sector_reason = self.check_sector_concentration(symbol, position_size_dollars)
+                _record(
+                    "sector_concentration_check",
+                    passes,
+                    projected_pct,
+                    getattr(self, "max_sector_concentration", 0.30) * 100,
+                    sector_reason or "Sector check passed",
+                    gap="Reads get_all_positions() via get_sector_allocation(); does NOT include pending exposure from earlier candidates in this cycle. CURRENT BEHAVIOR GAP.",
+                )
+            except Exception as e:
+                _record(
+                    "sector_concentration_check",
+                    None,
+                    None,
+                    None,
+                    f"Could not compute: {e}",
+                    gap=None,
+                )
+        else:
+            checks.append({
+                "name": "sector_concentration_check",
+                "applied": False,
+                "passed": None,
+                "observed_value": None,
+                "threshold_value": None,
+                "reason": "Sector concentration only applies to BUY",
+                "_gap_note": None,
+            })
+
+        # 6. correlation_check (BUY only)
+        if signal == "BUY":
+            try:
+                passes_corr, max_corr, correlated, corr_reason = self.check_correlation_risk(symbol)
+                _record(
+                    "correlation_check",
+                    passes_corr,
+                    max_corr,
+                    getattr(self, "max_correlation", 0.85),
+                    corr_reason or "Correlation check passed",
+                    gap="Reads get_all_positions(); does NOT include pending exposure. CURRENT BEHAVIOR GAP.",
+                )
+            except Exception as e:
+                _record(
+                    "correlation_check",
+                    None,
+                    None,
+                    None,
+                    f"Could not compute: {e}",
+                    gap=None,
+                )
+        else:
+            checks.append({
+                "name": "correlation_check",
+                "applied": False,
+                "passed": None,
+                "observed_value": None,
+                "threshold_value": None,
+                "reason": "Correlation only applies to BUY",
+                "_gap_note": None,
+            })
+
+        # 7. beta_check (BUY only)
+        if signal == "BUY":
+            try:
+                passes_beta, current_beta, beta_reason = self.check_beta_exposure()
+                _record(
+                    "beta_check",
+                    passes_beta,
+                    current_beta,
+                    getattr(self, "max_portfolio_beta", 1.5),
+                    beta_reason or "Beta check passed",
+                    gap="Reads get_all_positions() via get_portfolio_beta(); does NOT include pending exposure. CURRENT BEHAVIOR GAP.",
+                )
+            except Exception as e:
+                _record(
+                    "beta_check",
+                    None,
+                    None,
+                    None,
+                    f"Could not compute: {e}",
+                    gap=None,
+                )
+        else:
+            checks.append({
+                "name": "beta_check",
+                "applied": False,
+                "passed": None,
+                "observed_value": None,
+                "threshold_value": None,
+                "reason": "Beta only applies to BUY",
+                "_gap_note": None,
+            })
+
+        # 8. buying_power_check
+        try:
+            account = self.trading_client.get_account()
+            cash = float(account.cash)
+            cost = quantity * price
+            _record(
+                "buying_power_check",
+                cash >= cost,
+                cash,
+                cost,
+                f"Cash ${cash:.2f} vs cost ${cost:.2f}",
+                gap="Reads account.cash; whether cash is reserved after submit_order is NOT empirically tested by current code. CURRENT BEHAVIOR GAP.",
+            )
+        except Exception as e:
+            _record(
+                "buying_power_check",
+                None,
+                None,
+                None,
+                f"Could not read: {e}",
+                gap=None,
+            )
+
+        # 9. quantity_post_sizing_check
+        _record(
+            "quantity_post_sizing_check",
+            quantity > 0,
+            quantity,
+            1,
+            f"Post-sizing quantity {quantity}",
+            gap=None,
+        )
+
+        return checks, first_blocking_check, first_blocking_reason
+
         logging.info(f"💾 Saved {symbol}: {analysis.get('signal')} score={analysis.get('total_score', 50)}")
 
     def get_analysis_status(self) -> Dict:
@@ -4349,6 +5044,35 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         self._market_data_cache.clear()
         self._cycle_start_time = datetime.now(timezone.utc)
 
+        # ── OBS-001 Phase A: cycle bookkeeping (observability only) ─────────
+        # cycle_id is used by decision_history and cycle_funnel to bind
+        # multiple snapshots together. cycle_start is the timestamp used by
+        # every per-symbol snapshot for this run.
+        cycle_id = (
+            f"cycle_{self.session_id or 'LOCAL'}_"
+            f"{self._cycle_start_time.strftime('%Y-%m-%dT%H-%M-%S')}"
+        )
+        cycle_start_iso = self._cycle_start_time.isoformat()
+        # Per-cycle funnel counters. These reflect CURRENT runtime behavior;
+        # pre_rank_actionable_count is intentionally NOT tracked (no active
+        # pre-rank gate in current code).
+        obs_001_cycle_stats = {
+            "analyzed_count": 0,                       # symbols that completed L1 analysis
+            "strategy_eligible_count": 0,              # BUY or SELL signal produced
+            "ranked_candidate_count": 0,               # added to buy_candidates
+            "execution_attempt_count": 0,              # execute_trade called
+            "execution_blocked_count": 0,               # execute_trade returned False
+            "order_submission_attempt_count": 0,        # submit_order reached
+            "order_submitted_count": 0,                 # submit_order returned an order
+            "order_failed_count": 0,                   # submit_order raised/returned None
+            "not_attempted_count": 0,                   # ranked but never reached execute_trade
+            "not_attempted_reason": None,               # 'slots_filled' when applicable
+        }
+        # Snapshot accumulator. Each entry is {symbol, snapshot_dict,
+        # persistence_state}. Persistence happens once per (cycle_id, symbol)
+        # at cycle finalize time (guarded by UNIQUE(cycle_id, symbol)).
+        obs_001_pending_snapshots: Dict[str, Dict] = {}
+
         # Log market regime at start of analysis
         if self.enable_regime_filter:
             try:
@@ -4651,6 +5375,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 else:
                     analysis = self.analyze_symbol(symbol, use_ai=ai_enabled)
 
+                # OBS-001 Phase A: count every symbol that completed L1.
+                obs_001_cycle_stats["analyzed_count"] += 1
+
                 # Save analysis result
                 if analysis:
                     self.save_analysis_to_db(symbol, analysis)
@@ -4844,6 +5571,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                 if analysis and analysis['signal'] in ['BUY', 'SELL']:
                     opportunities += 1
+                    obs_001_cycle_stats["strategy_eligible_count"] += 1
 
                     # Check if we should skip due to weak signals
                     if analysis['signal_strength'] == "WEAK":
@@ -4898,6 +5626,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         # loop completes (see "Execute ranked BUY candidates"
                         # block below). total_score is the rank key.
                         buy_candidates.append(analysis)
+                        obs_001_cycle_stats["ranked_candidate_count"] += 1
                         logging.info(
                             f"   📋 Queued for ranking (eligible BUY, "
                             f"score={analysis.get('total_score', 0):.1f})"
@@ -4909,12 +5638,63 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         # available, matching the previous behavior.
                         if trades_executed < max_trades:
                             logging.info(f"   ➡️  Executing {analysis['signal']} trade...")
-                            if self.execute_trade(analysis):
+                            # OBS-001 Phase A: capture snapshot around the
+                            # unchanged execute_trade call. The snapshot
+                            # reflects what the bot observed; the trading
+                            # semantics are NOT modified.
+                            obs_001_cycle_stats["execution_attempt_count"] += 1
+                            obs_attempt_state = {
+                                "current_state_at_attempt": self._capture_l5_state_at_attempt(symbol),
+                            }
+                            exec_checks, first_block, first_reason = self._run_execution_checks_with_observation(
+                                symbol, "SELL",
+                                quantity=self.trade_amount // max(1, analysis.get('price', 1)),
+                                price=analysis.get('price', 0.0),
+                                portfolio_value=self.get_portfolio_total_value(),
+                            )
+                            obs_attempt_state["checks"] = exec_checks
+                            obs_attempt_state["first_blocking_check"] = first_block
+                            obs_attempt_state["first_blocking_reason"] = first_reason
+                            # The actual SELL outcome (the only behavioral change
+                            # possible) is captured via the existing trading
+                            # flow; we attach it to the order_state below.
+                            execute_returned = self.execute_trade(analysis)
+                            obs_attempt_state["_execute_returned"] = execute_returned
+                            obs_001_cycle_stats["execution_blocked_count"] += 0 if execute_returned else 1
+                            obs_001_pending_snapshots[symbol] = {
+                                "analysis": analysis,
+                                "ranking_state": {"applicable": False},
+                                "selection_state": {
+                                    "attempted": True,
+                                    "selection_attempted_at": datetime.now(timezone.utc).isoformat(),
+                                    "slots_available_at_attempt": max_trades - trades_executed,
+                                },
+                                "execution_state": obs_attempt_state,
+                                "order_state": {
+                                    "submitted": False,    # filled in post-loop via _finalize_obs_001_order
+                                    "submit_attempted": False,
+                                },
+                            }
+                            if execute_returned:
                                 trades_executed += 1
                             time.sleep(1)  # Rate limiting
                         else:
                             logging.info(f"   ⏸️  Signal detected but max trades reached ({max_trades})")
                             no_trade_reasons['max_trades_reached'] += 1
+                            # OBS-001: SELL not attempted because slots filled.
+                            obs_001_pending_snapshots[symbol] = {
+                                "analysis": analysis,
+                                "ranking_state": {"applicable": False},
+                                "selection_state": {
+                                    "attempted": False,
+                                    "selection_attempted_at": None,
+                                    "slots_available_at_attempt": 0,
+                                },
+                                "execution_state": {},
+                                "order_state": {"submitted": False, "submit_attempted": False},
+                                "not_attempted": True,
+                                "not_attempted_reason": "slots_filled",
+                            }
 
                 elif analysis:
                     # Has analysis but no actionable signal (HOLD)
@@ -4992,7 +5772,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 f"\n📊 SCORE-002 RANKING: {len(ranked)} eligible BUY candidates "
                 f"for {max(0, slots_remaining)} slot(s)"
             )
+            # OBS-001 Phase A: compute candidate_rank for each ranked
+            # candidate so the snapshot can record rank position.
+            obs_001_ranked_symbols: Dict[str, Dict] = {}
             for rank, cand in enumerate(ranked, 1):
+                obs_001_ranked_symbols[cand['symbol']] = {
+                    "applicable": True,
+                    "ranked_candidate": rank <= len(chosen),
+                    "eligible_candidate_count": len(ranked),
+                    "candidate_rank": rank,
+                    "total_score": cand.get('total_score'),
+                    "eligible_count_at_l3": len(ranked),
+                }
                 marker = "✅ EXEC" if rank <= len(chosen) else "⏸️  QUEUED"
                 logging.info(
                     f"   #{rank:>2}  score={cand.get('total_score', 0):6.1f}  "
@@ -5003,9 +5794,62 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     f"   ➡️  Executing BUY (ranked): {cand['symbol']} "
                     f"(score={cand.get('total_score', 0):.1f})"
                 )
-                if self.execute_trade(cand):
+                # OBS-001 Phase A: capture snapshot around the unchanged
+                # execute_trade call. Trading semantics are NOT modified.
+                obs_001_cycle_stats["execution_attempt_count"] += 1
+                quantity_for_obs = max(
+                    1,
+                    self.trade_amount // max(1, cand.get('price', 1)),
+                )
+                obs_attempt_state = {
+                    "current_state_at_attempt": self._capture_l5_state_at_attempt(cand['symbol']),
+                }
+                exec_checks, first_block, first_reason = self._run_execution_checks_with_observation(
+                    cand['symbol'], "BUY",
+                    quantity=quantity_for_obs,
+                    price=cand.get('price', 0.0),
+                    portfolio_value=self.get_portfolio_total_value(),
+                )
+                obs_attempt_state["checks"] = exec_checks
+                obs_attempt_state["first_blocking_check"] = first_block
+                obs_attempt_state["first_blocking_reason"] = first_reason
+                execute_returned = self.execute_trade(cand)
+                obs_001_cycle_stats["execution_blocked_count"] += 0 if execute_returned else 1
+                obs_001_pending_snapshots[cand['symbol']] = {
+                    "analysis": cand,
+                    "ranking_state": obs_001_ranked_symbols.get(cand['symbol'], {}),
+                    "selection_state": {
+                        "attempted": True,
+                        "selection_attempted_at": datetime.now(timezone.utc).isoformat(),
+                        "slots_available_at_attempt": max_trades - trades_executed,
+                    },
+                    "execution_state": obs_attempt_state,
+                    "order_state": {
+                        "submitted": False,    # finalized post-loop via _finalize_obs_001_orders
+                        "submit_attempted": True,
+                    },
+                    "_execute_returned": execute_returned,
+                }
+                if execute_returned:
                     trades_executed += 1
                 time.sleep(1)  # Rate limiting
+            # OBS-001: skipped (not_attempted) candidates
+            for cand in skipped:
+                obs_001_cycle_stats["not_attempted_count"] += 1
+                obs_001_cycle_stats["not_attempted_reason"] = "slots_filled"
+                obs_001_pending_snapshots[cand['symbol']] = {
+                    "analysis": cand,
+                    "ranking_state": obs_001_ranked_symbols.get(cand['symbol'], {}),
+                    "selection_state": {
+                        "attempted": False,
+                        "selection_attempted_at": None,
+                        "slots_available_at_attempt": 0,
+                    },
+                    "execution_state": {},
+                    "order_state": {"submitted": False, "submit_attempted": False},
+                    "not_attempted": True,
+                    "not_attempted_reason": "slots_filled",
+                }
             if skipped:
                 no_trade_reasons['max_trades_reached'] += len(skipped)
 
@@ -5109,6 +5953,254 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.info(f"💵 Cash: ${final_portfolio['cash_available']:,.2f} ({final_portfolio['cash_percentage']:.1f}%)")
         logging.info("="*60)
 
+        # ── OBS-001 Phase A: finalize snapshots + persist cycle_funnel ──────────
+        # Each pending snapshot is built, attached to the analysis dict, and
+        # upserted into analyzed_stocks.decision_snapshot. decision_history
+        # gets EXACTLY ONE finalized row per (cycle_id, symbol) — guarded
+        # by UNIQUE(cycle_id, symbol). cycle_funnel gets EXACTLY ONE row
+        # for this cycle. None of these calls alters trading behavior.
+        try:
+            self._finalize_obs_001_snapshots(
+                cycle_id=cycle_id,
+                cycle_start_iso=cycle_start_iso,
+                pending=obs_001_pending_snapshots,
+                cycle_stats=obs_001_cycle_stats,
+            )
+        except Exception as e:
+            logging.debug(f"OBS-001 snapshot finalization error (non-fatal): {e}")
+
+    def _finalize_obs_001_snapshots(
+        self,
+        cycle_id: str,
+        cycle_start_iso: str,
+        pending: Dict[str, Dict],
+        cycle_stats: Dict,
+    ) -> None:
+        """OBS-001 Phase A: build snapshots for all symbols analyzed this
+        cycle, upsert into analyzed_stocks, insert one decision_history
+        row per (cycle_id, symbol), and insert one cycle_funnel row.
+
+        Called once at end of run_analysis. Does not modify trading state.
+        """
+        if not self.db.is_available():
+            return
+
+        # Build baseline_diagnostics from current observable state. Labeled
+        # OBSERVED-ONLY; never affects ranking or execution.
+        try:
+            pending_orders = []
+            try:
+                from alpaca.trading.enums import OrderStatus as _OS
+                open_statuses = {
+                    _OS.NEW, _OS.ACCEPTED, _OS.PENDING_NEW,
+                    _OS.PARTIALLY_FILLED, _OS.PENDING_CANCEL,
+                    _OS.PENDING_REPLACE, _OS.PENDING_REVIEW,
+                }
+                orders = list(self.trading_client.get_orders())
+                pending_orders = [
+                    {"symbol": o.symbol, "qty": float(o.qty), "side": str(o.side),
+                     "status": str(o.status), "submitted_by_this_cycle": False}
+                    for o in orders if o.status in open_statuses
+                ]
+            except Exception:
+                pass
+
+            confirmed_positions = {}
+            try:
+                positions = self.trading_client.get_all_positions()
+                for p in positions:
+                    confirmed_positions[p.symbol] = {
+                        "qty": float(p.qty),
+                        "market_value": float(p.market_value),
+                    }
+            except Exception:
+                pass
+
+            cash = None
+            try:
+                cash = float(self.trading_client.get_account().cash)
+            except Exception:
+                pass
+
+            sector_pct = {}
+            try:
+                sector_pct = self.get_sector_allocation() or {}
+            except Exception:
+                pass
+
+            portfolio_beta = None
+            try:
+                portfolio_beta = self.get_portfolio_beta()
+            except Exception:
+                pass
+
+            baseline_diagnostics = {
+                "captured_at_cycle_start": cycle_start_iso,
+                "baseline_state_id": cycle_id,
+                "cash": cash,
+                "pending_orders": pending_orders,
+                "confirmed_positions": confirmed_positions,
+                "sector_allocation_pct": sector_pct,
+                "portfolio_beta": portfolio_beta,
+                "trade_cooldowns_active": {},  # captured lazily per-symbol below
+                "internal_bot_bookkeeping": {
+                    "trades_executed_this_cycle": getattr(self, "_last_loop_trades", 0),
+                },
+                "_label":
+                    "OBSERVED-ONLY: for future pre-rank analysis. "
+                    "Phase A does NOT use this as a trading gate.",
+            }
+        except Exception as e:
+            logging.debug(f"OBS-001 baseline_diagnostics capture failed: {e}")
+            baseline_diagnostics = None
+
+        # Iterate each pending snapshot and persist.
+        for symbol, entry in pending.items():
+            analysis = entry["analysis"]
+            ranking_state = entry.get("ranking_state") or {}
+            selection_state = entry.get("selection_state") or {}
+            execution_state = entry.get("execution_state") or {}
+            order_state = entry.get("order_state") or {}
+
+            # Build per-symbol baseline_diagnostics with potential_l2_blockers
+            # computed from the captured attempt state. NEVER used as a gate.
+            symbol_bd = None
+            if baseline_diagnostics is not None:
+                symbol_bd = dict(baseline_diagnostics)
+                current_state = execution_state.get("current_state_at_attempt", {})
+                potential_l2 = []
+                potential_l2.append({
+                    "check_name": "pending_order_check",
+                    "would_block": (current_state.get("pending_orders_for_this_symbol") or 0) > 0,
+                    "observed_value": current_state.get("pending_orders_for_this_symbol"),
+                    "threshold_value": 0,
+                })
+                potential_l2.append({
+                    "check_name": "cooldown_check",
+                    "would_block": bool(current_state.get("cooldown_active")),
+                    "observed_value": current_state.get("cooldown_remaining_minutes"),
+                    "threshold_value": 240.0,
+                })
+                existing = current_state.get("existing_position_qty", 0.0) or 0.0
+                potential_l2.append({
+                    "check_name": "existing_position_check",
+                    "would_block": existing > 0,
+                    "observed_value": existing,
+                    "threshold_value": None,
+                })
+                symbol_bd["potential_l2_blockers_for_this_symbol"] = potential_l2
+
+            snapshot = self._build_decision_snapshot(
+                symbol=symbol,
+                analysis=analysis,
+                cycle_id=cycle_id,
+                ranking_state=ranking_state,
+                selection_state=selection_state,
+                execution_state=execution_state,
+                order_state=order_state,
+                baseline_diagnostics=symbol_bd,
+            )
+
+            # Re-derive order.submitted from execute_trade return so the
+            # snapshot reflects the ACTUAL outcome (not the placeholder).
+            if entry.get("_execute_returned") is True:
+                snapshot["order"]["submitted"] = True
+                snapshot["order"]["slot_consumed"] = True
+                snapshot["order"]["status_known"] = "SUBMITTED"
+                # primary_reason for the order outcome
+                if analysis.get("signal") == "BUY":
+                    snapshot["decision"]["outcome"] = "BUY_ORDER_SUBMITTED"
+                elif analysis.get("signal") == "SELL":
+                    snapshot["decision"]["outcome"] = "SELL_ORDER_SUBMITTED"
+            elif entry.get("_execute_returned") is False:
+                snapshot["order"]["submitted"] = False
+                snapshot["order"]["slot_consumed"] = False
+                if execution_state.get("first_blocking_check") is None:
+                    snapshot["order"]["no_order_reason"] = (
+                        "submit_order failed (returned no order object)"
+                    )
+                    if analysis.get("signal") == "BUY":
+                        snapshot["decision"]["outcome"] = "BUY_ORDER_FAILED"
+                    elif analysis.get("signal") == "SELL":
+                        snapshot["decision"]["outcome"] = "SELL_ORDER_FAILED"
+            elif entry.get("not_attempted"):
+                # Not selected because slots_filled
+                if ranking_state.get("applicable") and not ranking_state.get("ranked_candidate"):
+                    snapshot["decision"]["outcome"] = "BUY_ELIGIBLE_NOT_SELECTED"
+                    snapshot["decision"]["primary_reason"] = (
+                        f"Rank #{ranking_state.get('candidate_rank')}/"
+                        f"{ranking_state.get('eligible_candidate_count')}; "
+                        f"slots available {selection_state.get('slots_available_at_attempt')}"
+                    )
+
+            # Attach to analysis dict and upsert into analyzed_stocks.
+            try:
+                analysis["decision_snapshot"] = snapshot
+                analysis["decision_schema_version"] = OBS_001_SCHEMA_VERSION
+                self.db.save_analysis_result(symbol, analysis)
+            except Exception as e:
+                logging.debug(f"OBS-001 upsert analyzed_stocks failed for {symbol}: {e}")
+
+            # Insert EXACTLY ONE finalized decision_history row per
+            # (cycle_id, symbol). UNIQUE(cycle_id, symbol) in the schema
+            # is the safety net.
+            try:
+                self.db.finalize_decision_history(
+                    cycle_id=cycle_id,
+                    symbol=symbol,
+                    cycle_start=cycle_start_iso,
+                    session_id=self.session_id,
+                    decision_schema_version=OBS_001_SCHEMA_VERSION,
+                    decision_snapshot=snapshot,
+                )
+            except Exception as e:
+                logging.debug(f"OBS-001 decision_history insert failed for {symbol}: {e}")
+
+        # Insert EXACTLY ONE cycle_funnel row for this cycle.
+        try:
+            cycle_end_iso = datetime.now(timezone.utc).isoformat()
+            # Derive order-side counters from execute_trade return values:
+            # current execute_trade returns False if it blocked OR if
+            # submit_order failed; returns True iff submit_order returned an
+            # order object. We track this via _execute_returned per snapshot.
+            order_submitted = 0
+            order_failed = 0
+            for symbol, entry in pending.items():
+                if entry.get("not_attempted"):
+                    continue
+                # If execute_trade returned True, submit_order succeeded.
+                if entry.get("_execute_returned"):
+                    order_submitted += 1
+                # If execute_trade returned False but execution was
+                # attempted (not skipped), the failure is either a
+                # pre-submit blocker OR a submit_order raise. We mark
+                # it order_failed when first_blocking_check is None
+                # (i.e. no pre-submit block was observed).
+                else:
+                    exec_state = entry.get("execution_state", {})
+                    if exec_state.get("first_blocking_check") is None:
+                        order_failed += 1
+            order_submission_attempt = order_submitted + order_failed
+            self.db.insert_cycle_funnel({
+                "cycle_id": cycle_id,
+                "session_id": self.session_id,
+                "cycle_start": cycle_start_iso,
+                "cycle_end": cycle_end_iso,
+                "analyzed_count": cycle_stats.get("analyzed_count", 0),
+                "strategy_eligible_count": cycle_stats.get("strategy_eligible_count", 0),
+                "ranked_candidate_count": cycle_stats.get("ranked_candidate_count", 0),
+                "execution_attempt_count": cycle_stats.get("execution_attempt_count", 0),
+                "execution_blocked_count": cycle_stats.get("execution_blocked_count", 0),
+                "order_submission_attempt_count": order_submission_attempt,
+                "order_submitted_count": order_submitted,
+                "order_failed_count": order_failed,
+                "not_attempted_count": cycle_stats.get("not_attempted_count", 0),
+                "not_attempted_reason": cycle_stats.get("not_attempted_reason"),
+                "bot_version": getattr(self, "bot_version", "2.1.0"),
+                "schema_version": OBS_001_SCHEMA_VERSION,
+            })
+        except Exception as e:
+            logging.debug(f"OBS-001 cycle_funnel insert failed: {e}")
     def show_database_status(self):
         """Show database status and recent sessions"""
         if not self.db.is_available():

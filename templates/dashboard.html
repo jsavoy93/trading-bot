@@ -1016,6 +1016,40 @@
                     const scoreClass = score >= 65 ? 'green' : (score <= 35 ? 'red' : '');
                     const signalClass = opp.signal === 'BUY' ? 'green' : (opp.signal === 'SELL' ? 'red' : '');
 
+                    // OBS-001 Phase A: render the canonical decision outcome
+                    // when present. Falls back to a Legacy label for rows
+                    // without a snapshot (decision_snapshot IS NULL).
+                    let decisionLabel;
+                    let decisionColor = '#d29922';
+                    if (opp.decision_outcome) {
+                        const out = opp.decision_outcome;
+                        if (out === 'BUY_ORDER_SUBMITTED' || out === 'SELL_ORDER_SUBMITTED') {
+                            decisionLabel = out.replace('_', ' ');
+                            decisionColor = '#2ea043';
+                        } else if (out === 'BUY_BLOCKED_DYNAMIC' || out === 'SELL_BLOCKED_DYNAMIC') {
+                            decisionLabel = out.replace('_', ' ');
+                            decisionColor = '#f0883e';
+                        } else if (out === 'BUY_ORDER_FAILED' || out === 'SELL_ORDER_FAILED') {
+                            decisionLabel = out.replace('_', ' ');
+                            decisionColor = '#da3633';
+                        } else if (out === 'BUY_ELIGIBLE_NOT_SELECTED') {
+                            decisionLabel = 'NOT SELECTED';
+                            decisionColor = '#d29922';
+                        } else if (out === 'SELL_BLOCKED_NO_POSITION') {
+                            decisionLabel = 'NO POSITION';
+                            decisionColor = '#8b949e';
+                        } else {
+                            decisionLabel = out;
+                            decisionColor = '#8b949e';
+                        }
+                    } else if ((opp.decision_schema_version || 0) === 0) {
+                        decisionLabel = 'Legacy';
+                        decisionColor = '#8b949e';
+                    } else {
+                        decisionLabel = '—';
+                        decisionColor = '#8b949e';
+                    }
+
                     const rsiScore = opp.rsi_score || 0;
                     const smaScore = opp.sma_score || 0;
                     const macdScore = opp.macd_score || 0;
@@ -1054,10 +1088,19 @@
                         }).join('<br>');
                     }
 
+                    // Rank cell shows candidate_rank / eligible_count when present.
+                    let rankCell = '';
+                    if (opp.rank !== null && opp.rank !== undefined && opp.eligible_candidate_count) {
+                        rankCell = `<span style="font-size:11px;color:#8b949e">#${opp.rank}/${opp.eligible_candidate_count}</span>`;
+                    } else {
+                        rankCell = '<span style="color:#8b949e">—</span>';
+                    }
+
                     return `<tr>
                         <td class="symbol" style="cursor:pointer;" onclick="showScoreBreakdown('${opp.symbol}')"><strong>${opp.symbol}</strong><br><span style="color:#8b949e">$${opp.price ? opp.price.toFixed(2) : 'N/A'}</span><br><span class="${scoreClass}">${score.toFixed(0)}</span></td>
                         <td>${bubblesHtml}</td>
                         <td style="font-size: 11px; line-height: 1.6;">${criteriaHtml}</td>
+                        <td style="font-size: 11px;"><span style="color:${decisionColor};font-weight:600">${decisionLabel}</span><br>${rankCell}</td>
                         <td class="opp-updated" style="white-space:nowrap;">${fmtAnalyzedAt(opp.analyzed_at)}</td>
                     </tr>`;
                 }).join('');
