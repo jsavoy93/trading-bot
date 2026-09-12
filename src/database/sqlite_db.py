@@ -232,6 +232,91 @@ class SQLiteDB:
                 except sqlite3.OperationalError:
                     pass
 
+                # ── OBS-001 Phase A: decision_snapshot + decision_history + cycle_funnel ──
+                # Phase A is observability-only. Two new nullable columns on
+                # analyzed_stocks (latest per-symbol state) plus two new tables
+                # (append-only history). No data rewrite. No row drop.
+                #
+                #   decision_snapshot TEXT        — JSON blob, schema_version=1
+                #   decision_schema_version INT   — 0 = legacy (NULL snapshot);
+                #                                     1 = OBS-001 Phase A.
+                #
+                # decision_history: one finalized row per (cycle_id, symbol).
+                # cycle_funnel:     one row per cycle, counters reflect CURRENT
+                #                   runtime behavior (no invented pre-rank gate).
+                try:
+                    conn.execute(
+                        "ALTER TABLE analyzed_stocks ADD COLUMN decision_snapshot TEXT;"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                try:
+                    conn.execute(
+                        "ALTER TABLE analyzed_stocks ADD COLUMN decision_schema_version INTEGER DEFAULT 0;"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS decision_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        cycle_id TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        cycle_start TEXT NOT NULL,
+                        session_id INTEGER,
+                        decision_schema_version INTEGER NOT NULL,
+                        decision_snapshot TEXT NOT NULL,
+                        created_at TEXT DEFAULT (datetime('now')),
+                        UNIQUE(cycle_id, symbol)
+                    )
+                """)
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_decision_history_symbol "
+                        "ON decision_history(symbol, cycle_start DESC);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_decision_history_session "
+                        "ON decision_history(session_id, cycle_start DESC);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS cycle_funnel (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        cycle_id TEXT NOT NULL UNIQUE,
+                        session_id INTEGER,
+                        cycle_start TEXT NOT NULL,
+                        cycle_end TEXT NOT NULL,
+                        analyzed_count INTEGER NOT NULL,
+                        strategy_eligible_count INTEGER NOT NULL,
+                        ranked_candidate_count INTEGER NOT NULL,
+                        execution_attempt_count INTEGER NOT NULL,
+                        execution_blocked_count INTEGER NOT NULL,
+                        order_submission_attempt_count INTEGER NOT NULL,
+                        order_submitted_count INTEGER NOT NULL,
+                        order_failed_count INTEGER NOT NULL,
+                        not_attempted_count INTEGER NOT NULL,
+                        not_attempted_reason TEXT,
+                        bot_version TEXT,
+                        schema_version INTEGER DEFAULT 1,
+                        created_at TEXT DEFAULT (datetime('now'))
+                    )
+                """)
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_cycle_funnel_session "
+                        "ON cycle_funnel(session_id, cycle_start DESC);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
             self.available = True
             logging.info(f"✅ SQLite database ready: {DB_PATH}")
         except Exception as e:
@@ -726,6 +811,15 @@ class SQLiteDB:
 
     def save_analysis_result(self, symbol: str, analysis: Dict) -> bool:
         try:
+            # OBS-001 Phase A: if a decision_snapshot is attached, persist
+            # it too. The snapshot is the authoritative observation of what
+            # the bot decided; the scalar columns above are retained for
+            # backward compatibility with existing dashboard consumers.
+            decision_snapshot = analysis.get("decision_snapshot")
+            decision_schema_version = analysis.get("decision_schema_version", 0)
+            if decision_snapshot is not None and decision_schema_version == 0:
+                decision_schema_version = 1  # OBS-001 Phase A deployed version
+
             with _get_conn() as conn:
                 conn.execute(
                     """INSERT INTO analyzed_stocks
@@ -733,8 +827,10 @@ class SQLiteDB:
                         rsi, rsi_score, sma_score, macd_score, bb_score,
                         vwap_score, regime_score, catalyst_score, earnings_score,
                         volatility_score, buy_criteria, passes_all_buy_criteria,
-                        filter_results, blocked_by, blocked_count, last_analyzed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        filter_results, blocked_by, blocked_count, last_analyzed,
+                        decision_snapshot, decision_schema_version)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                               ?, ?)
                        ON CONFLICT(symbol) DO UPDATE SET
                            price = excluded.price,
                            total_score = excluded.total_score,
@@ -755,7 +851,13 @@ class SQLiteDB:
                            filter_results = excluded.filter_results,
                            blocked_by = excluded.blocked_by,
                            blocked_count = excluded.blocked_count,
-                           last_analyzed = excluded.last_analyzed""",
+                           last_analyzed = excluded.last_analyzed,
+                           decision_snapshot = COALESCE(excluded.decision_snapshot, decision_snapshot),
+                           decision_schema_version = CASE
+                               WHEN excluded.decision_snapshot IS NOT NULL
+                               THEN excluded.decision_schema_version
+                               ELSE decision_schema_version
+                           END""",
                     (
                         symbol,
                         analysis.get("price"),
@@ -778,6 +880,8 @@ class SQLiteDB:
                         analysis.get("blocked_by"),
                         analysis.get("blocked_count", 0),
                         datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        json.dumps(decision_snapshot) if decision_snapshot is not None else None,
+                        decision_schema_version,
                     ),
                 )
             logging.debug(f"💾 Saved analysis for {symbol} to SQLite")
@@ -785,6 +889,185 @@ class SQLiteDB:
         except Exception as e:
             logging.debug(f"Error saving analysis for {symbol}: {e}")
             return False
+
+    # ── OBS-001 Phase A: decision_history + cycle_funnel persistence ─────
+    # decision_history is INSERT-only. UNIQUE(cycle_id, symbol) enforces
+    # the "one finalized row per (cycle_id, symbol)" invariant required
+    # by the Phase A design. Upsert via REPLACE only if the caller
+    # intends to overwrite (e.g. for the same-cycle same-symbol re-write
+    # before finalization); the canonical finalize path uses
+    # finalize_decision_history() which only INSERTs.
+
+    def finalize_decision_history(
+        self,
+        cycle_id: str,
+        symbol: str,
+        cycle_start: str,
+        session_id: Optional[int],
+        decision_schema_version: int,
+        decision_snapshot: Dict,
+    ) -> bool:
+        """Append one finalized decision_history row for (cycle_id, symbol).
+
+        IMMUTABILITY CONTRACT: this is a plain INSERT only. The
+        UNIQUE(cycle_id, symbol) constraint makes duplicate inserts
+        fail with sqlite3.IntegrityError, which is caught and logged;
+        the EXISTING finalized row is NEVER updated, replaced, or
+        reinserted. analyzed_stocks.decision_snapshot may continue
+        to upsert (it represents latest state) but decision_history
+        is insert-only.
+
+        Returns True if a new row was inserted, False otherwise
+        (existing row already present, or transient error).
+        """
+        try:
+            with _get_conn() as conn:
+                cur = conn.execute(
+                    """INSERT INTO decision_history
+                       (cycle_id, symbol, cycle_start, session_id,
+                        decision_schema_version, decision_snapshot)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        cycle_id,
+                        symbol,
+                        cycle_start,
+                        session_id,
+                        decision_schema_version,
+                        json.dumps(decision_snapshot),
+                    ),
+                )
+                return cur.rowcount > 0
+        except sqlite3.IntegrityError as e:
+            # UNIQUE(cycle_id, symbol) violation: a finalized row
+            # already exists. The original row is NEVER modified.
+            logging.debug(
+                f"decision_history already finalized for "
+                f"{cycle_id}/{symbol} (original preserved): {e}"
+            )
+            return False
+        except Exception as e:
+            logging.debug(f"Error finalizing decision_history for {cycle_id}/{symbol}: {e}")
+            return False
+
+    def insert_cycle_funnel(self, funnel: Dict) -> bool:
+        """Insert one cycle_funnel row. UNIQUE(cycle_id) makes it
+        idempotent on retry. Phase A calls this exactly once at the
+        end of run_analysis."""
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO cycle_funnel
+                       (cycle_id, session_id, cycle_start, cycle_end,
+                        analyzed_count, strategy_eligible_count,
+                        ranked_candidate_count, execution_attempt_count,
+                        execution_blocked_count, order_submission_attempt_count,
+                        order_submitted_count, order_failed_count,
+                        not_attempted_count, not_attempted_reason,
+                        bot_version, schema_version)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        funnel.get("cycle_id"),
+                        funnel.get("session_id"),
+                        funnel.get("cycle_start"),
+                        funnel.get("cycle_end"),
+                        funnel.get("analyzed_count", 0),
+                        funnel.get("strategy_eligible_count", 0),
+                        funnel.get("ranked_candidate_count", 0),
+                        funnel.get("execution_attempt_count", 0),
+                        funnel.get("execution_blocked_count", 0),
+                        funnel.get("order_submission_attempt_count", 0),
+                        funnel.get("order_submitted_count", 0),
+                        funnel.get("order_failed_count", 0),
+                        funnel.get("not_attempted_count", 0),
+                        funnel.get("not_attempted_reason"),
+                        funnel.get("bot_version"),
+                        funnel.get("schema_version", 1),
+                    ),
+                )
+            return True
+        except Exception as e:
+            logging.debug(f"Error inserting cycle_funnel for {funnel.get('cycle_id')}: {e}")
+            return False
+
+    def get_decision_snapshot_for_symbol(self, symbol: str) -> Optional[Dict]:
+        """Read the latest decision_snapshot for one symbol."""
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    """SELECT decision_snapshot, decision_schema_version
+                       FROM analyzed_stocks
+                       WHERE symbol = ? AND decision_snapshot IS NOT NULL""",
+                    (symbol,),
+                ).fetchone()
+            if row and row[0]:
+                return {
+                    "decision_snapshot": json.loads(row[0]),
+                    "decision_schema_version": row[1],
+                }
+            return None
+        except Exception as e:
+            logging.debug(f"Error reading decision_snapshot for {symbol}: {e}")
+            return None
+
+    def get_decision_history_for_symbol(self, symbol: str, limit: int = 50) -> list:
+        """Read decision_history rows for one symbol in cycle_start DESC order."""
+        try:
+            with _get_conn() as conn:
+                rows = conn.execute(
+                    """SELECT cycle_id, cycle_start, session_id,
+                              decision_schema_version, decision_snapshot
+                       FROM decision_history
+                       WHERE symbol = ?
+                       ORDER BY cycle_start DESC
+                       LIMIT ?""",
+                    (symbol, limit),
+                ).fetchall()
+            out = []
+            for r in rows:
+                out.append({
+                    "cycle_id": r[0],
+                    "cycle_start": r[1],
+                    "session_id": r[2],
+                    "decision_schema_version": r[3],
+                    "decision_snapshot": json.loads(r[4]) if r[4] else None,
+                })
+            return out
+        except Exception as e:
+            logging.debug(f"Error reading decision_history for {symbol}: {e}")
+            return []
+
+    def get_latest_cycle_funnel(self, session_id: Optional[int] = None) -> Optional[Dict]:
+        """Read the most recent cycle_funnel row."""
+        try:
+            with _get_conn() as conn:
+                if session_id is not None:
+                    row = conn.execute(
+                        """SELECT * FROM cycle_funnel
+                           WHERE session_id = ?
+                           ORDER BY cycle_start DESC LIMIT 1""",
+                        (session_id,),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """SELECT * FROM cycle_funnel
+                           ORDER BY cycle_start DESC LIMIT 1"""
+                    ).fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in conn.execute("SELECT * FROM cycle_funnel LIMIT 1").description] \
+                if False else [
+                    "id", "cycle_id", "session_id", "cycle_start", "cycle_end",
+                    "analyzed_count", "strategy_eligible_count",
+                    "ranked_candidate_count", "execution_attempt_count",
+                    "execution_blocked_count", "order_submission_attempt_count",
+                    "order_submitted_count", "order_failed_count",
+                    "not_attempted_count", "not_attempted_reason",
+                    "bot_version", "schema_version", "created_at",
+                ]
+            return dict(zip(cols, row))
+        except Exception as e:
+            logging.debug(f"Error reading latest cycle_funnel: {e}")
+            return None
 
     def increment_analysis_success(self, symbol: str) -> bool:
         """Increment the success counter for a symbol;

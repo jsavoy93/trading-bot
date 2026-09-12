@@ -2879,3 +2879,241 @@ agent/engplat-002a-project-context-contracts created from current main.
   (after PR is opened by `git push`).
 - **Next action**: **STOP**. Awaiting Josh's review and merge. Do NOT
   auto-merge. Do NOT push without explicit approval.
+
+## 2026-09-12 00:30 UTC — OBS-001 PHASE A IMPLEMENTATION COMPLETE (awaiting review)
+
+- Branch: `agent/obs-001-phase-a-decision-snapshot`
+- Commits on branch: 2 (implementation + dashboard + tests)
+- Backlog: OBS-001 Phase A — Decision Trace + Dashboard Observability
+- Owner: trading-manager (Josh-approved design 2026-09-12 00:17 UTC)
+- Status: `DONE` (implementation); `IN_PROGRESS` (awaiting Josh merge)
+- Phase A is observability ONLY. ZERO trading-semantic changes.
+
+### Schema migration
+- `analyzed_stocks.decision_snapshot TEXT` (nullable)
+- `analyzed_stocks.decision_schema_version INTEGER DEFAULT 0`
+- New table `decision_history` (UNIQUE(cycle_id, symbol) enforces
+  one finalized row per pair; INSERT-only)
+- New table `cycle_funnel` (UNIQUE(cycle_id) enforces one row
+  per cycle; INSERT-only)
+- All migrations use existing try/except "duplicate column name"
+  pattern (sqlite_db.py L122-156). Idempotent.
+
+### Constants and outcome enum
+- `OBS_001_SCHEMA_VERSION = 1` (first deployed schema version)
+- `OBS_001_SLOT_SEMANTICS_VERSION = 1` (consumed when
+  submit_order returns; NOT fill)
+- `OBS_001_EXECUTION_CHECK_ORDER` — 9 checks in current order
+- `OBS_001_OUTCOMES_CURRENTLY_REACHABLE` — 10 values
+  (BUY/SELL_ORDER_SUBMITTED, BUY/SELL_ORDER_FAILED,
+  BUY_ELIGIBLE_NOT_SELECTED, BUY/SELL_BLOCKED_DYNAMIC,
+  HOLD_INELIGIBLE, SELL_BLOCKED_NO_POSITION, SKIPPED_INVALID_DATA)
+- `OBS_001_OUTCOMES_RESERVED` — 5 values (BUY/SELL_FILLED,
+  BUY/SELL_BLOCKED_PRE_RANK, BUY_PRE_RANK_EXCLUDED)
+  NEVER produced by current code; tests verify
+
+### Snapshot builder `_build_decision_snapshot`
+- Returns dict with `schema_version=1` and all required blocks:
+  IDENTITY, STRATEGY_ELIGIBILITY, SCORING, RANKING, SELECTION,
+  EXECUTION_CHECKS, ORDER, DECISION, BASELINE_DIAGNOSTICS.
+- BASELINE_DIAGNOSTICS is OBSERVED-ONLY (labeled in snapshot);
+  never affects ranking or execution.
+
+### Observation wrappers (ZERO trading-semantic change)
+- `_capture_l5_state_at_attempt(symbol)` — read-only broker/
+  account state snapshot at attempt time. No submit_order call.
+- `_run_execution_checks_with_observation(...)` — runs the SAME
+  checks execute_trade performs, in the SAME order, but only
+  for OBSERVATION. Does NOT return early; does NOT submit.
+- `_finalize_obs_001_snapshots(...)` — at end of run_analysis:
+  builds snapshots, upserts analyzed_stocks, inserts EXACTLY ONE
+  decision_history row per (cycle_id, symbol), inserts EXACTLY
+  ONE cycle_funnel row.
+
+### run_analysis changes (observational only)
+- Added cycle_id and cycle_start_iso at top of run_analysis.
+- Added cycle_stats dict for funnel counters.
+- Incremented `analyzed_count` after each L1 analysis.
+- Incremented `strategy_eligible_count` when signal in (BUY, SELL).
+- Incremented `ranked_candidate_count` when buy_candidates.append.
+- Wrapped SELL inline execute_trade call with observation.
+- Wrapped BUY ranked-walk execute_trade call with observation.
+- Computed candidate_rank for each ranked candidate.
+- Tracked not_attempted_count for skipped (slots_filled) BUYs.
+- Added `_finalize_obs_001_snapshots` call at end of run_analysis
+  (try/except so failure doesn't break the cycle).
+
+### Dashboard changes
+- `api_opportunities`: reads decision_snapshot when present;
+  preserves legacy score-derivation for snapshot=NULL rows.
+- New `api_decision/{symbol}` — full snapshot detail; legacy
+  sentinel for snapshot=NULL rows.
+- New `api_decision_history/{symbol}` — cycle-over-cycle history.
+- New `api_actionability_summary` — latest cycle_funnel.
+- `templates/dashboard.html` opportunities table renders canonical
+  decision outcome (color-coded) and candidate rank #N/M.
+
+### Tests
+- New `tests/test_obs_001_phase_a_decision_snapshot.py`: 35 tests.
+- All 35 tests PASS.
+
+### Tests run
+- New OBS-001 Phase A suite: 35/35 PASS
+- SCORE-002 (`test_score_002_eligibility_and_ranking.py`): 24/24 PASS
+- SCORE-001 (`test_smart_bot_score_normalization.py`): 86/86 PASS
+- Settings (`test_settings_service.py`): 38/38 PASS
+- Full safe suite: 1222 PASS, 2 FAIL (pre-existing, unchanged)
+
+### Pre-existing failures (verified pre-OBS-001)
+1. `tests/test_bot001_dashboard_status.py::test_template_renders_red_dot_when_alpaca_unreachable`
+   (BOT-001 dashboard legend; out of scope)
+2. `tests/test_bot002_paper_only_guard.py::test_main_py_installs_sigterm_handler`
+   (BOT-002 sigterm handler; out of scope)
+
+### Decisions/risks
+- **Observational wrapping chosen over execute_trade mutation**:
+  The cleanest way to preserve trading semantics exactly. The
+  wrappers call the unchanged `execute_trade` and capture state
+  in-memory; the snapshot is finalized at end of run_analysis.
+  Zero risk of accidental trading-behavior change.
+- **Cycle funnel `not_attempted_reason`** is TEXT and currently
+  only emits `slots_filled` (the only currently proven reason
+  for a ranked candidate to be unattempted in current code).
+- **Reserved outcomes** documented in enum but never produced by
+  current code paths; tests verify this for all plausible input
+  combinations.
+- **Legacy rows** (decision_snapshot IS NULL) keep pre-OBS-001
+  score-derivation pathway in `api_opportunities` so existing
+  dashboard rows render unchanged.
+- **No live trading**: BOT-002 paper-only guard intact. ALPACA_BASE_URL
+  paper; TRADING_BOT_PAPER_ONLY=1 preserved.
+- **No restart triggered**: SmartBot PID 702290 unchanged. The
+  running bot holds pre-OBS-001 code in memory; new code loads
+  on next Josh-approved restart.
+
+### Manager review decision
+`ACCEPT`; ready for Josh's review and merge of branch
+`agent/obs-001-phase-a-decision-snapshot`.
+
+### Next action
+**STOP**. Awaiting Josh's review and merge. Do NOT auto-merge.
+Do NOT restart SmartBot. Do NOT start SCORE-003. After merge,
+future work:
+1. PIPELINE-001 — Pre-Rank Portfolio Actionability (FUTURE
+   architecture; documented only; separate Josh-approved task)
+2. Fill polling implementation (would bump slot_semantics_version
+   to 2; out of scope)
+3. SCORE-003 — MEDIUM SELL unreachable fix
+
+## 2026-09-12 01:25 UTC — OBS-001 PHASE A CORRIGENDUM (3 fixes from Josh review)
+
+- Branch: `agent/obs-001-phase-a-decision-snapshot`
+- Status: corrections complete; awaiting Josh review and merge
+- Backlog: OBS-001 Phase A
+- Owner: trading-manager
+
+### Fixes applied (Josh 2026-09-12 00:55 UTC)
+
+**Issue 1 — Legacy dashboard fidelity**
+- `api_opportunities` no longer derives signal/strength from
+  `total_score` thresholds for legacy rows (`decision_snapshot IS NULL`)
+- Legacy branch now reads `row['signal']` and `row['signal_strength']`
+  directly from `analyzed_stocks`. Changing dashboard score thresholds
+  cannot alter a legacy persisted signal/strength.
+- 4 regression tests in `TestLegacyDashboardFidelity`.
+
+**Issue 2 — Trace collected by REAL execute_trade; no duplicate runs**
+- Removed `_run_execution_checks_with_observation` (duplicate simulation).
+- Removed `_capture_l5_state_at_attempt` (duplicate broker reads).
+- Real `execute_trade` now calls `_obs_001_trace_record(...)` at the
+  EXACT location of each existing check, recording the actual values
+  it used.
+- `_obs_001_finalize_attempt` back-fills NOT RUN entries for checks the
+  real code short-circuited past.
+- Verified: `trading_client.get_account()` is called exactly once per
+  execute_trade invocation (same as pre-OBS-001).
+- 5 regression tests in `TestExecuteTradeTraceCollection`.
+
+**Issue 3 — Per-symbol decision_history finalized immediately**
+- New helper `_persist_obs_001_decision_snapshot(symbol, entry, ...)`
+  called IMMEDIATELY after each symbol's terminal outcome is known:
+  - After each execute_trade call (BUY and SELL inline + BUY ranked walk)
+  - After each slots_filled SELL/BUY skip
+  - After each HOLD outcome
+- UNIQUE(cycle_id, symbol) constraint ensures idempotency.
+- cycle_funnel row still written once at cycle end
+  (`_finalize_obs_001_snapshots` reduced to cycle_funnel writer).
+- 3 regression tests in `TestPerSymbolFinalizeOnDecision`.
+
+### Architecture summary
+
+- Module-level trace collector:
+  `_obs_001_active_trace`, `_obs_001_active_attempt_symbol/signal/returned`
+- Functions (NOT class methods):
+  - `_obs_001_begin_attempt(symbol, signal)` — open new trace
+  - `_obs_001_trace_record(name, applied, passed, observed, threshold, reason, gap)`
+  - `_obs_001_finalize_attempt(returned)` — close trace, back-fill NOT RUN
+- Observational methods on bot:
+  - `_capture_baseline_observed_state()` — once per cycle (OBSERVED-ONLY)
+  - `_capture_symbol_observed_state(symbol)` — small targeted per-symbol read
+  - `_persist_obs_001_decision_snapshot(symbol, entry, cycle_id, cycle_start_iso)`
+  - `_finalize_obs_001_snapshots(...)` — cycle_funnel only
+
+### Decisions/risks
+- SELL-only `position_existence_check` recorded with actual values but
+  not added to `OBS_001_EXECUTION_CHECK_ORDER` (so BUY order unchanged).
+- Cycle-start baseline captured once; per-symbol updates layered on top
+  via `_capture_symbol_observed_state` (small targeted reads only).
+- Trace is module-global (single-threaded bot, no concurrency risk).
+
+### Tests
+- 47/47 OBS-001 tests pass (was 35, +12 new)
+- 1234 PASS, 2 FAIL pre-existing (unchanged on clean main)
+
+### Manager decision
+`ACCEPT`; ready for Josh's review and merge of branch
+`agent/obs-001-phase-a-decision-snapshot`.
+
+### Next action
+**STOP**. Awaiting Josh's review and merge. Do NOT auto-merge.
+Do NOT restart SmartBot. Do NOT start SCORE-003.
+
+## 2026-09-12 03:35 UTC — OBS-001 PHASE A PR REVIEW IMMUTABILITY FIX
+
+- Branch: `agent/obs-001-phase-a-decision-snapshot`
+- Status: ready to push and open PR
+
+### PR Review Finding (Josh 2026-09-12 03:30 UTC)
+
+`finalize_decision_history()` previously used
+`ON CONFLICT(cycle_id, symbol) DO UPDATE SET decision_snapshot = ...`
+— a silent UPSERT that would overwrite the original finalized JSON
+if called twice. This contradicted Josh's immutability requirement.
+
+### Fix
+- Replaced `ON CONFLICT DO UPDATE` with plain `INSERT INTO`.
+- The UNIQUE(cycle_id, symbol) constraint is the safety net.
+- `sqlite3.IntegrityError` is caught and logged; the EXISTING
+  finalized row is NEVER modified.
+- Return semantics: True if a new row was inserted, False otherwise
+  (existing row preserved unchanged).
+
+### Regression tests added (TestDecisionHistoryImmutability)
+- `test_snapshot_b_does_not_overwrite_snapshot_a`:
+  persist A → attempt B → query → exactly one row → JSON is A
+- `test_finalize_decision_history_uses_plain_insert`: static-analysis
+  check that source uses plain INSERT and catches IntegrityError
+
+### Updated existing test
+- `test_decision_history_unique_constraint_enforced`:
+  `ok1 is True, ok2 is False` (matches new strict INSERT-only)
+
+### Tests run
+- OBS-001: 49/49 PASS (was 47, +2 new)
+- Full safe suite: 1236 PASS, 2 FAIL pre-existing (reproduced on clean main)
+
+### Manager decision
+`ACCEPT`; ready to push branch and open PR against main.
+
+### Next action
+Push branch to origin; open PR; STOP for Josh's final merge approval.
