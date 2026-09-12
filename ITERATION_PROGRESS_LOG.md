@@ -3077,3 +3077,43 @@ future work:
 ### Next action
 **STOP**. Awaiting Josh's review and merge. Do NOT auto-merge.
 Do NOT restart SmartBot. Do NOT start SCORE-003.
+
+## 2026-09-12 03:35 UTC — OBS-001 PHASE A PR REVIEW IMMUTABILITY FIX
+
+- Branch: `agent/obs-001-phase-a-decision-snapshot`
+- Status: ready to push and open PR
+
+### PR Review Finding (Josh 2026-09-12 03:30 UTC)
+
+`finalize_decision_history()` previously used
+`ON CONFLICT(cycle_id, symbol) DO UPDATE SET decision_snapshot = ...`
+— a silent UPSERT that would overwrite the original finalized JSON
+if called twice. This contradicted Josh's immutability requirement.
+
+### Fix
+- Replaced `ON CONFLICT DO UPDATE` with plain `INSERT INTO`.
+- The UNIQUE(cycle_id, symbol) constraint is the safety net.
+- `sqlite3.IntegrityError` is caught and logged; the EXISTING
+  finalized row is NEVER modified.
+- Return semantics: True if a new row was inserted, False otherwise
+  (existing row preserved unchanged).
+
+### Regression tests added (TestDecisionHistoryImmutability)
+- `test_snapshot_b_does_not_overwrite_snapshot_a`:
+  persist A → attempt B → query → exactly one row → JSON is A
+- `test_finalize_decision_history_uses_plain_insert`: static-analysis
+  check that source uses plain INSERT and catches IntegrityError
+
+### Updated existing test
+- `test_decision_history_unique_constraint_enforced`:
+  `ok1 is True, ok2 is False` (matches new strict INSERT-only)
+
+### Tests run
+- OBS-001: 49/49 PASS (was 47, +2 new)
+- Full safe suite: 1236 PASS, 2 FAIL pre-existing (reproduced on clean main)
+
+### Manager decision
+`ACCEPT`; ready to push branch and open PR against main.
+
+### Next action
+Push branch to origin; open PR; STOP for Josh's final merge approval.

@@ -909,22 +909,24 @@ class SQLiteDB:
     ) -> bool:
         """Append one finalized decision_history row for (cycle_id, symbol).
 
-        UNIQUE(cycle_id, symbol) makes this idempotent on retry: a second
-        call with the same (cycle_id, symbol) replaces the prior row.
-        Phase A guarantees this is called at most ONCE per
-        (cycle_id, symbol) by the snapshot writer at the moment the
-        cycle finalizes that symbol's outcome.
+        IMMUTABILITY CONTRACT: this is a plain INSERT only. The
+        UNIQUE(cycle_id, symbol) constraint makes duplicate inserts
+        fail with sqlite3.IntegrityError, which is caught and logged;
+        the EXISTING finalized row is NEVER updated, replaced, or
+        reinserted. analyzed_stocks.decision_snapshot may continue
+        to upsert (it represents latest state) but decision_history
+        is insert-only.
+
+        Returns True if a new row was inserted, False otherwise
+        (existing row already present, or transient error).
         """
         try:
             with _get_conn() as conn:
-                conn.execute(
+                cur = conn.execute(
                     """INSERT INTO decision_history
                        (cycle_id, symbol, cycle_start, session_id,
                         decision_schema_version, decision_snapshot)
-                       VALUES (?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(cycle_id, symbol) DO UPDATE SET
-                           decision_schema_version = excluded.decision_schema_version,
-                           decision_snapshot = excluded.decision_snapshot""",
+                       VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         cycle_id,
                         symbol,
@@ -934,7 +936,15 @@ class SQLiteDB:
                         json.dumps(decision_snapshot),
                     ),
                 )
-            return True
+                return cur.rowcount > 0
+        except sqlite3.IntegrityError as e:
+            # UNIQUE(cycle_id, symbol) violation: a finalized row
+            # already exists. The original row is NEVER modified.
+            logging.debug(
+                f"decision_history already finalized for "
+                f"{cycle_id}/{symbol} (original preserved): {e}"
+            )
+            return False
         except Exception as e:
             logging.debug(f"Error finalizing decision_history for {cycle_id}/{symbol}: {e}")
             return False

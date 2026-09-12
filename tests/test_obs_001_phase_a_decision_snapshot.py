@@ -92,7 +92,14 @@ class TestSchemaConstants:
 
 class TestSchemaMigration:
     def test_decision_history_unique_constraint_enforced(self, tmp_path):
-        """UNIQUE(cycle_id, symbol) guarantees one finalized row per pair."""
+        """UNIQUE(cycle_id, symbol) guarantees one finalized row per pair.
+
+        Post-PR-review (Josh 2026-09-12 03:30 UTC): decision_history is
+        INSERT-only. The first finalize returns True; the second
+        finalize for the same (cycle_id, symbol) returns False because
+        the SQL UNIQUE constraint blocks the duplicate insert. The
+        ORIGINAL row is NEVER overwritten.
+        """
         from src.database.sqlite_db import SQLiteDB, _get_conn
         db = SQLiteDB()
         db._init_schema()
@@ -100,10 +107,25 @@ class TestSchemaMigration:
         cycle_id = "test_obs_001_unique_smoke"
         snap = {"schema_version": 1, "symbol": "X", "decision": {"outcome": "HOLD_INELIGIBLE"}}
 
-        # Two inserts with the same (cycle_id, symbol) MUST collapse to one row.
+        # Clean any leftover row from a previous test run so the
+        # first finalize is a guaranteed fresh insert.
+        with _get_conn() as conn:
+            conn.execute(
+                "DELETE FROM decision_history WHERE cycle_id=?",
+                (cycle_id,),
+            )
+
+        # First finalize succeeds (inserts the row).
         ok1 = db.finalize_decision_history(cycle_id, "X", "2026-09-12T00:00:00", None, 1, snap)
+        # Second finalize with the same (cycle_id, symbol) MUST be
+        # rejected by the UNIQUE constraint; the function returns
+        # False (the original row is preserved unchanged).
         ok2 = db.finalize_decision_history(cycle_id, "X", "2026-09-12T00:00:00", None, 1, snap)
-        assert ok1 and ok2
+        assert ok1 is True, "first finalize must return True"
+        assert ok2 is False, (
+            "second finalize with same (cycle_id, symbol) MUST return "
+            "False (UNIQUE blocks silent overwrite); got True"
+        )
 
         with _get_conn() as conn:
             rows = conn.execute(
@@ -1180,3 +1202,143 @@ class TestPerSymbolFinalizeOnDecision:
                                 "WHERE cycle_id=?",
                                 (cycle_id,),
                             )
+
+
+# ── 11. Decision-history immutability under re-persist (PR review test) ──
+#
+# Josh's PR-review item #1: verify that when _persist_obs_001_decision_snapshot
+# is invoked more than once for the same (cycle_id, symbol), the
+# ORIGINAL row is preserved unchanged. Snapshot A must remain in the
+# table even after snapshot B is attempted.
+
+
+class TestDecisionHistoryImmutability:
+    """Josh PR-review #1: decision_history is INSERT-only.
+
+    Persisting finalized snapshot A then attempting to persist a
+    different finalized snapshot B for the same (cycle_id, symbol)
+    must leave exactly ONE row in decision_history, and the stored
+    JSON must be snapshot A's JSON (NOT snapshot B's).
+
+    We test this at the SQL layer (SQLiteDB.finalize_decision_history)
+    rather than the higher-level _persist_obs_001_decision_snapshot
+    wrapper because the wrapper rebuilds the snapshot from entry fields;
+    the immutability guarantee is enforced by the SQL UNIQUE constraint
+    on (cycle_id, symbol) and the plain INSERT (no ON CONFLICT DO UPDATE).
+    """
+
+    def test_snapshot_b_does_not_overwrite_snapshot_a(self):
+        """1. finalize snapshot A
+        2. attempt to finalize snapshot B (different JSON)
+        3. query decision_history: exactly one row exists
+        4. stored JSON is still snapshot A"""
+        from src.database.sqlite_db import SQLiteDB, _get_conn
+        SQLiteDB()._init_schema()
+
+        db = SQLiteDB()
+        cycle_id = "test_immutability_jb1"
+
+        # Clean any leftover row from a previous test run.
+        with _get_conn() as conn:
+            conn.execute(
+                "DELETE FROM decision_history WHERE cycle_id=?",
+                (cycle_id,),
+            )
+
+        snapshot_a = {
+            "schema_version": 1,
+            "symbol": "IMM",
+            "decision": {"outcome": "BUY_ORDER_SUBMITTED",
+                         "primary_reason": "snapshot A — original"},
+            "order": {"submitted": True, "slot_consumed": True,
+                      "fill_confirmed": False, "submit_attempted": True,
+                      "alpaca_order_id": "ord-A-original"},
+        }
+        snapshot_b = {
+            "schema_version": 1,
+            "symbol": "IMM",
+            "decision": {"outcome": "BUY_ORDER_SUBMITTED",
+                         "primary_reason": "snapshot B — should NOT overwrite"},
+            "order": {"submitted": True, "slot_consumed": True,
+                      "fill_confirmed": False, "submit_attempted": True,
+                      "alpaca_order_id": "ord-B-INTRUDER"},
+        }
+
+        try:
+            # Step 1: persist snapshot A (the ORIGINAL finalized row).
+            inserted_a = db.finalize_decision_history(
+                cycle_id=cycle_id,
+                symbol="IMM",
+                cycle_start="2026-09-12T00:00:00",
+                session_id=None,
+                decision_schema_version=1,
+                decision_snapshot=snapshot_a,
+            )
+            assert inserted_a is True, "first finalize must return True"
+
+            # Step 2: attempt to persist snapshot B (a DIFFERENT JSON for
+            # the same cycle_id + symbol).
+            inserted_b = db.finalize_decision_history(
+                cycle_id=cycle_id,
+                symbol="IMM",
+                cycle_start="2026-09-12T00:00:01",
+                session_id=None,
+                decision_schema_version=1,
+                decision_snapshot=snapshot_b,
+            )
+            # SQL UNIQUE constraint blocks the second insert; the
+            # function must return False (not raise).
+            assert inserted_b is False, (
+                f"second finalize must return False (UNIQUE blocked "
+                f"silent overwrite); got {inserted_b}"
+            )
+
+            # Step 3: query decision_history: exactly ONE row exists.
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*), decision_snapshot FROM "
+                    "decision_history WHERE cycle_id=? AND symbol=?",
+                    (cycle_id, "IMM"),
+                ).fetchone()
+            count = row[0]
+            stored_json = row[1]
+            assert count == 1, (
+                f"decision_history must have exactly ONE row per "
+                f"(cycle_id, symbol) under re-finalize; got {count}"
+            )
+
+            # Step 4: stored JSON must be snapshot A, not snapshot B.
+            stored = json.loads(stored_json)
+            stored_order_id = stored["order"]["alpaca_order_id"]
+            assert stored_order_id == "ord-A-original", (
+                f"decision_history must preserve snapshot A's JSON; "
+                f"stored order_id={stored_order_id!r} (expected "
+                f"'ord-A-original'). Snapshot B leaked through."
+            )
+            assert (
+                "snapshot A — original" in stored["decision"]["primary_reason"]
+            ), "decision_history must preserve snapshot A's primary_reason"
+        finally:
+            with _get_conn() as conn:
+                conn.execute(
+                    "DELETE FROM decision_history WHERE cycle_id=?",
+                    (cycle_id,),
+                )
+
+    def test_finalize_decision_history_uses_plain_insert(self):
+        """Static-analysis: `finalize_decision_history` SQL must use a
+        plain INSERT, NOT an UPSERT (no ON CONFLICT DO UPDATE).
+        Plain INSERT + UNIQUE constraint + IntegrityError catch is
+        the correct immutability pattern.
+        """
+        import inspect
+        from src.database.sqlite_db import SQLiteDB
+        source = inspect.getsource(SQLiteDB.finalize_decision_history)
+        assert "ON CONFLICT" not in source, (
+            "finalize_decision_history must NOT use ON CONFLICT "
+            "DO UPDATE (would silently overwrite the original)"
+        )
+        assert "INSERT INTO decision_history" in source, \
+            "finalize_decision_history must use plain INSERT"
+        assert "IntegrityError" in source, \
+            "finalize_decision_history must catch sqlite3.IntegrityError"
