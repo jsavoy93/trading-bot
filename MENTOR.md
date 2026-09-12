@@ -324,6 +324,63 @@ current code does NOT include pending exposure:
 These gaps are documented honestly. They are NOT patched inside
 OBS-001 Phase A; patching requires separate Josh-approved tasks.
 
+### Trace collector (post-corrigendum architecture)
+
+The OBS-001 trace is populated by the **real `execute_trade` path** at
+the EXACT location of each existing check. There is NO duplicate check
+run for observation. The trace collector is a passive side-channel:
+
+- `_obs_001_begin_attempt(symbol, signal)` is called immediately before
+  `execute_trade`. It opens a fresh empty trace.
+- Inside the real `execute_trade`, every existing check calls
+  `_obs_001_trace_record(name, applied, passed, observed_value,
+  threshold_value, reason, gap_note)` adjacent to the check. The trace
+  records the actual values used by the real code.
+- `_obs_001_finalize_attempt(returned)` is called immediately after
+  `execute_trade` returns. It back-fills `applied=False, passed=None`
+  entries for the checks the real code did not reach (due to
+  short-circuit). Each back-fill carries a reason like
+  "NOT RUN: real execute_trade short-circuited before reaching this check"
+  or "NOT RUN: cooldown_check applies to BUY only (signal=SELL)".
+- The `first_blocking_check` is the FIRST recorded check with
+  `passed=False` — i.e. the EXACT check that caused the real
+  `execute_trade` to return.
+
+**Forbidden**: do not add a parallel function that re-runs the checks
+for observation. Do not reorder checks. Do not change short-circuit
+behavior. Do not duplicate broker/API reads.
+
+### Per-symbol decision_history finalize (post-corrigendum)
+
+`_persist_obs_001_decision_snapshot(symbol, entry, cycle_id,
+cycle_start_iso)` is called IMMEDIATELY when each symbol's terminal
+outcome is known:
+
+- After each SELL inline `execute_trade` call (BUY and SELL inline)
+- After each BUY ranked-walk `execute_trade` call
+- After each slots_filled SELL/BUY skip
+- After each HOLD outcome (in the `elif analysis:` branch)
+
+The `decision_history` row is durable BEFORE the cycle continues. The
+UNIQUE(cycle_id, symbol) constraint ensures idempotency if the helper
+is called twice for the same symbol. The `cycle_funnel` row is still
+written ONCE at cycle end.
+
+### Legacy dashboard fidelity (post-corrigendum)
+
+For rows where `decision_snapshot IS NULL` (legacy rows written before
+Phase A shipped), `api_opportunities` reads `signal` and
+`signal_strength` directly from the persisted `analyzed_stocks.signal`
+and `analyzed_stocks.signal_strength` columns. It MUST NOT re-derive
+them from `total_score` thresholds — doing so would rewrite the
+meaning of an old analysis under current thresholds. Changing dashboard
+score thresholds MUST NOT alter a legacy persisted signal/strength.
+
+## Original (pre-corrigendum) text below
+
+These gaps are documented honestly. They are NOT patched inside
+OBS-001 Phase A; patching requires separate Josh-approved tasks.
+
 ### PROPOSED FOLLOW-UP PIPELINE ARCHITECTURE (documentation only)
 
 ```

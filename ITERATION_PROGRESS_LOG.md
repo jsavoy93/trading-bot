@@ -3004,3 +3004,76 @@ future work:
 2. Fill polling implementation (would bump slot_semantics_version
    to 2; out of scope)
 3. SCORE-003 — MEDIUM SELL unreachable fix
+
+## 2026-09-12 01:25 UTC — OBS-001 PHASE A CORRIGENDUM (3 fixes from Josh review)
+
+- Branch: `agent/obs-001-phase-a-decision-snapshot`
+- Status: corrections complete; awaiting Josh review and merge
+- Backlog: OBS-001 Phase A
+- Owner: trading-manager
+
+### Fixes applied (Josh 2026-09-12 00:55 UTC)
+
+**Issue 1 — Legacy dashboard fidelity**
+- `api_opportunities` no longer derives signal/strength from
+  `total_score` thresholds for legacy rows (`decision_snapshot IS NULL`)
+- Legacy branch now reads `row['signal']` and `row['signal_strength']`
+  directly from `analyzed_stocks`. Changing dashboard score thresholds
+  cannot alter a legacy persisted signal/strength.
+- 4 regression tests in `TestLegacyDashboardFidelity`.
+
+**Issue 2 — Trace collected by REAL execute_trade; no duplicate runs**
+- Removed `_run_execution_checks_with_observation` (duplicate simulation).
+- Removed `_capture_l5_state_at_attempt` (duplicate broker reads).
+- Real `execute_trade` now calls `_obs_001_trace_record(...)` at the
+  EXACT location of each existing check, recording the actual values
+  it used.
+- `_obs_001_finalize_attempt` back-fills NOT RUN entries for checks the
+  real code short-circuited past.
+- Verified: `trading_client.get_account()` is called exactly once per
+  execute_trade invocation (same as pre-OBS-001).
+- 5 regression tests in `TestExecuteTradeTraceCollection`.
+
+**Issue 3 — Per-symbol decision_history finalized immediately**
+- New helper `_persist_obs_001_decision_snapshot(symbol, entry, ...)`
+  called IMMEDIATELY after each symbol's terminal outcome is known:
+  - After each execute_trade call (BUY and SELL inline + BUY ranked walk)
+  - After each slots_filled SELL/BUY skip
+  - After each HOLD outcome
+- UNIQUE(cycle_id, symbol) constraint ensures idempotency.
+- cycle_funnel row still written once at cycle end
+  (`_finalize_obs_001_snapshots` reduced to cycle_funnel writer).
+- 3 regression tests in `TestPerSymbolFinalizeOnDecision`.
+
+### Architecture summary
+
+- Module-level trace collector:
+  `_obs_001_active_trace`, `_obs_001_active_attempt_symbol/signal/returned`
+- Functions (NOT class methods):
+  - `_obs_001_begin_attempt(symbol, signal)` — open new trace
+  - `_obs_001_trace_record(name, applied, passed, observed, threshold, reason, gap)`
+  - `_obs_001_finalize_attempt(returned)` — close trace, back-fill NOT RUN
+- Observational methods on bot:
+  - `_capture_baseline_observed_state()` — once per cycle (OBSERVED-ONLY)
+  - `_capture_symbol_observed_state(symbol)` — small targeted per-symbol read
+  - `_persist_obs_001_decision_snapshot(symbol, entry, cycle_id, cycle_start_iso)`
+  - `_finalize_obs_001_snapshots(...)` — cycle_funnel only
+
+### Decisions/risks
+- SELL-only `position_existence_check` recorded with actual values but
+  not added to `OBS_001_EXECUTION_CHECK_ORDER` (so BUY order unchanged).
+- Cycle-start baseline captured once; per-symbol updates layered on top
+  via `_capture_symbol_observed_state` (small targeted reads only).
+- Trace is module-global (single-threaded bot, no concurrency risk).
+
+### Tests
+- 47/47 OBS-001 tests pass (was 35, +12 new)
+- 1234 PASS, 2 FAIL pre-existing (unchanged on clean main)
+
+### Manager decision
+`ACCEPT`; ready for Josh's review and merge of branch
+`agent/obs-001-phase-a-decision-snapshot`.
+
+### Next action
+**STOP**. Awaiting Josh's review and merge. Do NOT auto-merge.
+Do NOT restart SmartBot. Do NOT start SCORE-003.

@@ -654,8 +654,10 @@ def api_opportunities(limit: int = 30):
     OBS-001 Phase A: read decision_snapshot when present and use the
     bot's stored signal/signal_strength rather than recomputing them
     from total_score. For legacy rows (decision_snapshot IS NULL) the
-    behavior is unchanged from pre-OBS-001: derive signal from score
-    thresholds (legacy backward-compatible pathway).
+    dashboard reads the persisted `signal` and `signal_strength`
+    columns from analyzed_stocks directly; it MUST NOT re-derive them
+    from total_score thresholds because doing so would rewrite the
+    meaning of an old analysis under new thresholds.
     """
     import sqlite3
 
@@ -709,23 +711,23 @@ def api_opportunities(limit: int = 30):
                 execution_block = snapshot.get('execution_checks', {}) or {}
                 order_block = snapshot.get('order', {}) or {}
             else:
-                # Legacy row (decision_snapshot IS NULL): preserve the
-                # pre-OBS-001 score-derivation pathway for backward
-                # compatibility with rows written before Phase A shipped.
-                if score >= 65:
-                    signal = 'BUY'
-                    strength = 'STRONG' if score >= 80 else 'MEDIUM'
-                elif score <= 35:
-                    signal = 'SELL'
-                    strength = 'STRONG' if score <= 20 else 'MEDIUM'
-                else:
-                    signal = 'HOLD'
-                    strength = 'WEAK'
+                # Legacy row (decision_snapshot IS NULL): use the
+                # persisted `signal` and `signal_strength` columns
+                # directly. NEVER re-derive from total_score thresholds:
+                # doing so would rewrite the meaning of an old
+                # analysis under a current threshold regime.
+                signal = row['signal'] or 'HOLD'
+                strength = row['signal_strength'] or 'WEAK'
                 decision_outcome = None
                 decision_primary_reason = None
                 ranking_block = {}
                 execution_block = {}
                 order_block = {}
+                # Defensive: if signal is NULL for any reason (e.g.
+                # extremely old rows), keep it as HOLD rather than
+                # re-deriving. The legacy pathway is "use what the
+                # bot wrote at analysis time, not what current code
+                # thinks the score implies".
 
             # Parse buy_criteria from JSON string
             buy_criteria = []
