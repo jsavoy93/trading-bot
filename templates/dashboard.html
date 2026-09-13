@@ -1676,7 +1676,20 @@
             } else if (checks.length > 0) {
                 html += _dt_row('First blocker', '<span style="color:#2ea043;">none — all checks passed</span>');
             }
-            const ordered = order.length ? order.slice() : seenOrder;
+            // Render in declared evaluation order first; then append any
+            // persisted checks[] that were not declared in evaluated_in_order,
+            // preserving their persisted checks[] order. This guarantees the
+            // rendered list contains every persisted check exactly once, even
+            // when the first_blocking_check falls outside evaluated_in_order.
+            const ordered = order.length ? order.slice() : [];
+            const orderedSet = new Set(ordered);
+            for (let i = 0; i < seenOrder.length; i++) {
+                const name = seenOrder[i];
+                if (!orderedSet.has(name)) {
+                    ordered.push(name);
+                    orderedSet.add(name);
+                }
+            }
             for (let i = 0; i < ordered.length; i++) {
                 const name = ordered[i];
                 const c = byName[name];

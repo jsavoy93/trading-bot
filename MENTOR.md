@@ -472,9 +472,17 @@ What Phase A does:
   evaluated and did not pass. The renderer must NOT translate
   missing or not-evaluated checks into failures.
 - **Execution checks** render in the exact persisted
-  `evaluated_in_order` order. The `first_blocking_check` row is
-  highlighted (left bar + `FIRST BLOCKER` chip). The renderer
-  must NOT recompute the blocker — it reads the persisted field.
+  `evaluated_in_order` order, then APPEND any persisted
+  `checks[]` entries that were not named in `evaluated_in_order`
+  (in their persisted `checks[]` order). The
+  `first_blocking_check` row is highlighted (left bar +
+  `FIRST BLOCKER` chip) wherever it appears — inside
+  `evaluated_in_order` or only inside `checks[]`. Live ALPXR
+  (SELL_BLOCKED_DYNAMIC, snapshot v1) has its blocker
+  (`position_existence_check`) only in `checks[]` and absent
+  from `evaluated_in_order`; the renderer must still surface
+  the row and the highlight. The renderer must NOT recompute
+  the blocker — it reads the persisted field.
 - **Order section** distinguishes SUBMITTED from FILLED/EXECUTED.
   `order.fill_confirmed === true` is the only field that may flip
   a submitted order into a fill state in the UI. The Order
