@@ -1948,3 +1948,49 @@ on a 0..100 scale, e.g., total_score in [20, 50]).
 Full safe suite: **1125/1125 pass** (was 1095 pre-amend, +30 new).
 `git diff --check` clean. Brokerage safety gate unchanged. SmartBot
 remains OFF. BOT-002 not enabled.
+
+### Phase A controlled activation (2026-09-12 03:42-03:50 UTC)
+
+- PR #78 merged to main at `eefd7e9`. Both local and origin main at
+  the same commit.
+- SmartBot restarted via `systemctl --user restart smartbot-runner.service`.
+  New PID 761649. Paper-only env preserved.
+- Both dashboards restarted:
+  - `trading-dashboard.service` (port 8000) — PID 761736. Loads OBS-001
+    dashboard code (api_opportunities, api_decision, api_decision-history,
+    api_actionability-summary).
+  - `dashboard.service` (port 8010, dashboard.mooseops.com.co) — PID
+    761807. Engineering Dashboard; OBS-001 changes are NOT here.
+- Migration is idempotent and was effectively applied during PR review
+  tests. Schema verified: analyzed_stocks.decision_snapshot +
+  decision_schema_version, decision_history UNIQUE(cycle_id, symbol),
+  cycle_funnel UNIQUE(cycle_id). 13,749 analyzed_stocks rows preserved
+  (10,352 pre-OBS rows still snap=NULL).
+- 16+ cycles ran post-activation. All 30 symbols/cycle, all HOLD_INELIGIBLE
+  (deep low-signal market today). No forced trades, no symbol/score
+  changes, no threshold changes.
+- Audit of 6 stocks (MNST, VCOB, RAVI, MNR, RBIL, ALRS) and a worked
+  example (MODD, cycle_76246) showed identical data across all four
+  sources: runtime journal ↔ analyzed_stocks ↔ decision_history ↔
+  dashboard API.
+- Absent categories this activation: BUY candidates, SELL candidates,
+  execution-blocked, order-submitted, ranked-not-attempted. These will
+  be audited when natural market conditions produce them.
+
+### Known pre-existing issue (out of OBS-001 scope)
+
+`trading-dashboard.service` (PID 761736) does NOT set
+`TRADING_BOT_PAPER_ONLY=1` in its unit env. When the dashboard's
+`/api/positions` endpoint instantiates `SmartTradingBot()`, the
+BOT-002 paper-only guard fails. The endpoint returns empty lists
+with an error logged. This is PRE-EXISTING (verified by journal scan
+of pre-OBS-001 PID 655875). NOT introduced by OBS-001 merge.
+NOT in scope for this activation. The OBS-001 endpoints are NOT
+affected.
+
+### Dashboard URL mapping (unchanged)
+
+| Cloudflare hostname | Local service | Local port |
+|---|---|---|
+| dashboard.mooseops.com.co | dashboard.service (Engineering Dashboard) | 8010 |
+| trading.mooseops.com.co | trading-dashboard.service (Trading Dashboard / dashboard.py) | 8000 |
