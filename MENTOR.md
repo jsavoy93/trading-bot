@@ -376,6 +376,72 @@ them from `total_score` thresholds — doing so would rewrite the
 meaning of an old analysis under current thresholds. Changing dashboard
 score thresholds MUST NOT alter a legacy persisted signal/strength.
 
+### Dashboard History → Recent Sessions (read-model fix)
+
+The Recent Sessions card on the History tab is a **read-model** view
+over `trading_sessions` + `decision_history` + `trades`. The fix lives
+entirely in `dashboard.get_recent_sessions_with_truthful_counts()` and
+the matching template fields. No SmartTradingBot / scoring / execution
+behavior changes.
+
+- **Symbols semantic** (per row in the table):
+  - If `decision_history` has any rows for the session:
+    `Symbols = COUNT(DISTINCT decision_history.symbol)`. Repeated
+    analysis of the same symbol across multiple cycles counts ONCE
+    (the DISTINCT semantic). This is the authoritative post-OBS-001
+    value.
+  - Else (legacy session with no OBS-001 decision rows):
+    `Symbols = trading_sessions.total_symbols_processed`. The legacy
+    scalar is only consulted when `decision_history` has no rows for
+    the session — it is NOT used when decision_history exists.
+
+- **Trades semantic** (per row):
+  - `Trades = COUNT(trades.id) WHERE trades.session_id = X`.
+  - The legacy `trading_sessions.total_trades_executed` scalar is NOT
+    consulted; the `trades` table is the only source. Historical
+    pre-OBS-001 trades that cannot be reliably associated with a
+    specific session are simply not counted (rather than invented).
+
+- **Future-fixture filter (BOT-003-style skew)**:
+  - Rows where `session_start > now(UTC) + 300 seconds` are excluded
+    from Recent Sessions. This is the same 5-minute future bound that
+    BOT-003 uses for active-session selection.
+  - The filter is **read-layer only**. No `trading_sessions` row is
+    mutated, hidden, or deleted. Session 71804 (the `2099-01-01`
+    fixture seeded by `tests/test_bot003_active_session_selection.py`)
+    remains queryable directly via `db.get_sessions()`; it simply does
+    not qualify for the normal Recent Sessions read model.
+
+- **Sort**: after filtering, `ORDER BY session_start DESC, id DESC`.
+  The id tiebreak makes ordering deterministic when two sessions share
+  the same `session_start`.
+
+- **Session → Cycle → Decision** (preserved understanding):
+  - `trading_sessions` is one row per logical session.
+  - `decision_history.cycle_id` groups rows within a session.
+  - `decision_history.symbol` is one row per symbol per cycle.
+  - In current runtime one session is approximately one cycle (the bot
+    calls `start_session`/`end_session` per loop iteration). The
+    DISTINCT semantic is correct for this shape AND scales correctly if
+    a future session spans multiple cycles.
+
+- **Implementation contract**:
+  - File: `dashboard.py` defines
+    `get_recent_sessions_with_truthful_counts(limit,
+    max_future_skew_seconds=300)`.
+  - File: `templates/dashboard.html` reads `session.symbols_count` and
+    `session.trades_count` for Recent Sessions.
+  - File: `tests/test_dashboard_recent_sessions_fidelity.py` proves the
+    nine acceptance criteria (DISTINCT semantic, legacy fallback,
+    trades-table count, fixture exclusion, fixture unchanged in DB,
+    deterministic sort, zero-trade rows, no mutation, no bot-runtime
+    surface).
+  - The bot-side baseline bug in
+    `SmartTradingBot.start_session`/`end_session` (which makes
+    `total_symbols_processed` always 0 after the first session) is
+    **deliberately NOT fixed here**. It is documented as a separate
+    task.
+
 ## Original (pre-corrigendum) text below
 
 These gaps are documented honestly. They are NOT patched inside

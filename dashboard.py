@@ -5,7 +5,7 @@ Mobile-friendly dashboard to monitor and control your trading bot.
 import json
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
 from fastapi import FastAPI, Depends, HTTPException
@@ -588,8 +588,185 @@ def get_trades_from_db(limit: int = 20) -> List[Dict]:
     return db.get_all_trades(limit)
 
 
+# Dashboard read-model fidelity: filter future-dated test fixtures out of the
+# Recent Sessions view and source Symbols/Trades from OBS-001 ground truth.
+# Mirrors the BOT-003 skew tolerance (CLOCK_SKEW_SECONDS=300 in sqlite_db.py).
+DASHBOARD_RECENT_SESSIONS_MAX_FUTURE_SKEW_SECONDS = 300
+
+
+def _parse_iso8601_utc(value: str):
+    """Parse an ISO-8601 timestamp string into an aware UTC datetime.
+
+    Accepts the formats actually written by the bot and tests:
+    trailing 'Z', explicit '+00:00', or naive strings (treated as UTC).
+    Raises ValueError on malformed input so callers can skip the row.
+    """
+    if not value or not isinstance(value, str):
+        raise ValueError("empty timestamp")
+    v = value.strip()
+    if v.endswith("Z"):
+        v = v[:-1] + "+00:00"
+    dt = datetime.fromisoformat(v)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _aggregate_session_counts(session_ids):
+    """Aggregate decision_history symbols and trades counts per session.
+
+    Returns (symbols_by_session, trades_by_session) dicts. Returns empty
+    dicts on any error; callers must treat missing keys as zero.
+
+    Uses the same DB_PATH the rest of the dashboard reads from, so the
+    helper stays consistent with `db.get_sessions()` and respects any
+    test-time monkeypatching of DB_PATH.
+    """
+    sym_by_session = {}
+    trd_by_session = {}
+    if not session_ids:
+        return sym_by_session, trd_by_session
+
+    try:
+        import sqlite3 as _sqlite3
+        import database.sqlite_db as _sqlite_mod  # dashboard-side module
+        db_path = _sqlite_mod.DB_PATH
+        if not db_path or not Path(str(db_path)).exists():
+            return sym_by_session, trd_by_session
+        placeholders = ",".join("?" for _ in session_ids)
+        conn = _sqlite3.connect(str(db_path))
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT session_id, COUNT(DISTINCT symbol)
+                FROM decision_history
+                WHERE session_id IN ({placeholders})
+                GROUP BY session_id
+                """,
+                session_ids,
+            )
+            for sid, n in cur.fetchall():
+                sym_by_session[int(sid)] = int(n)
+            cur.execute(
+                f"""
+                SELECT session_id, COUNT(*)
+                FROM trades
+                WHERE session_id IN ({placeholders})
+                GROUP BY session_id
+                """,
+                session_ids,
+            )
+            for sid, n in cur.fetchall():
+                trd_by_session[int(sid)] = int(n)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(
+            f"_aggregate_session_counts failed (returning empty dicts): {e}"
+        )
+    return sym_by_session, trd_by_session
+
+
+def get_recent_sessions_with_truthful_counts(limit: int = 5) -> List[Dict]:
+    """Recent trading sessions with truthful Symbols and Trades counts.
+
+    Symbols semantic:
+        - If decision_history has any rows for the session:
+            Symbols = COUNT(DISTINCT decision_history.symbol)
+            (repeated analysis of the same symbol across multiple cycles
+            counts once; this is the authoritative OBS-001 value).
+        - Else (legacy session with no OBS-001 decision rows):
+            Symbols = trading_sessions.total_symbols_processed.
+
+    Trades semantic:
+        - Trades = COUNT(trades.id) WHERE trades.session_id = X.
+        - The legacy trading_sessions.total_trades_executed scalar is NOT used.
+
+    Filter (read-layer only; no row is mutated or deleted):
+        - Exclude rows where parsed session_start > now(UTC) + 300 seconds.
+        - The BOT-003 skew tolerance is the same 5-minute future bound used
+          to keep implausibly future-dated test fixtures (e.g. session 71804
+          with session_start='2099-01-01') out of the active-session and
+          recent-sessions selectors. No session row is deleted or hidden at
+          the DB level by this helper.
+
+    Sort:
+        - ORDER BY session_start DESC, id DESC (deterministic tiebreak).
+
+    Shape:
+        - Returns the same per-row dict as db.get_sessions(), augmented
+          with `symbols_count` (int), `symbols_source` ("decision_history"
+          or "legacy_scalar"), and `trades_count` (int). The legacy
+          `total_symbols_processed` and `total_trades_executed` fields are
+          preserved on the dict for any consumer that still reads them.
+    """
+    if limit <= 0:
+        return []
+
+    # Over-fetch to absorb the future-skew filter. Bounded so a pathological
+    # table cannot force a full scan.
+    raw = db.get_sessions(limit=max(limit * 4, 50))
+    if not raw:
+        return []
+
+    now = datetime.now(timezone.utc)
+    upper_bound = now + timedelta(
+        seconds=DASHBOARD_RECENT_SESSIONS_MAX_FUTURE_SKEW_SECONDS
+    )
+
+    parsed = []
+    for s in raw:
+        ss_raw = s.get("session_start")
+        if not ss_raw:
+            continue
+        try:
+            ss_dt = _parse_iso8601_utc(ss_raw)
+        except Exception:
+            # Malformed timestamp: skip rather than render an ambiguous row.
+            continue
+        if ss_dt > upper_bound:
+            continue
+        parsed.append((ss_dt, s))
+
+    # Deterministic sort: session_start DESC, id DESC.
+    parsed.sort(
+        key=lambda pair: (pair[0], int(pair[1].get("id") or 0)),
+        reverse=True,
+    )
+    chosen = [s for _, s in parsed[:limit]]
+    if not chosen:
+        return []
+
+    session_ids = [
+        int(s["id"]) for s in chosen if s.get("id") is not None
+    ]
+    sym_by_session, trd_by_session = _aggregate_session_counts(session_ids)
+
+    enriched = []
+    for s in chosen:
+        sid = s.get("id")
+        sid_int = int(sid) if sid is not None else None
+        if sid_int is not None and sid_int in sym_by_session:
+            s["symbols_count"] = int(sym_by_session[sid_int])
+            s["symbols_source"] = "decision_history"
+        else:
+            s["symbols_count"] = int(s.get("total_symbols_processed") or 0)
+            s["symbols_source"] = "legacy_scalar"
+        s["trades_count"] = int(trd_by_session.get(sid_int, 0)) if sid_int is not None else 0
+        enriched.append(s)
+    return enriched
+
+
 def get_recent_sessions(limit: int = 5) -> List[Dict]:
-    """Get recent trading sessions"""
+    """Get recent trading sessions.
+
+    Backward-compatible wrapper. The History → Recent Sessions panel and
+    /api/sessions now use get_recent_sessions_with_truthful_counts(), which
+    applies the BOT-003 future-skew filter and sources Symbols/Trades from
+    OBS-001 ground truth. This wrapper is preserved for any external
+    consumer that wants the raw, unfiltered row list.
+    """
     return db.get_sessions(limit)
 
 
@@ -602,7 +779,7 @@ def dashboard():
         positions = get_positions()
         orders = get_orders(100)  # Get more orders to cover last week
         db_trades = get_trades_from_db(10)
-        sessions = get_recent_sessions(5)
+        sessions = get_recent_sessions_with_truthful_counts(5)
         trading_status = get_trading_status()
         runtime_status = get_runtime_status()
 
@@ -1092,8 +1269,14 @@ def api_trades(limit: int = 20):
 
 @app.get("/api/sessions")
 def api_sessions(limit: int = 5):
-    """API endpoint for sessions"""
-    return get_recent_sessions(limit)
+    """API endpoint for sessions.
+
+    Returns the recent-sessions read model with truthful Symbols and Trades
+    counts (decision_history / trades ground truth) and the BOT-003
+    future-skew filter applied. See
+    get_recent_sessions_with_truthful_counts for the full contract.
+    """
+    return get_recent_sessions_with_truthful_counts(limit)
 
 
 
