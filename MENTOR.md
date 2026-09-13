@@ -442,6 +442,94 @@ behavior changes.
     **deliberately NOT fixed here**. It is documented as a separate
     task.
 
+### Dashboard Phase A — History Symbol Search + OBS-001 Decision Trace (2026-09-13)
+
+Phase A is the first slice of the dashboard redesign plan. It is
+**dashboard-only** and does not change SmartBot, scoring, eligibility,
+ranking, sizing, risk, brokerage, systemd, Cloudflare, the database
+schema, PIPELINE-001, or SCORE-003.
+
+What Phase A does:
+
+- **Move Symbol Lookup** out of the always-visible global area at
+  the top of the page into a full-width **Symbol Search** card at
+  the top of the **History** tab. The History tab is now the single
+  entry point for per-symbol decision inspection.
+- **Render OBS-001 decision snapshots** directly from the existing
+  `/api/decision/{symbol}` and `/api/decision-history/{symbol}`
+  endpoints. No new HTTP endpoints are introduced.
+- **Never re-derive from current settings**. The renderer reads
+  the persisted `decision_snapshot` JSON only. It does NOT call
+  `/api/score/{symbol}` (live recompute) for the recorded-score
+  path, and it does NOT use the legacy `buy_criteria` field as
+  primary decision truth.
+- **Seven compact expandable sections**: DECISION (open by default),
+  STRATEGY GATES, SCORE, RANKING, SELECTION, EXECUTION CHECKS, ORDER.
+  Each section is collapsible via the `.dt-section.open` toggle.
+- **Strategy gates** render with PASS / FAIL / NOT RUN / N/A
+  chips. `NOT RUN` means the gate was not evaluated (data missing,
+  or N/A for the current signal). `FAIL` means the gate was
+  evaluated and did not pass. The renderer must NOT translate
+  missing or not-evaluated checks into failures.
+- **Execution checks** render in the exact persisted
+  `evaluated_in_order` order. The `first_blocking_check` row is
+  highlighted (left bar + `FIRST BLOCKER` chip). The renderer
+  must NOT recompute the blocker — it reads the persisted field.
+- **Order section** distinguishes SUBMITTED from FILLED/EXECUTED.
+  `order.fill_confirmed === true` is the only field that may flip
+  a submitted order into a fill state in the UI. The Order
+  section includes a literal note: *"submission does not imply
+  fill"*.
+- **History list** below the latest trace renders the most recent
+  10 cycles (`limit=10`). Each row is expandable and renders
+  the cached historical snapshot via the SAME renderer that
+  produced the latest trace — historical snapshots are immutable
+  facts, never reinterpreted using current settings.
+- **Legacy fallback**: rows with `decision_snapshot IS NULL`
+  render a literal "Legacy analysis — detailed decision trace
+  unavailable" message, plus the persisted legacy `signal`,
+  `signal_strength`, `total_score`, and `last_analyzed` columns.
+- **Unknown symbol fallback**: the literal "No analysis found for
+  SYMBOL" is rendered when both `/api/decision/{symbol}` and the
+  history endpoint return no rows.
+- **Mobile-first**: no element requires horizontal scroll on a
+  phone. Header uses `flex-wrap`. Sections stack vertically.
+  Decision section is the first thing visible on expand.
+
+Implementation contract:
+
+- File: `templates/dashboard.html` adds a new card
+  `#history-symbol-search-card` at the top of
+  `#top-tab-history` and removes the legacy
+  `#symbol-search-card`. New renderer helpers `_dt_*` are
+  scoped under the `doHistorySymbolSearch()` entry point.
+- File: `tests/test_dashboard_phase_a_history_symbol_trace.py`
+  proves 17 acceptance criteria including: removal of the
+  always-visible card; presence and ordering of the new card;
+  unique new IDs; reuse of `/api/decision/` and
+  `/api/decision-history/`; absence of `/api/search/` and
+  `/api/score/` calls in the new code path; seven section
+  renderers wired; Decision open by default, others closed;
+  submitted ≠ filled; legacy and unknown-symbol fallback
+  messages present; history list default 10; historical
+  snapshots rendered via the same renderer; `dashboard.py`
+  unchanged (no new HTTP routes).
+- No `dashboard.py` changes. No `src/` changes. No
+  `trading_bot.db` schema changes.
+
+What Phase A does NOT do (deferred to later phases):
+
+- Removal of the Filter Analysis card, Failed Analysis Breakdown
+  card, and the Timing / By RSI inner tabs on Analytics.
+- Top Opportunities is not yet SCORE-002-ranked.
+- Latest Cycle funnel card on Dashboard.
+- High-Score Near Misses, Strategy Gate Failure Frequency,
+  Execution-Time Blockers, Outcome Distribution widgets on
+  Analytics.
+- Settings deprecated treatment for `min_score_buy`.
+- Per-card silent refresh / SPA-state preservation.
+- Symbol drill-down from Recent Sessions / Positions / Orders.
+
 ## Original (pre-corrigendum) text below
 
 These gaps are documented honestly. They are NOT patched inside
