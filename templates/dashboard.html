@@ -429,6 +429,235 @@
             from { opacity: 0; transform: translateY(4px); }
             to   { opacity: 1; transform: translateY(0); }
         }
+
+        /* ── Phase A: Symbol Decision Trace ── */
+        .dt-header {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            padding: 4px 0 12px 0;
+            border-bottom: 1px solid #21262d;
+            margin-bottom: 10px;
+        }
+        .dt-symbol {
+            font-size: 22px;
+            font-weight: 700;
+            color: #58a6ff;
+            letter-spacing: 0.04em;
+        }
+        .dt-outcome {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .dt-outcome-buy { background: #1f6f37; color: #d2f4d8; }
+        .dt-outcome-sell { background: #8b1e2a; color: #f7d4d8; }
+        .dt-outcome-hold { background: #3d3a1e; color: #f0e4a3; }
+        .dt-outcome-blocked { background: #4a2c1a; color: #f5cf9a; }
+        .dt-outcome-invalid { background: #3a2d4a; color: #d8c8f0; }
+        .dt-outcome-neutral { background: #30363d; color: #c9d1d9; }
+        .dt-score-big {
+            font-size: 22px;
+            font-weight: 700;
+            color: #f0883e;
+        }
+        .dt-meta {
+            font-size: 11px;
+            color: #8b949e;
+        }
+        .dt-meta code {
+            font-size: 11px;
+            background: #0d1117;
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: #c9d1d9;
+        }
+
+        .dt-section {
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            overflow: hidden;
+            background: #0d1117;
+        }
+        .dt-section-header {
+            padding: 8px 12px;
+            background: #161b22;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #c9d1d9;
+        }
+        .dt-section-header:hover {
+            background: #1c2129;
+        }
+        .dt-section-caret {
+            font-size: 10px;
+            color: #8b949e;
+            transition: transform 0.15s;
+        }
+        .dt-section.open .dt-section-caret {
+            transform: rotate(90deg);
+        }
+        .dt-section-body {
+            display: none;
+            padding: 10px 12px;
+            font-size: 13px;
+        }
+        .dt-section.open .dt-section-body {
+            display: block;
+        }
+
+        .dt-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 16px;
+            padding: 4px 0;
+            border-bottom: 1px solid #21262d;
+            align-items: baseline;
+        }
+        .dt-row:last-child { border-bottom: none; }
+        .dt-label {
+            flex: 0 0 130px;
+            font-size: 11px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .dt-value {
+            flex: 1;
+            color: #c9d1d9;
+            word-break: break-word;
+            font-size: 13px;
+        }
+        .dt-value code {
+            font-size: 12px;
+            background: #161b22;
+            padding: 1px 5px;
+            border-radius: 3px;
+            color: #c9d1d9;
+        }
+        .dt-chip {
+            display: inline-block;
+            padding: 2px 7px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            margin-right: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .dt-chip-pass { background: #1f6f37; color: #d2f4d8; }
+        .dt-chip-fail { background: #8b1e2a; color: #f7d4d8; }
+        .dt-chip-notrun { background: #30363d; color: #8b949e; }
+        .dt-chip-na { background: #30363d; color: #6e7681; }
+        .dt-chip-blocker {
+            background: #d29922;
+            color: #1d1c08;
+            margin-left: 6px;
+        }
+        .dt-first-blocker {
+            border-left: 3px solid #d29922;
+            padding-left: 10px;
+        }
+        .dt-component {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+        }
+        .dt-component-label {
+            flex: 0 0 90px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .dt-component-bar {
+            flex: 1;
+            height: 6px;
+            background: #21262d;
+            border-radius: 3px;
+            position: relative;
+            overflow: hidden;
+            min-width: 60px;
+        }
+        .dt-component-fill {
+            height: 100%;
+            border-radius: 3px;
+        }
+        .dt-component-fill.pos { background: #2ea043; }
+        .dt-component-fill.neg { background: #da3633; }
+        .dt-component-fill.zero { background: #6e7681; }
+        .dt-component-value {
+            flex: 0 0 70px;
+            font-size: 12px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            color: #c9d1d9;
+        }
+
+        .dt-history-row {
+            padding: 10px 12px;
+            border-bottom: 1px solid #21262d;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .dt-history-row:last-child { border-bottom: none; }
+        .dt-history-row:hover { background: #161b22; }
+        .dt-history-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .dt-history-time {
+            font-size: 12px;
+            color: #8b949e;
+            font-variant-numeric: tabular-nums;
+        }
+        .dt-history-reason {
+            font-size: 12px;
+            color: #c9d1d9;
+            margin-top: 2px;
+        }
+        .dt-history-expand {
+            display: none;
+            margin-top: 8px;
+            border-top: 1px dashed #30363d;
+            padding-top: 8px;
+        }
+        .dt-history-row.open .dt-history-expand { display: block; }
+        .dt-history-row.open .dt-section { background: #161b22; }
+        .dt-msg {
+            padding: 12px;
+            color: #8b949e;
+            font-size: 13px;
+            border: 1px dashed #30363d;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .dt-msg.error { color: #f0883e; border-color: #f0883e44; }
+        .dt-msg.legacy { color: #d29922; border-color: #d2992244; }
+
+        @media (max-width: 600px) {
+            .dt-label { flex-basis: 100px; font-size: 10px; }
+            .dt-symbol { font-size: 18px; }
+            .dt-score-big { font-size: 18px; }
+            .dt-component-label { flex-basis: 70px; }
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
@@ -480,21 +709,6 @@
         <button class="top-tab" onclick="showTopTab('analytics', this)">📈 Analytics</button>
         <button class="top-tab" onclick="showTopTab('settings', this)">⚙️ Settings</button>
         <button class="top-tab" onclick="showTopTab('history', this)">📜 History</button>
-    </div>
-
-    <!-- Symbol Search — always visible above tabs -->
-    <div class="card" id="symbol-search-card">
-        <div class="card-header">
-            <span class="card-title">🔍 Symbol Lookup</span>
-        </div>
-        <div style="display:flex;gap:8px;">
-            <input type="text" id="searchInput" placeholder="Enter symbol (e.g. AAPL)"
-                style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px 12px;border-radius:6px;font-size:14px;"
-                onkeydown="if(event.key==='Enter')doSymbolSearch()">
-            <button type="button" class="btn btn-primary" id="searchBtn"
-                onclick="var s=document.getElementById('searchInput').value.trim().toUpperCase();if(!s)return;var r=document.getElementById('searchResults');var b=document.getElementById('searchBtn');r.style.display='block';r.innerHTML='<div style=color:#f0883e>Looking up '+s+'...</div>';b.textContent='Loading';b.disabled=true;fetch('/api/search/'+s).then(function(resp){return resp.json()}).then(function(data){if(data.error){r.innerHTML='<div style=color:#da3633>'+data.error+'</div>'}else{var c=data.buy_criteria&&data.buy_criteria.length?data.buy_criteria.map(function(x){if(x.kind==='rank'||x.passed===null){return'<span style=color:#8b949e;font-size:12px;display:block>· '+x.name+': '+(x.detail||'')+'</span>';}return'<span style=color:'+(x.passed?'#2ea043':'#da3633')+';font-size:12px;display:block>'+(x.passed?'✓':'✗')+' '+x.name+': '+x.detail+'</span>'}).join(''):'<span style=color:#8b949e>No criteria</span>';r.innerHTML='<div><h3 style=margin:0>'+data.symbol+' - '+data.signal+'</h3><p style=color:#8b949e>Price: $'+(data.price?data.price.toFixed(2):'N/A')+'</p><p style=font-size:24px;font-weight:bold>'+data.total_score+'</p></div><div><h4>Components</h4><div>RSI: '+(data.rsi_score?data.rsi_score.toFixed(1):'N/A')+' SMA: '+(data.sma_score?data.sma_score.toFixed(1):'N/A')+' MACD: '+(data.macd_score?data.macd_score.toFixed(1):'N/A')+' BB: '+(data.bb_score?data.bb_score.toFixed(1):'N/A')+'</div></div><div style=margin-top:10px><h4>Buy Criteria</h4>'+c+'</div><div style=margin-top:10px;color:#8b949e;font-size:12px>Updated: '+(data.last_analyzed?data.last_analyzed:'N/A')+'</div>';}b.textContent='Search';b.disabled=false}).catch(function(e){r.innerHTML='<div style=color:#da3633>Error: '+e.message+'</div>';b.textContent='Search';b.disabled=false})">Search</button>
-        </div>
-        <div id="searchResults" style="margin-top:12px;display:none;"></div>
     </div>
 
     <!-- ═══ TAB PANELS ═══ -->
@@ -836,6 +1050,23 @@
 
     <div id="top-tab-history" class="top-tab-panel" style="display:none;">
 
+        <!-- Phase A: Symbol Search (moved here from always-visible Symbol Lookup) -->
+        <div class="card" id="history-symbol-search-card">
+            <div class="card-header">
+                <span class="card-title">🔍 Symbol Search</span>
+                <span class="opp-updated">OBS-001 decision trace</span>
+            </div>
+            <div style="display:flex;gap:8px;">
+                <input type="text" id="historySearchInput" placeholder="Enter symbol (e.g. AAPL, MODD)"
+                    maxlength="10" autocapitalize="characters" autocomplete="off"
+                    style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:8px 12px;border-radius:6px;font-size:14px;text-transform:uppercase;"
+                    onkeydown="if(event.key==='Enter')doHistorySymbolSearch()">
+                <button type="button" class="btn btn-primary" id="historySearchBtn"
+                    onclick="doHistorySymbolSearch()">Search</button>
+            </div>
+            <div id="historySearchResults" style="margin-top:12px;"></div>
+        </div>
+
         <!-- Recent Sessions -->
         {% if sessions %}
         <div class="card">
@@ -1172,6 +1403,535 @@
         function closeLogs() {
             document.getElementById('log-viewer').style.display = 'none';
         }
+
+        // ── Phase A: Symbol Decision Trace ──────────────────────────────────────
+        // Renders OBS-001 decision_snapshot as compact expandable sections.
+        // No live recompute; no legacy buy_criteria; no score threshold re-derivation.
+
+        function _dt_escapeHtml(s) {
+            if (s === null || s === undefined) return '';
+            return String(s).replace(/[&<>"']/g, function (c) {
+                return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+            });
+        }
+
+        function _dt_formatNumber(v, digits) {
+            if (v === null || v === undefined || Number.isNaN(v)) return '—';
+            if (typeof v !== 'number') return _dt_escapeHtml(v);
+            return Number(v).toFixed(digits === undefined ? 2 : digits);
+        }
+
+        function _dt_formatScore(v) {
+            if (v === null || v === undefined) return '—';
+            return _dt_formatNumber(v, 1);
+        }
+
+        function _dt_formatIso(iso) {
+            if (!iso) return '—';
+            try {
+                const d = new Date(iso);
+                if (isNaN(d.getTime())) return _dt_escapeHtml(iso);
+                return _dt_escapeHtml(d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC'));
+            } catch (e) { return _dt_escapeHtml(iso); }
+        }
+
+        function _dt_formatRelative(iso) {
+            if (!iso) return '—';
+            try {
+                const d = new Date(iso);
+                if (isNaN(d.getTime())) return _dt_escapeHtml(iso);
+                const seconds = Math.max(1, Math.floor((Date.now() - d.getTime()) / 1000));
+                if (seconds < 60) return seconds + 's ago';
+                const m = Math.floor(seconds / 60);
+                if (m < 60) return m + ' min ago';
+                const h = Math.floor(m / 60);
+                if (h < 48) return h + 'h ago';
+                const dys = Math.floor(h / 24);
+                return dys + 'd ago';
+            } catch (e) { return _dt_escapeHtml(iso); }
+        }
+
+        // Map canonical outcomes to color classes.
+        function _dt_outcomeClass(outcome) {
+            if (!outcome) return 'dt-outcome-neutral';
+            const o = String(outcome);
+            if (o.startsWith('BUY_ORDER_SUBMITTED')) return 'dt-outcome-buy';
+            if (o.startsWith('BUY_BLOCKED') || o.startsWith('BUY_ORDER_FAILED')) return 'dt-outcome-blocked';
+            if (o === 'BUY_ELIGIBLE_NOT_SELECTED') return 'dt-outcome-neutral';
+            if (o.startsWith('SELL_ORDER_SUBMITTED')) return 'dt-outcome-sell';
+            if (o.startsWith('SELL_BLOCKED')) return 'dt-outcome-blocked';
+            if (o === 'HOLD_INELIGIBLE') return 'dt-outcome-hold';
+            if (o === 'SKIPPED_INVALID_DATA') return 'dt-outcome-invalid';
+            return 'dt-outcome-neutral';
+        }
+
+        // Build a section block; returns the outer element so callers can append it.
+        function _dt_section(title, bodyHtml, open) {
+            const wrap = document.createElement('div');
+            wrap.className = 'dt-section' + (open ? ' open' : '');
+            const headerId = 'dt-sh-' + Math.random().toString(36).slice(2, 9);
+            wrap.innerHTML =
+                '<div class="dt-section-header" onclick="this.parentElement.classList.toggle(\'open\')">' +
+                    '<span>' + _dt_escapeHtml(title) + '</span>' +
+                    '<span class="dt-section-caret">▶</span>' +
+                '</div>' +
+                '<div class="dt-section-body">' + bodyHtml + '</div>';
+            return wrap;
+        }
+
+        function _dt_row(label, valueHtml) {
+            return '<div class="dt-row"><div class="dt-label">' + _dt_escapeHtml(label) +
+                   '</div><div class="dt-value">' + valueHtml + '</div></div>';
+        }
+
+        // Render one strategy gate with PASS/FAIL/NOT RUN/N/A chip.
+        function _dt_gateRow(gate) {
+            const applied = gate.applied === true;
+            const passed = gate.passed === true;
+            let chipText, chipClass;
+            if (!applied) {
+                chipText = 'NOT RUN'; chipClass = 'dt-chip-notrun';
+            } else if (passed === null || passed === undefined) {
+                chipText = 'N/A'; chipClass = 'dt-chip-na';
+            } else if (passed) {
+                chipText = 'PASS'; chipClass = 'dt-chip-pass';
+            } else {
+                chipText = 'FAIL'; chipClass = 'dt-chip-fail';
+            }
+            let value = '';
+            if (gate.observed_value !== null && gate.observed_value !== undefined) {
+                value += 'Observed: <code>' + _dt_escapeHtml(gate.observed_value) + '</code> ';
+            }
+            if (gate.threshold_value !== null && gate.threshold_value !== undefined) {
+                value += 'Threshold: <code>' + _dt_escapeHtml(gate.threshold_value) + '</code>';
+            }
+            return '<div class="dt-row"><div class="dt-label"><span class="dt-chip ' + chipClass +
+                '">' + chipText + '</span>' + _dt_escapeHtml(gate.name || '') +
+                '</div><div class="dt-value">' + value +
+                (gate.reason ? '<div style="color:#8b949e;font-size:12px;margin-top:3px;">' +
+                    _dt_escapeHtml(gate.reason) + '</div>' : '') + '</div></div>';
+        }
+
+        // Render one scoring component as a horizontal bar with signed contribution.
+        function _dt_componentBar(label, value) {
+            const isNum = typeof value === 'number' && !Number.isNaN(value);
+            const v = isNum ? value : 0;
+            // Scale: |v|/25 → 100% width, clipped. 25 chosen as a typical
+            // contribution magnitude; clamped at +/-100 for visual sanity.
+            const pct = Math.min(100, Math.max(0, Math.abs(v) / 25 * 100));
+            const cls = isNum ? (v > 0.5 ? 'pos' : v < -0.5 ? 'neg' : 'zero') : 'zero';
+            const fillStyle = isNum
+                ? (v >= 0
+                    ? 'width:' + pct + '%;margin-left:' + (50 - pct/2) + '%;background:#2ea043;'
+                    : 'width:' + pct + '%;margin-left:' + (50 - pct/2) + '%;background:#da3633;')
+                : '';
+            const fillHtml = isNum
+                ? '<div class="dt-component-fill" style="' + fillStyle + '"></div>'
+                : '<div class="dt-component-fill zero" style="width:2px;margin-left:calc(50% - 1px);"></div>';
+            const displayValue = isNum ? _dt_formatScore(v) : '—';
+            return '<div class="dt-component">' +
+                '<div class="dt-component-label">' + _dt_escapeHtml(label) + '</div>' +
+                '<div class="dt-component-bar">' + fillHtml +
+                    '<div style="position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:#30363d;"></div>' +
+                '</div>' +
+                '<div class="dt-component-value">' + displayValue + '</div>' +
+            '</div>';
+        }
+
+        function _dt_renderDecisionSection(decision) {
+            const outcome = decision && decision.outcome ? decision.outcome : '—';
+            const cls = _dt_outcomeClass(outcome);
+            let html = _dt_row('Outcome', '<span class="dt-outcome ' + cls + '">' +
+                _dt_escapeHtml(outcome) + '</span>');
+            html += _dt_row('Primary reason', _dt_escapeHtml(decision && decision.primary_reason ? decision.primary_reason : '—'));
+            html += _dt_row('Evaluated at', _dt_formatIso(decision && decision.decision_evaluated_at));
+            return _dt_section('Decision', html, true);
+        }
+
+        function _dt_renderStrategyGatesSection(seBlock) {
+            const gates = (seBlock && Array.isArray(seBlock.gates)) ? seBlock.gates : [];
+            let html = '';
+            html += _dt_row('Strategy eligible',
+                seBlock && seBlock.strategy_eligible === true
+                    ? '<span class="dt-chip dt-chip-pass">PASS</span> yes'
+                    : '<span class="dt-chip dt-chip-fail">FAIL</span> no');
+            if (seBlock && seBlock.signal) {
+                html += _dt_row('Signal', '<code>' + _dt_escapeHtml(seBlock.signal) + '</code>');
+            }
+            if (seBlock && seBlock.signal_strength) {
+                html += _dt_row('Signal strength', _dt_escapeHtml(seBlock.signal_strength));
+            }
+            if (seBlock && seBlock.strategy_reason) {
+                html += _dt_row('Strategy reason', _dt_escapeHtml(seBlock.strategy_reason));
+            }
+            if (gates.length === 0) {
+                html += '<div style="color:#8b949e;font-size:12px;margin-top:8px;">No strategy gates recorded.</div>';
+            } else {
+                html += '<div style="margin-top:8px;font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.04em;">Gates</div>';
+                for (let i = 0; i < gates.length; i++) {
+                    html += _dt_gateRow(gates[i]);
+                }
+            }
+            return _dt_section('Strategy Gates', html, false);
+        }
+
+        function _dt_renderScoreSection(scoring) {
+            if (!scoring) {
+                return _dt_section('Score', _dt_row('Total', '<span class="dt-score-big">—</span>'), false);
+            }
+            const comps = scoring.components || {};
+            let html = '';
+            html += _dt_componentBar('RSI', comps.rsi_score);
+            html += _dt_componentBar('SMA', comps.sma_score);
+            html += _dt_componentBar('MACD', comps.macd_score);
+            html += _dt_componentBar('BB', comps.bb_score);
+            html += _dt_componentBar('Catalyst', comps.catalyst_score);
+            html += _dt_componentBar('Regime', comps.regime_score);
+            if (scoring.volatility_tier) {
+                html += _dt_row('Volatility tier', _dt_escapeHtml(scoring.volatility_tier));
+            }
+            if (scoring.volatility_multiplier_rsi !== undefined && scoring.volatility_multiplier_rsi !== null) {
+                html += _dt_row('Vol mult (RSI)', _dt_formatNumber(scoring.volatility_multiplier_rsi, 2) + '×');
+            }
+            if (scoring.volatility_multiplier_sma !== undefined && scoring.volatility_multiplier_sma !== null) {
+                html += _dt_row('Vol mult (SMA)', _dt_formatNumber(scoring.volatility_multiplier_sma, 2) + '×');
+            }
+            if (scoring.insider_boost_applied) {
+                html += _dt_row('Insider boost', 'applied · score ' + _dt_formatScore(scoring.insider_score));
+            } else if (scoring.insider_score && Number(scoring.insider_score) !== 0) {
+                html += _dt_row('Insider score', _dt_formatScore(scoring.insider_score));
+            }
+            if (scoring.blended_signed !== null && scoring.blended_signed !== undefined) {
+                html += _dt_row('Blended (signed)', _dt_formatScore(scoring.blended_signed));
+            }
+            const totalCls = scoring.score_invalid_data ? ' style="color:#da3633;"' : '';
+            html += '<div class="dt-row"><div class="dt-label">Total score</div><div class="dt-value">' +
+                '<span class="dt-score-big"' + totalCls + '>' + _dt_formatScore(scoring.total_score) + '</span></div></div>';
+            if (scoring.score_invalid_data) {
+                html += '<div style="color:#f0883e;font-size:12px;margin-top:4px;">⚠ Invalid data — score may be unreliable</div>';
+            }
+            return _dt_section('Score', html, false);
+        }
+
+        function _dt_renderRankingSection(ranking) {
+            if (!ranking) return _dt_section('Ranking', '<div style="color:#8b949e;font-size:12px;">No ranking block.</div>', false);
+            const applicable = ranking.applicable === true;
+            const ranked = ranking.ranked_candidate === true;
+            let html = '';
+            html += _dt_row('Applicable', applicable
+                ? '<span class="dt-chip dt-chip-pass">YES</span>' : '<span class="dt-chip dt-chip-na">NO</span>');
+            html += _dt_row('Ranked candidate', ranked
+                ? '<span class="dt-chip dt-chip-pass">YES</span>' : '<span class="dt-chip dt-chip-na">NO</span>');
+            if (ranking.candidate_rank !== null && ranking.candidate_rank !== undefined) {
+                const denom = ranking.eligible_candidate_count ? ' / ' + ranking.eligible_candidate_count : '';
+                html += _dt_row('Candidate rank', '<code>' + _dt_escapeHtml(ranking.candidate_rank) + denom + '</code>');
+            }
+            if (ranking.eligible_candidate_count !== null && ranking.eligible_candidate_count !== undefined) {
+                html += _dt_row('Eligible candidates', '<code>' + _dt_escapeHtml(ranking.eligible_candidate_count) + '</code>');
+            }
+            if (ranking.eligible_count_at_l3 !== null && ranking.eligible_count_at_l3 !== undefined) {
+                html += _dt_row('Eligible @ L3', '<code>' + _dt_escapeHtml(ranking.eligible_count_at_l3) + '</code>');
+            }
+            html += _dt_row('Tiebreak basis', _dt_escapeHtml(ranking.tiebreak_basis || '—'));
+            if (ranking.total_score !== null && ranking.total_score !== undefined) {
+                html += _dt_row('Score used', _dt_formatScore(ranking.total_score));
+            }
+            return _dt_section('Ranking', html, false);
+        }
+
+        function _dt_renderSelectionSection(selection) {
+            if (!selection) return _dt_section('Selection', '<div style="color:#8b949e;font-size:12px;">No selection block.</div>', false);
+            const attempted = selection.attempted === true;
+            let html = '';
+            html += _dt_row('Attempted', attempted
+                ? '<span class="dt-chip dt-chip-pass">YES</span>' : '<span class="dt-chip dt-chip-na">NO</span>');
+            if (selection.selection_attempted_at) {
+                html += _dt_row('Attempted at', _dt_formatIso(selection.selection_attempted_at));
+            }
+            if (selection.slots_available_at_attempt !== null && selection.slots_available_at_attempt !== undefined) {
+                html += _dt_row('Slots available', '<code>' + _dt_escapeHtml(selection.slots_available_at_attempt) + '</code>');
+            }
+            return _dt_section('Selection', html, false);
+        }
+
+        function _dt_renderExecutionChecksSection(execChecks) {
+            if (!execChecks) return _dt_section('Execution Checks', '<div style="color:#8b949e;font-size:12px;">No execution checks block.</div>', false);
+            const checks = Array.isArray(execChecks.checks) ? execChecks.checks : [];
+            const order = Array.isArray(execChecks.evaluated_in_order) ? execChecks.evaluated_in_order : [];
+            // Build a lookup of name → check, preserving first-seen order.
+            const byName = {};
+            const seenOrder = [];
+            for (let i = 0; i < checks.length; i++) {
+                const c = checks[i];
+                if (!c || !c.name) continue;
+                if (!byName[c.name]) { seenOrder.push(c.name); }
+                byName[c.name] = c;
+            }
+            // Render in declared evaluation order, then any extras.
+            let html = '';
+            if (execChecks.first_blocking_check) {
+                html += _dt_row('First blocker',
+                    '<span class="dt-chip dt-chip-blocker">' + _dt_escapeHtml(execChecks.first_blocking_check) + '</span>' +
+                    (execChecks.first_blocking_reason ? ' ' + _dt_escapeHtml(execChecks.first_blocking_reason) : ''));
+            } else if (checks.length > 0) {
+                html += _dt_row('First blocker', '<span style="color:#2ea043;">none — all checks passed</span>');
+            }
+            const ordered = order.length ? order.slice() : seenOrder;
+            for (let i = 0; i < ordered.length; i++) {
+                const name = ordered[i];
+                const c = byName[name];
+                if (!c) continue;
+                let chipText, chipClass;
+                if (c.applied !== true) {
+                    chipText = 'NOT RUN'; chipClass = 'dt-chip-notrun';
+                } else if (c.passed === true) {
+                    chipText = 'PASS'; chipClass = 'dt-chip-pass';
+                } else if (c.passed === false) {
+                    chipText = 'FAIL'; chipClass = 'dt-chip-fail';
+                } else {
+                    chipText = 'N/A'; chipClass = 'dt-chip-na';
+                }
+                const isBlocker = execChecks.first_blocking_check === name && c.passed === false;
+                let value = '';
+                if (c.observed_value !== null && c.observed_value !== undefined) {
+                    value += 'Observed: <code>' + _dt_escapeHtml(c.observed_value) + '</code> ';
+                }
+                if (c.threshold_value !== null && c.threshold_value !== undefined) {
+                    value += 'Threshold: <code>' + _dt_escapeHtml(c.threshold_value) + '</code>';
+                }
+                html += '<div class="dt-row' + (isBlocker ? ' dt-first-blocker' : '') +
+                    '"><div class="dt-label"><span class="dt-chip ' + chipClass + '">' + chipText + '</span>' +
+                    _dt_escapeHtml(name) +
+                    (isBlocker ? '<span class="dt-chip dt-chip-blocker">FIRST BLOCKER</span>' : '') +
+                    '</div><div class="dt-value">' + value +
+                    (c.reason ? '<div style="color:#8b949e;font-size:12px;margin-top:3px;">' +
+                        _dt_escapeHtml(c.reason) + '</div>' : '') + '</div></div>';
+            }
+            if (ordered.length === 0) {
+                html += '<div style="color:#8b949e;font-size:12px;">No execution checks ran for this symbol.</div>';
+            }
+            return _dt_section('Execution Checks', html, false);
+        }
+
+        function _dt_renderOrderSection(order) {
+            if (!order) return _dt_section('Order', '<div style="color:#8b949e;font-size:12px;">No order block.</div>', false);
+            const submitted = order.submitted === true;
+            let html = '';
+            html += _dt_row('Submitted', submitted
+                ? '<span class="dt-chip dt-chip-pass">SUBMITTED</span>'
+                : '<span class="dt-chip dt-chip-notrun">NOT SUBMITTED</span>');
+            if (submitted) {
+                if (order.alpaca_order_id) {
+                    html += _dt_row('Alpaca order id', '<code>' + _dt_escapeHtml(order.alpaca_order_id) + '</code>');
+                }
+                if (order.status_known) {
+                    html += _dt_row('Broker status', _dt_escapeHtml(order.status_known));
+                }
+                if (order.submitted_at) {
+                    html += _dt_row('Submitted at', _dt_formatIso(order.submitted_at));
+                }
+                html += _dt_row('Fill confirmed', order.fill_confirmed === true
+                    ? '<span class="dt-chip dt-chip-pass">YES</span>'
+                    : '<span class="dt-chip dt-chip-na">NO</span>');
+                if (order.fill_price !== null && order.fill_price !== undefined) {
+                    html += _dt_row('Fill price', _dt_formatNumber(order.fill_price, 2));
+                }
+                if (order.fill_quantity !== null && order.fill_quantity !== undefined) {
+                    html += _dt_row('Fill qty', _dt_escapeHtml(order.fill_quantity));
+                }
+                if (order.fill_timestamp) {
+                    html += _dt_row('Fill timestamp', _dt_formatIso(order.fill_timestamp));
+                }
+            } else if (order.no_order_reason) {
+                html += _dt_row('No-order reason', _dt_escapeHtml(order.no_order_reason));
+            }
+            html += _dt_row('Slot consumed', order.slot_consumed === true
+                ? '<span class="dt-chip dt-chip-pass">YES</span>'
+                : '<span class="dt-chip dt-chip-na">NO</span>');
+            if (order.slot_consumed_semantics_version !== null && order.slot_consumed_semantics_version !== undefined) {
+                html += _dt_row('Slot semantics ver', '<code>' + _dt_escapeHtml(order.slot_consumed_semantics_version) + '</code>');
+            }
+            // Important: SUBMITTED is NOT the same as FILLED / EXECUTED.
+            html += '<div style="color:#8b949e;font-size:11px;margin-top:8px;font-style:italic;">' +
+                'Note: order submission does not imply fill. Fill state is shown above when confirmed.</div>';
+            return _dt_section('Order', html, false);
+        }
+
+        function _dt_renderSnapshotTrace(symbol, snap, container) {
+            container.innerHTML = '';
+            const header = document.createElement('div');
+            header.className = 'dt-header';
+            const outcome = (snap.decision && snap.decision.outcome) || '—';
+            const cls = _dt_outcomeClass(outcome);
+            const scoreVal = (snap.scoring && snap.scoring.total_score);
+            const sessionId = snap.session_id;
+            const cycleId = snap.cycle_id;
+            const analyzedAt = snap.analysis_timestamp || (snap.decision && snap.decision.decision_evaluated_at);
+            let headerHtml = '<span class="dt-symbol">' + _dt_escapeHtml(symbol) + '</span>' +
+                '<span class="dt-outcome ' + cls + '">' + _dt_escapeHtml(outcome) + '</span>';
+            if (scoreVal !== null && scoreVal !== undefined) {
+                headerHtml += '<span class="dt-score-big">Score ' + _dt_formatScore(scoreVal) + '</span>';
+            }
+            headerHtml += '<span class="dt-meta">Analyzed ' + _dt_formatRelative(analyzedAt) +
+                ' (' + _dt_formatIso(analyzedAt) + ')</span>';
+            if (cycleId) {
+                headerHtml += '<span class="dt-meta">cycle: <code>' + _dt_escapeHtml(cycleId) + '</code></span>';
+            }
+            if (sessionId !== null && sessionId !== undefined) {
+                headerHtml += '<span class="dt-meta">session: <code>' + _dt_escapeHtml(sessionId) + '</code></span>';
+            }
+            header.innerHTML = headerHtml;
+            container.appendChild(header);
+
+            container.appendChild(_dt_renderDecisionSection(snap.decision || {}));
+            container.appendChild(_dt_renderStrategyGatesSection(snap.strategy_eligibility || {}));
+            container.appendChild(_dt_renderScoreSection(snap.scoring));
+            container.appendChild(_dt_renderRankingSection(snap.ranking));
+            container.appendChild(_dt_renderSelectionSection(snap.selection));
+            container.appendChild(_dt_renderExecutionChecksSection(snap.execution_checks));
+            container.appendChild(_dt_renderOrderSection(snap.order));
+        }
+
+        function _dt_renderHistoryList(history, parentEl) {
+            if (!Array.isArray(history) || history.length === 0) {
+                parentEl.innerHTML = '<div class="dt-msg">No recent decision history for this symbol.</div>';
+                return;
+            }
+            const wrap = document.createElement('div');
+            wrap.style.marginTop = '10px';
+            for (let i = 0; i < history.length; i++) {
+                const entry = history[i];
+                const snap = entry.snapshot || {};
+                const decision = snap.decision || {};
+                const scoring = snap.scoring || {};
+                const ranking = snap.ranking || {};
+                const outcome = decision.outcome || '—';
+                const cls = _dt_outcomeClass(outcome);
+                const row = document.createElement('div');
+                row.className = 'dt-history-row';
+                row.setAttribute('data-cycle', entry.cycle_id || '');
+                row.setAttribute('data-idx', String(i));
+                let summaryHtml = '<div class="dt-history-summary">' +
+                    '<span class="dt-history-time">' + _dt_formatIso(entry.cycle_start) +
+                        ' (' + _dt_formatRelative(entry.cycle_start) + ')</span>' +
+                    '<span class="dt-outcome ' + cls + '">' + _dt_escapeHtml(outcome) + '</span>' +
+                '</div>';
+                const rank = ranking.candidate_rank;
+                const eligible = ranking.eligible_candidate_count;
+                let scoreCell = '';
+                if (scoring.total_score !== null && scoring.total_score !== undefined) {
+                    scoreCell = '<span style="color:#f0883e;font-weight:600;">Score ' +
+                        _dt_formatScore(scoring.total_score) + '</span>';
+                }
+                let rankCell = '';
+                if (rank !== null && rank !== undefined) {
+                    rankCell = ' Rank ' + _dt_escapeHtml(rank) +
+                        (eligible !== null && eligible !== undefined ? '/' + _dt_escapeHtml(eligible) : '');
+                }
+                summaryHtml += '<div class="dt-history-reason">' +
+                    scoreCell + rankCell +
+                    (decision.primary_reason ? ' — ' + _dt_escapeHtml(decision.primary_reason) : '') +
+                '</div>';
+                summaryHtml += '<div class="dt-history-expand" id="history-expand-' + i + '"></div>';
+                row.innerHTML = summaryHtml;
+                row.onclick = (function (idx, e) {
+                    return function () {
+                        e.classList.toggle('open');
+                        const exp = document.getElementById('history-expand-' + idx);
+                        if (!exp) return;
+                        if (e.classList.contains('open')) {
+                            exp.innerHTML = '<div style="color:#8b949e;font-size:12px;padding:6px;">Loading snapshot…</div>';
+                            // Reuse cached snapshot already on history entry.
+                            const entryData = history[idx];
+                            if (entryData && entryData.snapshot) {
+                                _dt_renderSnapshotTrace(symbol, entryData.snapshot, exp);
+                            } else {
+                                exp.innerHTML = '<div class="dt-msg">Snapshot unavailable.</div>';
+                            }
+                        } else {
+                            exp.innerHTML = '';
+                        }
+                    };
+                })(i, row);
+                wrap.appendChild(row);
+            }
+            parentEl.appendChild(wrap);
+        }
+
+        function _dt_renderLegacy(symbol, data) {
+            const container = document.createElement('div');
+            container.innerHTML = '<div class="dt-msg legacy">Legacy analysis — detailed decision trace unavailable</div>' +
+                '<div style="margin-top:8px;">' +
+                _dt_row('Symbol', '<span class="dt-symbol" style="font-size:16px;">' + _dt_escapeHtml(symbol) + '</span>') +
+                _dt_row('Signal', '<code>' + _dt_escapeHtml(data.signal || '—') + '</code>') +
+                (data.signal_strength ? _dt_row('Signal strength', _dt_escapeHtml(data.signal_strength)) : '') +
+                (data.total_score !== null && data.total_score !== undefined
+                    ? _dt_row('Stored score', _dt_formatScore(data.total_score))
+                    : '') +
+                (data.analyzed_at ? _dt_row('Last analyzed', _dt_formatIso(data.analyzed_at)) : '') +
+                '</div>';
+            return container;
+        }
+
+        async function doHistorySymbolSearch() {
+            const input = document.getElementById('historySearchInput');
+            const btn = document.getElementById('historySearchBtn');
+            const out = document.getElementById('historySearchResults');
+            const raw = (input.value || '').trim().toUpperCase();
+            // Normalize: strip non-letters/digits/hyphens/dots, cap 10 chars.
+            const symbol = raw.replace(/[^A-Z0-9.\-]/g, '').slice(0, 10);
+            if (!symbol) return;
+            input.value = symbol;
+            btn.disabled = true;
+            btn.textContent = 'Loading';
+            out.innerHTML = '<div class="dt-msg">Loading ' + _dt_escapeHtml(symbol) + '…</div>';
+            try {
+                const [dResp, hResp] = await Promise.all([
+                    fetch('/api/decision/' + encodeURIComponent(symbol)),
+                    fetch('/api/decision-history/' + encodeURIComponent(symbol) + '?limit=10')
+                ]);
+                const dData = await dResp.json();
+                const hData = await hResp.json();
+                out.innerHTML = '';
+                if (dData.error && (!hData.history || hData.history.length === 0)) {
+                    out.innerHTML = '<div class="dt-msg error">No analysis found for ' +
+                        _dt_escapeHtml(symbol) + '.</div>';
+                    return;
+                }
+                if (dData.is_legacy) {
+                    out.appendChild(_dt_renderLegacy(symbol, dData));
+                } else if (dData.snapshot) {
+                    const trace = document.createElement('div');
+                    trace.style.marginTop = '4px';
+                    _dt_renderSnapshotTrace(symbol, dData.snapshot, trace);
+                    out.appendChild(trace);
+                } else if (dData.error) {
+                    out.innerHTML = '<div class="dt-msg error">No analysis found for ' +
+                        _dt_escapeHtml(symbol) + '.</div>';
+                    return;
+                }
+                // History list (only if we have history rows).
+                const history = (hData && Array.isArray(hData.history)) ? hData.history : [];
+                if (history.length > 0) {
+                    const histHeader = document.createElement('div');
+                    histHeader.style.marginTop = '16px';
+                    histHeader.style.fontSize = '12px';
+                    histHeader.style.fontWeight = '600';
+                    histHeader.style.color = '#58a6ff';
+                    histHeader.style.letterSpacing = '0.04em';
+                    histHeader.style.textTransform = 'uppercase';
+                    histHeader.textContent = 'Recent Cycles (' + history.length + ')';
+                    out.appendChild(histHeader);
+                    _dt_renderHistoryList(history, out);
+                }
+            } catch (e) {
+                out.innerHTML = '<div class="dt-msg error">Error: ' + _dt_escapeHtml(e.message || String(e)) + '</div>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Search';
+            }
+        }
+
         
         // ── Trading Parameters ──────────────────────────────────────────────────
         let _settingsCache = {};

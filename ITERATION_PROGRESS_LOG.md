@@ -3189,3 +3189,72 @@ All HOLD_INELIGIBLE. Cross-checked:
 ### Manager decision
 ACCEPT. OBS-001 Phase A is observably live in the running PAPER
 environment. All 6 audit items agree across all 4 sources.
+
+---
+
+## 2026-09-13 — Dashboard Phase A implementation (continuity: continuous)
+
+Branch: `agent/dashboard-phase-a-history-symbol-trace`
+Author role: dashboard-agent (per AGENT_OPERATING_PLAN.md)
+Scope: dashboard-only; no SmartBot / scoring / schema / pipeline changes.
+
+### What shipped
+- Removed always-visible Symbol Lookup card (`#symbol-search-card`
+  + `doSymbolSearch` handler + `/api/search/{symbol}` consumer in
+  template).
+- Added new Symbol Search card (`#history-symbol-search-card`)
+  inside `#top-tab-history`, BEFORE Recent Sessions.
+- Implemented Symbol Decision Trace renderer using the existing
+  `/api/decision/{symbol}` and `/api/decision-history/{symbol}`
+  endpoints. No new HTTP routes added (`dashboard.py` is
+  unmodified, asserted by the new test suite).
+- Seven compact expandable sections: DECISION (open by default),
+  STRATEGY GATES, SCORE, RANKING, SELECTION, EXECUTION CHECKS, ORDER.
+- Strategy gates render with PASS / FAIL / NOT RUN / N/A chips.
+- Execution checks render in `evaluated_in_order` order with
+  `first_blocking_check` highlighted.
+- Order section distinguishes SUBMITTED from FILLED via
+  `fill_confirmed === true` and includes a literal
+  "submission does not imply fill" note.
+- History list (latest 10) with expandable rows; historical
+  snapshots rendered via the same immutable renderer.
+- Legacy fallback message ("Legacy analysis — detailed decision
+  trace unavailable") and unknown-symbol fallback
+  ("No analysis found for SYMBOL") are both wired.
+
+### Verification
+- 44 / 44 new Phase A tests pass
+  (`tests/test_dashboard_phase_a_history_symbol_trace.py`).
+- 350 / 351 dashboard + bot tests pass with the Phase A diff.
+  One pre-existing failure
+  (`test_template_renders_red_dot_when_alpaca_unreachable`)
+  is unrelated to Phase A — confirmed by re-running the same
+  test on `main` without the diff. The failure was already
+  present on `main`.
+- Live OBS-001 endpoints verified end-to-end against the
+  production `trading_bot.db`:
+  - `/api/decision/ALPXR` returns a v1 snapshot with all
+    required blocks (decision, strategy_eligibility, scoring,
+    ranking, selection, execution_checks, order).
+  - `/api/decision/WBS` correctly returns `is_legacy=true` with
+    the legacy fallback message.
+  - `/api/decision/ZZZZZZ_NOTREAL` returns the documented error
+    envelope.
+  - `/api/decision-history/ALPXR?limit=10` returns 10 immutable
+    cycle rows for the history list.
+
+### Risks
+- The 7-section renderer relies on the OBS-001 schema_version=1
+  field set. If a future schema bump changes block names,
+  `_dt_renderSnapshotTrace` must be updated; the renderer
+  fails closed (renders "—" for missing fields) rather than
+  crashing, but blocks may become sparse.
+- The mobile-first CSS uses `@media (max-width: 600px)` plus
+  a 768px-equivalent breakpoint (`<768px` in spec). Devices in
+  the 600-768px range are not separately tested; the layout
+  uses flex-wrap and stacks gracefully.
+
+### Next action
+- Josh reviews and approves PR.
+- Phase B (Dashboard Latest Cycle funnel card) is the natural
+  next slice.
