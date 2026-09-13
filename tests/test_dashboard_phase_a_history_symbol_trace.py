@@ -238,16 +238,30 @@ class TestDecisionTraceSections:
             "Decision section must be open by default (open=true)"
         )
 
+    def test_strategy_gates_open_by_default(self):
+        # Strategy Gates must be open by default (per the verification step
+        # "Decision and Strategy Gates are open by default").
+        t = _read_template()
+        m = re.search(
+            r"function _dt_renderStrategyGatesSection\([^)]*\)\s*\{(.+?)\n        \}",
+            t, flags=re.DOTALL,
+        )
+        assert m, "_dt_renderStrategyGatesSection not found"
+        body = m.group(1)
+        assert re.search(r"_dt_section\(\s*'Strategy Gates'\s*,\s*[^,]+,\s*true\s*\)", body), (
+            "Strategy Gates section must default to open (open=true)"
+        )
+
     def test_other_sections_pass_open_false(self):
-        # Other renderers must call _dt_section(..., false).
+        # Score, Ranking, Selection, Execution Checks remain collapsed by default.
+        # Strategy Gates is now open by default (see test_strategy_gates_open_by_default).
+        # Order uses _dt_shouldAutoOpenOrder(order) — covered separately.
         t = _read_template()
         bodies = {
-            "Strategy Gates": "_dt_renderStrategyGatesSection",
             "Score": "_dt_renderScoreSection",
             "Ranking": "_dt_renderRankingSection",
             "Selection": "_dt_renderSelectionSection",
             "Execution Checks": "_dt_renderExecutionChecksSection",
-            "Order": "_dt_renderOrderSection",
         }
         for section_name, renderer in bodies.items():
             m = re.search(
@@ -301,6 +315,153 @@ class TestMobileFirstCSS:
 # ─────────────────────────────────────────────────────────────────────────
 # 5. SUBMITTED vs FILLED semantics
 # ─────────────────────────────────────────────────────────────────────────
+
+class TestOrderAutoOpenLogic:
+    """Order section uses _dt_shouldAutoOpenOrder(order) so it opens
+    only when the persisted OBS-001 order block indicates the order
+    path was actually taken. The decision outcome is NOT consulted."""
+
+    def test_helper_function_defined(self):
+        t = _read_template()
+        assert "function _dt_shouldAutoOpenOrder(" in t, (
+            "_dt_shouldAutoOpenOrder helper must be defined"
+        )
+
+    def test_helper_uses_four_facts(self):
+        t = _read_template()
+        m = re.search(
+            r"function _dt_shouldAutoOpenOrder\([^)]*\)\s*\{(.+?)\n        \}",
+            t, flags=re.DOTALL,
+        )
+        assert m, "_dt_shouldAutoOpenOrder not found"
+        body = m.group(1)
+        # All four persisted facts must participate in the decision.
+        assert "order.submitted === true" in body, "must consult order.submitted"
+        assert "order.alpaca_order_id" in body, "must consult order.alpaca_order_id"
+        assert "order.no_order_reason" in body, "must consult order.no_order_reason"
+        assert "order.slot_consumed === true" in body, "must consult order.slot_consumed"
+        # Order helper must NOT consult decision outcome.
+        assert "decision.outcome" not in body, (
+            "Order auto-open must NOT be derived from decision.outcome"
+        )
+
+    def test_order_section_uses_helper(self):
+        t = _read_template()
+        m = re.search(
+            r"function _dt_renderOrderSection\([^)]*\)\s*\{(.+?)\n        \}",
+            t, flags=re.DOTALL,
+        )
+        assert m, "_dt_renderOrderSection not found"
+        body = m.group(1)
+        # The third argument to _dt_section for Order must be the helper call.
+        assert re.search(
+            r"_dt_section\(\s*'Order'\s*,\s*[^,]+,\s*_dt_shouldAutoOpenOrder\(order\)\s*\)",
+            body,
+        ), "Order section must use _dt_shouldAutoOpenOrder(order) as the open flag"
+
+
+class TestOrderAutoOpenScenarios:
+    """Scenario tests: extract the helper JS source from the template and
+    evaluate it under Node.js against constructed order-block payloads.
+    Proves the auto-open logic returns the expected value for the five
+    scenarios required by the verification step."""
+
+    JS_HELPER_NAME = "_dt_shouldAutoOpenOrder"
+
+    @classmethod
+    def _extract_helper_js(cls):
+        t = _read_template()
+        m = re.search(
+            r"(function _dt_shouldAutoOpenOrder\([^)]*\)\s*\{.+?\n        \})",
+            t,
+            flags=re.DOTALL,
+        )
+        assert m, "_dt_shouldAutoOpenOrder helper not found"
+        return m.group(1)
+
+    @classmethod
+    def _eval_helper(cls, order_payload):
+        import json
+        import subprocess
+        helper_js = cls._extract_helper_js()
+        # Wrap the helper + invocation in an IIFE so the result is printed.
+        program = (
+            "(function(){\n"
+            + helper_js
+            + "\n;console.log(_dt_shouldAutoOpenOrder("
+            + json.dumps(order_payload)
+            + "));\n})();"
+        )
+        result = subprocess.run(
+            ["node", "-e", program],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, (
+            f"helper evaluation failed: stderr={result.stderr!r}"
+        )
+        out = result.stdout.strip()
+        assert out in ("true", "false"), (
+            f"unexpected helper output: {out!r} stderr={result.stderr!r}"
+        )
+        return out == "true"
+
+    def test_hold_ineligible_no_order_path_is_collapsed(self):
+        # HOLD_INELIGIBLE: order block present but every fact is empty.
+        assert self._eval_helper({
+            "submitted": False,
+            "alpaca_order_id": None,
+            "no_order_reason": None,
+            "slot_consumed": False,
+        }) is False
+
+    def test_hold_ineligible_missing_order_block_is_collapsed(self):
+        # order block is null/undefined entirely.
+        assert self._eval_helper(None) is False
+
+    def test_order_attempted_but_failed_is_open(self):
+        # Order path was attempted but failed (no_order_reason populated).
+        assert self._eval_helper({
+            "submitted": False,
+            "alpaca_order_id": None,
+            "no_order_reason": "submit_order returned no order object",
+            "slot_consumed": False,
+        }) is True
+
+    def test_buy_order_submitted_is_open(self):
+        # BUY_ORDER_SUBMITTED: submitted=true and alpaca_order_id present.
+        assert self._eval_helper({
+            "submitted": True,
+            "alpaca_order_id": "abc-123-uuid",
+            "no_order_reason": None,
+            "slot_consumed": True,
+        }) is True
+
+    def test_submitted_with_alpaca_order_id_only_is_open(self):
+        # Order was submitted (id present) even if other fields are sparse.
+        assert self._eval_helper({
+            "submitted": False,
+            "alpaca_order_id": "abc-123-uuid",
+            "no_order_reason": None,
+            "slot_consumed": False,
+        }) is True
+
+    def test_slot_consumed_only_is_open(self):
+        # Slot consumed (slot_consumed_semantics_version v1: iff submit_order
+        # returned an order). One fact is enough.
+        assert self._eval_helper({
+            "submitted": False,
+            "alpaca_order_id": None,
+            "no_order_reason": None,
+            "slot_consumed": True,
+        }) is True
+
+    def test_empty_order_object_is_collapsed(self):
+        # Order block exists but every meaningful fact is empty.
+        assert self._eval_helper({}) is False
+
+
 
 class TestSubmittedVsFilled:
     def test_no_executed_label_for_unfilled_orders(self):

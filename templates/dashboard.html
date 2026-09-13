@@ -1572,7 +1572,7 @@
                     html += _dt_gateRow(gates[i]);
                 }
             }
-            return _dt_section('Strategy Gates', html, false);
+            return _dt_section('Strategy Gates', html, true);
         }
 
         function _dt_renderScoreSection(scoring) {
@@ -1713,6 +1713,21 @@
             return _dt_section('Execution Checks', html, false);
         }
 
+        // Auto-open Order only when the persisted OBS-001 order block shows
+        // that the order path was actually taken. The decision outcome is
+        // NOT consulted here — we rely on authoritative persisted order
+        // facts so the UI never invents "an order happened" from a HOLD
+        // outcome, nor hides one when the order block tells the truth.
+        function _dt_shouldAutoOpenOrder(order) {
+            if (!order) return false;
+            return (
+                order.submitted === true ||
+                !!order.alpaca_order_id ||
+                !!order.no_order_reason ||
+                order.slot_consumed === true
+            );
+        }
+
         function _dt_renderOrderSection(order) {
             if (!order) return _dt_section('Order', '<div style="color:#8b949e;font-size:12px;">No order block.</div>', false);
             const submitted = order.submitted === true;
@@ -1754,7 +1769,7 @@
             // Important: SUBMITTED is NOT the same as FILLED / EXECUTED.
             html += '<div style="color:#8b949e;font-size:11px;margin-top:8px;font-style:italic;">' +
                 'Note: order submission does not imply fill. Fill state is shown above when confirmed.</div>';
-            return _dt_section('Order', html, false);
+            return _dt_section('Order', html, _dt_shouldAutoOpenOrder(order));
         }
 
         function _dt_renderSnapshotTrace(symbol, snap, container) {
