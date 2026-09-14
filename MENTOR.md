@@ -2294,15 +2294,88 @@ For every skipped path, the snapshot explicitly states:
 
 ### Persist contract
 
-- Helper is called ONCE per (cycle_id, symbol). `UNIQUE(cycle_id,
-  symbol)` is the safety net against duplicate calls (Phase A
-  contract).
+- **Terminal-path coverage is the OBS-002 responsibility.** The
+  six gap-path call sites (G1–G6) are responsible for ensuring
+  every symbol counted in `cycle_funnel.analyzed_count` ATTEMPTS
+  one terminal `decision_history` write via the helper. The
+  helper builds the snapshot and routes it through Phase A's
+  `db.finalize_decision_history`.
+- **`UNIQUE(cycle_id, symbol)` guarantees at most one persisted
+  row per (cycle_id, symbol).** It is a duplicate-call safety
+  net that swallows `IntegrityError` on the rare race path where
+  a Phase A persist and the OBS-002 helper both attempt to
+  finalize the same (cycle_id, symbol) within one cycle.
+- **Together, for a normal completed cycle with no process
+  interruption, the intended invariant is:**
+
+  ```text
+  cycle_funnel.analyzed_count
+  ==
+  COUNT(DISTINCT decision_history.symbol WHERE cycle_id = current_cycle)
+  ```
+
+  The `UNIQUE` constraint by itself does NOT guarantee
+  completeness; it only guarantees at-most-one row per
+  (cycle_id, symbol) and prevents duplicate writes. The
+  invariant holds because OBS-002's gap-path call sites cover
+  every symbol that reaches the `analyzed_count` counter.
 - `decision_history` is INSERT-only. The helper reuses
   `db.finalize_decision_history` from Phase A.
 - `analyzed_stocks.decision_snapshot` is upserted (latest per-
   symbol state), reusing `db.save_analysis_result` from Phase A.
 - No schema migration. `decision_history` and `analyzed_stocks`
   columns are unchanged.
+
+### NaN metric side effect
+
+OBS-002's NaN hardening (PART 3) changes how NaN / invalid-input
+cases are tallied in the session-end `errors_count` metric:
+
+- NaN / invalid inputs now persist a `SKIPPED_INVALID_DATA` row
+  BEFORE reaching the prior outer error path (the
+  `except Exception as e:` block). Because the persist happens
+  before the exception is raised, the outer handler never fires
+  for the pre-checked NaN path; `errors_count` is therefore not
+  incremented for these NaN cases in PR #85.
+- This is an **observability / metrics side effect only**. The
+  valid finite analysis path, trading decisions, ranking,
+  sizing, risk limits, and order behavior are all unchanged.
+- PR #85 does not modify `errors_count` deliberately to preserve
+  the prior metric shape. Restoring the prior `errors_count`
+  behavior would be a separate, explicitly-approved change.
+- Other categories of exceptions (network blips, indicator
+  calc failures that are not pre-checked NaN, etc.) still flow
+  through the outer `except` and DO increment `errors_count`
+  exactly as in `main`.
+
+### Phase C guidance note
+
+OBS-002 reuses `HOLD_INELIGIBLE` for G4 (WEAK signal strength)
+and G5 (CONFLICTED AI signal) gap paths. Future Phase C
+Analytics aggregations MUST observe the following:
+
+- `HOLD_INELIGIBLE` does NOT necessarily mean "failed strategy
+  gate". It can also mean "gates passed, but post-gate filter
+  (WEAK / CONFLICTED / etc.) rejected execution".
+- G4 (WEAK) and G5 (CONFLICTED) may persist `HOLD_INELIGIBLE`
+  without ordinary gate-failure semantics. Distinguish via:
+  - `decision.primary_reason` (mentions "weak" or "conflicted")
+  - `strategy_eligibility.signal_strength` (WEAK or CONFLICTED)
+  - `strategy_eligibility.gates[*].passed` (likely `true` for
+    WEAK/CONFLICTED)
+- Phase C MUST aggregate gate failures from
+  `strategy_eligibility.gates`, not infer failed gates from
+  `outcome` alone. Two symbols with `outcome=HOLD_INELIGIBLE`
+  can have very different gate states.
+- `SKIPPED_INVALID_DATA` MUST be reported separately from gate
+  failures. SKIPPED rows represent "no valid analysis
+  produced"; they are not gate rejections.
+
+This convention applies to the existing Phase A `elif
+analysis:` HOLD path too, which can produce
+`signal='HOLD'` + `outcome=HOLD_INELIGIBLE` with non-failed
+gates. OBS-002 extends the same convention to the previously-
+unpersisted WEAK/CONFLICTED gap paths.
 
 ### What this invariant does NOT cover
 
@@ -2329,13 +2402,24 @@ guarantees:
    as `SKIPPED_INVALID_DATA` with reason `"NaN in fallback score
    compute"`, and `int(total)` is never called.
 2. The outer per-symbol `except Exception as e:` block now also
-   persists a `SKIPPED_INVALID_DATA` row before re-raising the
-   error counter increment, so ANY exception (not just NaN) during
-   the analysis body cannot bypass OBS-001 persistence.
+   persists a `SKIPPED_INVALID_DATA` row INSIDE the same handler
+   that already logs and swallows the exception. The exception
+   propagation is UNCHANGED relative to main — the existing log +
+   `errors_count += 1` + swallow path completes identically; only
+   one additional INSERT is performed inside the handler before
+   control flows back to the per-symbol for-loop's next iteration.
+   ANY exception (not just NaN) during the analysis body is now
+   recorded as a `SKIPPED_INVALID_DATA` row, so OBS-001 persistence
+   is never bypassed by an unexpected exception.
 
 This is the minimum necessary change to prevent the exception from
 bypassing OBS persistence; it does NOT touch the underlying
 indicator-calc robustness (out of scope).
+
+**Exception propagation relative to `main`: NONE.** PR #85 does
+not change what the outer handler does after the new INSERT —
+the exception remains swallowed exactly as in `main`. No `raise`,
+`raise e`, or `raise from` is added.
 
 ### Test coverage
 
