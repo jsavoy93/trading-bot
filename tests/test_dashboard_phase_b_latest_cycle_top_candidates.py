@@ -315,6 +315,32 @@ class TestTopCandidatesCard:
         assert "0 of " in body2
         assert "strategy eligible" in body2
 
+    def test_zero_state_headline_uses_analyzed_count_as_denominator(self):
+        # The "0 of N strategy eligible" headline MUST use analyzed_count
+        # as the denominator, NOT strategy_eligible_count. Otherwise a
+        # zero-eligible cycle (the live state today) renders the
+        # misleading "0 of 0 strategy eligible" string.
+        t = _read_template()
+        m = re.search(
+            r"async function loadTopCandidates\([^)]*\)\s*\{(.+?)\n        \}",
+            t, flags=re.DOTALL,
+        )
+        assert m
+        body = m.group(1)
+        # The headline line must reference `analyzed`, not `eligible`.
+        # Match the exact headline construction expression.
+        assert re.search(
+            r"'0 of '\s*\+\s*\(analyzed\s*!==\s*undefined",
+            body,
+        ), "headline must use analyzed_count as denominator"
+        # The bug pattern: using eligible (strategy_eligible_count) as
+        # the denominator renders "0 of 0 strategy eligible" in the live
+        # zero-eligible case. Reject that pattern explicitly.
+        assert not re.search(
+            r"'0 of '\s*\+\s*\(eligible\s*!==\s*undefined",
+            body,
+        ), "headline must NOT use strategy_eligible_count as denominator"
+
     def test_near_miss_top_three_cap(self):
         # The renderer respects the near_miss_limit from the endpoint and
         # caps the table at that value (the endpoint already LIMITS to 3).
