@@ -1091,6 +1091,163 @@ def api_actionability_summary():
         return {"error": str(e)}
 
 
+@app.get("/api/cycle-candidates/{cycle_id}")
+def api_cycle_candidates(cycle_id: str, near_miss_limit: int = 3):
+    """OBS-001 Phase B: persistent candidate + near-miss facts for one cycle.
+
+    Reads from `decision_history` (immutable, append-only) — never writes.
+    The renderer, never the bot, derives the truth from these rows.
+
+    Two sets, intentionally separated:
+
+    - candidates: rows where the persisted snapshot's
+      ranking.candidate_rank is non-null. These are the symbols that
+      SCORE-002 actually ranked in this cycle. Ordered by
+      ranking.candidate_rank ASC (rank-1 first), NOT by total_score DESC.
+
+    - near_misses: rows where the persisted snapshot's
+      decision.outcome == 'HOLD_INELIGIBLE' AND ranking.candidate_rank
+      IS NULL. The IS NULL guard ensures candidates and near misses
+      never overlap. Ordered by scoring.total_score DESC, capped at
+      `near_miss_limit` (default 3, clamped to 1-10). These are NOT
+      candidates — Phase B explicitly labels them so.
+
+    The response also echoes the canonical cycle_funnel counters when
+    that row exists, so the Dashboard Latest Cycle card and Top
+    Candidates card can be rendered from one fetch (plus the funnel
+    endpoint for the card itself; this endpoint only carries per-symbol
+    rows). `cycle_known` distinguishes "no such cycle" from "cycle
+    exists but produced zero rows of this kind".
+
+    The candidate_rank gate is critical: under SCORE-002 a symbol with
+    total_score above the OLD `min_score_buy` threshold is NOT a
+    candidate unless it was actually ranked by the bot. This endpoint
+    enforces that distinction at the data-source boundary so the UI
+    cannot accidentally promote a high-score HOLD to a candidate.
+    """
+    import sqlite3
+    from pathlib import Path as _P
+    # Clamp near_miss_limit defensively (1-10).
+    if near_miss_limit < 1: near_miss_limit = 1
+    if near_miss_limit > 10: near_miss_limit = 10
+    db_path = _P(__file__).parent / "trading_bot.db"
+    if not db_path.exists():
+        return {"error": "Database not found", "cycle_known": False, "candidates": [], "near_misses": []}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # Confirm the cycle exists in cycle_funnel (so the UI knows
+        # which funnel row to associate with this candidate list).
+        cf_row = cur.execute(
+            "SELECT cycle_id, session_id, cycle_start, cycle_end, "
+            "analyzed_count, strategy_eligible_count, ranked_candidate_count "
+            "FROM cycle_funnel WHERE cycle_id = ? LIMIT 1",
+            (cycle_id,),
+        ).fetchone()
+        cycle_known = cf_row is not None
+
+        # Candidates: ranking.candidate_rank populated. Order by
+        # candidate_rank ASC (rank 1 first), with total_score as a
+        # secondary tie-break for stability across renderer versions.
+        candidate_rows = cur.execute(
+            """
+            SELECT id, symbol, cycle_start, session_id, decision_snapshot
+            FROM decision_history
+            WHERE cycle_id = ?
+              AND json_extract(decision_snapshot, '$.ranking.candidate_rank') IS NOT NULL
+            ORDER BY CAST(json_extract(decision_snapshot, '$.ranking.candidate_rank') AS INTEGER) ASC,
+                     CAST(json_extract(decision_snapshot, '$.scoring.total_score') AS REAL) DESC
+            """,
+            (cycle_id,),
+        ).fetchall()
+
+        candidates = []
+        for row in candidate_rows:
+            try:
+                snap = json.loads(row['decision_snapshot']) if row['decision_snapshot'] else {}
+            except Exception as e:
+                logger.debug(f"decision_snapshot parse failed for {row['symbol']}: {e}")
+                snap = {}
+            ranking = snap.get('ranking') or {}
+            decision = snap.get('decision') or {}
+            scoring = snap.get('scoring') or {}
+            candidates.append({
+                "symbol": row['symbol'],
+                "candidate_rank": ranking.get('candidate_rank'),
+                "eligible_candidate_count": ranking.get('eligible_candidate_count'),
+                "ranking_tiebreak_basis": ranking.get('tiebreak_basis'),
+                "total_score": scoring.get('total_score'),
+                "decision_outcome": decision.get('outcome'),
+                "decision_primary_reason": decision.get('primary_reason'),
+                "cycle_start": row['cycle_start'],
+                "session_id": row['session_id'],
+                "decision_history_id": row['id'],
+            })
+
+        # Near misses: outcome = HOLD_INELIGIBLE and candidate_rank is
+        # NOT populated (so candidates/near-misses never double-count).
+        # Order by scoring.total_score DESC.
+        nm_rows = cur.execute(
+            """
+            SELECT id, symbol, decision_snapshot
+            FROM decision_history
+            WHERE cycle_id = ?
+              AND json_extract(decision_snapshot, '$.decision.outcome') = 'HOLD_INELIGIBLE'
+              AND json_extract(decision_snapshot, '$.ranking.candidate_rank') IS NULL
+            ORDER BY CAST(json_extract(decision_snapshot, '$.scoring.total_score') AS REAL) DESC
+            LIMIT ?
+            """,
+            (cycle_id, near_miss_limit),
+        ).fetchall()
+
+        near_misses = []
+        for row in nm_rows:
+            try:
+                snap = json.loads(row['decision_snapshot']) if row['decision_snapshot'] else {}
+            except Exception as e:
+                logger.debug(f"decision_snapshot parse failed for {row['symbol']}: {e}")
+                snap = {}
+            decision = snap.get('decision') or {}
+            scoring = snap.get('scoring') or {}
+            strategy_eligibility = snap.get('strategy_eligibility') or {}
+            failed_gates = [
+                g.get('name') for g in (strategy_eligibility.get('gates') or [])
+                if g.get('passed') is False and g.get('name')
+            ]
+            near_misses.append({
+                "symbol": row['symbol'],
+                "total_score": scoring.get('total_score'),
+                "decision_outcome": decision.get('outcome'),
+                "decision_primary_reason": decision.get('primary_reason'),
+                "failed_strategy_gates": failed_gates,
+                "decision_history_id": row['id'],
+            })
+
+        conn.close()
+        envelope = {
+            "cycle_id": cycle_id,
+            "cycle_known": cycle_known,
+            "candidates": candidates,
+            "candidates_found": len(candidates),
+            "near_misses": near_misses,
+            "near_misses_found": len(near_misses),
+            "near_miss_limit": near_miss_limit,
+        }
+        if cycle_known:
+            envelope["session_id"] = cf_row['session_id']
+            envelope["cycle_start"] = cf_row['cycle_start']
+            envelope["cycle_end"] = cf_row['cycle_end']
+            envelope["analyzed_count"] = cf_row['analyzed_count']
+            envelope["strategy_eligible_count"] = cf_row['strategy_eligible_count']
+            envelope["ranked_candidate_count"] = cf_row['ranked_candidate_count']
+        return envelope
+    except Exception as e:
+        logger.error(f"api_cycle_candidates failed: {e}")
+        return {"error": str(e), "cycle_known": False, "candidates": [], "near_misses": []}
+
+
 @app.get("/api/filter-dashboard")
 def api_filter_dashboard(hours: int = 24, symbol: str = None):
     """Filter analysis dashboard — why symbols didn't generate BUY signals.

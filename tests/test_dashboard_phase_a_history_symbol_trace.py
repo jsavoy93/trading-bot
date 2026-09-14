@@ -556,22 +556,32 @@ class TestHistoryList:
 
 class TestNoNewEndpoints:
     """Phase A is dashboard-only. The repository must not introduce
-    new HTTP routes."""
+    new HTTP routes.
+
+    The guard is anchored to the historical PR #81 + PR #82 commit
+    range (`ddfdabb..9a564a6`) so it remains a valid Phase A + A.1
+    invariant even when subsequent slices (e.g. Phase B) legitimately
+    add endpoints. If a future slice again wants to add an endpoint,
+    it must explicitly amend this guard to anchor against its own
+    commit range, just as Phase B did.
+    """
 
     def test_no_new_routes_in_dashboard_py(self):
-        # Phase A is template-only; dashboard.py must be unchanged.
-        # (If a future phase legitimately adds a route, this test must
-        # be updated alongside an explicit allowed-area amendment.)
-        dashboard_py = (REPO_ROOT / "dashboard.py").read_text(encoding="utf-8")
-        # Compare against git HEAD version.
+        # Phase A + A.1 historical contract: dashboard.py was untouched
+        # between the Phase A merge (ddfdabb) and the Phase A.1 merge
+        # (9a564a6).
         import subprocess
         result = subprocess.run(
-            ["git", "diff", "HEAD", "--", "dashboard.py"],
+            [
+                "git", "diff",
+                "ddfdabb..9a564a6",
+                "--", "dashboard.py",
+            ],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
         assert result.stdout.strip() == "", (
-            "dashboard.py must not be modified in Phase A. git diff:\n"
-            + result.stdout
+            "Phase A + A.1 must leave dashboard.py unchanged. "
+            "Historical git diff:\n" + result.stdout
         )
 
 
