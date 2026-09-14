@@ -3302,3 +3302,75 @@ Phase A test file (+409), `MENTOR.md` (1 paragraph update).
 
 **Status:** PR opened; awaiting Josh's merge approval. SmartBot not
 restarted. Dashboard service not restarted for this slice.
+
+### Iteration Phase B — 2026-09-14 01:32 UTC
+**Phase B**: Dashboard-only Latest Cycle funnel + Truthful Top
+Candidates slice. Successor to Phase A + A.1.
+
+**Objective:** Make the Dashboard answer two questions truthfully:
+1. What happened in the latest completed SmartBot cycle?
+2. Which symbols were ACTUALLY ranked by SCORE-002 in that cycle?
+
+**Constraints:** Dashboard-only. No SmartBot, no scoring/eligibility/
+ranking/sizing/risk/brokerage/OBS-001 persistence/schema/PIPELINE-001/
+SCORE-003 changes.
+
+**Endpoint added:** `GET /api/cycle-candidates/{cycle_id}` reading
+from `decision_history` (immutable, append-only) + `cycle_funnel`.
+Reads only — no DB writes. `near_miss_limit` clamped to 1-10.
+
+**Endpoint NOT added:** Latest Cycle funnel card uses existing
+`/api/actionability-summary` — no new endpoint needed.
+
+**Renderer additions (templates/dashboard.html):**
+- `#latest-cycle-card` ABOVE the Top Candidates card on Dashboard tab.
+- `#top-candidates-card` replaces the legacy card heading.
+- Forward funnel stages: Analyzed → Strategy Eligible →
+  Ranked Candidates → Execution Attempted → Orders Submitted.
+- Off-path outcomes: Execution Blocked (off-path) +
+  Orders Failed (off-path) in their own red box.
+- Largest-dropoff callout based on persisted counts.
+- "View analysis →" switch to Analytics tab.
+- Zero-candidate state with HEADLINE + HIGH-SCORE NEAR MISSES
+  (top 3, persisted HOLD_INELIGIBLE rows whose candidate_rank IS NULL).
+- Click near-miss or candidate row → switch to History tab +
+  prefill search input → reuses Phase A's `_dt_renderSnapshotTrace`.
+
+**Tests added:** `tests/test_dashboard_phase_b_latest_cycle_top_candidates.py`
+with 28 tests across 5 classes:
+- TestCycleCandidatesEndpoint (4): endpoint shape, SQL surface,
+  near_miss_limit clamping, live zero-candidate invariant.
+- TestLatestCycleCard (7): HTML markers, _lc_renderLatestCycle
+  contract, no recompute, forward order, off-path separation,
+  empty state, View analysis navigates to analytics.
+- TestTopCandidatesCard (5): card position, two-step fetch,
+  rank-ASC contract, click-to-history, zero-state math.
+- TestLcRendererFidelityViaNode (9): Node-eval of the actual JS,
+  asserting rendered HTML for non-trivial scenarios.
+- TestPhaseBDoesNotBreakLegacyDashboards (4): /api/opportunities
+  intact, Phase A + A.1 endpoints intact, Phase A markers intact,
+  Phase B's NEW JS does not call bot-control.
+
+**Phase A guard updated:** `TestNoNewEndpoints::test_no_new_routes`
+re-anchored to the historical `ddfdabb..9a564a6` diff so the
+Phase A+A.1 contract (no dashboard.py changes) stays enforced
+explicitly, while Phase B's planned new endpoint is allowed.
+
+**Tests:** 1336 pass / 5 fail (5 fail = same 5 pre-existing on
+`main`; 0 new failures introduced by Phase B).
+
+**Branch:** `agent/dashboard-phase-b-latest-cycle-top-candidates`
+**Files:** 5
+- `dashboard.py` (+/-, new endpoint)
+- `templates/dashboard.html` (renderer + cards + CSS)
+- `tests/test_dashboard_phase_b_latest_cycle_top_candidates.py` (new)
+- `tests/test_dashboard_phase_a_history_symbol_trace.py` (Phase A
+  guard anchor tightened)
+- `MENTOR.md` (Phase B section appended)
+
+`git diff --check`: clean.
+
+**Status:** Awaiting Josh's merge approval.
+SmartBot not restarted (verified by `ActiveEnterTimestamp`).
+Trading-dashboard.service was restarted ONCE for live verification
+only; approved by Phase B's mandatory dashboard-only deployment.

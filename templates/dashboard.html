@@ -658,6 +658,188 @@
             .dt-score-big { font-size: 18px; }
             .dt-component-label { flex-basis: 70px; }
         }
+
+        /* Phase B — Latest Cycle funnel card + Top Candidates
+           -------------------------------------------------------------- */
+        .lc-funnel-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: stretch;
+            gap: 4px;
+            margin: 8px 0 4px 0;
+        }
+        .lc-funnel-stage {
+            flex: 1 1 80px;
+            min-width: 80px;
+            padding: 6px 8px;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            background: #161b22;
+            text-align: center;
+        }
+        .lc-funnel-stage .lc-stage-num {
+            font-size: 18px;
+            font-weight: 700;
+            color: #c9d1d9;
+            line-height: 1.1;
+        }
+        .lc-funnel-stage .lc-stage-label {
+            font-size: 10px;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-top: 2px;
+            line-height: 1.2;
+        }
+        .lc-funnel-arrow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            color: #8b949e;
+            flex: 0 0 auto;
+            padding: 0 1px;
+            align-self: center;
+        }
+        .lc-funnel-offpath {
+            flex: 1 1 80px;
+            min-width: 80px;
+            padding: 6px 8px;
+            border: 1px solid #6e2a2a;
+            background: #2d0f0f;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .lc-funnel-offpath .lc-stage-num {
+            font-size: 18px;
+            font-weight: 700;
+            color: #f0883e;
+            line-height: 1.1;
+        }
+        .lc-funnel-offpath .lc-stage-label {
+            font-size: 10px;
+            color: #f0883e;
+            text-transform: uppercase;
+            margin-top: 2px;
+            line-height: 1.2;
+        }
+        .lc-dropoff {
+            margin-top: 8px;
+            padding: 6px 10px;
+            background: #1f2937;
+            border-left: 3px solid #f0883e;
+            border-radius: 3px;
+            font-size: 12px;
+            color: #c9d1d9;
+        }
+        .lc-cycle-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 16px;
+            font-size: 12px;
+            color: #8b949e;
+            margin: 4px 0 8px 0;
+        }
+        .lc-cycle-meta strong { color: #c9d1d9; font-weight: 600; }
+        .lc-cycle-empty {
+            color: #8b949e;
+            font-size: 13px;
+            padding: 8px 0;
+        }
+        .lc-view-analysis-btn {
+            margin-top: 6px;
+            padding: 4px 10px;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            background: #21262d;
+            color: #c9d1d9;
+            font-size: 12px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .lc-view-analysis-btn:hover { background: #30363d; }
+        /* Top Candidates */
+        .lc-cand-row {
+            cursor: pointer;
+            border-top: 1px solid #21262d;
+        }
+        .lc-cand-row:first-child { border-top: none; }
+        .lc-cand-row:hover { background: #1c2128; }
+        .lc-cand-symbol {
+            font-weight: 700;
+            color: #c9d1d9;
+            font-size: 14px;
+        }
+        .lc-cand-rank {
+            font-size: 11px;
+            color: #8b949e;
+        }
+        .lc-cand-score {
+            font-size: 13px;
+            color: #2ea043;
+            font-weight: 600;
+        }
+        .lc-cand-outcome {
+            font-size: 11px;
+            color: #d29922;
+            font-weight: 600;
+        }
+        .lc-cand-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 12px;
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 2px;
+        }
+        .lc-cand-time {
+            font-size: 10px;
+            color: #8b949e;
+        }
+        .lc-zero-state {
+            padding: 10px 0;
+            text-align: center;
+        }
+        .lc-zero-state .lc-zero-headline {
+            font-size: 16px;
+            color: #f0883e;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .lc-zero-state .lc-zero-sub {
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 12px;
+        }
+        .lc-nearmiss-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 6px;
+        }
+        .lc-nearmiss-table th {
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #8b949e;
+            padding: 4px 6px;
+            border-bottom: 1px solid #30363d;
+            font-weight: 600;
+        }
+        .lc-nearmiss-table td {
+            padding: 6px;
+            font-size: 12px;
+            border-bottom: 1px solid #21262d;
+        }
+        .lc-nearmiss-table tr:last-child td { border-bottom: none; }
+        .lc-nearmiss-gates {
+            font-size: 10px;
+            color: #f0883e;
+        }
+        @media (max-width: 600px) {
+            .lc-funnel-stage, .lc-funnel-offpath { flex: 1 1 60px; min-width: 60px; }
+            .lc-funnel-stage .lc-stage-num, .lc-funnel-offpath .lc-stage-num { font-size: 16px; }
+            .lc-cand-row td { padding: 4px; }
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
@@ -856,25 +1038,42 @@
             {% endif %}
         </div>
 
-        <!-- Top Opportunities -->
-        <div class="card">
+        <!-- Phase B — Latest Cycle Funnel -->
+        <div class="card" id="latest-cycle-card">
             <div class="card-header">
-                <span class="card-title">🎯 Top Opportunities</span>
-                <button onclick="loadOpportunities()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
+                <span class="card-title">📊 Latest Cycle</span>
+                <button onclick="loadLatestCycle()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
             </div>
-            <div id="opportunities-loading">Loading opportunities...</div>
-            <table id="opportunities-table" style="display: none;">
+            <div id="latest-cycle-loading">Loading latest cycle...</div>
+            <div id="latest-cycle-body" style="display: none;"></div>
+            <div id="latest-cycle-empty" style="display: none;"></div>
+            <div id="latest-cycle-error" style="display: none;"></div>
+        </div>
+
+        <!-- Top Candidates (Latest Cycle) — Phase B OBS-001 -->
+        <div class="card" id="top-candidates-card">
+            <div class="card-header">
+                <span class="card-title">🎯 Top Candidates</span>
+                <span style="font-size: 11px; color: #8b949e; margin-left: 8px;">latest cycle · by candidate_rank</span>
+                <button onclick="loadTopCandidates()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
+            </div>
+            <div id="top-candidates-loading">Loading candidates...</div>
+            <table id="top-candidates-table" class="lc-cand-table" style="display: none; width:100%;">
                 <thead>
                     <tr>
-                        <th>Symbol</th>
-                        <th>Components</th>
-                        <th>Buy Criteria</th>
-                        <th>Score Updated</th>
+                        <th style="text-align:left;">#</th>
+                        <th style="text-align:left;">Symbol</th>
+                        <th style="text-align:right;">Score</th>
+                        <th style="text-align:left;">Outcome</th>
+                        <th style="text-align:right;">Analyzed (CT)</th>
                     </tr>
                 </thead>
-                <tbody id="opportunities-body">
+                <tbody id="top-candidates-body">
                 </tbody>
             </table>
+            <div id="top-candidates-zero" style="display: none;"></div>
+            <div id="top-candidates-error" style="display: none;"></div>
+        </div>
         </div>
 
         <!-- Recent Orders -->
@@ -1183,6 +1382,300 @@
                 if (btn) { btn.disabled = false; btn.textContent = kind === 'start' ? '▶️ Start Session' : '⏹️ Stop Session'; }
             }
         }
+
+        // ── Phase B: Latest Cycle funnel ─────────────────────────
+        // Renders the latest cycle_funnel row from /api/actionability-summary.
+        // Pure presentation — the bot is the writer of those facts.
+        function _lc_escapeHtml(s) {
+            if (s === null || s === undefined) return '';
+            return String(s).replace(/[&<>"']/g, function (c) {
+                return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+            });
+        }
+        function _lc_fmtIso(iso) {
+            if (!iso) return '<span style="color:#8b949e">—</span>';
+            try {
+                const d = new Date(iso);
+                if (isNaN(d.getTime())) return _lc_escapeHtml(iso);
+                return d.toLocaleString('en-US', {
+                    timeZone: 'America/Chicago',
+                    year: 'numeric', month: 'short', day: 'numeric',
+                    hour: 'numeric', minute: '2-digit', second: '2-digit',
+                    hour12: true,
+                }) + ' CT';
+            } catch (e) { return _lc_escapeHtml(iso); }
+        }
+        function _lc_renderLatestCycle(funnel) {
+            if (!funnel || !funnel.cycle_id) {
+                return '<div class="lc-cycle-empty">No completed OBS-001 cycle available yet.</div>';
+            }
+            const a = funnel.analyzed_count;
+            const e = funnel.strategy_eligible_count;
+            const r = funnel.ranked_candidate_count;
+            const xa = funnel.execution_attempt_count;
+            const os = funnel.order_submitted_count;
+            const eb = funnel.execution_blocked_count;
+            const of = funnel.order_failed_count;
+            const cycleStart = funnel.cycle_start;
+            const cycleEnd = funnel.cycle_end;
+            // Visual funnel: ONLY forward stages. Execution Blocked and
+            // Orders Failed are rendered separately as off-path outcomes,
+            // NOT as part of the linear funnel, so the UI never implies
+            // Execution Blocked → Orders Submitted.
+            // Forward stages:
+            //   Analyzed → Strategy Eligible → Ranked Candidates
+            //           → Execution Attempted → Orders Submitted
+            const stagesHtml = [
+                { num: a, lbl: 'Analyzed' },
+                { num: e, lbl: 'Strategy Eligible' },
+                { num: r, lbl: 'Ranked Candidates' },
+                { num: xa, lbl: 'Execution Attempted' },
+                { num: os, lbl: 'Orders Submitted' },
+            ].map((s, i, arr) => {
+                const arrow = i < arr.length - 1
+                    ? '<div class="lc-funnel-arrow">›</div>'
+                    : '';
+                return '<div class="lc-funnel-stage"><div class="lc-stage-num">' + s.num + '</div>'
+                    + '<div class="lc-stage-label">' + s.lbl + '</div></div>'
+                    + arrow;
+            }).join('');
+            const offpathHtml = [
+                '<div class="lc-funnel-offpath"><div class="lc-stage-num">' + eb + '</div>'
+                + '<div class="lc-stage-label">Execution Blocked (off-path)</div></div>',
+                '<div class="lc-funnel-offpath"><div class="lc-stage-num">' + of + '</div>'
+                + '<div class="lc-stage-label">Orders Failed (off-path)</div></div>',
+            ].join('');
+            // Drop-off callout: pick the largest proportional drop in the
+            // forward funnel. Compare Analyzed→Strategy Eligible and
+            // Strategy Eligible→Ranked Candidates. (Source-of-truth
+            // counts only.)
+            let dropoffLine = '';
+            const d1 = a - e;
+            const d2 = e - r;
+            if (d1 >= d2 && d1 > 0) {
+                dropoffLine = '<div class="lc-dropoff">' +
+                    '<strong>' + a + '</strong> analyzed → <strong>' + e + '</strong> strategy eligible' +
+                    ' <span style="color:#8b949e;">(largest drop)</span></div>';
+            } else if (d2 > 0) {
+                dropoffLine = '<div class="lc-dropoff">' +
+                    '<strong>' + e + '</strong> strategy eligible → <strong>' + r + '</strong> ranked candidates' +
+                    ' <span style="color:#8b949e;">(largest drop)</span></div>';
+            } else if (a > 0 && eb > 0) {
+                dropoffLine = '<div class="lc-dropoff">' +
+                    '<strong>' + a + '</strong> analyzed, <strong>' + eb + '</strong> execution blocked' +
+                    ' <span style="color:#8b949e;">(off-path)</span></div>';
+            }
+            const meta = [
+                '<span><strong>Cycle:</strong> <code>' + _lc_escapeHtml(funnel.cycle_id) + '</code></span>',
+                '<span><strong>Started:</strong> ' + _lc_fmtIso(cycleStart) + '</span>',
+                '<span><strong>Ended:</strong> ' + _lc_fmtIso(cycleEnd) + '</span>',
+                '<span><strong>Bot:</strong> v' + _lc_escapeHtml(funnel.bot_version || '?') + ' · schema v' + (funnel.schema_version || '?') + '</span>',
+            ].join('');
+            const viewBtn = '<a href="#" class="lc-view-analysis-btn" onclick="_lc_viewAnalysis(event)">View analysis →</a>';
+            return '<div class="lc-cycle-meta">' + meta + '</div>'
+                + '<div class="lc-funnel-row">' + stagesHtml + '</div>'
+                + '<div class="lc-funnel-row" style="margin-top:2px;">' + offpathHtml + '</div>'
+                + dropoffLine
+                + viewBtn;
+        }
+        function _lc_viewAnalysis(e) {
+            if (e) e.preventDefault();
+            const analyticsBtn = document.querySelector('button.top-tab:nth-child(2)')
+                || Array.from(document.querySelectorAll('.top-tab')).find(b => /analytics/i.test(b.textContent));
+            if (analyticsBtn) {
+                analyticsBtn.click();
+            }
+        }
+        async function loadLatestCycle() {
+            const loading = document.getElementById('latest-cycle-loading');
+            const body = document.getElementById('latest-cycle-body');
+            const empty = document.getElementById('latest-cycle-empty');
+            const errorBox = document.getElementById('latest-cycle-error');
+            loading.style.display = 'block';
+            body.style.display = 'none';
+            empty.style.display = 'none';
+            errorBox.style.display = 'none';
+            try {
+                const r = await fetch('/api/actionability-summary');
+                const data = await r.json();
+                if (data && data.error && !data.funnel) {
+                    empty.innerHTML = '<div class="lc-cycle-empty">' +
+                        (data.error === 'No cycle_funnel rows yet'
+                            ? 'No completed OBS-001 cycle available yet.'
+                            : 'No completed OBS-001 cycle available yet.') + '</div>';
+                    empty.style.display = 'block';
+                    loading.style.display = 'none';
+                    return;
+                }
+                if (!data || !data.funnel) {
+                    empty.innerHTML = '<div class="lc-cycle-empty">No completed OBS-001 cycle available yet.</div>';
+                    empty.style.display = 'block';
+                    loading.style.display = 'none';
+                    return;
+                }
+                body.innerHTML = _lc_renderLatestCycle(data.funnel);
+                body.style.display = 'block';
+                loading.style.display = 'none';
+            } catch (e) {
+                errorBox.innerHTML = '<span style="color:#da3633">Failed to load: ' + e.message + '</span>';
+                errorBox.style.display = 'block';
+                loading.style.display = 'none';
+            }
+        }
+
+        // ── Phase B: Top Candidates (replaces Top Opportunities concept) ──
+        function _lc_outcomeColor(oc) {
+            if (!oc) return '#8b949e';
+            if (oc === 'BUY_ORDER_SUBMITTED' || oc === 'SELL_ORDER_SUBMITTED') return '#2ea043';
+            if (oc === 'BUY_ORDER_FAILED' || oc === 'SELL_ORDER_FAILED') return '#da3633';
+            if (oc === 'BUY_BLOCKED_DYNAMIC' || oc === 'SELL_BLOCKED_DYNAMIC') return '#f0883e';
+            if (oc === 'BUY_ELIGIBLE_NOT_SELECTED') return '#d29922';
+            if (oc === 'SELL_BLOCKED_NO_POSITION') return '#8b949e';
+            return '#8b949e';
+        }
+        function _lc_outcomeShort(oc) {
+            if (!oc) return '—';
+            return oc.replace(/_/g, ' ');
+        }
+        function _lc_renderCandidatesTable(cands, cycleId) {
+            const rows = cands.map(c => {
+                const outcomeColor = _lc_outcomeColor(c.decision_outcome);
+                const outcomeShort = _lc_outcomeShort(c.decision_outcome);
+                return '<tr class="lc-cand-row" onclick="_lc_openHistorySymbol(\'' + c.symbol + '\')">'
+                    + '<td><span class="lc-cand-rank">#' + c.candidate_rank
+                    + (c.eligible_candidate_count ? '/' + c.eligible_candidate_count : '')
+                    + '</span></td>'
+                    + '<td><span class="lc-cand-symbol">' + _lc_escapeHtml(c.symbol) + '</span></td>'
+                    + '<td style="text-align:right;"><span class="lc-cand-score">'
+                    + (c.total_score !== null && c.total_score !== undefined
+                        ? Number(c.total_score).toFixed(0) : '—') + '</span></td>'
+                    + '<td><span class="lc-cand-outcome" style="color:' + outcomeColor + ';">'
+                    + _lc_escapeHtml(outcomeShort) + '</span>'
+                    + '<div class="lc-cand-meta">'
+                    + (c.decision_primary_reason
+                        ? '<span title="' + _lc_escapeHtml(c.decision_primary_reason) + '">'
+                        + _lc_escapeHtml(c.decision_primary_reason.length > 60
+                            ? c.decision_primary_reason.slice(0, 57) + '...'
+                            : c.decision_primary_reason) + '</span>'
+                        : '')
+                    + '</div></td>'
+                    + '<td style="text-align:right;"><span class="lc-cand-time">'
+                    + _lc_fmtIso(c.cycle_start) + '</span></td>'
+                    + '</tr>';
+            }).join('');
+            return rows;
+        }
+        function _lc_renderZeroState(nearMisses, cycleId) {
+            let nmHtml = '';
+            if (nearMisses && nearMisses.length > 0) {
+                const rowsHtml = nearMisses.map(n => {
+                    const gates = (n.failed_strategy_gates || []).map(g =>
+                        '<span class="lc-nearmiss-gates">' + _lc_escapeHtml(g) + '</span>'
+                    ).join(', ');
+                    return '<tr onclick="_lc_openHistorySymbol(\'' + _lc_escapeHtml(n.symbol) + '\')" style="cursor:pointer;">'
+                        + '<td><span class="lc-cand-symbol">' + _lc_escapeHtml(n.symbol) + '</span></td>'
+                        + '<td style="text-align:right;"><span class="lc-cand-score">'
+                        + (n.total_score !== null && n.total_score !== undefined
+                            ? Number(n.total_score).toFixed(0) : '—') + '</span></td>'
+                        + '<td><span class="lc-cand-outcome">HOLD</span></td>'
+                        + '<td style="font-size:11px;">'
+                        + (gates || '<span style="color:#8b949e;">—</span>') + '</td>'
+                        + '</tr>';
+                }).join('');
+                nmHtml = '<table class="lc-nearmiss-table" id="top-candidates-nearmiss-table">'
+                    + '<thead><tr><th>Symbol</th><th style="text-align:right;">Score</th>'
+                    + '<th>Outcome</th><th>Failed Strategy Gates</th></tr></thead>'
+                    + '<tbody>' + rowsHtml + '</tbody></table>';
+            } else {
+                nmHtml = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:12px 0;">'
+                    + 'No HOLD_INELIGIBLE rows in this cycle.</div>';
+            }
+            return nmHtml;
+        }
+        function _lc_openHistorySymbol(symbol) {
+            // Switch to History tab and prefill the symbol search input
+            // so the user lands on the OBS-001 Symbol Decision Trace for
+            // that symbol. (Phase A's trace renderer is reused verbatim.)
+            const topTabBtn = Array.from(document.querySelectorAll('.top-tab')).find(
+                b => /history/i.test(b.textContent)
+            );
+            if (topTabBtn) topTabBtn.click();
+            // Pre-fill the search input; trigger the same handler the
+            // search button uses so the trace actually fetches.
+            const input = document.getElementById('historySearchInput');
+            if (input) {
+                input.value = symbol;
+                if (typeof doHistorySymbolSearch === 'function') {
+                    doHistorySymbolSearch();
+                }
+            }
+        }
+        async function loadTopCandidates() {
+            const loading = document.getElementById('top-candidates-loading');
+            const table = document.getElementById('top-candidates-table');
+            const tbody = document.getElementById('top-candidates-body');
+            const zero = document.getElementById('top-candidates-zero');
+            const errorBox = document.getElementById('top-candidates-error');
+            loading.style.display = 'block';
+            table.style.display = 'none';
+            zero.style.display = 'none';
+            errorBox.style.display = 'none';
+            try {
+                // Step 1: get the latest cycle_id.
+                const summaryResp = await fetch('/api/actionability-summary');
+                const summary = await summaryResp.json();
+                if (!summary || !summary.funnel || !summary.funnel.cycle_id) {
+                    zero.innerHTML = '<div class="lc-cycle-empty" style="text-align:center;padding:16px 0;">'
+                        + 'No completed OBS-001 cycle available yet.</div>';
+                    zero.style.display = 'block';
+                    loading.style.display = 'none';
+                    return;
+                }
+                const cycleId = summary.funnel.cycle_id;
+                // Step 2: load candidates + near misses for that cycle.
+                const candsResp = await fetch('/api/cycle-candidates/' + encodeURIComponent(cycleId));
+                const envelope = await candsResp.json();
+                if (envelope.error) {
+                    errorBox.innerHTML = '<span style="color:#da3633">Failed to load: '
+                        + _lc_escapeHtml(envelope.error) + '</span>';
+                    errorBox.style.display = 'block';
+                    loading.style.display = 'none';
+                    return;
+                }
+                const cands = envelope.candidates || [];
+                const nms = envelope.near_misses || [];
+                if (cands.length === 0) {
+                    // Zero-candidate state \u2014 show count + NEAR MISSES.
+                    const analyzed = envelope.analyzed_count;
+                    const eligible = envelope.strategy_eligible_count;
+                    const ranked = envelope.ranked_candidate_count;
+                    const headline = (ranked !== undefined && ranked === 0)
+                        ? ('0 of ' + (eligible !== undefined ? eligible : '0') + ' strategy eligible')
+                        : 'No ranked candidates this cycle';
+                    zero.innerHTML = '<div class="lc-zero-state">'
+                        + '<div class="lc-zero-headline">' + _lc_escapeHtml(headline) + '</div>'
+                        + '<div class="lc-zero-sub">'
+                        + _lc_escapeHtml(analyzed !== undefined
+                            ? (analyzed + ' symbols were analyzed in this cycle.')
+                            : '') + '</div>'
+                        + '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.04em;margin:14px 0 4px 0;">'
+                        + 'HIGH-SCORE NEAR MISSES (top ' + nms.length + ')</div>'
+                        + _lc_renderZeroState(nms, cycleId)
+                        + '</div>';
+                    zero.style.display = 'block';
+                    loading.style.display = 'none';
+                    return;
+                }
+                // Candidates present: render ranked table.
+                tbody.innerHTML = _lc_renderCandidatesTable(cands, cycleId);
+                table.style.display = 'table';
+                loading.style.display = 'none';
+            } catch (e) {
+                errorBox.innerHTML = '<span style="color:#da3633">Failed to load: ' + e.message + '</span>';
+                errorBox.style.display = 'block';
+                loading.style.display = 'none';
+            }
+        }
         
         // Load top opportunities
         async function loadOpportunities() {
@@ -1342,7 +1835,10 @@
         }
         
         // Load opportunities on page load
-        document.addEventListener('DOMContentLoaded', loadOpportunities);
+        document.addEventListener('DOMContentLoaded', function() {
+            loadLatestCycle();
+            loadTopCandidates();
+        });
         
         // Toggle a single sector
         function toggleSector(id) {

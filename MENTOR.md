@@ -2156,3 +2156,104 @@ affected.
 |---|---|---|
 | dashboard.mooseops.com.co | dashboard.service (Engineering Dashboard) | 8010 |
 | trading.mooseops.com.co | trading-dashboard.service (Trading Dashboard / dashboard.py) | 8000 |
+
+## Phase B — Latest Cycle Funnel + Truthful Top Candidates (DASHBOARD-ONLY)
+
+A dashboard-only slice that replaces the legacy "Top Opportunities"
+concept (highest total_score rows from analyzed_stocks) with two
+views that are truthful under SCORE-002:
+
+### Source authority
+
+- **Latest Cycle funnel card** reads ONLY `cycle_funnel` via
+  `/api/actionability-summary`. Authoritative bot-written facts.
+- **Top Candidates card** reads ONLY `decision_history` via
+  `/api/cycle-candidates/{cycle_id}`. `decision_history` is
+  immutable, append-only.
+- The renderer never infers candidate status from `total_score`,
+  `signal`, `passes_all_buy_criteria`, or `analyzed_stocks` rows.
+
+### Path-of-truth for "ranked candidate"
+
+A symbol is a "ranked candidate" ONLY when its persisted
+`decision_snapshot.ranking.candidate_rank` is non-null. That field
+is populated exclusively by SCORE-002 when ranking actually executes
+in a cycle. Until SCORE-002 produces candidates (live today:
+`ranked_candidate_count = 0` for every cycle recorded), the Top
+Candidates card shows the ZERO-CANDIDATE state.
+
+The endpoint enforces this at the SQL boundary:
+```sql
+SELECT symbol FROM decision_history
+WHERE cycle_id = ?
+  AND json_extract(decision_snapshot, '$.ranking.candidate_rank') IS NOT NULL
+ORDER BY CAST(json_extract(decision_snapshot, '$.ranking.candidate_rank') AS INTEGER) ASC,
+         CAST(json_extract(decision_snapshot, '$.scoring.total_score') AS REAL) DESC
+```
+
+### Visual funnel policy (NEVER imply divergent outcomes)
+
+The Latest Cycle card renders FIVE forward stages in declared order:
+`Analyzed → Strategy Eligible → Ranked Candidates →
+Execution Attempted → Orders Submitted`
+
+Plus TWO off-path outcomes rendered in their own row, with a
+red background and `(off-path)` label suffix:
+`Execution Blocked (off-path)` and `Orders Failed (off-path)`
+
+Off-path outcomes are visually separated so the UI never implies
+`Execution Blocked → Orders Submitted` (which is mathematically
+false — they are divergent outcomes).
+
+### Zero-candidate state
+
+When `ranked_candidate_count == 0`, the Top Candidates card shows:
+- a headline like "0 of N strategy eligible"
+- a "X symbols were analyzed in this cycle" subtitle
+- a "HIGH-SCORE NEAR MISSES (top 3)" table sourced from
+  `decision_history` rows where
+  `decision.outcome = 'HOLD_INELIGIBLE' AND
+   ranking.candidate_rank IS NULL`, ordered by
+  `scoring.total_score DESC`, capped at 3.
+
+These are explicitly NOT candidates — they are near-misses labeled
+as such, with the persisted `failed_strategy_gates` names attached
+so the user can see WHY they failed strategy eligibility.
+
+Phase B does NOT implement "distance from pass" math. That belongs
+to a later phase.
+
+### Phases that came before
+
+- Phase A (merged, deployed): History Symbol Search + OBS-001
+  Symbol Decision Trace.
+- Phase A.1 (merged, deployed): Execution Checks renderer fidelity
+  (fixed display bug when `first_blocking_check` falls outside
+  `evaluated_in_order`).
+- Phase B (this slice): Latest Cycle funnel + Top Candidates.
+
+### Tab navigation
+
+- `View analysis →` button on the Latest Cycle card switches to
+  the Analytics tab (no Analytics redesign implemented yet).
+- Clicking a Top Candidates row or a near-miss row opens the
+  Phase A Symbol Decision Trace for that symbol via pre-filled
+  History tab search.
+
+### Endpoint added (Phase B only)
+
+- `GET /api/cycle-candidates/{cycle_id}?near_miss_limit=N`
+- Reads from `decision_history` (immutable) + `cycle_funnel` (read-only)
+- Returns `candidates`, `near_misses`, `cycle_known`, `cycle_*`
+  counter envelope.
+- All other endpoints (`/api/opportunities`, `/api/decision`,
+  `/api/decision-history`, `/api/actionability-summary`) UNCHANGED.
+
+### Safety / semantics
+
+- Does NOT modify SmartBot trading behavior.
+- Does NOT modify scoring, eligibility, ranking, sizing, risk,
+  brokerage, OBS-001 persistence, schema, PIPELINE-001, SCORE-003.
+- SmartBot `ActiveEnterTimestamp` must remain unchanged across
+  deployment.
+- DASHBOARD ONLY.
