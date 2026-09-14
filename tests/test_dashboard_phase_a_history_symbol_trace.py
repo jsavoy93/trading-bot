@@ -579,6 +579,415 @@ class TestNoNewEndpoints:
 # 9. Live endpoint smoke test (against the existing production DB)
 # ─────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────
+# A.1 Execution Checks Renderer Fidelity
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestExecutionChecksFidelity:
+    """Phase A.1: the rendered Execution Checks list must contain every
+    persisted check in execution_checks.checks[] exactly once, even when
+    the first_blocking_check is absent from execution_checks.evaluated_in_order.
+
+    These tests extract the actual JS of `_dt_renderExecutionChecksSection`
+    (plus its DOM-adjacent helpers) from templates/dashboard.html, evaluate
+    it under Node.js with a stub `document` against constructed
+    execution-checks payloads, and assert the resulting HTML.
+
+    The bug surfaced on the live ALPXR snapshot where:
+        first_blocking_check = "position_existence_check"
+        evaluated_in_order   = [margin_check, pending_order_check,
+                                cooldown_check, position_concentration_check,
+                                sector_concentration_check, correlation_check,
+                                beta_check, buying_power_check,
+                                quantity_post_sizing_check]
+        position_existence_check is in checks[] with applied=True, passed=False,
+        but is NOT in evaluated_in_order.
+    """
+
+    @staticmethod
+    def _extract_function(name: str, template: str) -> str:
+        """Extract a single top-level `function NAME(...) { ... }` block
+        from `template`. The codebase is uniformly 8-space indented, so
+        the close brace of a top-level `function` declaration is the
+        FIRST subsequent line whose content is exactly `        }` (eight
+        spaces and a closing brace). This avoids the JS-regex-literal
+        false-positives that a naive brace counter runs into.
+
+        Returns the full source of the function including trailing newline."""
+        lines = template.split("\n")
+        start = None
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith("function") and f"function {name}(" in line:
+                start = i
+                break
+        assert start is not None, f"could not find function {name}"
+        for j in range(start + 1, len(lines)):
+            if lines[j] == "        }":
+                body = "\n".join(lines[start:j + 1]) + "\n"
+                return body
+        raise AssertionError(
+            f"could not find matching close brace for function {name}"
+        )
+
+    @classmethod
+    def _render(cls, exec_checks_payload: dict) -> str:
+        """Compile the renderer plus its helpers under Node.js, run it
+        against `exec_checks_payload`, and return the resulting HTML body
+        (the bodyHtml passed to _dt_section('Execution Checks', ...))."""
+        import json
+        import subprocess
+        template = _read_template()
+        # Stub `_dt_section` to a string-returning variant so the renderer
+        # returns a plain HTML string under Node.js (no DOM needed).
+        stub_section = (
+            "function _dt_section(title, bodyHtml, open) {\n"
+            "  return '<section data-title=\"' + _dt_escapeHtml(title)\n"
+            "    + '\" data-open=\"' + (open ? '1' : '0') + '\">'\n"
+            "    + bodyHtml + '</section>';\n"
+            "}\n"
+        )
+        # Extract only the helpers we need; do NOT extract the original
+        # _dt_section (it uses DOM and would shadow our stub).
+        fn_escape = cls._extract_function("_dt_escapeHtml", template)
+        fn_row = cls._extract_function("_dt_row", template)
+        fn_exec = cls._extract_function("_dt_renderExecutionChecksSection", template)
+        helpers_no_section = fn_escape + "\n" + fn_row
+        # Stub FIRST so the stub shadows any other _dt_section declaration.
+        program = (
+            "let document = { createElement: () => ({ className: '', innerHTML: '', appendChild() {} }) };\n"
+            "Math.random = () => 0.5;\n"
+            + stub_section
+            + helpers_no_section
+            + fn_exec
+            + f"\nlet html = _dt_renderExecutionChecksSection({json.dumps(exec_checks_payload)});\n"
+            + "console.log(JSON.stringify(html));\n"
+        )
+        result = subprocess.run(
+            ["node", "-e", program],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, (
+            f"renderer evaluation failed: stderr={result.stderr!r}"
+        )
+        out = result.stdout.strip()
+        # Node's console.log wraps long strings sometimes; recover.
+        if not out:
+            return ""
+        # The renderer JSON.stringify's its output, so un-json.
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return out
+
+    # -- The 7 regression scenarios Josh requested -----------------------
+
+    def _row_count(self, html: str, name: str) -> int:
+        """Count occurrences of `name` as a labelled row inside a
+        `<div class="dt-row ..."><div class="dt-label">...</div>...</div>`.
+
+        Render shape:
+            <div class="dt-row [...]"><div class="dt-label">
+                <span class="dt-chip dt-chip-{status}">{status}</span>{NAME}
+                [possibly <span class="dt-chip dt-chip-blocker">FIRST BLOCKER</span>]
+            </div>...</div>
+
+        We count occurrences of the literal pattern
+            `dt-chip-{PASS|FAIL|NOTRUN|N/A}">{status-text}</span>{NAME}` in
+        the rendered HTML. The status-text after the chip (FAIL, PASS,
+        NOT RUN, N/A) is the same span, so we match both pieces. This
+        avoids counting the name's appearance in the "First blocker: NAME"
+        summary header or in CSS class names like `data-value`.
+        """
+        import re
+        # Match each of the four legal status patterns.
+        patterns = [
+            r'<span class="dt-chip dt-chip-pass">PASS</span>' + re.escape(name),
+            r'<span class="dt-chip dt-chip-fail">FAIL</span>' + re.escape(name),
+            r'<span class="dt-chip dt-chip-notrun">NOT RUN</span>' + re.escape(name),
+            r'<span class="dt-chip dt-chip-na">N/A</span>' + re.escape(name),
+        ]
+        return sum(len(re.findall(p, html)) for p in patterns)
+
+    def _first_row_pos(self, html: str, name: str) -> int:
+        """Return the index of the FIRST dt-row chip pattern for `name`.
+        Used for ordering checks so we don't get confused by the name's
+        appearance in the "First blocker: NAME" summary header."""
+        import re
+        candidates = []
+        for status_text, chip_class in (
+            ("PASS", "pass"), ("FAIL", "fail"),
+            ("NOT RUN", "notrun"), ("N/A", "na"),
+        ):
+            pat = ('<span class="dt-chip dt-chip-' + chip_class + '">'
+                   + status_text + '</span>' + re.escape(name))
+            m = re.search(pat, html)
+            if m:
+                candidates.append(m.start())
+        return min(candidates) if candidates else -1
+
+    def test_blocker_present_in_evaluated_in_order(self):
+        """A blocker that is already in evaluated_in_order must be rendered
+        in position with the .dt-first-blocker highlight."""
+        out = self._render({
+            "first_blocking_check": "buying_power_check",
+            "first_blocking_reason": "insufficient buying power",
+            "evaluated_in_order": [
+                "margin_check", "buying_power_check", "quantity_post_sizing_check",
+            ],
+            "checks": [
+                {"name": "margin_check",         "applied": True,  "passed": True,  "reason": ""},
+                {"name": "buying_power_check",   "applied": True,  "passed": False, "reason": "insufficient buying power"},
+                {"name": "quantity_post_sizing_check", "applied": False, "passed": None, "reason": ""},
+            ],
+        })
+        # Each persisted check appears in exactly one dt-row chip pattern.
+        for name in ("margin_check", "buying_power_check", "quantity_post_sizing_check"):
+            assert self._row_count(out, name) == 1, (
+                f"{name} should appear once in a row; got {self._row_count(out, name)}\n"
+                f"HTML: {out[:600]}"
+            )
+        # The blocker is highlighted.
+        assert "dt-first-blocker" in out, (
+            f"blocker must be highlighted; HTML: {out[:600]}"
+        )
+        # Order preserved: declared evaluation order.
+        assert self._first_row_pos(out, "margin_check") < self._first_row_pos(out, "buying_power_check")
+        assert self._first_row_pos(out, "buying_power_check") < self._first_row_pos(out, "quantity_post_sizing_check")
+
+    def test_blocker_absent_from_evaluated_in_order(self):
+        """THE BUG: blocker is in checks[] but NOT in evaluated_in_order.
+
+        The renderer must still emit the blocker row, highlighted, exactly
+        once, and the other persisted checks must remain in their persisted
+        checks[] order (appended after evaluated_in_order)."""
+        out = self._render({
+            "first_blocking_check": "position_existence_check",
+            "first_blocking_reason": "position does not exist",
+            "evaluated_in_order": [
+                "margin_check", "pending_order_check", "cooldown_check",
+                "position_concentration_check", "sector_concentration_check",
+                "correlation_check", "beta_check", "buying_power_check",
+                "quantity_post_sizing_check",
+            ],
+            "checks": [
+                {"name": "margin_check", "applied": True,  "passed": True,  "reason": ""},
+                {"name": "pending_order_check", "applied": True, "passed": True, "reason": ""},
+                {"name": "position_existence_check", "applied": True, "passed": False,
+                 "reason": "position does not exist"},
+                {"name": "cooldown_check", "applied": False, "passed": None, "reason": ""},
+                {"name": "position_concentration_check", "applied": False, "passed": None, "reason": ""},
+                {"name": "sector_concentration_check", "applied": False, "passed": None, "reason": ""},
+                {"name": "correlation_check", "applied": False, "passed": None, "reason": ""},
+                {"name": "beta_check", "applied": False, "passed": None, "reason": ""},
+                {"name": "buying_power_check", "applied": False, "passed": None, "reason": ""},
+                {"name": "quantity_post_sizing_check", "applied": False, "passed": None, "reason": ""},
+            ],
+        })
+        # Each persisted check appears exactly once as a labelled row.
+        for name in (
+            "margin_check", "pending_order_check", "position_existence_check",
+            "cooldown_check", "position_concentration_check",
+            "sector_concentration_check", "correlation_check", "beta_check",
+            "buying_power_check", "quantity_post_sizing_check",
+        ):
+            assert self._row_count(out, name) == 1, (
+                f"check {name!r} rendered {self._row_count(out, name)} times; expected once\n"
+                f"HTML: {out[:800]}"
+            )
+        # Exactly one dt-first-blocker row.
+        assert out.count("dt-first-blocker") == 1, (
+            f"exactly one .dt-first-blocker row expected; got {out.count('dt-first-blocker')}\n"
+            f"HTML: {out[:800]}"
+        )
+        # The blocker row contains the FAIL chip for the blocker name.
+        assert "dt-chip-fail\">FAIL</span>position_existence_check" in out, (
+            f"blocker must carry FAIL chip; HTML: {out[:800]}"
+        )
+        # Ordering: declared evaluated_in_order items come first in order,
+        # then appended extras in their persisted checks[] order (which
+        # for a single-blocker snapshot means position_existence_check
+        # is appended at the end after the last evaluated_in_order entry).
+        # Importantly: between evaluated_in_order neighbours, the declared
+        # order is preserved (pending_order_check before cooldown_check).
+        pos_pending = self._first_row_pos(out, "pending_order_check")
+        pos_cooldown = self._first_row_pos(out, "cooldown_check")
+        pos_qty = self._first_row_pos(out, "quantity_post_sizing_check")
+        pos_blocker = self._first_row_pos(out, "position_existence_check")
+        assert pos_pending < pos_cooldown
+        # The blocker (extra) must be appended AFTER the trailing
+        # evaluated_in_order entry, in this single-blocker snapshot.
+        assert pos_qty < pos_blocker, (
+            f"appended extras must come after the evaluated_in_order list; "
+            f"qty={pos_qty} blocker={pos_blocker}"
+        )
+
+    def test_multiple_extras_appended_in_checks_order(self):
+        """Multiple checks[] entries absent from evaluated_in_order must be
+        appended in their persisted checks[] order."""
+        out = self._render({
+            "evaluated_in_order": ["alpha_first"],
+            "checks": [
+                {"name": "alpha_first", "applied": True, "passed": True,  "reason": ""},
+                {"name": "z_extra_1",   "applied": True, "passed": False, "reason": ""},
+                {"name": "m_extra_2",   "applied": True, "passed": True,  "reason": ""},
+                {"name": "b_extra_3",   "applied": False, "passed": None,  "reason": ""},
+            ],
+        })
+        # All four appear exactly once as a labelled row.
+        for name in ("alpha_first", "z_extra_1", "m_extra_2", "b_extra_3"):
+            assert self._row_count(out, name) == 1, (
+                f"{name} should appear once; got {self._row_count(out, name)}\n"
+                f"HTML: {out[:800]}"
+            )
+        # Persistence order for extras: z, m, b (NOT alphabetical).
+        idx_z = self._row_count and out.find("z_extra_1")  # any unique marker
+        idx_z = out.find("z_extra_1")
+        idx_m = out.find("m_extra_2")
+        idx_b = out.find("b_extra_3")
+        assert 0 <= idx_z < idx_m < idx_b, (
+            f"extras must preserve persisted checks[] order; "
+            f"z={idx_z} m={idx_m} b={idx_b}\nHTML: {out[:600]}"
+        )
+
+    def test_duplicates_between_order_and_checks(self):
+        """If a name appears in BOTH evaluated_in_order and checks[], it must
+        be rendered exactly once (in the declared-order position)."""
+        out = self._render({
+            "evaluated_in_order": ["margin_check", "buying_power_check"],
+            "checks": [
+                {"name": "margin_check", "applied": True, "passed": True, "reason": ""},
+                {"name": "buying_power_check", "applied": True, "passed": True, "reason": ""},
+            ],
+        })
+        assert self._row_count(out, "margin_check") == 1
+        assert self._row_count(out, "buying_power_check") == 1
+
+    def test_name_absent_from_checks_array_is_never_invented(self):
+        """evaluated_in_order may name a check that was never persisted in
+        checks[]; the renderer must NOT invent a row for it."""
+        out = self._render({
+            "evaluated_in_order": ["in_phantom", "in_real"],
+            "checks": [
+                {"name": "in_real", "applied": True, "passed": True, "reason": ""},
+            ],
+        })
+        # The phantom name must not appear anywhere in the rendered output.
+        assert "in_phantom" not in out, (
+            "renderer must NOT fabricate checks; phantom input-only name leaked into output:\n"
+            + out[:600]
+        )
+        assert self._row_count(out, "in_real") == 1
+
+    def test_not_run_extra_appended_remains_not_run(self):
+        """A persisted check[] entry with applied=False must render as
+        'NOT RUN' even when it is named as the first_blocking_check.
+
+        Defensive invariant: we never demote a check to FAIL merely because
+        it is the first blocker."""
+        out = self._render({
+            "first_blocking_check": "phantom_blocker",
+            "evaluated_in_order": [],
+            "checks": [
+                {"name": "phantom_blocker", "applied": False, "passed": None, "reason": ""},
+            ],
+        })
+        # The persisted check is rendered exactly once and labelled NOT RUN.
+        assert self._row_count(out, "phantom_blocker") == 1
+        # The row for phantom_blocker carries the NOT RUN chip, not FAIL.
+        assert "dt-chip-notrun\">NOT RUN</span>phantom_blocker" in out, (
+            f"an applied=False / passed=None check must remain NOT RUN\nHTML: {out}"
+        )
+        # The summary header MAY mention the blocker name as text (in the
+        # "First blocker: <name>" chip); it must not include a FAIL marker
+        # on the row itself.
+        assert "dt-chip-fail" not in out, (
+            "no FAIL chip may appear when all persisted checks are NOT RUN\n"
+            f"HTML: {out}"
+        )
+
+    def test_ordinary_phase_a_decision_rendering_unchanged(self):
+        """When ALL persisted checks are already in evaluated_in_order (the
+        normal happy path used by Phase A), no extras get appended and the
+        output is identical to a renderer that only iterates
+        evaluated_in_order.
+
+        Guards Phase A regressions: the fix only changes behaviour in the
+        absence case."""
+        snapshot = {
+            "first_blocking_check": None,
+            "evaluated_in_order": [
+                "margin_check", "buying_power_check", "quantity_post_sizing_check",
+            ],
+            "checks": [
+                {"name": "margin_check", "applied": True, "passed": True, "reason": ""},
+                {"name": "buying_power_check", "applied": True, "passed": True, "reason": ""},
+                {"name": "quantity_post_sizing_check", "applied": False, "passed": None, "reason": ""},
+            ],
+        }
+        out = self._render(snapshot)
+        # Same set of names, each rendered exactly once in declared order.
+        for name in ("margin_check", "buying_power_check", "quantity_post_sizing_check"):
+            assert self._row_count(out, name) == 1
+        idx_m = out.find("margin_check")
+        idx_b = out.find("buying_power_check")
+        idx_q = out.find("quantity_post_sizing_check")
+        assert idx_m < idx_b < idx_q
+
+    # -- Live regression: ALPXR ------------------------------------------
+
+    def test_live_alpxr_snapshot_renders_blocker_row_and_highlight(self):
+        """Live OBS-001 regression: ALPXR (SELL_BLOCKED_DYNAMIC) has
+        first_blocking_check='position_existence_check' with the blocker
+        absent from evaluated_in_order. Fetch the live snapshot, run the
+        renderer, assert the row is rendered and highlighted exactly once.
+        """
+        from fastapi.testclient import TestClient
+        import sys
+        sys.path.insert(0, str(REPO_ROOT))
+        import dashboard as _dashboard
+
+        client = TestClient(_dashboard.app)
+        r = client.get("/api/decision/ALPXR")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # If ALPXR was recaptured with different shape, skip rather than fail.
+        if not body or body.get("is_legacy") or "snapshot" not in body:
+            import pytest
+            pytest.skip("ALPXR live snapshot unavailable in this environment")
+        ec = body["snapshot"].get("execution_checks")
+        assert ec, "ALPXR snapshot must include execution_checks"
+        out = self._render(ec)
+        # Live ALPXR snapshot invariant: blocker name IS in checks[] but NOT
+        # in evaluated_in_order. If that invariant ever changes (e.g. a
+        # future snapshot fix), this test should be re-evaluated rather
+        # than silently passing.
+        fbc = ec.get("first_blocking_check")
+        order = ec.get("evaluated_in_order") or []
+        checks = ec.get("checks") or []
+        assert fbc and fbc not in order, (
+            f"test invariant: fbc={fbc!r} must NOT be in order={order!r}"
+        )
+        # The blocker row IS rendered exactly once.
+        assert self._row_count(out, fbc) == 1, (
+            f"live renderer dropped or duplicated {fbc!r}; "
+            f"row_count={self._row_count(out, fbc)} HTML head: {out[:800]}"
+        )
+        # The blocker row carries the .dt-first-blocker class.
+        assert "dt-first-blocker" in out, (
+            f"live ALPXR: blocker row missing .dt-first-blocker; HTML head: {out[:800]}"
+        )
+        # Every persisted check is rendered exactly once as a row.
+        for c in checks:
+            n = c.get("name")
+            if not n:
+                continue
+            assert self._row_count(out, n) == 1, (
+                f"check {n!r} rendered {self._row_count(out, n)} times; expected once"
+            )
+
+
 class TestLiveEndpointsReturnExpectedShape:
     """Phase A relies on the existing /api/decision and /api/decision-history
     endpoints returning the documented shape. This test pins the contract

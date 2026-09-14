@@ -3258,3 +3258,47 @@ Scope: dashboard-only; no SmartBot / scoring / schema / pipeline changes.
 - Josh reviews and approves PR.
 - Phase B (Dashboard Latest Cycle funnel card) is the natural
   next slice.
+
+### Iteration A.1 — 2026-09-13 21:50 UTC
+**Phase A follow-up**: dashboard-only Execution Checks renderer fidelity fix.
+
+**Objective:** Fix the post-PR #81 live-verification display bug where the
+ALPXR SELL_BLOCKED_DYNAMIC snapshot's `first_blocking_check`
+(`position_existence_check`) is rendered as the "First blocker" header
+chip but the corresponding per-check row is missing from the Execution
+Checks list because that name is absent from `evaluated_in_order`.
+
+**Constraint:** display-only; no SmartBot, OBS-001, or execution-check
+ordering changes. Only `templates/dashboard.html` and `tests/...` may
+be modified.
+
+**Root cause:** `_dt_renderExecutionChecksSection` rendered only
+`evaluated_in_order` names and silently dropped any `checks[]` entry
+not declared in that list. With no "append extras" pass, the blocker
+row was lost.
+
+**Renderer fix:** minimal 11-line change — after building `ordered`
+from `evaluated_in_order`, iterate `seenOrder` (from `checks[]`) and
+append any name not already present. Dedup is enforced by a `Set`.
+The existing `isBlocker` highlight condition automatically catches
+the appended row.
+
+**Acceptance tests (new TestExecutionChecksFidelity class):**
+- blocker-in-evaluated_in_order → rendered once + highlighted
+- blocker-absent-from-evaluated_in_order → appended once + highlighted (THE BUG)
+- multiple extras → appended in persisted checks[] order
+- duplicates between order and checks → rendered once
+- name absent from checks[] → never invented
+- NOT RUN extra remains NOT RUN even when named first_blocking_check
+- ordinary Phase A rendering (all-in-order) unchanged
+- live ALPXR snapshot regression
+
+**Tests:** 1308 pass, 5 fail (all 5 pre-existing on `main`; 0 new
+failures introduced).
+
+**Branch:** `agent/dashboard-phase-a1-execution-checks-fidelity`
+**Files touched:** `templates/dashboard.html` (+15/-1 line), the
+Phase A test file (+409), `MENTOR.md` (1 paragraph update).
+
+**Status:** PR opened; awaiting Josh's merge approval. SmartBot not
+restarted. Dashboard service not restarted for this slice.
