@@ -5636,6 +5636,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     if df is None or len(df) < self.sma_slow:
                         logging.debug(f"   ⏭️  {symbol}: ❌ No market data (needs {self.sma_slow} bars)")
                         no_trade_reasons['no_data'] += 1
+                        # OBS-002: persist a SKIPPED_INVALID_DATA row so
+                        # decision_history coverage equals analyzed_count.
+                        try:
+                            self._persist_skipped_terminal_decision(
+                                symbol,
+                                cycle_id=cycle_id,
+                                cycle_start_iso=cycle_start_iso,
+                                outcome="SKIPPED_INVALID_DATA",
+                                primary_reason=(
+                                    f"no market data (needs {self.sma_slow} bars)"
+                                ),
+                                baseline_diagnostics=obs_001_baseline_diagnostics,
+                            )
+                        except Exception as e:
+                            logging.debug(
+                                f"OBS-002 no-data persist failed for {symbol}: {e}"
+                            )
                     else:
                         # Has data but no signal (RSI not in buy/sell zone)
                         df = self.calculate_indicators(df)
@@ -5784,6 +5801,46 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                         # One-line summary: Symbol | Price | RSI | MACD | BB% | VWAP% | Score
                         logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{total:.0f}/100")
+                        # OBS-002 PART 3 NaN hardening: if any component
+                        # produced a NaN (the historical "cannot convert
+                        # float NaN to integer" failure), do NOT raise.
+                        # Convert to a SKIPPED_INVALID_DATA path with a
+                        # truthful primary_reason. This is the minimum
+                        # hardening: a single NaN-guard that preserves
+                        # OBS-001 coverage for every analyzed symbol.
+                        nan_reason = None
+                        for _n, _v in (
+                            ("rsi", rsi), ("sma_fast", sma_fast),
+                            ("sma_slow", sma_slow),
+                            ("macd", macd), ("bb_pos", bb_pos),
+                            ("total", total),
+                        ):
+                            try:
+                                if pd.isna(_v):
+                                    nan_reason = (
+                                        f"NaN in fallback score compute "
+                                        f"({_n} is NaN)"
+                                    )
+                                    break
+                            except (TypeError, ValueError):
+                                continue
+                        if nan_reason is not None:
+                            try:
+                                self._persist_skipped_terminal_decision(
+                                    symbol,
+                                    cycle_id=cycle_id,
+                                    cycle_start_iso=cycle_start_iso,
+                                    outcome="SKIPPED_INVALID_DATA",
+                                    primary_reason=nan_reason,
+                                    analysis={"price": price, "rsi": rsi},
+                                    baseline_diagnostics=obs_001_baseline_diagnostics,
+                                )
+                            except Exception as e:
+                                logging.debug(
+                                    f"OBS-002 NaN persist failed for {symbol}: {e}"
+                                )
+                            no_trade_reasons['no_data'] += 1
+                            continue
                         self.db.save_analysis_result(symbol, {
                             'price': price, 'total_score': int(total), 'signal': 'HOLD',
                             'rsi': rsi, 'rsi_score': rsi_score, 'sma_score': sma_score,
@@ -5793,6 +5850,43 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             'buy_criteria': buy_criteria,
                             'passes_all_buy_criteria': passes_all,
                         })
+                        # OBS-002: this fallback path produces a valid
+                        # HOLD analysis; persist a SKIPPED_INVALID_DATA
+                        # decision_history row (score_invalid_data=True)
+                        # to keep analyzed_count == dh_count for this
+                        # symbol. We do NOT claim HOLD_INELIGIBLE here
+                        # because no strategy-gate evaluation actually
+                        # ran — analyze_*() returned None.
+                        try:
+                            self._persist_skipped_terminal_decision(
+                                symbol,
+                                cycle_id=cycle_id,
+                                cycle_start_iso=cycle_start_iso,
+                                outcome="SKIPPED_INVALID_DATA",
+                                primary_reason=(
+                                    "analyze_symbol returned None "
+                                    "(fallback HOLD score saved but "
+                                    "no real strategy-gate evaluation)"
+                                ),
+                                analysis={
+                                    "price": price,
+                                    "rsi": rsi,
+                                    "sma_fast": sma_fast,
+                                    "sma_slow": sma_slow,
+                                    "rsi_score": rsi_score,
+                                    "sma_score": sma_score,
+                                    "macd_score": macd_score,
+                                    "bb_score": bb_score,
+                                    "regime_score": regime_score,
+                                    "catalyst_score": catalyst_score,
+                                    "total_score": int(total),
+                                },
+                                baseline_diagnostics=obs_001_baseline_diagnostics,
+                            )
+                        except Exception as e:
+                            logging.debug(
+                                f"OBS-002 fallback persist failed for {symbol}: {e}"
+                            )
                         no_trade_reasons['no_signal'] += 1
                     continue
 
@@ -5811,10 +5905,59 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         vwap_dist = analysis.get('vwap_distance', 0)
                         if pd.isna(vwap_dist): vwap_dist = 0
                         logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | ⚠️ WEAK")
+                        # OBS-002: signal passed non-score gates but
+                        # signal_strength is WEAK, so the symbol is NOT
+                        # actionable for execution. Persist a
+                        # HOLD_INELIGIBLE row. If a filter downgrade
+                        # (liquidity/sector) is present, attach it to
+                        # primary_reason for observability.
+                        weak_reason = "weak signal strength (WEAK)"
+                        if analysis.get("liquidity_warning"):
+                            weak_reason += (
+                                f"; liquidity_filter: "
+                                f"{analysis['liquidity_warning']}"
+                            )
+                        elif analysis.get("sector_warning"):
+                            weak_reason += (
+                                f"; sector_filter: {analysis['sector_warning']}"
+                            )
+                        try:
+                            self._persist_skipped_terminal_decision(
+                                symbol,
+                                cycle_id=cycle_id,
+                                cycle_start_iso=cycle_start_iso,
+                                outcome="HOLD_INELIGIBLE",
+                                primary_reason=weak_reason,
+                                analysis=analysis,
+                                baseline_diagnostics=obs_001_baseline_diagnostics,
+                            )
+                        except Exception as e:
+                            logging.debug(
+                                f"OBS-002 WEAK persist failed for {symbol}: {e}"
+                            )
                         continue
                     elif analysis['signal_strength'] == "CONFLICTED":
                         no_trade_reasons['conflicted_signal'] += 1
                         print(f"   ⏭️  {symbol}: ⚠️  AI conflicts with technical {analysis['signal']} signal")
+                        # OBS-002: signal passed non-score gates but
+                        # AI conflicts with technical — not actionable.
+                        try:
+                            self._persist_skipped_terminal_decision(
+                                symbol,
+                                cycle_id=cycle_id,
+                                cycle_start_iso=cycle_start_iso,
+                                outcome="HOLD_INELIGIBLE",
+                                primary_reason=(
+                                    "AI conflicts with technical signal "
+                                    "(CONFLICTED); not actionable"
+                                ),
+                                analysis=analysis,
+                                baseline_diagnostics=obs_001_baseline_diagnostics,
+                            )
+                        except Exception as e:
+                            logging.debug(
+                                f"OBS-002 CONFLICTED persist failed for {symbol}: {e}"
+                            )
                         continue
 
                     # Enhanced logging with AI insights
@@ -6035,6 +6178,33 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             except Exception as e:
                 logging.error(f"❌ Error with {symbol}: {e}")
                 self.errors_count += 1
+                # OBS-002 PART 3 NaN hardening: even when the analysis
+                # body throws (e.g. NaN-to-int in any indicator calc),
+                # the symbol was already counted in analyzed_count. We
+                # MUST persist one SKIPPED_INVALID_DATA row so the
+                # invariant `analyzed_count == decision_history rows`
+                # holds for normally completed cycles. Without this
+                # call, the symbol would silently disappear from OBS
+                # observability — exactly the gap the diagnostic
+                # identified.
+                try:
+                    self._persist_skipped_terminal_decision(
+                        symbol,
+                        cycle_id=cycle_id,
+                        cycle_start_iso=cycle_start_iso,
+                        outcome="SKIPPED_INVALID_DATA",
+                        primary_reason=(
+                            f"analysis-body exception: {type(e).__name__}: "
+                            f"{str(e)[:120]}"
+                        ),
+                        analysis={"signal": "HOLD", "signal_strength": "WEAK"},
+                        baseline_diagnostics=obs_001_baseline_diagnostics,
+                    )
+                except Exception as persist_err:
+                    logging.debug(
+                        f"OBS-002 outer-except persist failed for "
+                        f"{symbol}: {persist_err}"
+                    )
 
         # ─────────────────────────────────────────────────────────────────
         # SCORE-002: Execute ranked BUY candidates
@@ -6508,6 +6678,212 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # Stash on entry so the cycle_funnel writer at cycle end can
         # derive order counters from the canonical outcome.
         entry["decision_snapshot"] = snapshot
+
+    # ── OBS-002 ─────────────────────────────────────────────────────────
+    # OBS-002 Terminal Decision Coverage: every symbol counted in
+    # cycle_funnel.analyzed_count must receive exactly ONE terminal
+    # decision_history row during a normally completed cycle.
+    #
+    # The gap paths previously bypassed persistence (no-data, NaN
+    # exception, weak/conflicted signal, outer per-symbol exception).
+    # This helper builds a minimal but truthful snapshot for those
+    # paths and persists it via the SAME finalize path used by the
+    # normal flow. NO new outcome enum values are introduced:
+    #   - SKIPPED_INVALID_DATA   (no-data, NaN, outer exception)
+    #   - HOLD_INELIGIBLE        (weak/conflicted signal)
+    # Schema version remains 1; this is an OBSERVABILITY-only change.
+    #
+    # Contract:
+    #   * analyze_*() either returned None OR the bot hit a non-actionable
+    #     signal path that historically `continue`d without persisting.
+    #   * The helper is invoked ONCE per (cycle_id, symbol). The
+    #     UNIQUE(cycle_id, symbol) constraint is the safety net against
+    #     duplicate calls.
+    #   * Does NOT modify trading behavior. Does NOT change scoring
+    #     math, eligibility, ranking, sizing, risk, or brokerage.
+    def _persist_skipped_terminal_decision(
+        self,
+        symbol: str,
+        *,
+        cycle_id: str,
+        cycle_start_iso: str,
+        outcome: str,
+        primary_reason: str,
+        analysis: Optional[Dict] = None,
+        ranking_state: Optional[Dict] = None,
+        selection_state: Optional[Dict] = None,
+        execution_state: Optional[Dict] = None,
+        order_state: Optional[Dict] = None,
+        baseline_diagnostics: Optional[Dict] = None,
+    ) -> Optional[Dict]:
+        """Persist one OBS-001 decision_history row for a skipped/never-
+        actioned symbol path. Reuses _build_decision_snapshot and the
+        same finalize path as the normal flow; the snapshot is
+        constructed so that strategy_eligible=False, score_invalid_data=True,
+        no ranking, no selection, no execution checks, no order.
+
+        Caller MUST pass cycle_id, cycle_start_iso, outcome (one of the
+        canonical OBS-001 outcomes), and a primary_reason string.
+        Other kwargs are optional and default to "not applicable"
+        placeholders that match the snapshot schema.
+
+        Returns the built snapshot dict on success, or None on guard
+        rejection (missing cycle_id, bogus outcome, db unavailable).
+        """
+        if not self.db.is_available():
+            return None
+        if not cycle_id:
+            # Defensive: never persist without a cycle_id — that would
+            # violate the (cycle_id, symbol) UNIQUE invariant.
+            logging.debug(f"OBS-002 skip persist for {symbol}: missing cycle_id")
+            return None
+        if outcome not in OBS_001_OUTCOMES_CURRENTLY_REACHABLE:
+            logging.debug(
+                f"OBS-002 skip persist for {symbol}/{cycle_id}: "
+                f"outcome={outcome!r} not in canonical enum"
+            )
+            return None
+
+        # Build a minimal analysis dict that drives _build_decision_snapshot
+        # to produce a truthful SKIPPED/HOLD snapshot. Do NOT fabricate
+        # unavailable fields; preserve whatever the caller supplied.
+        # score_invalid_data is only True for SKIPPED_INVALID_DATA paths;
+        # HOLD_INELIGIBLE paths (WEAK/CONFLICTED) have a real score and
+        # so must not claim invalid data.
+        minimal_analysis: Dict = {
+            "symbol": symbol,
+            "signal": (analysis or {}).get("signal", "HOLD"),
+            "signal_strength": (analysis or {}).get("signal_strength", "WEAK"),
+            "score_invalid_data": (outcome == "SKIPPED_INVALID_DATA"),
+        }
+        if analysis:
+            # Forward only fields the snapshot builder actually reads; this
+            # keeps the snapshot truthful (real rsi/sma values if known,
+            # None otherwise) without inventing facts. NaN/inf values are
+            # normalized to None because JSON does not support them and
+            # sqlite stores them as TEXT which would deserialize as NaN
+            # — a non-canonical OBS-001 representation.
+            import math as _math
+            for k in (
+                "rsi", "rsi_score", "sma_score", "macd_score", "bb_score",
+                "catalyst_score", "regime_score", "volatility_tier",
+                "volatility_multiplier_rsi", "volatility_multiplier_sma",
+                "insider_score", "blended_signed", "total_score",
+                "macd_histogram", "volume_ratio", "rsi_buy_threshold",
+                "sma_fast", "sma_slow",
+            ):
+                if k in analysis:
+                    _v = analysis[k]
+                    try:
+                        if _v is not None and (
+                            isinstance(_v, float) and (
+                                _math.isnan(_v) or _math.isinf(_v)
+                            )
+                        ):
+                            minimal_analysis[k] = None
+                        else:
+                            minimal_analysis[k] = _v
+                    except TypeError:
+                        minimal_analysis[k] = _v
+        # For SKIPPED_INVALID_DATA paths, total_score is NOT a real
+        # computed value; force None unless the caller already supplied one.
+        if outcome == "SKIPPED_INVALID_DATA" and (
+            analysis is None or "total_score" not in analysis
+        ):
+            minimal_analysis["total_score"] = None
+
+        # All skipped/never-actioned paths share the same "not applicable"
+        # placeholders for ranking, selection, execution, and order.
+        minimal_ranking = {
+            "applicable": False,
+            "ranked_candidate": False,
+            "eligible_candidate_count": None,
+            "candidate_rank": None,
+            "tiebreak_basis": "symbol ASC",
+            "total_score": minimal_analysis.get("total_score"),
+            "eligible_count_at_l3": None,
+        }
+        if ranking_state:
+            minimal_ranking.update(ranking_state)
+        minimal_selection = {
+            "attempted": False,
+            "selection_attempted_at": None,
+            "slots_available_at_attempt": 0,
+        }
+        if selection_state:
+            minimal_selection.update(selection_state)
+        minimal_execution = {
+            "current_state_at_attempt": {},
+            "checks": [],
+            "first_blocking_check": None,
+            "first_blocking_reason": None,
+            "evaluated_in_order": list(OBS_001_EXECUTION_CHECK_ORDER),
+        }
+        if execution_state:
+            minimal_execution.update(execution_state)
+        minimal_order = {
+            "submitted": False,
+            "alpaca_order_id": None,
+            "status_known": None,
+            "submitted_at": None,
+            "no_order_reason": None,
+            "fill_confirmed": False,
+            "fill_confirmation_method": None,
+            "fill_price": None,
+            "fill_quantity": None,
+            "fill_timestamp": None,
+            "slot_consumed": False,
+            "slot_consumed_semantics_version": OBS_001_SLOT_SEMANTICS_VERSION,
+        }
+        if order_state:
+            minimal_order.update(order_state)
+
+        snapshot = self._build_decision_snapshot(
+            symbol=symbol,
+            analysis=minimal_analysis,
+            cycle_id=cycle_id,
+            ranking_state=minimal_ranking,
+            selection_state=minimal_selection,
+            execution_state=minimal_execution,
+            order_state=minimal_order,
+            baseline_diagnostics=baseline_diagnostics,
+        )
+        # Override the outcome and primary_reason explicitly: the snapshot
+        # builder's default logic derives outcomes from execution_state /
+        # order_state; for skipped paths we know the truth directly.
+        snapshot["decision"]["outcome"] = outcome
+        snapshot["decision"]["primary_reason"] = primary_reason
+
+        # Upsert into analyzed_stocks (latest known state). Reuses the
+        # existing save_analysis_result; this preserves the upsert
+        # behavior of the rest of the bot (latest row per symbol).
+        try:
+            minimal_analysis["decision_snapshot"] = snapshot
+            minimal_analysis["decision_schema_version"] = OBS_001_SCHEMA_VERSION
+            self.db.save_analysis_result(symbol, minimal_analysis)
+        except Exception as e:
+            logging.debug(
+                f"OBS-002 upsert analyzed_stocks failed for {symbol}: {e}"
+            )
+
+        # Insert EXACTLY ONE finalized decision_history row. UNIQUE
+        # (cycle_id, symbol) is the safety net against duplicate calls.
+        try:
+            self.db.finalize_decision_history(
+                cycle_id=cycle_id,
+                symbol=symbol,
+                cycle_start=cycle_start_iso,
+                session_id=self.session_id,
+                decision_schema_version=OBS_001_SCHEMA_VERSION,
+                decision_snapshot=snapshot,
+            )
+        except Exception as e:
+            logging.debug(
+                f"OBS-002 decision_history insert failed for "
+                f"{cycle_id}/{symbol}: {e}"
+            )
+
+        return snapshot
 
 
     def show_database_status(self):

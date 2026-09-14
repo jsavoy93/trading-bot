@@ -2232,6 +2232,131 @@ to a later phase.
   `evaluated_in_order`).
 - Phase B (this slice): Latest Cycle funnel + Top Candidates.
 
+---
+
+## OBS-002 — Terminal Decision Coverage
+
+**Target invariant for a normally completed cycle:**
+
+```
+cycle_funnel.analyzed_count
+==
+COUNT(DISTINCT decision_history.symbol WHERE cycle_id = current_cycle)
+```
+
+Every symbol counted in `cycle_funnel.analyzed_count` MUST receive
+exactly ONE terminal `decision_history` row during a normally
+completed cycle. The invariant makes the dashboard's funnel
+denominator (`analyzed_count`) match the dashboard's per-cycle
+source-of-truth (`decision_history`).
+
+### Gap paths covered by `_persist_skipped_terminal_decision`
+
+| # | Code path | Outcome | Reason captured in `decision.primary_reason` |
+|---|---|---|---|
+| G1 | `if not analysis:` no-market-data sub-case | `SKIPPED_INVALID_DATA` | `"no market data (needs N bars)"` |
+| G2 | `if not analysis:` fallback HOLD compute (analyze returned None) | `SKIPPED_INVALID_DATA` | `"analyze_symbol returned None (fallback HOLD score saved but no real strategy-gate evaluation)"` |
+| G3 | NaN in fallback score compute (pre-checked before `int(total)`) | `SKIPPED_INVALID_DATA` | `"NaN in fallback score compute (X is NaN)"` |
+| G4 | BUY/SELL signal with `signal_strength == "WEAK"` | `HOLD_INELIGIBLE` | `"weak signal strength (WEAK); [liquidity_filter|sector_filter: ...]"` |
+| G5 | BUY/SELL signal with `signal_strength == "CONFLICTED"` | `HOLD_INELIGIBLE` | `"AI conflicts with technical signal (CONFLICTED); not actionable"` |
+| G6 | Outer per-symbol `except Exception` (incl. NaN-to-int) | `SKIPPED_INVALID_DATA` | `"analysis-body exception: TypeName: msg"` |
+
+### Semantic decisions
+
+- **No new outcome enum values.** All six paths reuse existing
+  canonical outcomes. `OBS_001_SCHEMA_VERSION` remains 1.
+- **G4/G5 reuse `HOLD_INELIGIBLE`** (not a new outcome) — they
+  represent "strategy passed but signal strength made the symbol
+  unactionable". The snapshot truthfully records `signal=BUY/SELL`
+  (gates did pass) and `outcome=HOLD_INELIGIBLE` (bot did not act).
+- **G1/G2/G3/G6 reuse `SKIPPED_INVALID_DATA`** — these are
+  "no valid analysis produced" failures. NaN inputs in the analysis
+  dict are normalized to `None` so the snapshot round-trips through
+  JSON without NaN corruption.
+
+### Snapshot truthfulness contract
+
+For every skipped path, the snapshot explicitly states:
+
+| Block | Truth |
+|---|---|
+| `strategy_eligibility.strategy_eligible` | `False` (bot did not execute) |
+| `strategy_eligibility.gates` | `[]` (no strategy gates were evaluated) |
+| `scoring.total_score` | `None` for SKIPPED_INVALID_DATA; preserved for HOLD_INELIGIBLE |
+| `scoring.score_invalid_data` | `True` for SKIPPED_INVALID_DATA; `False` for HOLD_INELIGIBLE |
+| `ranking.applicable` | `False` |
+| `ranking.candidate_rank` | `None` |
+| `selection.attempted` | `False` |
+| `execution_checks.checks` | `[]` (no check ran) |
+| `execution_checks.evaluated_in_order` | full documented order (Phase A convention) |
+| `order.submitted` | `False` |
+| `order.slot_consumed` | `False` |
+
+### Persist contract
+
+- Helper is called ONCE per (cycle_id, symbol). `UNIQUE(cycle_id,
+  symbol)` is the safety net against duplicate calls (Phase A
+  contract).
+- `decision_history` is INSERT-only. The helper reuses
+  `db.finalize_decision_history` from Phase A.
+- `analyzed_stocks.decision_snapshot` is upserted (latest per-
+  symbol state), reusing `db.save_analysis_result` from Phase A.
+- No schema migration. `decision_history` and `analyzed_stocks`
+  columns are unchanged.
+
+### What this invariant does NOT cover
+
+- Symbols skipped for `has_pending_orders` (smart_bot.py:5593) are
+  NOT counted in `analyzed_count`. They are correctly excluded from
+  the invariant.
+- The invariant applies to **normally completed cycles**. If the
+  bot crashes mid-cycle, the cycle_funnel row may be missing
+  entirely; the invariant is undefined for that case.
+- The invariant is a cycle-level property. Aggregations across
+  many cycles are valid only when every cycle in the window is
+  complete.
+
+### NaN hardening (PART 3)
+
+The recurring `❌ Error with SYM: cannot convert float NaN to
+integer` exception (previously caught by the per-symbol outer
+`except Exception as e:` at smart_bot.py:6035) now has TWO
+guarantees:
+
+1. The fallback score compute path (smart_bot.py inside `if not
+   analysis:`) checks for NaN components BEFORE calling
+   `int(total)`. If any NaN is detected, the symbol is persisted
+   as `SKIPPED_INVALID_DATA` with reason `"NaN in fallback score
+   compute"`, and `int(total)` is never called.
+2. The outer per-symbol `except Exception as e:` block now also
+   persists a `SKIPPED_INVALID_DATA` row before re-raising the
+   error counter increment, so ANY exception (not just NaN) during
+   the analysis body cannot bypass OBS-001 persistence.
+
+This is the minimum necessary change to prevent the exception from
+bypassing OBS persistence; it does NOT touch the underlying
+indicator-calc robustness (out of scope).
+
+### Test coverage
+
+`tests/test_obs_002_terminal_decision_coverage.py` (20 tests):
+
+- `TestOBS002Contract` — schema version unchanged, enum unchanged.
+- `TestSkippedHelperSnapshots` — each of G1/G4/G5/G6 builds the
+  correct snapshot; bogus outcome and missing cycle_id are
+  rejected.
+- `TestSkippedHelperPersistence` — `finalize_decision_history` and
+  `save_analysis_result` are called with the right schema version;
+  UNIQUE-violation safety net swallows IntegrityError without
+  propagating.
+- `TestSkippedHelperSnapshotFields` — `total_score` not fabricated
+  for invalid data, `candidate_rank` is None, `checks` is empty,
+  `fill_confirmed=False`, WEAK preserves real `total_score`.
+- `TestNaNHardening` — NaN inputs don't raise; NaN is normalized
+  to None in JSON; rsi NaN doesn't propagate into gates.
+- `TestTerminalCoverageInvariant` — mixed gap paths for the same
+  cycle_id each produce one finalize call.
+
 ### Tab navigation
 
 - `View analysis →` button on the Latest Cycle card switches to
