@@ -2232,6 +2232,215 @@ to a later phase.
   `evaluated_in_order`).
 - Phase B (this slice): Latest Cycle funnel + Top Candidates.
 
+---
+
+## OBS-002 — Terminal Decision Coverage
+
+**Target invariant for a normally completed cycle:**
+
+```
+cycle_funnel.analyzed_count
+==
+COUNT(DISTINCT decision_history.symbol WHERE cycle_id = current_cycle)
+```
+
+Every symbol counted in `cycle_funnel.analyzed_count` MUST receive
+exactly ONE terminal `decision_history` row during a normally
+completed cycle. The invariant makes the dashboard's funnel
+denominator (`analyzed_count`) match the dashboard's per-cycle
+source-of-truth (`decision_history`).
+
+### Gap paths covered by `_persist_skipped_terminal_decision`
+
+| # | Code path | Outcome | Reason captured in `decision.primary_reason` |
+|---|---|---|---|
+| G1 | `if not analysis:` no-market-data sub-case | `SKIPPED_INVALID_DATA` | `"no market data (needs N bars)"` |
+| G2 | `if not analysis:` fallback HOLD compute (analyze returned None) | `SKIPPED_INVALID_DATA` | `"analyze_symbol returned None (fallback HOLD score saved but no real strategy-gate evaluation)"` |
+| G3 | NaN in fallback score compute (pre-checked before `int(total)`) | `SKIPPED_INVALID_DATA` | `"NaN in fallback score compute (X is NaN)"` |
+| G4 | BUY/SELL signal with `signal_strength == "WEAK"` | `HOLD_INELIGIBLE` | `"weak signal strength (WEAK); [liquidity_filter|sector_filter: ...]"` |
+| G5 | BUY/SELL signal with `signal_strength == "CONFLICTED"` | `HOLD_INELIGIBLE` | `"AI conflicts with technical signal (CONFLICTED); not actionable"` |
+| G6 | Outer per-symbol `except Exception` (incl. NaN-to-int) | `SKIPPED_INVALID_DATA` | `"analysis-body exception: TypeName: msg"` |
+
+### Semantic decisions
+
+- **No new outcome enum values.** All six paths reuse existing
+  canonical outcomes. `OBS_001_SCHEMA_VERSION` remains 1.
+- **G4/G5 reuse `HOLD_INELIGIBLE`** (not a new outcome) — they
+  represent "strategy passed but signal strength made the symbol
+  unactionable". The snapshot truthfully records `signal=BUY/SELL`
+  (gates did pass) and `outcome=HOLD_INELIGIBLE` (bot did not act).
+- **G1/G2/G3/G6 reuse `SKIPPED_INVALID_DATA`** — these are
+  "no valid analysis produced" failures. NaN inputs in the analysis
+  dict are normalized to `None` so the snapshot round-trips through
+  JSON without NaN corruption.
+
+### Snapshot truthfulness contract
+
+For every skipped path, the snapshot explicitly states:
+
+| Block | Truth |
+|---|---|
+| `strategy_eligibility.strategy_eligible` | `False` (bot did not execute) |
+| `strategy_eligibility.gates` | `[]` (no strategy gates were evaluated) |
+| `scoring.total_score` | `None` for SKIPPED_INVALID_DATA; preserved for HOLD_INELIGIBLE |
+| `scoring.score_invalid_data` | `True` for SKIPPED_INVALID_DATA; `False` for HOLD_INELIGIBLE |
+| `ranking.applicable` | `False` |
+| `ranking.candidate_rank` | `None` |
+| `selection.attempted` | `False` |
+| `execution_checks.checks` | `[]` (no check ran) |
+| `execution_checks.evaluated_in_order` | full documented order (Phase A convention) |
+| `order.submitted` | `False` |
+| `order.slot_consumed` | `False` |
+
+### Persist contract
+
+- **Terminal-path coverage is the OBS-002 responsibility.** The
+  six gap-path call sites (G1–G6) are responsible for ensuring
+  every symbol counted in `cycle_funnel.analyzed_count` ATTEMPTS
+  one terminal `decision_history` write via the helper. The
+  helper builds the snapshot and routes it through Phase A's
+  `db.finalize_decision_history`.
+- **`UNIQUE(cycle_id, symbol)` guarantees at most one persisted
+  row per (cycle_id, symbol).** It is a duplicate-call safety
+  net that swallows `IntegrityError` on the rare race path where
+  a Phase A persist and the OBS-002 helper both attempt to
+  finalize the same (cycle_id, symbol) within one cycle.
+- **Together, for a normal completed cycle with no process
+  interruption, the intended invariant is:**
+
+  ```text
+  cycle_funnel.analyzed_count
+  ==
+  COUNT(DISTINCT decision_history.symbol WHERE cycle_id = current_cycle)
+  ```
+
+  The `UNIQUE` constraint by itself does NOT guarantee
+  completeness; it only guarantees at-most-one row per
+  (cycle_id, symbol) and prevents duplicate writes. The
+  invariant holds because OBS-002's gap-path call sites cover
+  every symbol that reaches the `analyzed_count` counter.
+- `decision_history` is INSERT-only. The helper reuses
+  `db.finalize_decision_history` from Phase A.
+- `analyzed_stocks.decision_snapshot` is upserted (latest per-
+  symbol state), reusing `db.save_analysis_result` from Phase A.
+- No schema migration. `decision_history` and `analyzed_stocks`
+  columns are unchanged.
+
+### NaN metric side effect
+
+OBS-002's NaN hardening (PART 3) changes how NaN / invalid-input
+cases are tallied in the session-end `errors_count` metric:
+
+- NaN / invalid inputs now persist a `SKIPPED_INVALID_DATA` row
+  BEFORE reaching the prior outer error path (the
+  `except Exception as e:` block). Because the persist happens
+  before the exception is raised, the outer handler never fires
+  for the pre-checked NaN path; `errors_count` is therefore not
+  incremented for these NaN cases in PR #85.
+- This is an **observability / metrics side effect only**. The
+  valid finite analysis path, trading decisions, ranking,
+  sizing, risk limits, and order behavior are all unchanged.
+- PR #85 does not modify `errors_count` deliberately to preserve
+  the prior metric shape. Restoring the prior `errors_count`
+  behavior would be a separate, explicitly-approved change.
+- Other categories of exceptions (network blips, indicator
+  calc failures that are not pre-checked NaN, etc.) still flow
+  through the outer `except` and DO increment `errors_count`
+  exactly as in `main`.
+
+### Phase C guidance note
+
+OBS-002 reuses `HOLD_INELIGIBLE` for G4 (WEAK signal strength)
+and G5 (CONFLICTED AI signal) gap paths. Future Phase C
+Analytics aggregations MUST observe the following:
+
+- `HOLD_INELIGIBLE` does NOT necessarily mean "failed strategy
+  gate". It can also mean "gates passed, but post-gate filter
+  (WEAK / CONFLICTED / etc.) rejected execution".
+- G4 (WEAK) and G5 (CONFLICTED) may persist `HOLD_INELIGIBLE`
+  without ordinary gate-failure semantics. Distinguish via:
+  - `decision.primary_reason` (mentions "weak" or "conflicted")
+  - `strategy_eligibility.signal_strength` (WEAK or CONFLICTED)
+  - `strategy_eligibility.gates[*].passed` (likely `true` for
+    WEAK/CONFLICTED)
+- Phase C MUST aggregate gate failures from
+  `strategy_eligibility.gates`, not infer failed gates from
+  `outcome` alone. Two symbols with `outcome=HOLD_INELIGIBLE`
+  can have very different gate states.
+- `SKIPPED_INVALID_DATA` MUST be reported separately from gate
+  failures. SKIPPED rows represent "no valid analysis
+  produced"; they are not gate rejections.
+
+This convention applies to the existing Phase A `elif
+analysis:` HOLD path too, which can produce
+`signal='HOLD'` + `outcome=HOLD_INELIGIBLE` with non-failed
+gates. OBS-002 extends the same convention to the previously-
+unpersisted WEAK/CONFLICTED gap paths.
+
+### What this invariant does NOT cover
+
+- Symbols skipped for `has_pending_orders` (smart_bot.py:5593) are
+  NOT counted in `analyzed_count`. They are correctly excluded from
+  the invariant.
+- The invariant applies to **normally completed cycles**. If the
+  bot crashes mid-cycle, the cycle_funnel row may be missing
+  entirely; the invariant is undefined for that case.
+- The invariant is a cycle-level property. Aggregations across
+  many cycles are valid only when every cycle in the window is
+  complete.
+
+### NaN hardening (PART 3)
+
+The recurring `❌ Error with SYM: cannot convert float NaN to
+integer` exception (previously caught by the per-symbol outer
+`except Exception as e:` at smart_bot.py:6035) now has TWO
+guarantees:
+
+1. The fallback score compute path (smart_bot.py inside `if not
+   analysis:`) checks for NaN components BEFORE calling
+   `int(total)`. If any NaN is detected, the symbol is persisted
+   as `SKIPPED_INVALID_DATA` with reason `"NaN in fallback score
+   compute"`, and `int(total)` is never called.
+2. The outer per-symbol `except Exception as e:` block now also
+   persists a `SKIPPED_INVALID_DATA` row INSIDE the same handler
+   that already logs and swallows the exception. The exception
+   propagation is UNCHANGED relative to main — the existing log +
+   `errors_count += 1` + swallow path completes identically; only
+   one additional INSERT is performed inside the handler before
+   control flows back to the per-symbol for-loop's next iteration.
+   ANY exception (not just NaN) during the analysis body is now
+   recorded as a `SKIPPED_INVALID_DATA` row, so OBS-001 persistence
+   is never bypassed by an unexpected exception.
+
+This is the minimum necessary change to prevent the exception from
+bypassing OBS persistence; it does NOT touch the underlying
+indicator-calc robustness (out of scope).
+
+**Exception propagation relative to `main`: NONE.** PR #85 does
+not change what the outer handler does after the new INSERT —
+the exception remains swallowed exactly as in `main`. No `raise`,
+`raise e`, or `raise from` is added.
+
+### Test coverage
+
+`tests/test_obs_002_terminal_decision_coverage.py` (20 tests):
+
+- `TestOBS002Contract` — schema version unchanged, enum unchanged.
+- `TestSkippedHelperSnapshots` — each of G1/G4/G5/G6 builds the
+  correct snapshot; bogus outcome and missing cycle_id are
+  rejected.
+- `TestSkippedHelperPersistence` — `finalize_decision_history` and
+  `save_analysis_result` are called with the right schema version;
+  UNIQUE-violation safety net swallows IntegrityError without
+  propagating.
+- `TestSkippedHelperSnapshotFields` — `total_score` not fabricated
+  for invalid data, `candidate_rank` is None, `checks` is empty,
+  `fill_confirmed=False`, WEAK preserves real `total_score`.
+- `TestNaNHardening` — NaN inputs don't raise; NaN is normalized
+  to None in JSON; rsi NaN doesn't propagate into gates.
+- `TestTerminalCoverageInvariant` — mixed gap paths for the same
+  cycle_id each produce one finalize call.
+
 ### Tab navigation
 
 - `View analysis →` button on the Latest Cycle card switches to

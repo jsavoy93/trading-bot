@@ -3374,3 +3374,45 @@ explicitly, while Phase B's planned new endpoint is allowed.
 SmartBot not restarted (verified by `ActiveEnterTimestamp`).
 Trading-dashboard.service was restarted ONCE for live verification
 only; approved by Phase B's mandatory dashboard-only deployment.
+
+---
+
+## OBS-002 PR #85 — Documentation-only follow-up (2026-09-14 16:55 UTC)
+
+Final read-only semantic review of PR #85 (`agent/obs-002-terminal-decision-coverage`
+@ `cb75bc4`) approved the PR pending documentation wording fixes.
+This entry records the doc-only follow-up commit (no production
+code, no tests, no merge, no SmartBot restart):
+
+**Files:** 1 (`MENTOR.md` only).
+**Diff size:** small, additive. No `src/`, `tests/`, `dashboard.py`,
+schema, settings, scoring, ranking, execution, or brokerage
+changes.
+
+**Corrections:**
+1. Outer-exception wording: replaced misleading "before re-raising
+   the error counter increment" with "INSIDE the same handler
+   that already logs and swallows the exception ... the exception
+   propagation is UNCHANGED relative to main". Added an explicit
+   "Exception propagation relative to `main`: NONE" note.
+2. Persist contract wording: replaced inaccurate
+   "UNIQUE(cycle_id, symbol) is the safety net against duplicate
+   calls" with the accurate two-part description:
+   - Terminal-path coverage is OBS-002's responsibility.
+   - UNIQUE(cycle_id, symbol) guarantees at most one row per
+     (cycle, symbol) — it does NOT guarantee completeness.
+   - Together they produce the invariant for normal completed
+     cycles.
+3. NaN metric side-effect note: added section explaining that
+   PR #85 changes how NaN inputs are tallied in `errors_count`
+   (no longer incremented for the pre-checked NaN path), with
+   explicit "observability / metrics side effect only" framing.
+4. Phase C guidance note: added section explaining that
+   `HOLD_INELIGIBLE` does NOT necessarily mean "failed strategy
+   gate", how to distinguish WEAK/CONFLICTED via `primary_reason`
+   and `signal_strength`, and that `SKIPPED_INVALID_DATA` must be
+   reported separately.
+
+`git diff --check`: clean (text-only file).
+
+**Status:** Awaiting Josh's final merge approval for PR #85.
