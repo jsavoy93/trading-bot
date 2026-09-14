@@ -1647,10 +1647,9 @@
                 if (cands.length === 0) {
                     // Zero-candidate state \u2014 show count + NEAR MISSES.
                     const analyzed = envelope.analyzed_count;
-                    const eligible = envelope.strategy_eligible_count;
                     const ranked = envelope.ranked_candidate_count;
                     const headline = (ranked !== undefined && ranked === 0)
-                        ? ('0 of ' + (eligible !== undefined ? eligible : '0') + ' strategy eligible')
+                        ? ('0 of ' + (analyzed !== undefined ? analyzed : '0') + ' strategy eligible')
                         : 'No ranked candidates this cycle';
                     zero.innerHTML = '<div class="lc-zero-state">'
                         + '<div class="lc-zero-headline">' + _lc_escapeHtml(headline) + '</div>'
