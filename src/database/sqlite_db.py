@@ -286,6 +286,23 @@ class SQLiteDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+                # PHASE-C13: cycle_start index added for Phase C analytics.
+                # Phase C endpoints (strategy-gates, execution-blockers)
+                # filter decision_history by cycle_start for the cohort
+                # (post_obs002 boundary) and the range (latest / 24h /
+                # today / 7d). Without an index whose leading column is
+                # cycle_start, SQLite falls back to a full table scan +
+                # JSON parse per row. Same try/except pattern as the
+                # two neighboring indexes above so an OperationalError
+                # during bootstrap (e.g. concurrent DDL) cannot break
+                # initialization.
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_decision_history_cycle_start "
+                        "ON decision_history(cycle_start);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS cycle_funnel (
