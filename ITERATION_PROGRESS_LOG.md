@@ -3416,3 +3416,195 @@ changes.
 `git diff --check`: clean (text-only file).
 
 **Status:** Awaiting Josh's final merge approval for PR #85.
+
+## PHASE-C10B-3A — Approve latent assertion fix + complete C10B-3 (2026-09-20 18:42 UTC)
+
+Approved-by-Josh test-only corrections to two pre-existing latent
+assertion bugs found in C10B-3. Production behavior is unchanged.
+
+**C10B-3 STOPPED entry** (above this one) records the discovery of
+the bugs. **This entry** records the approved fix and C10B-3
+completion.
+
+**Files changed (this slice):**
+- `tests/test_dashboard_phase_c_obs_analytics.py` — 2 approved
+  assertion corrections only
+  - L2502: `assert "range" in body` → `assert "valid_ranges" in body`
+  - L2528: `assert "cohort" in body` → `assert "valid_cohorts" in body`
+
+**Files NOT changed:**
+- `dashboard.py` — production endpoint code unchanged
+- `templates/dashboard.html` — unchanged
+- `main.py`, `src/`, `trading_bot.db`, `pytest.ini` — unchanged
+- The 10 successful C10B-3 migrations — NOT reverted (per Josh)
+- The 1 factory self-test reclassification — NOT reverted
+- The 13 observational tests — NOT touched (C10D scope)
+
+**Fix is a typo correction, not a weakening.** Production
+`_phase_c_validate` envelope has always been
+`{"error": ..., "valid_ranges": [...]}` (no `"range"` key). The
+deeper assertion on the very next line was already checking the
+real key (`body.get("valid_ranges") == [...]`); the broken
+membership check above it was a copy-paste typo from the
+cohort/range pair.
+
+**Status:** C10B-3 in progress (awaiting verification run).
+
+**C10B-3A verification (2026-09-20 18:44 UTC):** all checks
+passed.
+
+**Test results:**
+- C10B-3 focused group (13 tests): **13/13 PASSED in 3.04s**
+- Complete deterministic Phase C selection (151 tests):
+  **151/151 PASSED in 4.50s**
+- Zero live-DB canary failures
+- Zero regressions
+
+**Final LIVE_DB_READ inventory: 13 tests, all genuinely
+observational.**
+
+**Branch:** `agent/dashboard-phase-c-obs-analytics`
+**HEAD:** `23fe6ba95d689d2ef2e97dd83f67622c7a32891b`
+**Files changed:** 1 — `tests/test_dashboard_phase_c_obs_analytics.py`
+(test-only typo corrections + fixture wiring). No production
+code touched.
+
+**Two approved assertion corrections:**
+- L2531: `assert "range" in body` → `assert "valid_ranges" in body`
+- L2554: `assert "cohort" in body` → `assert "valid_cohorts" in body`
+
+These are typo corrections, not weaknesses. Production
+`_phase_c_validate` envelope has always returned
+`{"error": ..., "valid_ranges": [...]}` (no `"range"` key) and
+`{"error": ..., "valid_cohorts": [...]}` (no `"cohort"` key).
+The deeper assertions on the next lines already check the
+real keys.
+
+**13 remaining observational C10D node IDs (full list in REPORT.md):**
+- `TestGateAggregationContract::test_no_hold_ineligible_to_failed_gate_inference`
+- `TestCandidateRankSemantics::test_decision_history_invariant`
+- `TestCoverageIndicator::test_post_band_invariant_holds_in_observation_window`
+- `TestExecutionBlockersHonestUniverse::test_per_check_totals_sum_to_with_checks_rows`
+- `TestFunnelAggregation::test_funnel_latest_returns_one_cycle`
+- `TestFunnelAggregation::test_funnel_24h_returns_something`
+- `TestFunnelAggregation::test_funnel_cohort_all_includes_pre_obs002`
+- `TestOutcomeDistribution::test_pct_sums_to_1`
+- `TestPhaseCSharedHelper::test_strategy_gates_response_shape_after_refactor`
+- `TestPhaseCSharedHelper::test_strategy_gates_cohort_all_is_superset_of_post_obs002`
+- `TestPhaseCSharedHelper::test_funnel_cohort_all_superset_of_post_obs002`
+- `TestPhaseCSharedHelper::test_latest_returns_one_or_zero_cycles`
+- `TestPhaseCSharedHelper::test_applied_filter_still_excludes_applied_false`
+
+**SmartBot:** PID 833643 ELAPSED 5-22:19:41 (unchanged, no pause).
+
+**Status:** DONE — PHASE-C10B-3 COMPLETE — READY FOR PHASE-C10D
+
+## PHASE-C10D — Relocate observational tests; separate default collection (2026-09-20 22:04 UTC)
+
+Bounded slice to finish test isolation: separate the 13
+LIVE_DB_READ (observational) tests from the deterministic
+Phase C test file so default pytest collection excludes them.
+
+**Files changed (this slice):**
+- `pytest.ini` — `observational` marker registered;
+  `addopts = -v --tb=short -m "not observational"`
+- `tests/observational/test_phase_c_live_observational.py`
+  (NEW, 350 lines) — 13 relocated tests + minimal live-DB
+  helpers + module-level
+  `pytestmark = pytest.mark.observational`
+- `tests/test_dashboard_phase_c_obs_analytics.py` — 13 tests
+  removed + 3 dead helpers (`shared_client`,
+  `gates_response_today_post`, `_db`) + 1 class
+  (`TestCandidateRankSemantics`) removed; +1 static guard
+  test
+  (`TestPhaseC10AFactorySelfTest::test_no_deterministic_test_uses_live_db_path`)
+  appended
+- `MENTOR.md` — appended "Dashboard Phase C — Test Isolation
+  (PHASE-C10D, 2026-09-20)" section
+
+**Test results:**
+- Deterministic Phase C file (`tests/test_dashboard_phase_c_obs_analytics.py`):
+  **152/152 PASSED in 4.00s** (151 prior tests + 1 new static
+  guard). ZERO live DB access.
+- Default pytest collection: **1514/1527 tests collected
+  (13 deselected)** — observational excluded by default.
+- `pytest -m observational tests/observational/...`:
+  **13 tests collected** — all discoverable.
+- SmartBot PID 833643 ELAPSED 6-01:39:42 (unchanged, no
+  pause/restart).
+- No pytest children after run.
+
+**Risks and known issues:**
+- `TestAnalyticsTabHtml` reconstruction: the bulk-deletion
+  script's walk-back heuristic over-consumed lines during the
+  13-test removal and accidentally removed the class header +
+  4 of its 9 test methods. The 4 missing tests were
+  reconstructed based on dashboard template IDs. The 5
+  surviving tests were relocated from `TestCoverageIndicator`
+  back into `TestAnalyticsTabHtml`.
+- Static guard uses word-boundary regex
+  `(?<![A-Za-z_])_db\(` to avoid false positives on
+  `_phase_c_open_db(` and `_build_phase_c_db(`. Verified
+  working.
+- `live_phase_c_db` fixture remains in deterministic file as
+  documented opt-in escape hatch (no test currently uses it).
+
+**Status:** DONE — PHASE-C10D COMPLETE — READY FOR FINAL PHASE C REVIEW
+
+## PHASE-C10E — Final Phase C Release Review (2026-09-20 23:33 UTC)
+
+READ-ONLY review of the complete Phase C implementation. Did NOT
+modify any production code except for one documentation-only
+trailing-blank fix in `MENTOR.md` (surfaced by
+`git diff --check`).
+
+**Review scope:**
+- A. Worktree / diff review (git status, git diff --check, look
+  for debug code / TODOs / dupes)
+- B. Final semantic review (time ranges, cohorts, funnel, gate
+  analytics, truth contracts, SQL helper, UX)
+- C. Test architecture review (zero live-DB tests in deterministic
+  file, marker registered, default excludes, -m discovers 13)
+- D. Default repo test suite (single run, classify any failures)
+- E. Observational release gate (run the 13 observational tests
+  once)
+
+**Files changed (this slice):**
+- `MENTOR.md` — stripped trailing blank line (one-byte fix,
+  no semantic effect)
+- `ITERATION_PROGRESS_LOG.md` — this continuity entry
+- `/root/.openclaw/audit-archives/trading-bot/2026-09-20_233338_PHASE-C10E-final-phase-c-release-review.md`
+  (audit archive)
+
+**Test results:**
+- Deterministic Phase C file:
+  `152/152 PASSED in 4.35s` (verified post-fix)
+- Default repo test suite:
+  `6 failed, 1508 passed, 13 deselected, 83 warnings in 85.86s`
+  - All 6 failures classified as `PRE_EXISTING_UNRELATED`:
+    1. `test_template_renders_red_dot_when_alpaca_unreachable`
+       — template legend reorganized to multi-level status
+    2. `test_main_py_installs_sigterm_handler` — lock-collision
+       with running SmartBot (PID 833643)
+    3. `test_live_alpxr_snapshot_renders_blocker_row_and_highlight`
+       — live ALPXR fixture-dependent
+    4-6. Three `test_score_*` tests — weekend trading window blocked
+- Observational release gate:
+  `12 passed, 1 skipped in 70.79s`
+  - The skip is `test_per_check_totals_sum_to_with_checks_rows`
+    (no SELL_BLOCKED_DYNAMIC rows in latest window — expected
+    conditional skip)
+- SmartBot PID 833643 ELAPSED 6-03:09:05 (unchanged, no
+  pause/restart)
+- No pytest children after both runs
+
+**Acceptance criteria:** ALL PASS
+- A.1-A.4 worktree review: PASS
+- B.1-B.7 semantic review: PASS (verified from code)
+- C.1-C.4 test architecture: PASS
+- D.1-D.5 default suite: 6 failures, all PRE_EXISTING_UNRELATED
+- E.1-E.3 observational gate: PASS (12/13 + 1 expected skip)
+
+**Recommendation:** Phase C is READY FOR COMMIT/PR.
+
+**Status:** DONE — PHASE-C10E COMPLETE — FINAL PHASE C RELEASE REVIEW PASSED

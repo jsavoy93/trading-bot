@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
@@ -1859,6 +1859,755 @@ def api_analytics_rsi():
         return {"error": str(e)}
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OBS-001 Phase C — OBS Analytics endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Five read-only endpoints backing the redesigned Analytics tab. Every
+# endpoint reads ONLY from persisted columns or persisted JSON fields.
+# No endpoint mutates the database. No endpoint consults live settings
+# or recomputes a decision. No endpoint uses heuristic text parsing
+# of `decision.primary_reason`. No endpoint infers a strategy-gate
+# failure from HOLD_INELIGIBLE alone.
+#
+# Cohort semantics:
+#   - "post_obs002": only rows whose cycle_start >= the OBS-002
+#     deployment boundary (2026-09-14T20:24:55 UTC, the first
+#     SKIPPED_INVALID_DATA cycle).
+#   - "all": every cycle, regardless of boundary. The UI exposes
+#     this only behind a coverage banner.
+#
+# Range semantics:
+#   - "latest":  only the latest single completed cycle (Phase B's
+#     "latest cycle" notion).
+#   - "today":   rows whose cycle_start falls within the server's
+#                 current calendar day (UTC for production).
+#   - "24h":     cycle_start >= now() - 24h
+#   - "7d":      cycle_start >= now() - 7*24h
+#
+# All boundary computation is performed server-side from
+# datetime.now(timezone.utc). The browser only sends the choice
+# enum; it does not compute a timestamp.
+
+OBS_002_DEPLOYMENT_BOUNDARY_UTC = "2026-09-14T20:24:55"
+_VALID_PHASE_C_RANGES = {"latest", "today", "24h", "7d"}
+_VALID_PHASE_C_COHORTS = {"post_obs002", "all"}
+
+# PHASE-C9: shared helper accepts a fully-qualified column name
+# ("alias.column" or "column") so a single helper can serve all
+# five Phase C endpoints regardless of whether they alias the
+# source table (`dh` for decision_history, `cf` for cycle_funnel)
+# or not. Aliases must come from this internal allowlist — never
+# from request data — and are interpolated as-is into the SQL
+# fragment. User-supplied values stay bound via `?` parameters.
+_PHASE_C_ALIAS_ALLOWLIST = frozenset({"", "dh", "cf"})
+
+
+def _phase_c_qualify_column(column: str) -> str:
+    """Validate and return a fully-qualified column name.
+
+    Accepts either "column" or "alias.column" where alias is one
+    of the internal allowlist members. This is the ONLY function
+    that interpolates an alias into a SQL fragment; user input
+    never reaches it. Column names are also restricted to a
+    small known set; this prevents accidental injection if a
+    future caller mistakenly passes a request-derived string.
+    """
+    # Allowlist of column names Phase C endpoints may filter on.
+    # Kept narrow on purpose: extending it requires reviewing the
+    # call sites and the test surface.
+    allowed_columns = {"cycle_start"}
+    if "." in column:
+        alias, _, col = column.partition(".")
+        if alias not in _PHASE_C_ALIAS_ALLOWLIST:
+            raise ValueError(f"unknown Phase C alias '{alias}'")
+        if col not in allowed_columns:
+            raise ValueError(f"unknown Phase C column '{col}'")
+        return column
+    if column not in allowed_columns:
+        raise ValueError(f"unknown Phase C column '{column}'")
+    return column
+
+
+def _phase_c_range_clause(range_name: str, column: str = "cycle_start"):
+    """Return (where_clause, params) for a Phase C range filter.
+
+    The clause is intentionally simple and deterministic. SQLite
+    handles ISO-8601 UTC lexicographic comparison correctly because
+    every persisted timestamp is a `+00:00` suffix ISO string.
+
+    The `column` argument may be either `"cycle_start"` or a
+    fully-qualified `"alias.cycle_start"` so a single helper
+    serves endpoints that alias the source table and those that
+    don't. The alias is validated against an internal allowlist
+    in `_phase_c_qualify_column`.
+    """
+    qualified = _phase_c_qualify_column(column)
+    if range_name == "latest":
+        # Only the row with the largest cycle_end that is non-null.
+        # The subquery's `cycle_start` is unqualified because
+        # cycle_funnel is always the inner table here.
+        return (
+            f"({qualified} = (SELECT cycle_start FROM cycle_funnel "
+            f"WHERE cycle_end IS NOT NULL ORDER BY cycle_end DESC LIMIT 1))",
+            (),
+        )
+    if range_name == "today":
+        # cycle_start is stored as ISO-8601 UTC. Date prefix
+        # lexicographic comparison yields the UTC calendar day.
+        from datetime import datetime as _dt
+        today_prefix = _dt.now(timezone.utc).strftime("%Y-%m-%d")
+        return (f"({qualified} >= ? AND {qualified} < ?)", (f"{today_prefix}T00:00:00+00:00", f"{today_prefix}T23:59:59.999999+00:00"))
+    if range_name == "24h":
+        from datetime import datetime as _dt, timedelta as _td
+        cutoff = (_dt.now(timezone.utc) - _td(hours=24)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        return (f"({qualified} >= ?)", (cutoff,))
+    if range_name == "7d":
+        from datetime import datetime as _dt, timedelta as _td
+        cutoff = (_dt.now(timezone.utc) - _td(days=7)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        return (f"({qualified} >= ?)", (cutoff,))
+    # Defensive: the FastAPI dependency below enforces the enum.
+    raise ValueError(f"invalid Phase C range: {range_name}")
+
+
+def _phase_c_cohort_clause(cohort: str, column: str = "cycle_start"):
+    """Return (where_clause, params) for a Phase C cohort filter.
+
+    Same alias handling as `_phase_c_range_clause`.
+    """
+    qualified = _phase_c_qualify_column(column)
+    if cohort == "post_obs002":
+        return (f"({qualified} >= ?)", (OBS_002_DEPLOYMENT_BOUNDARY_UTC,))
+    if cohort == "all":
+        return ("(1=1)", ())
+    raise ValueError(f"invalid Phase C cohort: {cohort}")
+
+
+def _phase_c_window_predicates(range_name: str, cohort: str, column: str):
+    """PHASE-C9: bundle the cohort + range filter fragments.
+
+    Each Phase C endpoint that filters by range + cohort repeats
+    the same three-line pattern:
+
+        cohort_sql, cohort_params = _phase_c_cohort_clause(cohort, column)
+        range_sql, range_params = _phase_c_range_clause(range_name, column)
+        params = cohort_params + range_params
+
+    This helper consolidates the helper-call + param-concat step.
+    Endpoint-specific WHERE composition (joins, additional filters,
+    aggregation, ordering) stays in the caller. No new query
+    builder is introduced.
+
+    Returns a tuple of:
+        cohort_clause_sql: SQL fragment for the cohort predicate
+        range_clause_sql:  SQL fragment for the range predicate
+        combined_params:   bound parameters in cohort-then-range order
+
+    The caller composes the WHERE clause from the two fragments,
+    e.g.:
+
+        cohort_sql, range_sql, params = _phase_c_window_predicates(
+            range_name, cohort, "dh.cycle_start"
+        )
+        sql = (
+            "SELECT ... FROM decision_history dh "
+            f"WHERE {cohort_sql} AND {range_sql} ..."
+        )
+        cur.execute(sql, params)
+
+    Alias handling for `column` flows through `_phase_c_qualify_column`
+    (allowlist: "", "dh", "cf"). Aliases come only from internal
+    call sites, never from request data. User-supplied values
+    remain bound via `?` parameters.
+    """
+    cohort_clause_sql, cohort_params = _phase_c_cohort_clause(cohort, column)
+    range_clause_sql, range_params = _phase_c_range_clause(range_name, column)
+    return cohort_clause_sql, range_clause_sql, cohort_params + range_params
+
+
+def _phase_c_open_db():
+    """Open trading_bot.db as a read-only sqlite3 connection."""
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _P
+    db_path = _P(__file__).parent / "trading_bot.db"
+    if not db_path.exists():
+        return None
+    conn = _sqlite3.connect(str(db_path))
+    conn.row_factory = _sqlite3.Row
+    return conn
+
+
+def _phase_c_validate(range_name: str, cohort: str):
+    """Validate Phase C query params. Returns error envelope or None."""
+    if range_name not in _VALID_PHASE_C_RANGES:
+        return {"error": f"invalid range '{range_name}'; must be one of {sorted(_VALID_PHASE_C_RANGES)}",
+                "valid_ranges": sorted(_VALID_PHASE_C_RANGES)}
+    if cohort not in _VALID_PHASE_C_COHORTS:
+        return {"error": f"invalid cohort '{cohort}'; must be one of {sorted(_VALID_PHASE_C_COHORTS)}",
+                "valid_cohorts": sorted(_VALID_PHASE_C_COHORTS)}
+    return None
+
+
+@app.get("/api/phase-c/funnel")
+def api_phase_c_funnel(range_name: str = Query("7d", alias="range"), cohort: str = "post_obs002"):
+    """OBS-001 Phase C: aggregate cycle_funnel counters for a window.
+
+    Returns the canonical counters summed across the cohort. Counts
+    come from `cycle_funnel` only — never from `decision_history`,
+    because `decision_history` has multiple rows per cycle and would
+    double-count.
+
+    Forward path:
+      analyzed_count -> strategy_eligible_count -> ranked_candidate_count
+      -> execution_attempt_count -> order_submitted_count.
+
+    Off-path (NEVER shown flowing into submission):
+      execution_blocked_count (off-path)
+      order_failed_count     (off-path)
+      not_attempted_count    (off-path; reason preserved)
+    """
+    err = _phase_c_validate(range_name, cohort)
+    if err: return err
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name, "cohort": cohort}
+
+    try:
+        cur = conn.cursor()
+        # PHASE-C9: use the bundle helper. The column is unqualified
+        # ("cycle_start") because cycle_funnel is the only source here.
+        cohort_sql, range_sql, params = _phase_c_window_predicates(
+            range_name, cohort, "cycle_start"
+        )
+        sql = (
+            "SELECT "
+            "  COUNT(*) AS cycles, "
+            "  COALESCE(SUM(analyzed_count), 0) AS analyzed_count, "
+            "  COALESCE(SUM(strategy_eligible_count), 0) AS strategy_eligible_count, "
+            "  COALESCE(SUM(ranked_candidate_count), 0) AS ranked_candidate_count, "
+            "  COALESCE(SUM(execution_attempt_count), 0) AS execution_attempt_count, "
+            "  COALESCE(SUM(execution_blocked_count), 0) AS execution_blocked_count, "
+            "  COALESCE(SUM(order_submission_attempt_count), 0) AS order_submission_attempt_count, "
+            "  COALESCE(SUM(order_submitted_count), 0) AS order_submitted_count, "
+            "  COALESCE(SUM(order_failed_count), 0) AS order_failed_count, "
+            "  COALESCE(SUM(not_attempted_count), 0) AS not_attempted_count "
+            "FROM cycle_funnel "
+            f"WHERE {cohort_sql} AND {range_sql}"
+        )
+        row = cur.execute(sql, params).fetchone()
+
+        # Largest dropoff for the headline callout. Compare forward
+        # path stages pairwise; the largest delta wins.
+        forward = [
+            ("Analyzed", row["analyzed_count"]),
+            ("Strategy Eligible", row["strategy_eligible_count"]),
+            ("Ranked Candidates", row["ranked_candidate_count"]),
+            ("Execution Attempted", row["execution_attempt_count"]),
+            ("Orders Submitted", row["order_submitted_count"]),
+        ]
+        largest_dropoff = None
+        for i in range(len(forward) - 1):
+            delta = forward[i][1] - forward[i + 1][1]
+            if delta <= 0:
+                continue
+            if largest_dropoff is None or delta > largest_dropoff["delta"]:
+                largest_dropoff = {
+                    "from_stage": forward[i][0],
+                    "to_stage": forward[i + 1][0],
+                    "delta": int(delta),
+                }
+
+        return {
+            "range": range_name,
+            "cohort": cohort,
+            "cycles": int(row["cycles"]),
+            "forward_path": {
+                "analyzed_count": int(row["analyzed_count"]),
+                "strategy_eligible_count": int(row["strategy_eligible_count"]),
+                "ranked_candidate_count": int(row["ranked_candidate_count"]),
+                "execution_attempt_count": int(row["execution_attempt_count"]),
+                "orders_submitted_count": int(row["order_submitted_count"]),
+            },
+            "off_path": {
+                "execution_blocked_count": int(row["execution_blocked_count"]),
+                "orders_failed_count": int(row["order_failed_count"]),
+                "not_attempted_count": int(row["not_attempted_count"]),
+            },
+            "largest_dropoff": largest_dropoff,
+        }
+    except Exception as e:
+        logger.error(f"api_phase_c_funnel failed: {e}")
+        return {"error": str(e), "range": range_name, "cohort": cohort}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/phase-c/strategy-gates")
+def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), cohort: str = "post_obs002"):
+    """OBS-001 Phase C: aggregate `strategy_eligibility.gates[]`.
+
+    Source of truth: `decision_history.decision_snapshot ->
+    $.strategy_eligibility.gates[]`. Each gate record has
+    `{name, category, applied, passed, observed_value,
+    threshold_value, reason}`. We never parse `primary_reason`.
+
+    For each distinct gate `name`, returns:
+      total_evaluations, passed, failed, failure_rate, applied.
+
+    A gate is "passed" iff `passed == true`. A gate is "failed"
+    iff `passed == false`. `applied == true` entries are
+    exclusively those the bot actually evaluated (vs back-filled
+    NOT RUN). All denominators use the same applied count so
+    failure_rate = failed / total_evaluations.
+
+    NO row-level inference is performed. We never map
+    HOLD_INELIGIBLE -> failed gate; we only count rows where
+    `gates[].passed = false`.
+
+    **PHASE-C7 gate-aggregation contract** (closed 2026-09-17):
+
+    Only persisted `applied == true` gate evaluations contribute
+    to the aggregation. The semantic mapping is:
+
+      gate.applied=true  + gate.passed=true  -> passed += 1, total += 1
+      gate.applied=true  + gate.passed=false -> failed += 1, total += 1
+      gate.applied=false                       -> contributes 0 to
+                                                   passed, failed,
+                                                   and total
+      gate.applied missing / malformed / NULL -> contributes 0 to
+                                                   passed, failed,
+                                                   and total
+                                                   (fails closed)
+
+    The SQL filters at the join level:
+      WHERE COALESCE(json_extract(gate.value, '$.applied'), 0) = 1
+
+    so `COUNT(*)` per gate equals the number of applied=true gate
+    evaluations (the denominator). `failure_rate` = failed / total
+    uses only the applied=true denominator. See
+    `tests/test_dashboard_phase_c_obs_analytics.py ::
+    TestGateAggregationAppliedFilter` for regression coverage.
+    """
+    err = _phase_c_validate(range_name, cohort)
+    if err: return err
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name, "cohort": cohort}
+
+    try:
+        cur = conn.cursor()
+        # PHASE-C9: use the bundle helper. The alias is internal
+        # ("dh" for decision_history) and goes through
+        # `_phase_c_qualify_column`'s allowlist. No request data
+        # is interpolated.
+        cohort_clause_sql, range_clause_sql, params = _phase_c_window_predicates(
+            range_name, cohort, "dh.cycle_start"
+        )
+
+        # Count rows in the cohort (for the explicit coverage footer).
+        # This is a fast COUNT(*) — no JSON extraction — so it stays
+        # under a second on the production DB. JSON-derived cohort
+        # counts would extract JSON for every row and take 10s+.
+        rows_in_cohort = int(cur.execute(
+            "SELECT COUNT(*) AS c FROM decision_history dh "
+            f"WHERE {cohort_clause_sql} AND {range_clause_sql}",
+            params,
+        ).fetchone()["c"])
+
+        sql = (
+            "SELECT "
+            "  json_extract(gate.value, '$.name') AS gate_name, "
+            "  json_extract(gate.value, '$.category') AS gate_category, "
+            "  SUM(CASE WHEN COALESCE(json_extract(gate.value, '$.passed'), 0) = 1 "
+            "           THEN 1 ELSE 0 END) AS passed_count, "
+            "  SUM(CASE WHEN COALESCE(json_extract(gate.value, '$.applied'), 0) = 1 "
+            "           THEN 1 ELSE 0 END) AS applied_count, "
+            "  COUNT(*) AS total_count, "
+            "  MIN(CASE WHEN json_extract(gate.value, '$.observed_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.observed_value') AS REAL) "
+            "           ELSE NULL END) AS sampled_observed_min, "
+            "  MAX(CASE WHEN json_extract(gate.value, '$.observed_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.observed_value') AS REAL) "
+            "           ELSE NULL END) AS sampled_observed_max, "
+            "  MIN(CASE WHEN json_extract(gate.value, '$.threshold_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.threshold_value') AS REAL) "
+            "           ELSE NULL END) AS sampled_threshold_min, "
+            "  MAX(CASE WHEN json_extract(gate.value, '$.threshold_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.threshold_value') AS REAL) "
+            "           ELSE NULL END) AS sampled_threshold_max "
+            "FROM decision_history dh, "
+            "     json_each(json_extract(dh.decision_snapshot, '$.strategy_eligibility.gates')) AS gate "
+            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
+            # PHASE-C7: only persisted applied=true gate evaluations contribute.
+            # Missing or malformed `applied` is coalesced to 0 (fail closed).
+            "  AND COALESCE(json_extract(gate.value, '$.applied'), 0) = 1 "
+            "GROUP BY gate_name, gate_category "
+            "ORDER BY SUM(CASE WHEN COALESCE(json_extract(gate.value, '$.passed'), 0) = 0 "
+            "                  THEN 1 ELSE 0 END) DESC, gate_name ASC"
+        )
+        rows = cur.execute(sql, params).fetchall()
+
+        # Aggregate per gate_name. Deterministic ordering: failures DESC
+        # then name ASC (already enforced by the ORDER BY clause above).
+        gates_list = []
+        for r in rows:
+            name = r["gate_name"]
+            if name is None or name == "":
+                continue
+            total = int(r["total_count"])
+            passed = int(r["passed_count"])
+            # PHASE-C7: the WHERE filter restricted the join to
+            # applied=true rows, so total = COUNT of applied=true
+            # gate evaluations, and failed = total - passed counts
+            # only applied=true + passed=false (NOT applied=false,
+            # NOT missing/malformed applied).
+            failed = total - passed
+            slot = {
+                "gate_name": name,
+                "category": r["gate_category"],
+                "total_evaluations": total,
+                "passed": passed,
+                "failed": failed,
+                "applied_count": int(r["applied_count"]),
+                "failure_rate": (failed / total) if total else 0.0,
+            }
+            if r["sampled_observed_min"] is not None:
+                slot["sampled_observed_min"] = float(r["sampled_observed_min"])
+                slot["sampled_observed_max"] = float(r["sampled_observed_max"])
+                slot["sampled_threshold_min"] = float(r["sampled_threshold_min"])
+                slot["sampled_threshold_max"] = float(r["sampled_threshold_max"])
+            gates_list.append(slot)
+
+        return {
+            "range": range_name,
+            "cohort": cohort,
+            "rows_in_cohort": rows_in_cohort,
+            "gate_rows_aggregated": sum(g["total_evaluations"] for g in gates_list),
+            "gates": gates_list,
+            "source": "decision_history.decision_snapshot -> $.strategy_eligibility.gates[]",
+            "inference_rule": (
+                "failures counted only where gate.passed == false AND "
+                "gate.applied == true; gate.applied == false and "
+                "malformed/missing applied both contribute 0 (fail closed); "
+                "never from HOLD_INELIGIBLE outcome"
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_phase_c_strategy_gates failed: {e}")
+        return {"error": str(e), "range": range_name, "cohort": cohort}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/phase-c/execution-blockers")
+def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"), cohort: str = "post_obs002"):
+    """OBS-001 Phase C: aggregate `execution_checks.checks[]`.
+
+    Honest universe: only `decision_history` rows whose snapshot has
+    a populated `$.execution_checks.checks[]` contribute. In current
+    runtime this is the SELL path (SELL_BLOCKED_DYNAMIC). The
+    response surfaces the universe size explicitly so the UI can
+    render the "Blocker data only exists for symbols that reached
+    execute_trade" caveat.
+
+    Per check `name`: total_evaluations, passed, failed, applied_count.
+    A check is "passed" iff `passed == true`; "failed" iff
+    `passed == false`. `first_blocking_check` is preserved per row
+    in a small sample so the UI can show the most common blockers
+    without doing client-side aggregation.
+    """
+    err = _phase_c_validate(range_name, cohort)
+    if err: return err
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name, "cohort": cohort}
+
+    try:
+        cur = conn.cursor()
+        # PHASE-C9: use the bundle helper. The alias is internal
+        # ("dh" for decision_history) and goes through
+        # `_phase_c_qualify_column`'s allowlist. No request data
+        # is interpolated.
+        cohort_clause_sql, range_clause_sql, params = _phase_c_window_predicates(
+            range_name, cohort, "dh.cycle_start"
+        )
+
+        # Cohort sizes: total rows + rows with non-empty checks[].
+        # Two FAST counts: the first is pure COUNT(*); the second
+        # uses a conditional COUNT that skips rows whose
+        # $.execution_checks.checks is NULL. We use type='array'
+        # (cheap) rather than json_array_length (slow on the
+        # production DB).
+        rows_in_cohort = int(cur.execute(
+            "SELECT COUNT(*) AS c FROM decision_history dh "
+            f"WHERE {cohort_clause_sql} AND {range_clause_sql}",
+            params,
+        ).fetchone()["c"])
+        # rows_with_checks: count rows whose snapshot has a populated
+        # $.execution_checks.checks array. We use json_type='array'
+        # (which is fast) AND require json_array_length > 0 in a
+        # second cheap pass via the same SELECT. In practice a single
+        # conditional SUM is sufficient and avoids the double scan.
+        rows_with_checks = int(cur.execute(
+            "SELECT COUNT(*) AS c FROM decision_history dh "
+            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
+            "  AND json_type(json_extract(decision_snapshot, '$.execution_checks.checks')) = 'array' "
+            "  AND json_array_length(json_extract(decision_snapshot, '$.execution_checks.checks')) > 0",
+            params,
+        ).fetchone()["c"])
+
+        # Aggregate per check name.
+        sql_gates = (
+            "SELECT "
+            "  json_extract(\"check\".value, '$.name') AS check_name, "
+            "  COALESCE(json_extract(\"check\".value, '$.passed'), 0) AS passed_int, "
+            "  COALESCE(json_extract(\"check\".value, '$.applied'), 0) AS applied_int "
+            "FROM decision_history dh, "
+            "     json_each(json_extract(dh.decision_snapshot, '$.execution_checks.checks')) AS \"check\" "
+            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
+            "  AND json_extract(dh.decision_snapshot, '$.execution_checks.checks') IS NOT NULL "
+            "  AND json_array_length(json_extract(dh.decision_snapshot, '$.execution_checks.checks')) > 0"
+        )
+        rows = cur.execute(sql_gates, params).fetchall()
+        per_check = {}
+        for r in rows:
+            name = r["check_name"]
+            if not name:
+                continue
+            slot = per_check.setdefault(name, {
+                "check_name": name,
+                "total_evaluations": 0,
+                "passed": 0,
+                "failed": 0,
+                "applied_count": 0,
+            })
+            slot["total_evaluations"] += 1
+            if bool(r["applied_int"]):
+                slot["applied_count"] += 1
+            if bool(r["passed_int"]):
+                slot["passed"] += 1
+            else:
+                slot["failed"] += 1
+
+        checks_list = sorted(
+            per_check.values(),
+            key=lambda c: (-c["failed"], c["check_name"]),
+        )
+
+        # first_blocking_check distribution (sampled honestly).
+        sql_blockers = (
+            "SELECT json_extract(decision_snapshot, '$.execution_checks.first_blocking_check') AS blocker, "
+            "       COUNT(*) AS cnt "
+            "FROM decision_history dh "
+            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
+            "  AND json_extract(decision_snapshot, '$.execution_checks.first_blocking_check') IS NOT NULL "
+            "GROUP BY blocker ORDER BY cnt DESC, blocker ASC"
+        )
+        blockers_rows = cur.execute(sql_blockers, params).fetchall()
+        first_blocking = [
+            {"check_name": (r["blocker"] or "unknown"), "count": int(r["cnt"])}
+            for r in blockers_rows
+        ]
+
+        return {
+            "range": range_name,
+            "cohort": cohort,
+            "rows_in_cohort": rows_in_cohort,
+            "rows_with_checks": rows_with_checks,
+            "universe_caveat": (
+                "Blocker data only exists for decision_history rows whose "
+                "OBS-001 trace reached execute_trade. Currently this is the "
+                "SELL path (SELL_BLOCKED_DYNAMIC). BUY paths and HOLD outcomes "
+                "are not in this universe."
+            ),
+            "checks": checks_list,
+            "first_blocking_check": first_blocking,
+            "source": "decision_history.decision_snapshot -> $.execution_checks.checks[]",
+        }
+    except Exception as e:
+        logger.error(f"api_phase_c_execution_blockers failed: {e}")
+        return {"error": str(e), "range": range_name, "cohort": cohort}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/phase-c/outcomes")
+def api_phase_c_outcomes(range_name: str = Query("7d", alias="range"), cohort: str = "post_obs002"):
+    """OBS-001 Phase C: per-decision outcome distribution.
+
+    Counts every `decision_history` row by `$.decision.outcome`. This
+    is per-decision, not per-cycle, so SKIPPED_INVALID_DATA can be
+    shown as its own bar with the explicit label "Invalid data (no
+    score, no rank)".
+
+    Deterministic sort: count DESC, outcome enum ASC.
+    """
+    err = _phase_c_validate(range_name, cohort)
+    if err: return err
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name, "cohort": cohort}
+
+    try:
+        cur = conn.cursor()
+        # PHASE-C9: use the bundle helper. The alias is internal
+        # ("dh" for decision_history) and goes through
+        # `_phase_c_qualify_column`'s allowlist. No request data
+        # is interpolated.
+        cohort_clause_sql, range_clause_sql, params = _phase_c_window_predicates(
+            range_name, cohort, "dh.cycle_start"
+        )
+
+        sql = (
+            "SELECT json_extract(decision_snapshot, '$.decision.outcome') AS outcome, "
+            "       COUNT(*) AS cnt "
+            "FROM decision_history dh "
+            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
+            "GROUP BY outcome "
+            "ORDER BY cnt DESC, outcome ASC"
+        )
+        rows = cur.execute(sql, params).fetchall()
+        total = sum(int(r["cnt"]) for r in rows)
+        return {
+            "range": range_name,
+            "cohort": cohort,
+            "total_decisions": total,
+            "outcomes": [
+                {"outcome": (r["outcome"] or "NULL"), "count": int(r["cnt"]),
+                 "pct": (int(r["cnt"]) / total if total else 0.0)}
+                for r in rows
+            ],
+            "skipped_invalid_data_label": "Invalid data (no score, no rank)",
+            "source": "decision_history.decision_snapshot -> $.decision.outcome",
+        }
+    except Exception as e:
+        logger.error(f"api_phase_c_outcomes failed: {e}")
+        return {"error": str(e), "range": range_name, "cohort": cohort}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/phase-c/coverage")
+def api_phase_c_coverage(range_name: str = Query("7d", alias="range")):
+    """OBS-001 Phase C: pre vs post OBS-002 cycle completion coverage.
+
+    For each cycle in `cycle_funnel`, completion is defined as
+    `cycle_funnel.analyzed_count == COUNT(DISTINCT decision_history.symbol
+    for that cycle)`. The endpoint computes per-cycle coverage
+    separately for the pre-OBS-002 and post-OBS-002 bands so the UI
+    can show the historical coverage gap honestly.
+
+    Coverage stats:
+      pre_obs002:
+        cycle_count, complete_cycles, incomplete_cycles,
+        total_missing_symbol_decisions
+      post_obs002:
+        cycle_count, complete_cycles, incomplete_cycles,
+        total_missing_symbol_decisions
+
+    Pre-OBS-002 cycles that predate `decision_history` entirely are
+    not backfilled. Their `complete_cycles` count is 0 and they
+    contribute `analyzed_count` to `total_missing_symbol_decisions`
+    (because the DB has no `decision_history` rows for them).
+    """
+    if range_name not in _VALID_PHASE_C_RANGES:
+        return {"error": f"invalid range '{range_name}'",
+                "valid_ranges": sorted(_VALID_PHASE_C_RANGES)}
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name}
+
+    try:
+        cur = conn.cursor()
+        # PHASE-C9: use the bundle helper. The alias is internal
+        # ("cf" for cycle_funnel) and goes through
+        # `_phase_c_qualify_column`'s allowlist. No request data
+        # is interpolated. The coverage endpoint does not filter by
+        # cohort at the SQL level — it computes pre_obs002 vs
+        # post_obs002 stats in Python — so we pass the constant
+        # `cohort="all"` here. The bundle helper returns
+        # `(1=1)` as the cohort fragment, which is harmless and
+        # keeps the endpoint on the same code path as the others.
+        _, range_clause, params = _phase_c_window_predicates(
+            range_name, "all", "cf.cycle_start"
+        )
+
+        # Pull every cycle in the range with its decision_history distinct
+        # symbol count. SQLite's LEFT JOIN + subquery handles legacy
+        # cycles (no matching rows => 0 distinct symbols).
+        sql = (
+            "SELECT cf.cycle_id, cf.cycle_start, cf.cycle_end, cf.analyzed_count, "
+            "       cf.schema_version, "
+            "       (SELECT COUNT(DISTINCT dh.symbol) FROM decision_history dh "
+            "          WHERE dh.cycle_id = cf.cycle_id) AS distinct_symbols "
+            "FROM cycle_funnel cf "
+            f"WHERE {range_clause} "
+            "ORDER BY cf.cycle_start ASC"
+        )
+        rows = cur.execute(sql, params).fetchall()
+
+        def _band_stats(band_rows):
+            cycle_count = len(band_rows)
+            complete = 0
+            incomplete = 0
+            missing = 0
+            for r in band_rows:
+                gap = int(r["analyzed_count"]) - int(r["distinct_symbols"])
+                if gap == 0:
+                    complete += 1
+                else:
+                    incomplete += 1
+                    missing += gap
+            return {
+                "cycle_count": cycle_count,
+                "complete_cycles": complete,
+                "incomplete_cycles": incomplete,
+                "total_missing_symbol_decisions": missing,
+            }
+
+        pre_rows = [r for r in rows if (r["cycle_start"] or "") < OBS_002_DEPLOYMENT_BOUNDARY_UTC]
+        post_rows = [r for r in rows if (r["cycle_start"] or "") >= OBS_002_DEPLOYMENT_BOUNDARY_UTC]
+
+        pre = _band_stats(pre_rows)
+        post = _band_stats(post_rows)
+
+        return {
+            "range": range_name,
+            "obs002_deployment_boundary_utc": OBS_002_DEPLOYMENT_BOUNDARY_UTC,
+            "pre_obs002": {**pre, "note": (
+                "Pre-OBS-002 cycles may be incomplete. "
+                "decision_history is sparse for these cycles; the dashboard "
+                "does not backfill missing decisions from current settings "
+                "or raw indicators."
+            )},
+            "post_obs002": {**post, "note": (
+                "Post-OBS-002 cycles carry a complete decision_history "
+                "footprint (terminal decision coverage invariant)."
+            )},
+            "cycles_total": len(rows),
+        }
+    except Exception as e:
+        logger.error(f"api_phase_c_coverage failed: {e}")
+        return {"error": str(e), "range": range_name}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.get("/api/score/{symbol}")
