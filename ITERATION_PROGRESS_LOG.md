@@ -3608,3 +3608,109 @@ trailing-blank fix in `MENTOR.md` (surfaced by
 **Recommendation:** Phase C is READY FOR COMMIT/PR.
 
 **Status:** DONE — PHASE-C10E COMPLETE — FINAL PHASE C RELEASE REVIEW PASSED
+
+---
+
+## PHASE-C12 — cycle_start INDEX + VERIFY PERFORMANCE (2026-09-21 15:55 UTC)
+
+- Backlog item: PHASE-C12 (PHASE-C11 follow-up: index only slice).
+- Objective: add `idx_decision_history_cycle_start` to the production DB
+  and measure Phase C endpoint performance.
+- Branch and commit: `main` @ `52ea491`. No commit yet — this slice is
+  DDL-only, no source change.
+- Status: **DONE** — DDL applied in 5.78s, no contention, semantics
+  preserved.
+- Files changed:
+  - `trading_bot.db` (added index; +48.4 MB; +50,733,056 bytes)
+  - `REPORT.md` (overwritten, current rolling executive summary)
+  - `reports/2026-09-21_155720_PHASE-C12-cycle-start-index.md` (archived)
+  - `ITERATION_PROGRESS_LOG.md` (this entry)
+- Tests run:
+  - Pre-DDL baseline: 4 endpoint shots (strategy-gates latest/24h,
+    execution-blockers latest/24h)
+  - Post-DDL smoke: same 4 endpoint shots
+  - EXPLAIN QUERY PLAN for strategy-gates 24h + execution-blockers 24h +
+    rows_in_cohort COUNT
+  - Observational: `pytest -m observational
+    tests/observational/test_phase_c_live_observational.py` →
+    **12 passed, 1 skipped in 42.91s** (matches overnight baseline)
+- Exact results:
+  - EXPLAIN: `SCAN dh` → `SEARCH dh USING INDEX
+    idx_decision_history_cycle_start (cycle_start>?)`
+  - strategy-gates latest: 4.91s → 0.076s (**64.6×**)
+  - strategy-gates 24h:   10.63s → 7.17s (**1.48×**)
+  - execution-blockers latest: 12.52s → 0.110s (**113.8×**)
+  - execution-blockers 24h:   19.37s → 9.95s (**1.95×**)
+  - All other Phase C endpoints (funnel/outcomes/coverage): 200, no
+    payload regression.
+  - SmartBot PID 833643 ELAPSED 6-19:32:31 (unchanged, no
+    pause/restart).
+  - trading-dashboard PID 1003780 (unchanged).
+  - No SQLITE_BUSY burst, no exceptions, no 5xx.
+  - No orphan pytest.
+- Important discoveries:
+  - The new index currently exists **only in the production DB**.
+    A fresh rebuild via `src/database/sqlite_db.py` schema bootstrap
+    would NOT recreate it. **Durability follow-up needed.**
+- Risks / remaining items:
+  - **Durability follow-up:** add the same `CREATE INDEX IF NOT
+    EXISTS` to `src/database/sqlite_db.py` next to the two existing
+    `idx_decision_history_*` indexes. This was deliberately deferred
+    from PHASE-C12 because the approved slice was DDL-only.
+  - 24h endpoints still scan 132k rows. The remaining cost is JSON
+    parsing, not row scanning. The execution-blockers CTE
+    consolidation (slice A1) would cut execution-blockers 24h from
+    ~10s to ~2.5s. Out of scope for this slice.
+- Next action: ship the durability follow-up as a separate narrow PR
+  (1 `CREATE INDEX IF NOT EXISTS` line + 1 test that proves the
+  bootstrap creates it on a fresh DB). Josh's approval required.
+
+---
+
+## PHASE-C13 — Make cycle_start Index Durable in DB Bootstrap (2026-09-21 17:38 UTC)
+
+- Backlog item: PHASE-C13 (durability follow-up from PHASE-C12).
+- Objective: make `idx_decision_history_cycle_start` reproducible
+  on a fresh DB by adding the same `CREATE INDEX IF NOT EXISTS`
+  pattern used for the two pre-existing `idx_decision_history_*`
+  indexes, then prove it with a focused regression test.
+- Branch: `agent/phase-c13-cycle-start-index-durability` (new from
+  `main @ 52ea491`). Commit: not yet — slice stops at test-verified.
+- Status: **DONE** — focused tests 6/6 pass, directly related
+  tests 69/69 pass, deterministic Phase C suite 152/152 pass.
+- Files changed:
+  - `src/database/sqlite_db.py` (17 lines added: 1 `CREATE INDEX`
+    block + comment, mirroring the two neighboring index blocks)
+  - `tests/test_phase_c13_cycle_start_index_durability.py` (new,
+    6 tests across 2 classes)
+  - `ITERATION_PROGRESS_LOG.md` (this entry)
+- Tests run and exact results:
+  - `tests/test_phase_c13_cycle_start_index_durability.py` —
+    **6 passed in 0.51s** (index present, column list
+    `['cycle_start']`, planner uses it for cohort filter, both
+    pre-existing indexes preserved, exact three-index contract).
+  - `tests/test_obs_001_phase_a_decision_snapshot.py` +
+    `tests/test_obs_002_terminal_decision_coverage.py` —
+    **69 passed in 5.43s** (no regressions on schema or
+    finalize_decision_history paths).
+  - `tests/test_dashboard_phase_c_obs_analytics.py` — **152 passed
+    in 5.25s** (deterministic Phase C suite, no regressions).
+- Important discoveries:
+  - The PHASE-C12 audit identified this slice as a follow-up. It
+    is the only durability gap from C12.
+  - The new test uses `monkeypatch.setattr(sqlite_mod, "DB_PATH",
+    new_path)` and re-runs `SQLiteDB._init_schema()` against a
+    `tempfile.NamedTemporaryFile`, exactly mirroring the pattern
+    already proven by `test_bot001_dashboard_status.py` and
+    `test_obs_002_terminal_decision_coverage.py`. No production
+    DB is touched.
+- Risks / remaining items:
+  - `db_path` and `os` are imported inside the test helpers rather
+    than at module top; kept inside the helpers to follow the
+    existing convention in `test_obs_002_terminal_decision_coverage.py`.
+  - No regressions in any directly-related or deterministic test.
+- Next action: ship as a single narrow PR with the source diff +
+  new test file. After merge, the recommended next slice is
+  **PHASE-C14 — execution-blockers / strategy-gates 24h SQL
+  optimization** (the CTE consolidation identified in PHASE-C11
+  that would cut execution-blockers 24h from ~10s to ~2.5s).
