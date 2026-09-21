@@ -839,6 +839,52 @@
             .lc-funnel-stage, .lc-funnel-offpath { flex: 1 1 60px; min-width: 60px; }
             .lc-funnel-stage .lc-stage-num, .lc-funnel-offpath .lc-stage-num { font-size: 16px; }
             .lc-cand-row td { padding: 4px; }
+
+            /* PHASE-C8: mobile polish for OBS Analytics cards.
+               Stack selector controls vertically; ensure 44px touch
+               targets; contain table overflow; keep coverage banner
+               readable. */
+            #phase-c-selector-card > div {
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 8px !important;
+            }
+            #phase-c-selector-card select,
+            #phase-c-selector-card .phase-c-legacy-toggle,
+            #phase-c-cohort-display {
+                min-height: 44px !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+                justify-content: flex-start !important;
+            }
+            #phase-c-range,
+            #phase-c-cohort-display {
+                font-size: 14px !important;
+                padding: 8px 10px !important;
+            }
+            #phase-c-coverage-banner {
+                margin-left: 0 !important;
+                text-align: left !important;
+            }
+            /* Contain table overflow inside Phase C cards so the page
+               never scrolls horizontally. */
+            .phase-c-card-table-wrap {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                max-width: 100%;
+            }
+            .phase-c-card-table-wrap table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            /* Cards stack with reduced internal padding on narrow screens. */
+            #phase-c-funnel-card,
+            #phase-c-gate-freq-card,
+            #phase-c-execution-blockers-card,
+            #phase-c-outcome-card,
+            #phase-c-coverage-card {
+                padding: 10px !important;
+            }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -1118,6 +1164,117 @@
     </div><!-- /top-tab-dashboard -->
 
     <div id="top-tab-analytics" class="top-tab-panel" style="display:none;">
+
+        <!-- ============================================================
+             Phase C — OBS Analytics (2026-09-17)
+             Five cards redesigned around persisted OBS decision truth.
+             Sources: cycle_funnel + decision_history.decision_snapshot.
+             ============================================================ -->
+
+        <!-- Time-range selector + coverage banner -->
+        <div class="card" id="phase-c-selector-card">
+            <div class="card-header">
+                <span class="card-title">🕒 OBS Analytics — Time Range</span>
+                <button onclick="loadPhaseCAll()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
+            </div>
+            <div style="display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap; margin-bottom:0.75rem;">
+                <label for="phase-c-range" style="font-size:13px; color:#8b949e;">Range:</label>
+                <select id="phase-c-range" onchange="onPhaseCRangeChange()" style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9; padding:4px 8px; border-radius:6px; font-size:13px;">
+                    <option value="latest" selected>Latest cycle</option>
+                    <option value="today">Today</option>
+                    <option value="24h">Past 24h</option>
+                    <option value="7d">Past 7 days</option>
+                </select>
+                <!-- Cohort selection. PHASE-C8: legacy cycles are opt-in only.
+                     Default is complete post-OBS-002 coverage. The cohort
+                     <select> is hidden; the visible control is the
+                     explicit "include legacy" checkbox, which is unchecked
+                     by default. Selecting "all" requires an extra explicit
+                     click so users do not silently include incomplete
+                     pre-OBS-002 history. -->
+                <span style="font-size:13px; color:#8b949e; margin-left:0.5rem;">Cohort:</span>
+                <span id="phase-c-cohort-display" style="background:#0d1117; border:1px solid #30363d; color:#c9d1d9; padding:6px 10px; border-radius:6px; font-size:13px; min-height:44px; display:inline-flex; align-items:center;">Post-OBS-002 (complete)</span>
+                <select id="phase-c-cohort" style="display:none;" aria-hidden="true">
+                    <option value="post_obs002" selected>Post-OBS-002 (complete)</option>
+                    <option value="all">All cycles (legacy pre + post)</option>
+                </select>
+                <label for="phase-c-include-legacy" class="phase-c-legacy-toggle" style="font-size:13px; color:#d29922; display:inline-flex; align-items:center; gap:6px; padding:6px 10px; min-height:44px; cursor:pointer;">
+                    <input type="checkbox" id="phase-c-include-legacy" onchange="onPhaseCIncludeLegacyChange()" style="width:18px; height:18px; margin:0; cursor:pointer;" />
+                    Include legacy pre-OBS-002 cycles
+                </label>
+                <span id="phase-c-coverage-banner" style="margin-left:auto; font-size:12px; color:#8b949e;"></span>
+            </div>
+            <!-- Coverage warning banner. PHASE-C8: only visible when legacy
+                 cohort is active. Warns that pre-OBS-002 history may be
+                 incomplete and no backfill was performed. -->
+            <div id="phase-c-legacy-warning" class="phase-c-legacy-warning" role="alert" style="display:none; background:#3a2e0a; border:1px solid #d29922; color:#f0c674; padding:10px 12px; border-radius:6px; margin-top:8px; font-size:13px;">
+                <strong>⚠ Legacy history included</strong> &mdash;
+                pre-OBS-002 cycles may be incomplete.
+                <code>strategy_eligibility.gates[]</code> and other
+                structured fields were not persisted in every legacy cycle,
+                and no backfill was performed. Percentages and counts in
+                this view may reflect incomplete historical coverage.
+            </div>
+        </div>
+
+        <!-- 1. Decision Funnel -->
+        <div class="card" id="phase-c-funnel-card">
+            <div class="card-header">
+                <span class="card-title">📊 Decision Funnel</span>
+                <span style="font-size:11px; color:#8b949e; margin-left:8px;">forward path + off-path (separated)</span>
+            </div>
+            <div id="phase-c-funnel-loading" style="color:#8b949e; padding:8px;">Loading funnel…</div>
+            <div id="phase-c-funnel-body" style="display:none;"></div>
+            <div id="phase-c-funnel-empty" style="display:none; color:#8b949e; padding:8px;">No cycles in this window.</div>
+            <div id="phase-c-funnel-error" style="display:none; color:#f85149; padding:8px;"></div>
+        </div>
+
+        <!-- 2. Strategy Gate Failure Frequency -->
+        <div class="card" id="phase-c-gate-freq-card">
+            <div class="card-header">
+                <span class="card-title">🚧 Strategy Gate Failure Frequency</span>
+                <span style="font-size:11px; color:#8b949e; margin-left:8px;">from $.strategy_eligibility.gates[]</span>
+            </div>
+            <div id="phase-c-gates-loading" style="color:#8b949e; padding:8px;">Loading gate data…</div>
+            <div id="phase-c-gates-body" style="display:none;"></div>
+            <div id="phase-c-gates-empty" style="display:none; color:#8b949e; padding:8px;">No structured strategy gate data in this window. Pre-OBS-002 cycles did not persist <code>strategy_eligibility.gates[]</code>.</div>
+            <div id="phase-c-gates-error" style="display:none; color:#f85149; padding:8px;"></div>
+        </div>
+
+        <!-- 3. Execution Blocker Frequency -->
+        <div class="card" id="phase-c-execution-blockers-card">
+            <div class="card-header">
+                <span class="card-title">⛔ Execution Blocker Frequency</span>
+                <span style="font-size:11px; color:#8b949e; margin-left:8px;">from $.execution_checks.checks[]</span>
+            </div>
+            <div id="phase-c-blockers-loading" style="color:#8b949e; padding:8px;">Loading blocker data…</div>
+            <div id="phase-c-blockers-body" style="display:none;"></div>
+            <div id="phase-c-blockers-empty" style="display:none; color:#8b949e; padding:8px;">No execution blocker data in this window.</div>
+            <div id="phase-c-blockers-error" style="display:none; color:#f85149; padding:8px;"></div>
+        </div>
+
+        <!-- 4. Outcome Distribution -->
+        <div class="card" id="phase-c-outcome-card">
+            <div class="card-header">
+                <span class="card-title">🎯 Outcome Distribution</span>
+                <span style="font-size:11px; color:#8b949e; margin-left:8px;">SKIPPED_INVALID_DATA reported separately</span>
+            </div>
+            <div id="phase-c-outcomes-loading" style="color:#8b949e; padding:8px;">Loading outcomes…</div>
+            <div id="phase-c-outcomes-body" style="display:none;"></div>
+            <div id="phase-c-outcomes-empty" style="display:none; color:#8b949e; padding:8px;">No decisions in this window.</div>
+            <div id="phase-c-outcomes-error" style="display:none; color:#f85149; padding:8px;"></div>
+        </div>
+
+        <!-- 5. Coverage indicator -->
+        <div class="card" id="phase-c-coverage-card">
+            <div class="card-header">
+                <span class="card-title">🛡 Historical Coverage</span>
+                <span style="font-size:11px; color:#8b949e; margin-left:8px;">pre vs post OBS-002 cycle completion</span>
+            </div>
+            <div id="phase-c-coverage-loading" style="color:#8b949e; padding:8px;">Loading coverage…</div>
+            <div id="phase-c-coverage-body" style="display:none;"></div>
+            <div id="phase-c-coverage-error" style="display:none; color:#f85149; padding:8px;"></div>
+        </div>
 
         <!-- Performance Analytics -->
         <div class="card">
@@ -3077,6 +3234,432 @@
                 statusEl.textContent = 'Load error: ' + e.message;
             }
         }
+
+        // ============================================================
+        // Phase C — OBS Analytics renderer (2026-09-17)
+        // Sources: persisted cycle_funnel + decision_history JSON only.
+        // NEVER recomputes from current settings or raw indicators.
+        // ============================================================
+
+        function _pc_escapeHtml(s) {
+            if (s === null || s === undefined) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+        function _pc_fmtNum(n) {
+            if (n === null || n === undefined) return '—';
+            return Number(n).toLocaleString('en-US');
+        }
+        function _pc_pct(n) {
+            if (n === null || n === undefined || isNaN(n)) return '—';
+            return (n * 100).toFixed(2) + '%';
+        }
+        function _pc_getRange() {
+            const sel = document.getElementById('phase-c-range');
+            return sel ? sel.value : '7d';
+        }
+        function _pc_getCohort() {
+            const sel = document.getElementById('phase-c-cohort');
+            return sel ? sel.value : 'post_obs002';
+        }
+        function _pc_showError(boxId, msg) {
+            const el = document.getElementById(boxId);
+            if (!el) return;
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+        function _pc_hideAll(prefix, suffix) {
+            // Helper: hide loading/body/empty/error boxes for a card.
+            const ids = ['loading', 'body', 'empty', 'error'];
+            ids.forEach(s => {
+                const el = document.getElementById(prefix + '-' + s);
+                if (el) el.style.display = 'none';
+            });
+        }
+        function _pc_showLoading(prefix) {
+            _pc_hideAll(prefix);
+            const el = document.getElementById(prefix + '-loading');
+            if (el) el.style.display = 'block';
+        }
+        function _pc_showBody(prefix) {
+            _pc_hideAll(prefix);
+            const el = document.getElementById(prefix + '-body');
+            if (el) el.style.display = 'block';
+        }
+        function _pc_showEmpty(prefix) {
+            _pc_hideAll(prefix);
+            const el = document.getElementById(prefix + '-empty');
+            if (el) el.style.display = 'block';
+        }
+
+        // ----- Funnel card -----
+        function _pc_renderFunnel(data) {
+            if (data && data.error) return { error: data.error };
+            const fp = data.forward_path || {};
+            const op = data.off_path || {};
+            const cycles = data.cycles || 0;
+            if (cycles === 0) {
+                return { empty: true };
+            }
+            // Forward stages only. NO arrow into submission is allowed
+            // to flow through the off-path counts.
+            const stages = [
+                { n: fp.analyzed_count, lbl: 'Analyzed' },
+                { n: fp.strategy_eligible_count, lbl: 'Strategy Eligible' },
+                { n: fp.ranked_candidate_count, lbl: 'Ranked Candidates' },
+                { n: fp.execution_attempt_count, lbl: 'Execution Attempted' },
+                { n: fp.orders_submitted_count, lbl: 'Orders Submitted' },
+            ];
+            const stagesHtml = stages.map((s, i, arr) => {
+                const arrow = i < arr.length - 1
+                    ? '<div class="lc-funnel-arrow">›</div>'
+                    : '';
+                return '<div class="lc-funnel-stage"><div class="lc-stage-num">' + _pc_fmtNum(s.n) + '</div>'
+                    + '<div class="lc-stage-label">' + s.lbl + '</div></div>' + arrow;
+            }).join('');
+            const offpathHtml = [
+                '<div class="lc-funnel-offpath"><div class="lc-stage-num">' + _pc_fmtNum(op.execution_blocked_count) + '</div>'
+                + '<div class="lc-stage-label">Execution Blocked (off-path)</div></div>',
+                '<div class="lc-funnel-offpath"><div class="lc-stage-num">' + _pc_fmtNum(op.orders_failed_count) + '</div>'
+                + '<div class="lc-stage-label">Orders Failed (off-path)</div></div>',
+                '<div class="lc-funnel-offpath"><div class="lc-stage-num">' + _pc_fmtNum(op.not_attempted_count) + '</div>'
+                + '<div class="lc-stage-label">Not Attempted (off-path)</div></div>',
+            ].join('');
+            let dropoffHtml = '';
+            const ld = data.largest_dropoff;
+            if (ld && ld.delta > 0) {
+                dropoffHtml = '<div class="lc-dropoff">' +
+                    'Largest drop: <strong>' + _pc_fmtNum(ld.delta) + '</strong> from <strong>'
+                    + _pc_escapeHtml(ld.from_stage) + '</strong> to <strong>'
+                    + _pc_escapeHtml(ld.to_stage) + '</strong></div>';
+            }
+            const meta = '<div class="lc-cycle-meta"><span><strong>Cycles:</strong> ' + _pc_fmtNum(cycles) + '</span>'
+                + '<span><strong>Range:</strong> ' + _pc_escapeHtml(data.range) + '</span>'
+                + '<span><strong>Cohort:</strong> ' + _pc_escapeHtml(data.cohort) + '</span></div>';
+            return {
+                body: meta
+                    + '<div class="lc-funnel-row">' + stagesHtml + '</div>'
+                    + '<div class="lc-funnel-row" style="margin-top:2px;">' + offpathHtml + '</div>'
+                    + dropoffHtml
+            };
+        }
+        async function loadPhaseCFunnel() {
+            _pc_showLoading('phase-c-funnel');
+            try {
+                const range = _pc_getRange();
+                const cohort = _pc_getCohort();
+                const r = await fetch('/api/phase-c/funnel?range=' + encodeURIComponent(range) + '&cohort=' + encodeURIComponent(cohort));
+                const data = await r.json();
+                if (data.error) { _pc_showError('phase-c-funnel-error', data.error); return; }
+                const out = _pc_renderFunnel(data);
+                if (out.error) { _pc_showError('phase-c-funnel-error', out.error); return; }
+                if (out.empty) { _pc_showEmpty('phase-c-funnel'); return; }
+                document.getElementById('phase-c-funnel-body').innerHTML = out.body;
+                _pc_showBody('phase-c-funnel');
+            } catch (e) {
+                _pc_showError('phase-c-funnel-error', 'Load error: ' + e.message);
+            }
+        }
+
+        // ----- Strategy Gate Failure Frequency -----
+        function _pc_renderGates(data) {
+            if (data && data.error) return { error: data.error };
+            const gates = data.gates || [];
+            const rowsAgg = data.gate_rows_aggregated || 0;
+            if (rowsAgg === 0 || gates.length === 0) {
+                return { empty: true };
+            }
+            const rows = gates.map(g => {
+                const obsRange = (g.sampled_observed_min !== undefined && g.sampled_observed_max !== undefined)
+                    ? 'obs ' + Number(g.sampled_observed_min).toFixed(2) + '…' + Number(g.sampled_observed_max).toFixed(2)
+                    : '';
+                const thrRange = (g.sampled_threshold_min !== undefined && g.sampled_threshold_max !== undefined)
+                    ? 'thr ' + Number(g.sampled_threshold_min).toFixed(2) + '…' + Number(g.sampled_threshold_max).toFixed(2)
+                    : '';
+                const tooltip = obsRange && thrRange ? ' title="' + _pc_escapeHtml(obsRange + ' / ' + thrRange) + '"' : '';
+                return '<tr' + tooltip + '>'
+                    + '<td>' + _pc_escapeHtml(g.gate_name) + '</td>'
+                    + '<td style="text-align:right;">' + _pc_fmtNum(g.total_evaluations) + '</td>'
+                    + '<td style="text-align:right;">' + _pc_fmtNum(g.passed) + '</td>'
+                    + '<td style="text-align:right;">' + _pc_fmtNum(g.failed) + '</td>'
+                    + '<td style="text-align:right;">' + _pc_pct(g.failure_rate) + '</td>'
+                    + '<td style="text-align:right;">' + _pc_fmtNum(g.applied_count) + '</td>'
+                    + '</tr>';
+            }).join('');
+            const header = '<div class="lc-cycle-meta">'
+                + '<span><strong>Cohort rows:</strong> ' + _pc_fmtNum(data.rows_in_cohort) + '</span>'
+                + '<span><strong>Gate rows aggregated:</strong> ' + _pc_fmtNum(rowsAgg) + '</span>'
+                + '</div>';
+            const table = '<div class="phase-c-card-table-wrap"><table style="width:100%; font-size:13px;"><thead><tr>'
+                + '<th style="text-align:left;">Gate</th>'
+                + '<th style="text-align:right;">Total</th>'
+                + '<th style="text-align:right;">Passed</th>'
+                + '<th style="text-align:right;">Failed</th>'
+                + '<th style="text-align:right;">Failure Rate</th>'
+                + '<th style="text-align:right;">Applied</th>'
+                + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+            const note = '<div style="margin-top:0.5rem; font-size:11px; color:#8b949e;">'
+                + 'Failures counted only where <code>gates[].passed == false</code>; '
+                + 'never inferred from HOLD_INELIGIBLE outcome or <code>primary_reason</code> text. '
+                + 'Source: <code>decision_snapshot.$.strategy_eligibility.gates[]</code>.'
+                + '</div>';
+            return { body: header + table + note };
+        }
+        async function loadPhaseCGates() {
+            _pc_showLoading('phase-c-gates');
+            try {
+                const range = _pc_getRange();
+                const cohort = _pc_getCohort();
+                const r = await fetch('/api/phase-c/strategy-gates?range=' + encodeURIComponent(range) + '&cohort=' + encodeURIComponent(cohort));
+                const data = await r.json();
+                if (data.error) { _pc_showError('phase-c-gates-error', data.error); return; }
+                const out = _pc_renderGates(data);
+                if (out.error) { _pc_showError('phase-c-gates-error', out.error); return; }
+                if (out.empty) { _pc_showEmpty('phase-c-gates'); return; }
+                document.getElementById('phase-c-gates-body').innerHTML = out.body;
+                _pc_showBody('phase-c-gates');
+            } catch (e) {
+                _pc_showError('phase-c-gates-error', 'Load error: ' + e.message);
+            }
+        }
+
+        // ----- Execution Blocker Frequency -----
+        function _pc_renderBlockers(data) {
+            if (data && data.error) return { error: data.error };
+            const rowsWithChecks = data.rows_with_checks || 0;
+            if (rowsWithChecks === 0) {
+                return { empty: true };
+            }
+            const checks = data.checks || [];
+            const checkRows = checks.map(c =>
+                '<tr>'
+                + '<td>' + _pc_escapeHtml(c.check_name) + '</td>'
+                + '<td style="text-align:right;">' + _pc_fmtNum(c.total_evaluations) + '</td>'
+                + '<td style="text-align:right;">' + _pc_fmtNum(c.passed) + '</td>'
+                + '<td style="text-align:right;">' + _pc_fmtNum(c.failed) + '</td>'
+                + '<td style="text-align:right;">' + _pc_fmtNum(c.applied_count) + '</td>'
+                + '</tr>'
+            ).join('');
+            const firstBlocking = (data.first_blocking_check || []).map(b =>
+                '<tr><td>' + _pc_escapeHtml(b.check_name) + '</td><td style="text-align:right;">' + _pc_fmtNum(b.count) + '</td></tr>'
+            ).join('');
+            const caveat = '<div style="margin-top:0.5rem; padding:0.5rem; background:#0d1117; border-left:3px solid #d29922; font-size:12px; color:#d29922;">'
+                + '⚠ ' + _pc_escapeHtml(data.universe_caveat || 'Blocker data only exists for symbols that reached execute_trade.')
+                + '</div>';
+            const header = '<div class="lc-cycle-meta">'
+                + '<span><strong>Cohort rows:</strong> ' + _pc_fmtNum(data.rows_in_cohort) + '</span>'
+                + '<span><strong>Rows with checks[]:</strong> ' + _pc_fmtNum(rowsWithChecks) + '</span>'
+                + '</div>';
+            const checkTable = '<h4 style="margin:0.5rem 0 0.25rem 0; font-size:13px;">Per-check totals</h4>'
+                + '<div class="phase-c-card-table-wrap"><table style="width:100%; font-size:13px;"><thead><tr>'
+                + '<th style="text-align:left;">Check</th>'
+                + '<th style="text-align:right;">Total</th>'
+                + '<th style="text-align:right;">Passed</th>'
+                + '<th style="text-align:right;">Failed</th>'
+                + '<th style="text-align:right;">Applied</th>'
+                + '</tr></thead><tbody>' + checkRows + '</tbody></table></div>';
+            const blockTable = (firstBlocking ? '<h4 style="margin:0.75rem 0 0.25rem 0; font-size:13px;">first_blocking_check distribution</h4>'
+                + '<div class="phase-c-card-table-wrap"><table style="width:100%; font-size:13px;"><thead><tr>'
+                + '<th style="text-align:left;">Check</th><th style="text-align:right;">Count</th>'
+                + '</tr></thead><tbody>' + firstBlocking + '</tbody></table></div>' : '');
+            return { body: header + checkTable + blockTable + caveat };
+        }
+        async function loadPhaseCBlockers() {
+            _pc_showLoading('phase-c-blockers');
+            try {
+                const range = _pc_getRange();
+                const cohort = _pc_getCohort();
+                const r = await fetch('/api/phase-c/execution-blockers?range=' + encodeURIComponent(range) + '&cohort=' + encodeURIComponent(cohort));
+                const data = await r.json();
+                if (data.error) { _pc_showError('phase-c-blockers-error', data.error); return; }
+                const out = _pc_renderBlockers(data);
+                if (out.error) { _pc_showError('phase-c-blockers-error', out.error); return; }
+                if (out.empty) { _pc_showEmpty('phase-c-blockers'); return; }
+                document.getElementById('phase-c-blockers-body').innerHTML = out.body;
+                _pc_showBody('phase-c-blockers');
+            } catch (e) {
+                _pc_showError('phase-c-blockers-error', 'Load error: ' + e.message);
+            }
+        }
+
+        // ----- Outcome Distribution -----
+        function _pc_renderOutcomes(data) {
+            if (data && data.error) return { error: data.error };
+            const outcomes = data.outcomes || [];
+            const total = data.total_decisions || 0;
+            if (total === 0 || outcomes.length === 0) {
+                return { empty: true };
+            }
+            const skippedLabel = data.skipped_invalid_data_label || 'Invalid data';
+            const rows = outcomes.map(o => {
+                const isSkipped = o.outcome === 'SKIPPED_INVALID_DATA';
+                const label = isSkipped ? _pc_escapeHtml(skippedLabel) : _pc_escapeHtml(o.outcome);
+                const color = isSkipped ? '#d29922' : '#58a6ff';
+                return '<tr style="border-left:3px solid ' + color + ';">'
+                    + '<td>' + label + '</td>'
+                    + '<td style="text-align:right;">' + _pc_fmtNum(o.count) + '</td>'
+                    + '<td style="text-align:right;">' + _pc_pct(o.pct) + '</td>'
+                    + '</tr>';
+            }).join('');
+            const table = '<div class="phase-c-card-table-wrap"><table style="width:100%; font-size:13px;"><thead><tr>'
+                + '<th style="text-align:left;">Outcome</th>'
+                + '<th style="text-align:right;">Count</th>'
+                + '<th style="text-align:right;">Pct</th>'
+                + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+            const note = '<div style="margin-top:0.5rem; font-size:11px; color:#8b949e;">'
+                + 'Source: <code>decision_snapshot.$.decision.outcome</code>. '
+                + 'SKIPPED_INVALID_DATA is reported separately (no score, no rank).'
+                + '</div>';
+            const header = '<div class="lc-cycle-meta">'
+                + '<span><strong>Total decisions:</strong> ' + _pc_fmtNum(total) + '</span>'
+                + '<span><strong>Range:</strong> ' + _pc_escapeHtml(data.range) + '</span>'
+                + '<span><strong>Cohort:</strong> ' + _pc_escapeHtml(data.cohort) + '</span>'
+                + '</div>';
+            return { body: header + table + note };
+        }
+        async function loadPhaseCOutcomes() {
+            _pc_showLoading('phase-c-outcomes');
+            try {
+                const range = _pc_getRange();
+                const cohort = _pc_getCohort();
+                const r = await fetch('/api/phase-c/outcomes?range=' + encodeURIComponent(range) + '&cohort=' + encodeURIComponent(cohort));
+                const data = await r.json();
+                if (data.error) { _pc_showError('phase-c-outcomes-error', data.error); return; }
+                const out = _pc_renderOutcomes(data);
+                if (out.error) { _pc_showError('phase-c-outcomes-error', out.error); return; }
+                if (out.empty) { _pc_showEmpty('phase-c-outcomes'); return; }
+                document.getElementById('phase-c-outcomes-body').innerHTML = out.body;
+                _pc_showBody('phase-c-outcomes');
+            } catch (e) {
+                _pc_showError('phase-c-outcomes-error', 'Load error: ' + e.message);
+            }
+        }
+
+        // ----- Coverage -----
+        function _pc_renderCoverage(data) {
+            if (data && data.error) return { error: data.error };
+            const pre = data.pre_obs002 || {};
+            const post = data.post_obs002 || {};
+            const preRate = pre.cycle_count ? (pre.complete_cycles / pre.cycle_count) : 0;
+            const postRate = post.cycle_count ? (post.complete_cycles / post.cycle_count) : 0;
+            const banner = '<div style="font-size:12px; color:#8b949e; margin-bottom:0.5rem;">'
+                + 'OBS-002 deployment boundary: <code>' + _pc_escapeHtml(data.obs002_deployment_boundary_utc) + '</code> · '
+                + 'Total cycles in range: <strong>' + _pc_fmtNum(data.cycles_total) + '</strong>'
+                + '</div>';
+            const renderBand = (label, band, rate) => {
+                const color = rate >= 0.999 ? '#3fb950' : (rate >= 0.95 ? '#d29922' : '#f85149');
+                return '<div style="margin-bottom:0.75rem; padding:0.5rem; background:#0d1117; border-left:3px solid ' + color + ';">'
+                    + '<div style="display:flex; gap:1rem; align-items:baseline; flex-wrap:wrap; font-size:13px;">'
+                    + '<strong>' + _pc_escapeHtml(label) + '</strong>'
+                    + '<span>cycles: <strong>' + _pc_fmtNum(band.cycle_count) + '</strong></span>'
+                    + '<span>complete: <strong style="color:' + color + ';">' + _pc_fmtNum(band.complete_cycles) + '</strong></span>'
+                    + '<span>incomplete: <strong>' + _pc_fmtNum(band.incomplete_cycles) + '</strong></span>'
+                    + '<span>missing decisions: <strong>' + _pc_fmtNum(band.total_missing_symbol_decisions) + '</strong></span>'
+                    + '<span>rate: <strong>' + _pc_pct(rate) + '</strong></span>'
+                    + '</div>'
+                    + '<div style="margin-top:0.25rem; font-size:11px; color:#8b949e;">' + _pc_escapeHtml(band.note) + '</div>'
+                    + '</div>';
+            };
+            const body = banner
+                + renderBand('Pre-OBS-002 (legacy)', pre, preRate)
+                + renderBand('Post-OBS-002 (complete)', post, postRate);
+            return { body };
+        }
+        async function loadPhaseCCoverage() {
+            _pc_showLoading('phase-c-coverage');
+            try {
+                const range = _pc_getRange();
+                const r = await fetch('/api/phase-c/coverage?range=' + encodeURIComponent(range));
+                const data = await r.json();
+                if (data.error) { _pc_showError('phase-c-coverage-error', data.error); return; }
+                const out = _pc_renderCoverage(data);
+                if (out.error) { _pc_showError('phase-c-coverage-error', out.error); return; }
+                document.getElementById('phase-c-coverage-body').innerHTML = out.body;
+                _pc_showBody('phase-c-coverage');
+            } catch (e) {
+                _pc_showError('phase-c-coverage-error', 'Load error: ' + e.message);
+            }
+        }
+
+        function onPhaseCRangeChange() {
+            loadPhaseCAll();
+        }
+        function onPhaseCIncludeLegacyChange() {
+            // PHASE-C8: explicit legacy opt-in. Default is complete
+            // post-OBS-002 cohort. The cohort <select> is hidden;
+            // its value is mirrored from the checkbox.
+            const cb = document.getElementById('phase-c-include-legacy');
+            const sel = document.getElementById('phase-c-cohort');
+            const display = document.getElementById('phase-c-cohort-display');
+            const warn = document.getElementById('phase-c-legacy-warning');
+            const includeLegacy = !!(cb && cb.checked);
+            if (sel) sel.value = includeLegacy ? 'all' : 'post_obs002';
+            if (display) {
+                display.textContent = includeLegacy
+                    ? 'All cycles (legacy pre + post)'
+                    : 'Post-OBS-002 (complete)';
+            }
+            if (warn) {
+                warn.style.display = includeLegacy ? 'block' : 'none';
+            }
+            loadPhaseCAll();
+        }
+        // Backwards-compatible no-op handler. The cohort <select>
+        // is hidden in PHASE-C8; cohort is driven by the explicit
+        // opt-in checkbox. Kept as a no-op so external callers do
+        // not crash if invoked.
+        function onPhaseCCohortChange() {
+            // no-op (PHASE-C8: cohort controlled by #phase-c-include-legacy)
+        }
+        async function loadPhaseCAll() {
+            await Promise.all([
+                loadPhaseCFunnel(),
+                loadPhaseCGates(),
+                loadPhaseCBlockers(),
+                loadPhaseCOutcomes(),
+                loadPhaseCCoverage(),
+            ]);
+            const range = _pc_getRange();
+            const cohort = _pc_getCohort();
+            const banner = document.getElementById('phase-c-coverage-banner');
+            if (banner) {
+                banner.textContent = 'range=' + range + ' · cohort=' + cohort;
+            }
+            // PHASE-C8: re-sync the legacy warning visibility with
+            // the checkbox state on every load. loadPhaseCAll can be
+            // called via auto-load (when Analytics tab becomes active)
+            // without the user touching the checkbox; we want the
+            // warning to reflect current state, not stale state.
+            const cb = document.getElementById('phase-c-include-legacy');
+            const warn = document.getElementById('phase-c-legacy-warning');
+            if (cb && warn) {
+                warn.style.display = cb.checked ? 'block' : 'none';
+            }
+        }
+        // Auto-load Phase C cards when the Analytics tab becomes active.
+        // Hook into the existing showAnalyticsTab if present, or fall back
+        // to a per-tab visibility observer. We add a small observer.
+        (function _pc_setupAutoLoad() {
+            const tabId = 'top-tab-analytics';
+            let loaded = false;
+            const observer = new MutationObserver(() => {
+                const el = document.getElementById(tabId);
+                if (el && el.style.display !== 'none' && !loaded) {
+                    loaded = true;
+                    loadPhaseCAll();
+                } else if (el && el.style.display === 'none') {
+                    loaded = false;
+                }
+            });
+            const el = document.getElementById(tabId);
+            if (el) {
+                observer.observe(el, { attributes: true, attributeFilter: ['style'] });
+            }
+        })();
 
 </script>
 

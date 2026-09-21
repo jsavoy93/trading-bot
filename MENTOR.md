@@ -2466,3 +2466,651 @@ the exception remains swallowed exactly as in `main`. No `raise`,
 - SmartBot `ActiveEnterTimestamp` must remain unchanged across
   deployment.
 - DASHBOARD ONLY.
+
+## Dashboard Phase C — OBS Analytics (2026-09-17)
+
+Phase C is a dashboard-only, read-only OBS Analytics redesign of the
+Analytics tab. It exists to answer one question: **"why, over time?"**
+That is, given the persisted decision footprint, what does the bot
+actually do cycle after cycle — how many symbols it analyzes, how
+many become eligible, how many reach execution, how many fail each
+gate or check, how outcomes distribute, and where the historical
+record is complete vs. incomplete. It is NOT a redesign of the
+trading bot itself.
+
+**Scope: dashboard / read-model only.** Phase C does NOT modify:
+SmartBot scoring, eligibility, ranking, sizing, risk, brokerage,
+OBS-001/OBS-002 persistence, the `trading_bot.db` schema,
+PIPELINE-001, SCORE-003, OpenClaw runtime/config, or any service
+configuration. No `src/` changes. No settings changes. SmartBot
+`ActiveEnterTimestamp` must remain unchanged across deployment.
+
+### Purpose and contract
+
+- Persisted OBS facts are the only authority. Every Phase C value
+  comes from a persisted column or a persisted JSON field on
+  `cycle_funnel` or `decision_history.decision_snapshot`.
+- No historical recomputation from current settings. The bot's
+  current scoring or eligibility rules are never consulted to
+  derive Phase C values; only the structured persisted snapshot is.
+- `HOLD_INELIGIBLE` does NOT automatically mean a failed gate. A
+  HOLD row's gate record is counted only if its structured
+  `gates[].passed == false` says so. The outcome enum is never
+  used to infer gate failure.
+- `SKIPPED_INVALID_DATA` remains distinct. It is its own outcome
+  row in the Outcome Distribution card, never lumped with HOLD,
+  rendered in a distinct color and labeled "Invalid data (no
+  score, no rank)".
+- Candidate existence requires `ranking.candidate_rank IS NOT NULL`
+  (Phase B contract; unchanged by Phase C).
+- Submitted orders are not fills. A submitted order is shown as
+  submitted, never as filled, unless `fill_confirmed === true`.
+  Phase C does not introduce or change any order-fill endpoint.
+- Pre-OBS-002 history may be incomplete and is never backfilled.
+  Pre-OBS-002 cycles are surfaced separately in the coverage card
+  with an explicit "does not backfill" note; the structured
+  `gates[]` and `execution_checks.checks[]` arrays are sparse or
+  absent for those cycles.
+
+### Gate-aggregation contract (audited)
+
+Phase C was preceded by a schema-v1 audit of persisted decision
+snapshots (287,066 post-OBS-002 rows sampled). The audit resolved the
+"structured failed_gates vs primary_reason text" question definitively:
+
+| Snapshot block | Population | Status | Phase C use |
+|----------------|-----------|--------|-------------|
+| `strategy_eligibility.failed_gates` | 0 / 287,066 rows | **never populated** in v1 | NOT USED. The structured `gates[]` array replaces it. |
+| `strategy_eligibility.gates[]` | 275,296 / 287,066 rows (96%) | canonical structured array with `{name, category, applied, passed, observed_value, threshold_value, reason}` per gate; **100% of HOLD_INELIGIBLE rows have it** | YES. **Strategy Gate Failure Frequency** reads this directly. No text parsing. No `primary_reason` substring heuristic. |
+| `execution_checks.checks[]` | 516 / 287,151 rows (0.18%) | structured array; only SELL_BLOCKED_DYNAMIC paths reach `execute_trade` and therefore produce checks[]; **every other outcome has NO checks[]** | YES (with explicit universe caveat). **Execution Blocker Frequency** reads this and labels its universe as "decision_history rows where the symbol reached `execute_trade`" — currently only SELL paths produce this. |
+| `decision.outcome` | 287,066 / 287,066 rows | canonical enum | YES. **Outcome Distribution** plus explicit SKIPPED_INVALID_DATA separation. |
+| `decision.signal_strength` | 1,437 / 1,437 sampled HOLD_INELIGIBLE rows = NULL; some HOLD rows in early post-OBS-002 sample = `WEAK` | per-outcome, NOT a strategy-gate indicator | NOT used to infer gate failure. The structured `gates[].passed = false` is the only authoritative gate-failure signal. |
+
+**Conclusion**: Phase C uses `strategy_eligibility.gates[].passed =
+false` (canonical structured source) for Strategy Gate Failure
+Frequency. **No heuristic parsing of `decision.primary_reason` is
+performed.** `decision.primary_reason` is free-form English (e.g.,
+"Strategy ineligible: failed gates: rsi_oversold, sma_uptrend") and
+is therefore NOT canonical for aggregation. It is preserved exactly
+as persisted and exposed verbatim in tooltips / drill-down panels
+(Phase A behavior), but never parsed into structured gate fields by
+the dashboard.
+
+### Time-range selector
+
+The Analytics tab header gains a `<select id="phase-c-range">` with
+four options:
+
+| Option | Window | Source of `start_time` |
+|--------|--------|-------------------------|
+| Latest | the latest single completed cycle (the same one Phase B's Latest Cycle card shows) | `cycle_funnel.cycle_start` of the row with the largest `cycle_end` that is non-null |
+| Today | 00:00:00.000000 → 23:59:59.999999 of the **server's UTC calendar day** | `datetime.now(timezone.utc).strftime("%Y-%m-%d")` — UTC day boundary, computed on the server. |
+| 24h | now − 24h → now | `datetime.now(timezone.utc) - timedelta(hours=24)` |
+| 7d | now − 7×24h → now | `datetime.now(timezone.utc) - timedelta(days=7)` |
+
+All four windows are interpreted on the **persisted
+`cycle_funnel.cycle_start` and `decision_history.cycle_start` columns**
+(always stored as ISO-8601 UTC with `+00:00` suffix). SQLite
+lexicographic comparison on these strings is a correct chronological
+comparison. The browser does NOT compute the boundary; the server
+computes it on the server's UTC clock and only accepts the choice
+enum from the browser.
+
+Each endpoint also accepts `cohort="post_obs002"|"all"` (default
+`"post_obs002"`). `"all"` includes pre-OBS-002 cycles. **The
+`cohort=all` selection is gated behind an explicit user action in
+the UI.** As of PHASE-C8 (2026-09-18), the visible cohort control
+is a checkbox labelled "Include legacy pre-OBS-002 cycles"
+(`<input type="checkbox" id="phase-c-include-legacy">`), which is
+unchecked by default. The backend `<select id="phase-c-cohort">`
+remains in the DOM (hidden) so `_pc_getCohort()` continues to
+work, but its value is mirrored from the checkbox state. Until
+the box is ticked, the cohort is `post_obs002` (complete coverage
+only) and the user cannot silently include pre-OBS-002 cycles.
+
+When the legacy opt-in checkbox is enabled:
+
+- `cohort` becomes `"all"`.
+- A visible coverage warning banner
+  (`<div id="phase-c-legacy-warning">`) appears immediately
+  below the selector card. It states that pre-OBS-002 cycles may
+  be incomplete, that no backfill was performed, and that
+  percentages/counts in this view may reflect incomplete
+  historical coverage.
+- `loadPhaseCAll()` re-syncs the banner visibility on every
+  reload so the warning reflects the current state, not stale
+  state from a previous session.
+
+Pre-OBS-002 cycles have sparse or absent
+`strategy_eligibility.gates[]` and `execution_checks.checks[]`,
+so even with `cohort=all` the Strategy Gate Failure Frequency
+and Execution Blocker Frequency cards will populate with whatever
+pre-OBS-002 data exists — which for the gates card is typically
+empty, and for the blockers card is always empty. The default
+`cohort=post_obs002` is the recommended mode.
+
+### Phase C cards on the Analytics tab
+
+Phase C does NOT remove or restructure the legacy Analytics cards.
+The legacy Performance Analytics, Failed Analysis Breakdown, and
+Filter Analysis cards are preserved UNCHANGED and remain visible at
+the bottom of the Analytics tab. Phase C adds six new cards
+**above** the legacy cards:
+
+1. **Time-range selector card** (`#phase-c-selector-card`)
+   - 4-option range selector (`latest` / `today` / `24h` / `7d`).
+   - 2-option cohort selector (`post_obs002` / `all`).
+   - Coverage status banner (the JS sets `range=X · cohort=Y` text;
+     full coverage stats are in the dedicated coverage card).
+
+2. **Decision Funnel card** (`#phase-c-funnel-card`)
+   - Reads from `cycle_funnel` only — never `decision_history` (which
+     would double-count per-symbol decisions).
+   - Forward path stages (rendered as connected blocks in the JS
+     with `›` arrows between them):
+     Analyzed → Strategy Eligible → Ranked Candidates → Execution
+     Attempted → Orders Submitted.
+   - Off-path outcomes (rendered in a separate row in the JS,
+     explicitly labeled "(off-path)", NEVER as funnel steps that
+     flow into submission):
+     Execution Blocked, Orders Failed, Not Attempted.
+   - Largest dropoff callout computed pairwise over the forward
+     path. Drop-off counts are computed from the persisted
+     counters, NOT from `decision_history` rows.
+   - Card meta line shows `Cycles`, `Range`, and `Cohort`. The
+     zero-state headline ("No cycles in this window.") renders when
+     `cycles == 0`.
+
+3. **Strategy Gate Failure Frequency card** (`#phase-c-gate-freq-card`)
+   - Reads `decision_history.decision_snapshot → $.strategy_eligibility.gates[]`
+     for every row in the cohort (HOLD_INELIGIBLE rows are where this
+     is most populated).
+   - Renders an HTML table with columns: Gate, Total, Passed,
+     Failed, Failure Rate, Applied.
+   - Each gate row carries a tooltip with the sampled
+     `observed_value` and `threshold_value` ranges (sampled from
+     persisted JSON only — never from live settings).
+   - Default sort: failures DESC, then gate_name ASC (deterministic).
+   - Empty state: literal text "No structured strategy gate data in
+     this window. Pre-OBS-002 cycles did not persist
+     `strategy_eligibility.gates[]`."
+   - **Authoritative source**: `gates[].name`, `gates[].passed`.
+   - **Limitations**:
+     1. **`applied=false` is NOT excluded from the failure count.**
+        See "Gate-aggregation future-proofing note" below. Current
+        data is unaffected (every persisted gate record has
+        `applied=1`), but a schema change that begins writing
+        `applied=false` records would inflate failure counts.
+     2. **The pre-OBS-002 population is sparse.** Pre-OBS-002
+        rows that lack structured `gates[]` will not contribute.
+        The test `test_no_hold_ineligible_to_failed_gate_inference`
+        enforces that all HOLD_INELIGIBLE rows in post-OBS-002
+        must carry `gates[]`.
+
+4. **Execution Blocker Frequency card** (`#phase-c-execution-blockers-card`)
+   - Reads `decision_history.decision_snapshot → $.execution_checks.checks[]`.
+   - Renders an HTML table with columns: Check, Total, Passed,
+     Failed, Applied. A second table shows the
+     `first_blocking_check` distribution.
+   - Honest universe caveat (rendered in a yellow box with `⚠`):
+     "Blocker data only exists for decision_history rows whose
+     OBS-001 trace reached `execute_trade`. Currently this is the
+     SELL path (SELL_BLOCKED_DYNAMIC). BUY paths and HOLD outcomes
+     are not in this universe."
+   - `rows_in_cohort` and `rows_with_checks` are exposed so the UI
+     can render the gap between the cohort size and the universe
+     that actually carries execution-check data.
+
+5. **Outcome Distribution card** (`#phase-c-outcome-card`)
+   - HTML table (NOT a Chart.js chart) of `decision.outcome` enum
+     values, one row per distinct outcome.
+   - Columns: Outcome, Count, Pct.
+   - SKIPPED_INVALID_DATA is rendered in its own color (amber
+     border) and explicitly labeled "Invalid data (no score, no
+     rank)" instead of the raw enum string.
+   - SELL_BLOCKED_DYNAMIC, BUY_BLOCKED_DYNAMIC,
+     SELL_BLOCKED_NO_POSITION are each rendered as separate table
+     rows (not as separate "bars").
+   - HOLD_INELIGIBLE is the dominant row in current data.
+   - Sort: count DESC, then outcome enum ASC (deterministic).
+   - Total pcts sum to exactly 1.0.
+
+6. **Historical completeness / coverage indicator card** (`#phase-c-coverage-card`)
+   - Two bands: pre-OBS-002 (legacy) and post-OBS-002 (complete).
+   - Per-band, shows: cycle count, complete_cycles, incomplete_cycles,
+     total_missing_symbol_decisions, complete-rate.
+   - Per-cycle coverage = "complete" iff `cycle_funnel.analyzed_count
+     == COUNT(DISTINCT decision_history.symbol for that cycle)`
+     (the OBS-002 invariant).
+   - The pre-OBS-002 band explicitly states: "Pre-OBS-002 cycles may
+     be incomplete. decision_history is sparse for these cycles; the
+     dashboard does not backfill missing decisions from current
+     settings or raw indicators."
+   - The post-OBS-002 band explicitly states: "Post-OBS-002 cycles
+     carry a complete decision_history footprint (terminal decision
+     coverage invariant)." The OBS-002 long-run validation
+     confirmed this for the post-OBS-002 window; see
+     `reports/2026-09-14_155755_obs-002-terminal-decision-coverage.md`
+     for the validation report.
+
+### Endpoints added (Phase C only)
+
+Five read-only GET endpoints under `/api/phase-c/*`. All return JSON.
+All return `range` and `cohort` (where applicable) in the response
+envelope. All return `{"error": "..."}` envelopes on validation
+failure or runtime exception (HTTP 200 with an error envelope; never
+a 5xx).
+
+| Endpoint | Purpose | Authoritative tables/fields | Time-window behavior | Bounded reads | Legacy / incomplete handling |
+|---|---|---|---|---|---|
+| `GET /api/phase-c/funnel` | Decision Funnel counts for a window (forward path + off-path + largest dropoff). | `cycle_funnel` (`analyzed_count`, `strategy_eligible_count`, `ranked_candidate_count`, `execution_attempt_count`, `execution_blocked_count`, `order_submission_attempt_count`, `order_submitted_count`, `order_failed_count`, `not_attempted_count`). | `range` ∈ `{latest, today, 24h, 7d}` filters `cycle_funnel.cycle_start`. `cohort` ∈ `{post_obs002, all}` defaults `post_obs002`. | Reads `cycle_funnel` only (not `decision_history`); `cycle_funnel` is bounded per cycle so the SUM is finite. | With `cohort=post_obs002`, pre-OBS-002 cycles are excluded. With `cohort=all`, the pre-band cycles contribute honestly (their funnel counters may be 0 or sparse). |
+| `GET /api/phase-c/strategy-gates` | Strategy Gate Failure Frequency per gate name. | `decision_history.decision_snapshot → $.strategy_eligibility.gates[]` (`name`, `category`, `applied`, `passed`, `observed_value`, `threshold_value`). | `range` and `cohort` as above. Cohort/range filter `decision_history.cycle_start`. | `json_each(...)` flattens the `gates[]` array. `GROUP BY gate_name, gate_category`. No unbounded loop. Sort: failures DESC, name ASC (deterministic). | Pre-OBS-002 rows without structured `gates[]` contribute zero (they are filtered by `json_each` naturally). Empty state surfaced explicitly. See "Gate-aggregation future-proofing note" below. |
+| `GET /api/phase-c/execution-blockers` | Execution Blocker Frequency per check name + `first_blocking_check` distribution. | `decision_history.decision_snapshot → $.execution_checks.checks[]` and `$.execution_checks.first_blocking_check`. | `range` and `cohort` as above. | `json_each(...)` flattens `checks[]`. Two `SELECT`s: per-check aggregation + blocker distribution. Rows are bounded by the cohort. | Universe caveat exposed in response: only `decision_history` rows whose OBS-001 trace reached `execute_trade` carry `checks[]` — currently only the SELL path. `rows_in_cohort` vs `rows_with_checks` exposed for the UI to render the gap. |
+| `GET /api/phase-c/outcomes` | Per-decision outcome distribution. | `decision_history.decision_snapshot → $.decision.outcome`. | `range` and `cohort` as above. | One `SELECT ... GROUP BY outcome`. Bounded by the cohort. Sort: count DESC, outcome ASC. | SKIPPED_INVALID_DATA rendered as its own row with distinct label. All outcomes from the `decision.outcome` enum surface, including `None` (rendered as `NULL`). |
+| `GET /api/phase-c/coverage` | Pre/post OBS-002 cycle completion coverage. | `cycle_funnel` + `decision_history` (per-cycle distinct-symbol count via correlated subquery). | `range` as above (no `cohort` param; the endpoint itself always splits by band). | One `SELECT` against `cycle_funnel` with a `COUNT(DISTINCT ...)` subquery per row. The query is bounded by the range; pre/post split happens in Python. | Pre-OBS-002 cycles without `decision_history` rows have `distinct_symbols == 0` (LEFT-JOIN-style behavior via the subquery); they contribute `analyzed_count` to `total_missing_symbol_decisions`. They are NEVER backfilled. |
+
+All five endpoints accept `?range=latest|today|24h|7d` and
+`?cohort=post_obs002|all` query params with safe defaults
+(`range=7d`, `cohort=post_obs002` for the four that take a cohort).
+
+All other endpoints (`/api/opportunities`, `/api/decision`,
+`/api/decision-history`, `/api/actionability-summary`,
+`/api/cycle-candidates/{cycle_id}`, `/api/score/{symbol}`,
+`/api/orders/*`, `/api/positions*`) are UNCHANGED by Phase C.
+
+### Source-of-truth enforcement
+
+- NO endpoint ever recomputes a decision from current settings or
+  raw indicators. Every value comes from a persisted column or a
+  persisted JSON field.
+- `decision.primary_reason` is shown verbatim where surfaced (Phase
+  A behavior, preserved); it is NEVER parsed by the dashboard into
+  structured fields.
+- `analyzed_stocks.signal` is NOT consulted for any Phase C
+  analytics (it is consulted only for legacy pre-OBS-001 reads in
+  Phase A's renderer fidelity path, which is preserved untouched).
+- `failed_analyses.blocked_by` is NOT consulted for Phase C
+  analytics (it is consulted only by the legacy Filter Analysis
+  card, which is preserved untouched per the Phase A/B "no
+  replacement of legacy functionality" rule).
+- `fill_confirmed` semantics apply unchanged: a submitted order is
+  never shown as filled unless `fill_confirmed === true`. Phase C
+  does not introduce or change any order-fill endpoint.
+- `ranking.candidate_rank IS NOT NULL` is the only authoritative
+  candidate existence test (Phase B contract preserved).
+
+### Gate-aggregation future-proofing note (PHASE-C7, 2026-09-17) — CLOSED
+
+**Status: CLOSED as of PHASE-C7 (2026-09-17 18:14 UTC).** The
+`applied=false` defensive gap identified in PHASE-C6 has been
+hardened at the SQL level. Only persisted `applied=true` gate
+evaluations contribute to the aggregation. The semantic mapping is
+locked in by regression tests in
+`tests/test_dashboard_phase_c_obs_analytics.py ::
+TestGateAggregationAppliedFilter`.
+
+**Semantic mapping (locked):**
+
+| gate.applied | gate.passed | Effect on the response |
+|---|---|---|
+| `true` (JSON boolean, SQL `1`) | `true` | `passed += 1`, `total += 1` |
+| `true` (JSON boolean, SQL `1`) | `false` | `failed += 1`, `total += 1` |
+| `false` (JSON boolean, SQL `0`) | (any) | contributes 0 to passed, failed, total |
+| missing / malformed / NULL | (any) | contributes 0 to passed, failed, total (fails closed) |
+
+**SQL change (PHASE-C7):** The aggregation's `WHERE` clause now
+includes a join-level filter:
+
+```sql
+WHERE <cohort_clause> AND <range_clause>
+  AND COALESCE(json_extract(gate.value, '$.applied'), 0) = 1
+```
+
+This restricts the `json_each` join to rows whose persisted
+`applied` value is JSON `true` (or, defensively, the integer `1`).
+JSON `false` and missing/malformed values are coalesced to `0` and
+excluded. `COUNT(*)` per group therefore equals the count of
+`applied=true` gate evaluations (the denominator); `failure_rate`
+= `failed / total` uses only the `applied=true` denominator.
+
+**Response-shape invariants (preserved):**
+- `total_evaluations` = number of persisted `applied=true` gate
+  evaluations (the denominator).
+- `applied_count` is still surfaced in the response for backward
+  compatibility with the Phase C test surface; by construction it
+  now equals `total_evaluations` (every row in the join has
+  `applied=true`).
+- `failed = total - passed` (unchanged). Because the join is
+  filtered to `applied=true`, this counts only
+  `applied=true + passed=false` rows.
+- `failure_rate = failed / total` when `total > 0`, else `0.0`.
+- `rows_in_cohort` and `gate_rows_aggregated` are surfaced as
+  before. `gate_rows_aggregated` now equals the count of
+  `applied=true` gate evaluations across all gates.
+
+**`inference_rule` string** (now documents the filter):
+
+```
+failures counted only where gate.passed == false AND
+gate.applied == true; gate.applied == false and
+malformed/missing applied both contribute 0 (fail closed);
+never from HOLD_INELIGIBLE outcome
+```
+
+**Regression coverage (PHASE-C7):**
+`tests/test_dashboard_phase_c_obs_analytics.py ::
+TestGateAggregationAppliedFilter` — 8 test cases driven by a
+`synthetic_phase_c_db` pytest fixture that builds an in-memory
+sqlite DB with 6 controlled `decision_history` rows:
+
+| Row | applied | passed | Outcome expectation |
+|---|---|---|---|
+| `c1` | `true` | `true` | contributes `passed=1, total=1` |
+| `c2` | `true` | `false` | contributes `failed=1, total=1` |
+| `c3` | `false` | `null` | contributes 0 (excluded) |
+| `c4` | missing field | `true` | contributes 0 (fails closed) |
+| `c5` | `true` | `false` (sma_uptrend) | contributes `failed=1, total=1` |
+| `c6` | (HOLD_INELIGIBLE, empty `gates[]`) | n/a | contributes 0 to any gate |
+
+The fixture monkey-patches `dashboard._phase_c_open_db` to return
+the in-memory DB for the duration of each test; pytest restores
+the original opener after the test exits.
+
+**No code changes** outside `dashboard.py` (the
+`api_phase_c_strategy_gates` endpoint) and the test file. SmartBot
+persistence schema, the OBS-001 / OBS-002 invariants, and
+`trading_bot.db` are unchanged. The ground-truth DB check on
+2026-09-17 confirmed all 718,526 persisted gate records have
+`applied=true`, so the new filter is identity for current data and
+guards against future schema changes (OBS-003+).
+
+### Mobile-first (current behavior)
+
+- No element requires horizontal scroll on a phone.
+- Time-range and cohort selectors use native `<select>` (native
+  mobile picker).
+- Phase C cards stack vertically (they are `<div class="card">`
+  elements inside the existing `.top-tab-panel` flex container).
+- **Phase C uses HTML `<table>` elements for the Funnel,
+  Strategy Gate Failure Frequency, Execution Blocker Frequency,
+  and Outcome Distribution cards.** Chart.js is used by the LEGACY
+  cards only (Performance Analytics, Failed Analysis Breakdown,
+  Filter Analysis). Phase C does not depend on Chart.js.
+- Touch target sizing: the latest/today/24h/7d `<select>`, the
+  legacy opt-in `<label class="phase-c-legacy-toggle">`, the
+  read-only `<span id="phase-c-cohort-display">` chip, and the
+  "🔄 Refresh" button all carry `min-height: 44px` (or rely on
+  the inherited 44px media-query override) so the controls meet
+  Apple HIG / WCAG 2.5.5 mobile touch target expectations.
+- Table overflow: each Phase C table is wrapped in a
+  `<div class="phase-c-card-table-wrap">` which carries
+  `overflow-x: auto` and `-webkit-overflow-scrolling: touch` in
+  the 600px media query. Tables scroll horizontally inside the
+  card rather than causing the whole page to scroll.
+- Mobile selector layout: under 600px viewport the time-range,
+  cohort display chip, and legacy opt-in toggle stack vertically
+  (flex-direction: column) with full-width controls and 8px
+  gap; the meta banner reflows to the left edge.
+- Phase C card padding is reduced under 600px so cards do not
+  waste horizontal space.
+
+### Test coverage (tests/test_dashboard_phase_c_obs_analytics.py)
+
+The test file (760 lines, 13 test classes, 59 test functions, ~33 KB
+AST-parsed) covers at least:
+
+- Time-window boundaries (`today`, `24h`, `7d`, `latest`) per
+  endpoint; UTC-aware, server-clock-based; browser does not compute.
+- Funnel aggregation: forward path counts from `cycle_funnel` SUM,
+  off-path from `cycle_funnel` SUM; never from `decision_history`
+  rows (which would double-count).
+- Off-path separation: Execution Blocked and Orders Failed never
+  appear in the forward path; they're in a separate field
+  `off_path`.
+- Terminal outcome aggregation: per outcome enum, sorted count DESC
+  + name ASC.
+- SKIPPED_INVALID_DATA separation: distinct color, distinct label,
+  NOT lumped with HOLD.
+- Candidate-rank semantics: `candidate_rank IS NOT NULL` only;
+  Phase B's contract preserved (analyzed_count ==
+  COUNT(DISTINCT decision_history.symbol) invariant checked against
+  the latest completed cycle).
+- NO HOLD_INELIGIBLE → failed-gate inference test: a HOLD_INELIGIBLE
+  row with empty `gates[]` MUST contribute zero gate failures to
+  the Strategy Gate Failure Frequency card (asserted via direct DB
+  query in `test_no_hold_ineligible_to_failed_gate_inference`).
+- Gate aggregation contract: gate names come from `gates[].name`
+  only; never from `primary_reason` substring matching (asserted
+  via static grep of the Phase C JS block, plus response-shape
+  assertions).
+- Zero-state behavior: each card renders a deterministic zero-state
+  message (no fabricated counts).
+- Legacy rows: pre-OBS-002 cycles never contribute to the funnel
+  numerators or denominators when `cohort=post_obs002`.
+- Cycle completion invariant: the coverage card uses the same
+  `analyzed_count == COUNT(DISTINCT decision_history.symbol)`
+  invariant the OBS-002 long-run validation proved.
+
+### Implementation contract
+
+- File: `dashboard.py` adds 5 new read-only endpoints under
+  `/api/phase-c/*`. NO existing endpoint changes.
+- File: `templates/dashboard.html` adds 6 new `<div class="card">`
+  elements with `id="phase-c-*"` (selector + funnel + gates +
+  blockers + outcomes + coverage) inside the Analytics tab. The
+  legacy Performance Analytics, Failed Analysis Breakdown, and
+  Filter Analysis cards are preserved UNCHANGED below the Phase C
+  cards; they are NOT moved behind a disclosure and are NOT
+  removed. The Phase C JS adds renderers for the 5 data cards and
+  a `loadPhaseCAll()` orchestrator that fires when the Analytics
+  tab becomes visible (via a MutationObserver on the tab's `style`
+  attribute).
+- File: `tests/test_dashboard_phase_c_obs_analytics.py` (new)
+  covers all acceptance criteria listed above.
+- File: `MENTOR.md` (this section) is the source-of-truth spec.
+- No `src/` changes. No `trading_bot.db` schema changes. No
+  settings changes. No SmartBot runtime changes. No
+  OpenClaw runtime/config changes.
+- SmartBot `ActiveEnterTimestamp` must remain unchanged across
+  deployment.
+- The trading dashboard (`dashboard.service`) MAY be restarted ONCE
+  for live verification only; this is the same Phase B-approved
+  dashboard-restart pattern. SmartBot and the engineering dashboard
+  must NOT be restarted.
+
+### PHASE-C8 status (2026-09-18)
+
+PHASE-C8 closed two follow-up items from PHASE-C7's
+"Remaining Phase C Risks" list and added the legacy opt-in
+contract. The dashboard.html template was extended (not the
+backend SQL — `dashboard.py` was not touched in PHASE-C8):
+
+1. **Legacy cohort opt-in (read-only safety):** The
+   `cohort=all` value is no longer directly selectable in the
+   UI. The visible cohort control is a checkbox
+   (`#phase-c-include-legacy`), unchecked by default. The
+   backend `<select id="phase-c-cohort">` remains in the DOM
+   for `_pc_getCohort()` compatibility but is hidden. The
+   checkbox's `onchange` handler mirrors the value into the
+   hidden select, updates a read-only display chip
+   (`#phase-c-cohort-display`), toggles the coverage warning
+   banner (`#phase-c-legacy-warning`), and calls
+   `loadPhaseCAll()`. `loadPhaseCAll()` also re-syncs the
+   banner visibility on every reload so the warning always
+   reflects current state.
+2. **Mobile / touch UX:** The 600px media query now enforces
+   44px minimum touch target height on the time-range
+   `<select>`, the legacy opt-in `<label>`, and the read-only
+   cohort display chip; stacks selector controls vertically;
+   reflows the meta banner to the left edge; reduces Phase C
+   card padding; and wraps every Phase C table inside
+   `<div class="phase-c-card-table-wrap">` which carries
+   `overflow-x: auto` and `-webkit-overflow-scrolling: touch`
+   so tables scroll horizontally inside the card rather than
+   causing the page to overflow.
+3. **Race-test stabilization:** The pre-existing
+   `TestGateAggregationContract::test_no_hold_ineligible_to_failed_gate_inference`
+   test was failing intermittently because it issued two
+   separate SELECTs against `decision_history` while SmartBot
+   was writing concurrently (~21s/cycle). PHASE-C8 combined
+   the two SELECTs into a single atomic query using
+   `SUM(CASE WHEN ... THEN 1 ELSE 0 END)` so both counts
+   derive from one snapshot. Verified 3/3 consecutive runs
+   pass against the live DB. The semantic assertion is
+   unchanged: every post-OBS-002 HOLD_INELIGIBLE row must
+   carry a populated `strategy_eligibility.gates[]` array.
+
+PHASE-C8 added two new test classes
+(`TestPhaseCLegacyCohortOptIn`, `TestPhaseCMobileUx`) totaling
+18 new test functions to
+`tests/test_dashboard_phase_c_obs_analytics.py`.
+
+**Backend (`dashboard.py`) is unchanged in PHASE-C8.** All
+PHASE-C7 semantics (`applied=true` filter, `inference_rule`,
+fail-closed behavior, response shape) remain intact. The
+backend continues to accept both `cohort=post_obs002` and
+`cohort=all` as documented.
+- The gateway was restarted ONCE during the CHAT-RETRY-001
+  deployment on 2026-09-17 00:21:03 UTC (separately tracked in the
+  CHAT-RETRY-001 audit archives). No gateway restart is required
+  by Phase C itself.
+
+### Reconciliation status (PHASE-C6, 2026-09-17)
+
+This section was reconciled against the existing implementation
+in PHASE-C6 (2026-09-17 11:50 UTC). The reconciliation corrected:
+
+- Removed Chart.js references (Phase C uses HTML `<table>`, not
+  Chart.js). Chart.js usage in the file is for legacy cards only.
+- Replaced "server's local trading date" with "server's UTC
+  calendar day" for the `today` range. Implementation uses
+  `datetime.now(timezone.utc)` (UTC), not `date('now',
+  'localtime')`.
+- Replaced "rendered as connected blocks with arrows" with the
+  actual JS `›`-separator inline markup.
+- Replaced "Headline: 'Analyzed N symbols across M cycles'" with
+  the actual meta line ("Cycles, Range, Cohort").
+- Replaced "Bar chart"/"rendered as separate bars" with "HTML
+  table"/"rendered as separate table rows" for the Outcome
+  Distribution card.
+- Removed the unverifiable "OBS-002 long-run validation passed
+  9,392/9,392 cycles" claim; replaced with a pointer to the OBS-002
+  validation report under `reports/`.
+- Added documentation of `first_blocking_check` distribution and
+  `applied_count` column on the Execution Blocker Frequency card.
+- Added explicit per-endpoint table (purpose, fields, time-window
+  behavior, bounded reads, legacy/incomplete handling).
+- Added "Gate-aggregation future-proofing note" documenting the
+  `applied=false` defensive gap and the planned PHASE-C7 fix.
+- Corrected "restructured from…into" to "adds to (legacy cards
+  remain)"; removed the misleading "advanced/legacy disclosure"
+  claim.
+- Corrected the "cohort=all gated behind a toggle" claim to
+  reflect the actual UI (currently exposed directly in a
+  `<select>`, with PHASE-C8 hardening planned).
+- Reconciled the Implementation contract to accurately describe
+  the `<select>`-based cohort UI and the lack of a disclosure.
+
+## Dashboard Phase C — Test Isolation (PHASE-C10D, 2026-09-20)
+
+PHASE-C10D relocates the 13 LIVE_DB_READ (observational) tests out
+of the deterministic Phase C test file so that default pytest
+collection excludes them.
+
+**The split:**
+
+- **Deterministic Phase C tests** (`tests/test_dashboard_phase_c_obs_analytics.py`)
+  use synthetic in-memory SQLite fixtures wired into
+  `dashboard._phase_c_open_db` via `monkeypatch`. They are
+  hermetic, fast, and CI-safe. 151/151 PASSED in ~4.6s on
+  2026-09-20. ZERO live DB access.
+
+- **Live observational tests** (`tests/observational/test_phase_c_live_observational.py`)
+  read the live `trading_bot.db` produced by the running
+  SmartBot. They verify invariants that only hold in real
+  operation (recent cycle completion, post-OBS-002 coverage,
+  gate structure consistency under actual SmartBot writes, etc.).
+  13 tests, each marked `pytest.mark.observational` via
+  module-level `pytestmark`.
+
+**Default collection policy (pytest.ini):**
+
+- `addopts = -v --tb=short -m "not observational"` — default
+  pytest runs do NOT collect `observational` tests.
+- `markers = observational: empirical checks against the live
+  trading_bot.db; not collected by default pytest runs ...` —
+  the marker is registered so pytest does not emit
+  "unknown marker" warnings.
+
+**Explicit invocation (release gate / smoke / post-deploy):**
+
+```
+pytest -m observational tests/observational/test_phase_c_live_observational.py
+```
+
+**Hard rules for observational tests** (documented in
+`tests/observational/test_phase_c_live_observational.py` doctring):
+
+- Read-only: never write to `trading_bot.db` (the `_db()`
+  helper opens the DB in `mode=ro` URI as defense in depth).
+- Never pause, stop, or restart SmartBot.
+- Never mutate production state.
+- Never call brokerage or network services.
+- Tolerate concurrent SmartBot writes: where the assertion
+  requires internal consistency across two derived counts,
+  use ONE atomic SQL statement (SQLite serializes writes via
+  the database lock, so a single statement observes one
+  snapshot). The
+  `test_no_hold_ineligible_to_failed_gate_inference` test
+  preserves the PHASE-C8 atomic-query formulation.
+- Avoid repeated expensive endpoint calls when one bounded
+  read can prove the invariant.
+
+**Static guard:**
+
+`TestPhaseC10AFactorySelfTest::test_no_deterministic_test_uses_live_db_path`
+walks the file's AST and asserts that no test method (other
+than the guard itself) is structured to read the live
+`trading_bot.db`. The check covers:
+
+- direct `_db()` helper calls;
+- `live_phase_c_db` fixture arguments (the documented opt-in
+  escape hatch that no test currently uses);
+- the `shared_client` and `gates_response_today_post`
+  module-scoped live fixtures.
+
+If any of these patterns is reintroduced into this file's
+test bodies, the guard fails at run time so the regression
+is caught BEFORE it can run live during CI.
+
+**13 LIVE_DB_READ observational tests** (full list of node IDs,
+in `tests/observational/test_phase_c_live_observational.py`):
+- `TestGateAggregationContract::test_no_hold_ineligible_to_failed_gate_inference` (atomic SQL, OBS-002 regression guard)
+- `TestFunnelAggregation::test_funnel_latest_returns_one_cycle`
+- `TestFunnelAggregation::test_funnel_24h_returns_something`
+- `TestFunnelAggregation::test_funnel_cohort_all_includes_pre_obs002`
+- `TestExecutionBlockersHonestUniverse::test_per_check_totals_sum_to_with_checks_rows`
+- `TestOutcomeDistribution::test_pct_sums_to_1`
+- `TestCoverageIndicator::test_post_band_invariant_holds_in_observation_window`
+- `TestCandidateRankSemantics::test_decision_history_invariant`
+- `TestPhaseCSharedHelper::test_strategy_gates_response_shape_after_refactor`
+- `TestPhaseCSharedHelper::test_strategy_gates_cohort_all_is_superset_of_post_obs002`
+- `TestPhaseCSharedHelper::test_funnel_cohort_all_superset_of_post_obs002`
+- `TestPhaseCSharedHelper::test_latest_returns_one_or_zero_cycles`
+- `TestPhaseCSharedHelper::test_applied_filter_still_excludes_applied_false`
+
+**Implementation contract (PHASE-C10D):**
+
+- File: `pytest.ini` adds `observational` marker and updates
+  `addopts` to include `-m "not observational"`.
+- File: `tests/observational/test_phase_c_live_observational.py`
+  (NEW) holds the 13 relocated tests + minimal live-DB helpers
+  (`_db`, `_client`, `shared_client`, `gates_response_today_post`).
+  The module declares `pytestmark = pytest.mark.observational`.
+- File: `tests/test_dashboard_phase_c_obs_analytics.py` removes
+  the 13 relocated tests and the dead helpers
+  (`shared_client`, `gates_response_today_post`, `_db`). Adds
+  the static guard test (152 tests total, 152/152 pass).
+- No `dashboard.py` changes. No `templates/dashboard.html`
+  changes. No `src/` changes. No `trading_bot.db` schema changes.
+  No SmartBot runtime changes. No OpenClaw config changes.
