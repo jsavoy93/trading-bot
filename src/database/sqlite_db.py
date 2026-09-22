@@ -334,6 +334,109 @@ class SQLiteDB:
                 except sqlite3.OperationalError:
                     pass
 
+                # ── PHASE-C14B-1: Normalized analytics child tables ──
+                # Persisted derivative / index of the same OBS facts
+                # that are persisted in decision_history.decision_snapshot.
+                # decision_snapshot remains authoritative; the child
+                # tables mirror the structured `strategy_eligibility.gates[]`
+                # and `execution_checks.checks[]` arrays so that Phase C
+                # analytics queries can aggregate over indexed columns
+                # without re-parsing the full snapshot TEXT on every
+                # read (see C14B audit archive).
+                #
+                # Truth contract:
+                #   * INSERT-only; never UPDATE/DELETE.
+                #   * Populated atomically with the parent decision_history
+                #     INSERT inside finalize_decision_history's transaction.
+                #   * `applied` is INTEGER NOT NULL (0/1), coerced at write
+                #     time; missing or malformed values coerce to 0 (fail
+                #     closed) so future schema drift cannot inflate counts.
+                #   * `passed` is NULL when `applied = 0` (the documented
+                #     semantics — do not compute passed for non-applied
+                #     gates/checks).
+                #   * `ordinality` preserves the position of each entry
+                #     in the source array, including repeated names. The
+                #     UNIQUE constraint uses (decision_history_id,
+                #     ordinality) — NOT (decision_history_id, name) — so
+                #     multiplicity and order survive.
+                #   * `is_first_blocking` mirrors the structured scalar
+                #     snapshot.execution_checks.first_blocking_check;
+                #     only the row whose check_name matches that scalar
+                #     is set to 1.
+                #   * `gap_note` preserves _gap_note verbatim.
+                try:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS decision_gate_evaluations (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            decision_history_id INTEGER NOT NULL,
+                            cycle_id TEXT NOT NULL,
+                            symbol TEXT NOT NULL,
+                            cycle_start TEXT NOT NULL,
+                            ordinality INTEGER NOT NULL,
+                            gate_name TEXT NOT NULL,
+                            gate_category TEXT,
+                            applied INTEGER NOT NULL,
+                            passed INTEGER,
+                            observed_value REAL,
+                            threshold_value REAL,
+                            reason TEXT,
+                            UNIQUE(decision_history_id, ordinality)
+                        )
+                    """)
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_dge_cycle_start "
+                        "ON decision_gate_evaluations(cycle_start);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_dge_gate_name "
+                        "ON decision_gate_evaluations(gate_name);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
+                try:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS decision_execution_checks (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            decision_history_id INTEGER NOT NULL,
+                            cycle_id TEXT NOT NULL,
+                            symbol TEXT NOT NULL,
+                            cycle_start TEXT NOT NULL,
+                            ordinality INTEGER NOT NULL,
+                            check_name TEXT NOT NULL,
+                            applied INTEGER NOT NULL,
+                            passed INTEGER,
+                            observed_value REAL,
+                            threshold_value REAL,
+                            reason TEXT,
+                            gap_note TEXT,
+                            is_first_blocking INTEGER NOT NULL DEFAULT 0,
+                            UNIQUE(decision_history_id, ordinality)
+                        )
+                    """)
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_dec_cycle_start "
+                        "ON decision_execution_checks(cycle_start);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_dec_check_name "
+                        "ON decision_execution_checks(check_name);"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+
             self.available = True
             logging.info(f"✅ SQLite database ready: {DB_PATH}")
         except Exception as e:
@@ -924,7 +1027,9 @@ class SQLiteDB:
         decision_schema_version: int,
         decision_snapshot: Dict,
     ) -> bool:
-        """Append one finalized decision_history row for (cycle_id, symbol).
+        """Append one finalized decision_history row for (cycle_id, symbol)
+        PLUS the PHASE-C14B-1 normalized analytics child rows in the same
+        database transaction.
 
         IMMUTABILITY CONTRACT: this is a plain INSERT only. The
         UNIQUE(cycle_id, symbol) constraint makes duplicate inserts
@@ -933,6 +1038,16 @@ class SQLiteDB:
         reinserted. analyzed_stocks.decision_snapshot may continue
         to upsert (it represents latest state) but decision_history
         is insert-only.
+
+        PHASE-C14B-1 ATOMICITY CONTRACT: the parent decision_history
+        INSERT and the child-table INSERTs run inside ONE
+        `with _get_conn() as conn:` block. If any of the three INSERTs
+        raises, the connection's implicit transaction rolls back when
+        the `with` block exits via exception — decision_history is
+        NOT committed unless the child rows also succeed. This is the
+        atomic invariant the user required for the normalized
+        derivative index. `decision_snapshot` itself is never
+        modified; the child tables are additive mirrors.
 
         Returns True if a new row was inserted, False otherwise
         (existing row already present, or transient error).
@@ -953,6 +1068,29 @@ class SQLiteDB:
                         json.dumps(decision_snapshot),
                     ),
                 )
+                # PHASE-C14B-1: persist the normalized analytics
+                # derivative rows in the SAME transaction. Using
+                # `cur.lastrowid` to bind the parent id without an
+                # extra SELECT (cheap, atomic). If the child INSERTs
+                # raise, the implicit transaction is rolled back when
+                # the `with` block exits via exception — decision_history
+                # is not committed unless the child rows also succeed.
+                parent_id = cur.lastrowid
+                if parent_id is not None:
+                    self._persist_gate_evaluations(
+                        conn, parent_id,
+                        cycle_id=cycle_id,
+                        symbol=symbol,
+                        cycle_start=cycle_start,
+                        decision_snapshot=decision_snapshot,
+                    )
+                    self._persist_execution_checks(
+                        conn, parent_id,
+                        cycle_id=cycle_id,
+                        symbol=symbol,
+                        cycle_start=cycle_start,
+                        decision_snapshot=decision_snapshot,
+                    )
                 return cur.rowcount > 0
         except sqlite3.IntegrityError as e:
             # UNIQUE(cycle_id, symbol) violation: a finalized row
@@ -965,6 +1103,207 @@ class SQLiteDB:
         except Exception as e:
             logging.debug(f"Error finalizing decision_history for {cycle_id}/{symbol}: {e}")
             return False
+
+    # ── PHASE-C14B-1: Normalized analytics persistence helpers ────────────
+    # These helpers run INSIDE the finalize_decision_history transaction
+    # (the caller passes an open sqlite3.Connection). They are
+    # deliberately NOT public methods — the only entry point is
+    # finalize_decision_history, which guarantees atomicity with the
+    # parent decision_history INSERT. Both helpers are INSERT-only
+    # and never mutate an existing row.
+    #
+    # Truth contract (locked from PHASE-C7 audit):
+    #   * `applied` is INTEGER NOT NULL: 1 for true, 0 for false,
+    #     missing, or non-boolean. Fail-closed.
+    #   * `passed` is NULL when applied = 0; 0/1 otherwise.
+    #   * `is_first_blocking` is set on the SINGLE check row whose
+    #     name matches snapshot.execution_checks.first_blocking_check.
+    #     All other rows have is_first_blocking = 0. If the scalar is
+    #     None / empty / missing, no row is marked.
+    #   * `ordinality` is the 0-based position in the source array,
+    #     preserved verbatim so multiplicity and order survive.
+    #   * `gap_note` is preserved from the structured Dict; the
+    #     caller does NOT need to serialize/deserialize JSON.
+
+    @staticmethod
+    def _coerce_applied_int(value: Any) -> int:
+        """Return 1 if value is truthy and boolean-like, else 0.
+
+        Phase C7 fail-closed contract: missing or malformed values
+        coalesce to 0 (NOT applied) so they never inflate evaluation
+        totals. JSON booleans serialize to Python bool; integers 1/0
+        are accepted; everything else (including None, strings,
+        floats, lists, dicts) coerces to 0.
+        """
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, int) and not isinstance(value, bool):
+            return 1 if value == 1 else 0
+        return 0
+
+    @staticmethod
+    def _coerce_passed_int(applied: int, value: Any) -> Optional[int]:
+        """Return 0/1 for an applied entry, or None when applied=0.
+
+        The documented semantics are: a gate/check that was not
+        applied has no `passed` value. We persist NULL, not 0, so the
+        aggregator can distinguish "passed=false" from "not applied".
+        """
+        if applied == 0:
+            return None
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, int) and not isinstance(value, bool):
+            return 1 if value == 1 else 0
+        # Defensive: a malformed passed value on an applied entry.
+        # Treat as fail-closed (passed=0) to avoid silent overcount.
+        return 0
+
+    def _persist_gate_evaluations(
+        self,
+        conn: sqlite3.Connection,
+        parent_id: int,
+        *,
+        cycle_id: str,
+        symbol: str,
+        cycle_start: str,
+        decision_snapshot: Dict,
+    ) -> int:
+        """Persist one row per gate in decision_snapshot.strategy_eligibility.gates[].
+
+        Returns the number of rows inserted. Atomic with the parent
+        decision_history INSERT: if any of these raises, the caller's
+        transaction is rolled back.
+        """
+        gates = (
+            (decision_snapshot.get("strategy_eligibility") or {}).get("gates")
+        )
+        if not isinstance(gates, list):
+            return 0
+
+        rows = []
+        for ordinality, gate in enumerate(gates):
+            if not isinstance(gate, dict):
+                continue
+            name = gate.get("name")
+            # Skip entries with no name (malformed gate record). We
+            # do NOT fabricate names; missing-name rows are silently
+            # dropped to mirror the dashboard's `if not name: continue`
+            # guard.
+            if not isinstance(name, str) or not name:
+                continue
+            applied = self._coerce_applied_int(gate.get("applied"))
+            passed = self._coerce_passed_int(applied, gate.get("passed"))
+            category = gate.get("category")
+            if not isinstance(category, str):
+                category = None
+            observed = gate.get("observed_value")
+            threshold = gate.get("threshold_value")
+            try:
+                observed_f = float(observed) if observed is not None else None
+            except (TypeError, ValueError):
+                observed_f = None
+            try:
+                threshold_f = float(threshold) if threshold is not None else None
+            except (TypeError, ValueError):
+                threshold_f = None
+            reason = gate.get("reason")
+            if not isinstance(reason, str):
+                reason = None
+            rows.append((
+                parent_id, cycle_id, symbol, cycle_start,
+                ordinality, name, category,
+                applied, passed, observed_f, threshold_f, reason,
+            ))
+
+        if not rows:
+            return 0
+
+        conn.executemany(
+            """INSERT INTO decision_gate_evaluations
+               (decision_history_id, cycle_id, symbol, cycle_start,
+                ordinality, gate_name, gate_category,
+                applied, passed, observed_value, threshold_value, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        return len(rows)
+
+    def _persist_execution_checks(
+        self,
+        conn: sqlite3.Connection,
+        parent_id: int,
+        *,
+        cycle_id: str,
+        symbol: str,
+        cycle_start: str,
+        decision_snapshot: Dict,
+    ) -> int:
+        """Persist one row per check in decision_snapshot.execution_checks.checks[].
+
+        Returns the number of rows inserted. Atomic with the parent
+        decision_history INSERT: if any of these raises, the caller's
+        transaction is rolled back.
+        """
+        exec_block = decision_snapshot.get("execution_checks") or {}
+        checks = exec_block.get("checks")
+        if not isinstance(checks, list):
+            return 0
+
+        # The structured first_blocking_check scalar decides which
+        # check row is marked is_first_blocking=1. We resolve the
+        # match at write time so reads do not need to inspect the
+        # snapshot.
+        first_blocker = exec_block.get("first_blocking_check")
+        if not isinstance(first_blocker, str) or not first_blocker:
+            first_blocker = None
+
+        rows = []
+        for ordinality, check in enumerate(checks):
+            if not isinstance(check, dict):
+                continue
+            name = check.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            applied = self._coerce_applied_int(check.get("applied"))
+            passed = self._coerce_passed_int(applied, check.get("passed"))
+            observed = check.get("observed_value")
+            threshold = check.get("threshold_value")
+            try:
+                observed_f = float(observed) if observed is not None else None
+            except (TypeError, ValueError):
+                observed_f = None
+            try:
+                threshold_f = float(threshold) if threshold is not None else None
+            except (TypeError, ValueError):
+                threshold_f = None
+            reason = check.get("reason")
+            if not isinstance(reason, str):
+                reason = None
+            gap_note = check.get("_gap_note")
+            if not isinstance(gap_note, str):
+                gap_note = None
+            is_first = 1 if (first_blocker is not None and name == first_blocker) else 0
+            rows.append((
+                parent_id, cycle_id, symbol, cycle_start,
+                ordinality, name,
+                applied, passed, observed_f, threshold_f,
+                reason, gap_note, is_first,
+            ))
+
+        if not rows:
+            return 0
+
+        conn.executemany(
+            """INSERT INTO decision_execution_checks
+               (decision_history_id, cycle_id, symbol, cycle_start,
+                ordinality, check_name,
+                applied, passed, observed_value, threshold_value,
+                reason, gap_note, is_first_blocking)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        return len(rows)
 
     def insert_cycle_funnel(self, funnel: Dict) -> bool:
         """Insert one cycle_funnel row. UNIQUE(cycle_id) makes it
