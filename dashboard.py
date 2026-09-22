@@ -2340,81 +2340,105 @@ def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"),
             range_name, cohort, "dh.cycle_start"
         )
 
-        # Cohort sizes: total rows + rows with non-empty checks[].
-        # Two FAST counts: the first is pure COUNT(*); the second
-        # uses a conditional COUNT that skips rows whose
-        # $.execution_checks.checks is NULL. We use type='array'
-        # (cheap) rather than json_array_length (slow on the
-        # production DB).
-        rows_in_cohort = int(cur.execute(
-            "SELECT COUNT(*) AS c FROM decision_history dh "
-            f"WHERE {cohort_clause_sql} AND {range_clause_sql}",
-            params,
-        ).fetchone()["c"])
-        # rows_with_checks: count rows whose snapshot has a populated
-        # $.execution_checks.checks array. We use json_type='array'
-        # (which is fast) AND require json_array_length > 0 in a
-        # second cheap pass via the same SELECT. In practice a single
-        # conditional SUM is sufficient and avoids the double scan.
-        rows_with_checks = int(cur.execute(
-            "SELECT COUNT(*) AS c FROM decision_history dh "
-            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
-            "  AND json_type(json_extract(decision_snapshot, '$.execution_checks.checks')) = 'array' "
-            "  AND json_array_length(json_extract(decision_snapshot, '$.execution_checks.checks')) > 0",
-            params,
-        ).fetchone()["c"])
-
-        # Aggregate per check name.
-        sql_gates = (
+        # Single-statement CTE chain. `cohort` materializes the
+        # filtered set once (uses idx_decision_history_cycle_start);
+        # `parsed` materializes the JSON-extracted columns once per
+        # cohort row so the four aggregate subqueries reuse them
+        # instead of re-parsing `decision_snapshot`. MATERIALIZED
+        # forces single evaluation — without it SQLite may inline
+        # the CTE on each reference and re-do the JSON work.
+        # `decision_history` is scanned at most once per request;
+        # `parsed` consumers read from the materialized CTE only.
+        #
+        # Filter semantics (preserved from the prior per-pass SQL):
+        #   * rows_with_checks: json_type='array' AND
+        #     json_array_length>0.
+        #   * per-check: checks_json IS NOT NULL AND
+        #     json_array_length>0; check_name IS NOT NULL AND !=''
+        #     AND !=0 (matches Python `if not name: continue`).
+        #   * first_blocker: first_blocker IS NOT NULL; null/empty
+        #     maps to 'unknown' (matches Python `r["blocker"] or
+        #     "unknown"`).
+        #   * checks sort: `failed DESC, check_name ASC`.
+        #     first_blocking sort: `cnt DESC, blocker ASC`.
+        # Regression tests: tests/test_phase_c14_execution_blockers_refactor.py.
+        single_sql = (
+            "WITH cohort AS MATERIALIZED ( "
+            "  SELECT decision_snapshot FROM decision_history dh "
+            f"  WHERE {cohort_clause_sql} AND {range_clause_sql} "
+            "), parsed AS MATERIALIZED ( "
+            "  SELECT "
+            "    decision_snapshot, "
+            "    json_extract(decision_snapshot, '$.execution_checks.checks') AS checks_json, "
+            "    json_extract(decision_snapshot, '$.execution_checks.first_blocking_check') AS first_blocker "
+            "  FROM cohort "
+            ") "
             "SELECT "
-            "  json_extract(\"check\".value, '$.name') AS check_name, "
-            "  COALESCE(json_extract(\"check\".value, '$.passed'), 0) AS passed_int, "
-            "  COALESCE(json_extract(\"check\".value, '$.applied'), 0) AS applied_int "
-            "FROM decision_history dh, "
-            "     json_each(json_extract(dh.decision_snapshot, '$.execution_checks.checks')) AS \"check\" "
-            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
-            "  AND json_extract(dh.decision_snapshot, '$.execution_checks.checks') IS NOT NULL "
-            "  AND json_array_length(json_extract(dh.decision_snapshot, '$.execution_checks.checks')) > 0"
-        )
-        rows = cur.execute(sql_gates, params).fetchall()
-        per_check = {}
-        for r in rows:
-            name = r["check_name"]
-            if not name:
-                continue
-            slot = per_check.setdefault(name, {
-                "check_name": name,
-                "total_evaluations": 0,
-                "passed": 0,
-                "failed": 0,
-                "applied_count": 0,
-            })
-            slot["total_evaluations"] += 1
-            if bool(r["applied_int"]):
-                slot["applied_count"] += 1
-            if bool(r["passed_int"]):
-                slot["passed"] += 1
-            else:
-                slot["failed"] += 1
-
-        checks_list = sorted(
-            per_check.values(),
-            key=lambda c: (-c["failed"], c["check_name"]),
-        )
-
-        # first_blocking_check distribution (sampled honestly).
-        sql_blockers = (
-            "SELECT json_extract(decision_snapshot, '$.execution_checks.first_blocking_check') AS blocker, "
+            "  (SELECT COUNT(*) FROM cohort) AS rows_in_cohort, "
+            "  (SELECT COUNT(*) FROM parsed "
+            "   WHERE json_type(checks_json) = 'array' "
+            "     AND json_array_length(checks_json) > 0) AS rows_with_checks, "
+            "  (SELECT json_group_array(json_object( "
+            "     'check_name', check_name, "
+            "     'total_evaluations', total_evaluations, "
+            "     'passed', passed, "
+            "     'failed', failed, "
+            "     'applied_count', applied_count)) "
+            "   FROM ( "
+            "     SELECT "
+            "       json_extract(\"check\".value, '$.name') AS check_name, "
+            "       SUM(1) AS total_evaluations, "
+            "       SUM(CASE WHEN COALESCE(json_extract(\"check\".value, '$.passed'), 0) THEN 1 ELSE 0 END) AS passed, "
+            "       SUM(CASE WHEN COALESCE(json_extract(\"check\".value, '$.passed'), 0) THEN 0 ELSE 1 END) AS failed, "
+            "       SUM(CASE WHEN COALESCE(json_extract(\"check\".value, '$.applied'), 0) THEN 1 ELSE 0 END) AS applied_count "
+            "     FROM parsed, json_each(parsed.checks_json) AS \"check\" "
+            "     WHERE parsed.checks_json IS NOT NULL "
+            "       AND json_array_length(parsed.checks_json) > 0 "
+            "       AND json_extract(\"check\".value, '$.name') IS NOT NULL "
+            "       AND json_extract(\"check\".value, '$.name') != '' "
+            "       AND json_extract(\"check\".value, '$.name') != 0 "
+            "     GROUP BY check_name "
+            "     ORDER BY failed DESC, check_name ASC "
+            "   )) AS checks_json, "
+            "  (SELECT json_group_array(json_object('check_name', blocker, 'count', cnt)) "
+            "   FROM ( "
+            "     SELECT "
+            "       CASE WHEN first_blocker IS NULL OR first_blocker = '' "
+            "            THEN 'unknown' ELSE first_blocker END AS blocker, "
             "       COUNT(*) AS cnt "
-            "FROM decision_history dh "
-            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
-            "  AND json_extract(decision_snapshot, '$.execution_checks.first_blocking_check') IS NOT NULL "
-            "GROUP BY blocker ORDER BY cnt DESC, blocker ASC"
+            "     FROM parsed "
+            "     WHERE first_blocker IS NOT NULL "
+            "     GROUP BY blocker "
+            "     ORDER BY cnt DESC, blocker ASC "
+            "   )) AS first_blocking_json "
         )
-        blockers_rows = cur.execute(sql_blockers, params).fetchall()
+        row = cur.execute(single_sql, params).fetchone()
+        rows_in_cohort = int(row["rows_in_cohort"])
+        rows_with_checks = int(row["rows_with_checks"])
+        # `json_group_array` returns a JSON array string (or '[]' for
+        # empty input). json.loads decodes it back into Python lists.
+        import json as _json
+        checks_raw = _json.loads(row["checks_json"] or "[]")
+        first_blocking_raw = _json.loads(row["first_blocking_json"] or "[]")
+        # The SQL aggregations already produce the exact field shape
+        # and ordering used in the response; no post-processing
+        # beyond the JSON decode is needed.
+        checks_list = [
+            {
+                "check_name": c["check_name"],
+                "total_evaluations": int(c["total_evaluations"]),
+                "passed": int(c["passed"]),
+                "failed": int(c["failed"]),
+                "applied_count": int(c["applied_count"]),
+            }
+            for c in checks_raw
+        ]
         first_blocking = [
-            {"check_name": (r["blocker"] or "unknown"), "count": int(r["cnt"])}
-            for r in blockers_rows
+            {
+                "check_name": r["check_name"],
+                "count": int(r["count"]),
+            }
+            for r in first_blocking_raw
         ]
 
         return {
