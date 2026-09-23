@@ -7,7 +7,10 @@ from typing import Mapping, Protocol
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from dashboard_api.chat_gateway import GatewayChatHistoryClient
+from dashboard_api.chat_gateway import (
+    CHAT_SEND_MAX_CHARS,
+    GatewayChatHistoryClient,
+)
 from dashboard_api.chat_history_durable import (
     ChatHistoryDurableProvider,
     DEFAULT_LIMIT as DURABLE_HISTORY_DEFAULT_LIMIT,
@@ -541,7 +544,7 @@ def render_dashboard(snapshot: DashboardSnapshot) -> str:
             ".badge{display:inline-flex;align-items:center;min-height:1.75rem;padding:.2rem .55rem;border-radius:999px;background:#334155;color:#e2e8f0;font-weight:700;font-size:.82rem}.healthy{color:#86efac}.degraded{color:#fbbf24}.error{color:#fca5a5}.warning{border-left:4px solid #f59e0b;padding-left:.75rem}",
             ".tabs{position:sticky;top:0;z-index:2;display:flex;gap:.35rem;overflow-x:auto;padding:.5rem 0;margin:0 0 .5rem;background:#0f172a}.tab-button{appearance:none;border:1px solid #334155;border-radius:999px;background:#1e293b;color:#e2e8f0;padding:.65rem .8rem;min-height:44px;font-weight:700;white-space:nowrap}.tab-button[aria-selected='true']{background:#2563eb;border-color:#60a5fa;color:#fff}.tab-panel[hidden]{display:none}",
             ".list{display:grid;gap:.65rem}.activity-card,.report-card,.event-card,.task-card{border:1px solid #334155;border-radius:12px;padding:.75rem;background:#172033;min-width:0}.kv{display:grid;grid-template-columns:minmax(6rem,.45fr) minmax(0,1fr);gap:.25rem .6rem;margin-top:.5rem}.kv dt{font-weight:700;color:#bfdbfe}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}",
-            ".chat-history-shell{display:flex;flex-direction:column;gap:.5rem;margin:0}.chat-load-older{appearance:none;border:1px solid #475569;border-radius:10px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer;width:fit-content}.chat-load-older:hover{background:#334155;border-color:#60a5fa}.chat-load-older:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-load-older[disabled]{opacity:.55;cursor:not-allowed}.chat-load-older[hidden]{display:none}.chat-load-older[data-loading='true']::after{content:' \u2026'}.chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-message-actions{display:flex;justify-content:flex-end;margin-top:.4rem}.chat-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#0f172a;color:#bfdbfe;font-size:.72rem;padding:.25rem .65rem;min-height:28px;line-height:1.1;cursor:pointer;font-weight:600;letter-spacing:.02em}.chat-copy:hover{background:#1e293b;border-color:#60a5fa;color:#e2e8f0}.chat-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-copy[disabled]{opacity:.6;cursor:not-allowed}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-status{display:flex;align-items:center;gap:.5rem;border:1px solid #334155;border-radius:999px;padding:.4rem .75rem;background:#172033;font-size:.85rem;min-height:36px;margin:0 0 .65rem;width:fit-content;max-width:100%}.chat-status .dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;background:#94a3b8;flex:none}.chat-status[data-agent-status='working'] .dot{background:#fbbf24;animation:chat-status-pulse 1.05s ease-in-out infinite}@keyframes chat-status-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}.chat-status[data-agent-status='failed'] .dot{background:#fca5a5}.chat-status[data-agent-status='stale'] .dot{background:#f59e0b}.chat-status[data-agent-status='unavailable'] .dot{background:#94a3b8}.chat-status[data-agent-status='loading'] .dot{background:#94a3b8}.chat-status .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}.chat-status-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0 0 .65rem}.chat-status-row .chat-status{margin:0}.chat-since-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer}.chat-since-copy:hover{background:#334155;border-color:#60a5fa}.chat-since-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-since-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-since-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-since-copy[disabled]{opacity:.55;cursor:not-allowed}.chat-since-copy[hidden]{display:none}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}.chat-truncated{display:inline-block;margin-top:.4rem;padding:.15rem .55rem;border:1px solid #f59e0b;border-radius:999px;background:#292524;color:#fde68a;font-size:.72rem;font-weight:600;letter-spacing:.02em}.chat-message-truncated{box-shadow:inset 3px 0 0 #f59e0b}",
+            ".chat-history-shell{display:flex;flex-direction:column;gap:.5rem;margin:0}.chat-load-older{appearance:none;border:1px solid #475569;border-radius:10px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer;width:fit-content}.chat-load-older:hover{background:#334155;border-color:#60a5fa}.chat-load-older:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-load-older[disabled]{opacity:.55;cursor:not-allowed}.chat-load-older[hidden]{display:none}.chat-load-older[data-loading='true']::after{content:' \u2026'}.chat-history{display:flex;flex-direction:column;gap:.65rem;max-height:62vh;overflow-y:auto;padding:.35rem}.chat-message{border:1px solid #334155;border-radius:14px;padding:.7rem;max-width:92%;overflow-wrap:anywhere;white-space:pre-wrap}.chat-message.user{align-self:flex-end;background:#1d4ed8;border-color:#60a5fa}.chat-message.assistant{align-self:flex-start;background:#172033;border-color:#475569}.chat-meta{display:block;margin-bottom:.25rem;font-size:.72rem;color:#bfdbfe;text-transform:uppercase;letter-spacing:.04em}.chat-message-actions{display:flex;justify-content:flex-end;margin-top:.4rem}.chat-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#0f172a;color:#bfdbfe;font-size:.72rem;padding:.25rem .65rem;min-height:28px;line-height:1.1;cursor:pointer;font-weight:600;letter-spacing:.02em}.chat-copy:hover{background:#1e293b;border-color:#60a5fa;color:#e2e8f0}.chat-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-copy[disabled]{opacity:.6;cursor:not-allowed}.chat-state{border:1px dashed #475569;border-radius:12px;padding:.75rem;color:#cbd5e1;background:#111827}.chat-status{display:flex;align-items:center;gap:.5rem;border:1px solid #334155;border-radius:999px;padding:.4rem .75rem;background:#172033;font-size:.85rem;min-height:36px;margin:0 0 .65rem;width:fit-content;max-width:100%}.chat-status .dot{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;background:#94a3b8;flex:none}.chat-status[data-agent-status='working'] .dot{background:#fbbf24;animation:chat-status-pulse 1.05s ease-in-out infinite}@keyframes chat-status-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}.chat-status[data-agent-status='failed'] .dot{background:#fca5a5}.chat-status[data-agent-status='stale'] .dot{background:#f59e0b}.chat-status[data-agent-status='unavailable'] .dot{background:#94a3b8}.chat-status[data-agent-status='loading'] .dot{background:#94a3b8}.chat-status .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}.chat-status-row{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin:0 0 .65rem}.chat-status-row .chat-status{margin:0}.chat-since-copy{appearance:none;border:1px solid #475569;border-radius:999px;background:#1e293b;color:#e2e8f0;font-size:.78rem;padding:.4rem .85rem;min-height:36px;font-weight:600;cursor:pointer}.chat-since-copy:hover{background:#334155;border-color:#60a5fa}.chat-since-copy:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}.chat-since-copy[data-copy-state='copied']{background:#14532d;border-color:#22c55e;color:#bbf7d0}.chat-since-copy[data-copy-state='failed']{background:#7f1d1d;border-color:#fca5a5;color:#fecaca}.chat-since-copy[disabled]{opacity:.55;cursor:not-allowed}.chat-since-copy[hidden]{display:none}.chat-form{display:grid;gap:.5rem;margin-top:.75rem}.chat-input{width:100%;min-height:5.5rem;border:1px solid #475569;border-radius:12px;background:#0f172a;color:#e2e8f0;padding:.75rem;font:inherit;resize:vertical}.chat-send{justify-self:end;min-height:44px;border:1px solid #60a5fa;border-radius:999px;background:#2563eb;color:#fff;font-weight:700;padding:.65rem 1rem}.chat-send:disabled{opacity:.6;cursor:not-allowed}.chat-input-meta{display:flex;justify-content:space-between;align-items:baseline;gap:.75rem;font-size:.72rem;color:#94a3b8;margin:-.15rem 0 .15rem}.chat-message-counter{font-variant-numeric:tabular-nums;font-weight:600;color:#bfdbfe;letter-spacing:.01em}.chat-message-counter[data-near-limit='true']{color:#fbbf24}.chat-message-counter[data-over-limit='true']{color:#fca5a5}.chat-message-limit{color:#64748b;font-variant-numeric:tabular-nums}.chat-truncated{display:inline-block;margin-top:.4rem;padding:.15rem .55rem;border:1px solid #f59e0b;border-radius:999px;background:#292524;color:#fde68a;font-size:.72rem;font-weight:600;letter-spacing:.02em}.chat-message-truncated{box-shadow:inset 3px 0 0 #f59e0b}",
             "#update-warning{display:none;border-left:4px solid #f59e0b;padding:.75rem;margin:.75rem 0;background:#292524;color:#fde68a;border-radius:10px}",
             "dl{margin:.5rem 0 0}dt{font-weight:700;color:#bfdbfe}dd{margin:0 0 .5rem 0;overflow-wrap:anywhere}code{color:#bae6fd;white-space:normal;overflow-wrap:anywhere}ul{padding-left:1.1rem;margin:.5rem 0}li{margin:.3rem 0}",
             "@media(max-width:700px){.shell{padding:.75rem}.overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.grid{grid-template-columns:1fr}.dashboard-title{font-size:1.1rem}.card,.mini-card,section{padding:.65rem}.kv{grid-template-columns:1fr}.tabs{margin-left:-.75rem;margin-right:-.75rem;padding:.45rem .75rem}.tab-button{font-size:.9rem;padding:.6rem .75rem}}",
@@ -754,7 +757,8 @@ def _chat_tab() -> str:
             "<div id='chat-history' class='chat-history' aria-label='Trading manager conversation history'></div>",
             "<form id='chat-form' class='chat-form'>",
             "<label class='label' for='chat-message'>Message trading-manager</label>",
-            "<textarea id='chat-message' class='chat-input' name='message' maxlength='4000' required placeholder='Send a bounded text message to trading-manager…'></textarea>",
+            f"<textarea id='chat-message' class='chat-input' name='message' maxlength='{CHAT_SEND_MAX_CHARS}' required placeholder='Send a bounded text message to trading-manager…'></textarea>",
+            f"<div class='chat-input-meta'><span id='chat-message-counter' class='chat-message-counter' aria-live='polite'>0 characters</span><span id='chat-message-limit' class='chat-message-limit'>limit: {CHAT_SEND_MAX_CHARS:,} characters</span></div>",
             "<button id='chat-send' class='chat-send' type='submit'>Send</button>",
             "</form>",
         ]
@@ -807,6 +811,12 @@ def _refresh_script() -> str:
   const CHAT_HISTORY_URL = '__CHAT_HISTORY_ROUTE__';
   const CHAT_SEND_URL = '__CHAT_SEND_ROUTE__';
   const CHAT_HISTORY_DURABLE_URL = '__CHAT_HISTORY_DURABLE_ROUTE__';
+  // Mirror of dashboard_api.chat_gateway.CHAT_SEND_MAX_CHARS.
+  // Single source of truth is the Python constant; this is embedded at
+  // render time so the frontend textarea maxlength, the JS-side
+  // sendChatMessage reject path, and the character-counter warning
+  // thresholds all stay aligned with the backend hard reject bound.
+  const CHAT_SEND_MAX_CHARS = __CHAT_SEND_MAX_CHARS__;
   const POLL_INTERVAL_MS = 15000;
   const CHAT_POLL_INTERVAL_MS = 15000;
   const DURABLE_HISTORY_PAGE_SIZE = 50;
@@ -882,7 +892,7 @@ def _refresh_script() -> str:
   const reportCard = (report) => detailCard('report-card', esc(report.title), {'Task': report.task_id, 'Outcome': report.outcome || report.kind, 'Generated': report.generated_at, 'Path': report.path});
   const reportsTab = (snapshot) => `<h2>Reports</h2><div class="list">${(snapshot.recent_reports || []).map(reportCard).join('') || '<p class="muted">No recent reports.</p>'}</div>`;
   const healthTab = (snapshot) => `<h2>Health</h2>${healthSection(snapshot.engineering_health)}${warningsSection(snapshot.health_warnings)}<div class="grid">${repositorySection(snapshot.repository)}${testSection(snapshot)}${testingSection(snapshot.testing)}${pullRequestSection(snapshot.pull_request)}</div><p class="muted">Freshness: <code>${esc(snapshot.data_freshness_timestamp)}</code></p>`;
-  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded. History is loaded from the durable store first; live Gateway polling keeps the run indicator and the newest visible messages current.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading durable trading-manager history…</div><div class="chat-status-row"><div id="chat-status" class="chat-status" data-agent-status="loading" role="status" aria-live="polite" aria-label="Trading manager agent status"><span class="dot" aria-hidden="true"></span><span class="label">Trading manager \u00b7 Loading\u2026</span></div><button id="chat-copy-since" class="chat-since-copy" type="button" data-copy-state="idle" hidden disabled aria-label="Copy every trading-manager response since your last message">Copy since my last message</button></div><div class="chat-history-shell"><button id="chat-load-older" class="chat-load-older" type="button" hidden aria-label="Load older trading-manager messages">Load older</button><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="4000" required placeholder="Send a bounded text message to trading-manager…"></textarea><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
+  const chatTab = () => `<h2>Chat</h2><p class="muted">Conversation with the existing OpenClaw trading-manager session. Messages are text-only and bounded. History is loaded from the durable store first; live Gateway polling keeps the run indicator and the newest visible messages current.</p><div id="chat-state" class="chat-state" role="status" aria-live="polite">Loading durable trading-manager history…</div><div class="chat-status-row"><div id="chat-status" class="chat-status" data-agent-status="loading" role="status" aria-live="polite" aria-label="Trading manager agent status"><span class="dot" aria-hidden="true"></span><span class="label">Trading manager \u00b7 Loading\u2026</span></div><button id="chat-copy-since" class="chat-since-copy" type="button" data-copy-state="idle" hidden disabled aria-label="Copy every trading-manager response since your last message">Copy since my last message</button></div><div class="chat-history-shell"><button id="chat-load-older" class="chat-load-older" type="button" hidden aria-label="Load older trading-manager messages">Load older</button><div id="chat-history" class="chat-history" aria-label="Trading manager conversation history"></div></div><form id="chat-form" class="chat-form"><label class="label" for="chat-message">Message trading-manager</label><textarea id="chat-message" class="chat-input" name="message" maxlength="${CHAT_SEND_MAX_CHARS}" required placeholder="Send a bounded text message to trading-manager…"></textarea><div class="chat-input-meta"><span id="chat-message-counter" class="chat-message-counter" aria-live="polite">0 characters</span><span id="chat-message-limit" class="chat-message-limit">limit: ${CHAT_SEND_MAX_CHARS.toLocaleString()} characters</span></div><button id="chat-send" class="chat-send" type="submit">Send</button></form>`;
   const renderSnapshot = (snapshot) => tabNav() + panel('overview', overviewTab(snapshot), true) + panel('activity', activityTab(snapshot), false) + panel('backlog', backlogTab(snapshot), false) + panel('timeline', timelineTab(snapshot), false) + panel('reports', reportsTab(snapshot), false) + panel('health', healthTab(snapshot), false) + panel('chat', chatTab(), false);
   const selectedTab = () => { try { const stored = window.localStorage && window.localStorage.getItem(TAB_KEY); return TABS.includes(stored) ? stored : 'overview'; } catch (error) { return 'overview'; } };
   const switchTab = (tab) => {
@@ -1490,7 +1500,17 @@ def _refresh_script() -> str:
     const original = input ? input.value : String(message || '');
     const trimmed = String(original || '').trim();
     if (!trimmed) { setChatState('Enter a message before sending.', true); return; }
-    if (trimmed.length > 4000) { setChatState('Message is too long; maximum is 4000 characters.', true); return; }
+    if (trimmed.length > CHAT_SEND_MAX_CHARS) {
+      // Explicit, length-aware rejection — never silently truncate. The
+      // backend `GatewayChatHistoryClient.send` enforces the same
+      // CHAT_SEND_MAX_CHARS bound; this JS check is the user-facing fast
+      // path so the draft is preserved and the user can edit.
+      setChatState(
+        'Message is too long; maximum is ' + CHAT_SEND_MAX_CHARS.toLocaleString() + ' characters (got ' + trimmed.length.toLocaleString() + ').',
+        true,
+      );
+      return;
+    }
     setComposeState(original, 'sending');
     setChatState('Sending message to trading-manager…', false);
     // PR4: optimistic UI row. Added BEFORE the POST so the user sees
@@ -1566,9 +1586,39 @@ def _refresh_script() -> str:
   const bindChatForm = () => {
     const form = document.getElementById('chat-form');
     const input = document.getElementById('chat-message');
+    const counter = document.getElementById('chat-message-counter');
     if (!form || typeof form.addEventListener !== 'function') { return; }
-    if (form.dataset && form.dataset.bound === 'true') { return; }
+    if (form.dataset && form.dataset.bound === 'true') {
+      // Re-bind input listener on the same element after a tab switch /
+      // dashboard re-render (form.dataset.bound === 'true' is sticky, but
+      // the input element is recreated when the chat tab HTML is
+      // re-rendered, so the input listener needs to be re-attached).
+      if (input && counter && typeof input.addEventListener === 'function'
+          && input.dataset && input.dataset.counterBound !== 'true') {
+        const updateCounter = () => {
+          const value = String(input.value || '');
+          counter.textContent = value.length.toLocaleString() + ' characters';
+          counter.dataset.nearLimit = value.length > CHAT_SEND_MAX_CHARS * 0.9 ? 'true' : 'false';
+          counter.dataset.overLimit = value.length > CHAT_SEND_MAX_CHARS ? 'true' : 'false';
+        };
+        input.addEventListener('input', updateCounter);
+        if (input.dataset) { input.dataset.counterBound = 'true'; }
+        updateCounter();
+      }
+      return;
+    }
     if (form.dataset) { form.dataset.bound = 'true'; }
+    if (input && counter && typeof input.addEventListener === 'function') {
+      const updateCounter = () => {
+        const value = String(input.value || '');
+        counter.textContent = value.length.toLocaleString() + ' characters';
+        counter.dataset.nearLimit = value.length > CHAT_SEND_MAX_CHARS * 0.9 ? 'true' : 'false';
+        counter.dataset.overLimit = value.length > CHAT_SEND_MAX_CHARS ? 'true' : 'false';
+      };
+      input.addEventListener('input', updateCounter);
+      if (input.dataset) { input.dataset.counterBound = 'true'; }
+      updateCounter();
+    }
     form.addEventListener('submit', (event) => { event.preventDefault(); sendChatMessage(input && input.value); });
   };
   // Snapshot polling.
@@ -1653,7 +1703,7 @@ def _refresh_script() -> str:
 })();
 </script>
 '''
-    return script.replace("__SNAPSHOT_ROUTE__", SNAPSHOT_ROUTE).replace("__CHAT_HISTORY_ROUTE__", CHAT_HISTORY_ROUTE).replace("__CHAT_SEND_ROUTE__", CHAT_SEND_ROUTE).replace("__CHAT_HISTORY_DURABLE_ROUTE__", CHAT_HISTORY_DURABLE_ROUTE)
+    return script.replace("__SNAPSHOT_ROUTE__", SNAPSHOT_ROUTE).replace("__CHAT_HISTORY_ROUTE__", CHAT_HISTORY_ROUTE).replace("__CHAT_SEND_ROUTE__", CHAT_SEND_ROUTE).replace("__CHAT_HISTORY_DURABLE_ROUTE__", CHAT_HISTORY_DURABLE_ROUTE).replace("__CHAT_SEND_MAX_CHARS__", str(CHAT_SEND_MAX_CHARS))
 
 
 def _engineering_health_section(health: EngineeringHealthSummary | None, warnings: tuple[HealthWarning, ...]) -> str:

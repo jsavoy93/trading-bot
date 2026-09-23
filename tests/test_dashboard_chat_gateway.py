@@ -8,6 +8,7 @@ from dashboard_api.chat_gateway import (
     ALLOWED_RUN_STATUSES,
     CHAT_HISTORY_LIMIT,
     CHAT_MESSAGE_MAX_CHARS,
+    CHAT_SEND_MAX_CHARS,
     OPENCLAW_GATEWAY_TOKEN_ENV_VAR,
     PREFERRED_TRADING_MANAGER_SESSION_KEY,
     TRADING_MANAGER_AGENT_ID,
@@ -233,7 +234,10 @@ def test_send_adapter_rejects_empty_non_text_and_over_limit_without_gateway_call
         payload = client.send(value).to_public_dict()
         assert payload["ok"] is False
         assert payload["status"] == "rejected"
-    too_long = "x" * 4001
+    # One character over the current outbound ceiling. As of 2026-09-23 the
+    # ceiling is CHAT_SEND_MAX_CHARS = 32_000; this test pins to the
+    # constant so it survives future ceiling changes.
+    too_long = "x" * (CHAT_SEND_MAX_CHARS + 1)
     payload = client.send(too_long).to_public_dict()
     assert payload["ok"] is False
     assert payload["status"] == "rejected"
@@ -1544,10 +1548,15 @@ def test_history_dashboard_bound_truncation_still_surfaces_as_truncation_source_
 
 def test_history_bounds_remain_unchanged_after_fix():
     # Hard guardrails: the bounds from PR #58..PR #68 must not regress.
+    # NOTE: CHAT_SEND_MAX_CHARS was bumped from 4_000 to 32_000 on
+    # 2026-09-23 so manager prompts up to 20,000 chars (plus headroom)
+    # can be submitted without truncation. The other bounds remain at
+    # their PR #58..PR #68 values.
     from dashboard_api import chat_gateway
     assert chat_gateway.CHAT_HISTORY_MAX_CHARS == 64_000
     assert chat_gateway.CHAT_MESSAGE_MAX_CHARS == 64_000
-    assert chat_gateway.CHAT_SEND_MAX_CHARS == 4_000
+    assert chat_gateway.CHAT_SEND_MAX_CHARS == 32_000
+    assert chat_gateway.CHAT_SEND_MAX_CHARS > chat_gateway.CHAT_MESSAGE_MAX_CHARS - chat_gateway.CHAT_MESSAGE_MAX_CHARS  # never 0; documents intent
     assert chat_gateway.CHAT_HISTORY_LIMIT == 50
     assert chat_gateway.GATEWAY_HISTORY_TIMEOUT_SECONDS == 15
     assert chat_gateway.OPENCLAW_GATEWAY_TRUNCATION_MARKER == "\n...(truncated)..."
@@ -1961,7 +1970,8 @@ def test_chat_bounds_constants_remain_unchanged():
     pre-truncate at its own 8K default.
 
     Other bounds remain:
-      * outbound user-input CHAT_SEND_MAX_CHARS = 4_000
+      * outbound user-input CHAT_SEND_MAX_CHARS = 32_000 (raised from
+        4_000 on 2026-09-23 so 20K-char manager prompts fit with headroom)
       * history window CHAT_HISTORY_LIMIT = 50
       * allowed terminal run-status set unchanged
 
@@ -1977,7 +1987,7 @@ def test_chat_bounds_constants_remain_unchanged():
         ALLOWED_RUN_STATUSES,
         OPENCLAW_GATEWAY_TRUNCATION_MARKER,
     )
-    assert CHAT_SEND_MAX_CHARS == 4_000
+    assert CHAT_SEND_MAX_CHARS == 32_000
     # The 64K inbound bound was raised from the previous 16K so the known
     # 18,354-char audit response is no longer silently cut. The bound is
     # also passed as `maxChars` to the chat.history RPC so the Gateway does
