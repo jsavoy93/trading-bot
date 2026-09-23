@@ -268,10 +268,39 @@ class SQLiteDB:
                         session_id INTEGER,
                         decision_schema_version INTEGER NOT NULL,
                         decision_snapshot TEXT NOT NULL,
+                        -- PHASE-C14B-2B: per-parent normalized analytics
+                        -- persistence version. 0 = legacy parent written
+                        -- before C14B-1 normalized persistence was active;
+                        -- child tables are NOT authoritative for that
+                        -- parent. 1 = C14B-1 normalized persistence
+                        -- completed atomically for this parent (gates+
+                        -- checks written successfully in the SAME
+                        -- transaction as the parent INSERT); child tables
+                        -- ARE authoritative. The constant default 0 lets
+                        -- ALTER TABLE ADD COLUMN rewrite-free (no row
+                        -- scan) on the existing ~1.45M-row prod DB.
+                        analytics_persistence_version INTEGER NOT NULL DEFAULT 0,
                         created_at TEXT DEFAULT (datetime('now')),
                         UNIQUE(cycle_id, symbol)
                     )
                 """)
+                # PHASE-C14B-2B: idempotent column upgrade for the
+                # production 1.45M-row SQLite DB. SQLite stores the
+                # constant default 0 in the schema header for existing
+                # rows, so this is a metadata-only schema change (no
+                # row rewrite). The "duplicate column name" OperationalError
+                # is the expected signal for fresh DBs that the CREATE
+                # TABLE above already added the column; any other
+                # OperationalError must propagate.
+                try:
+                    conn.execute(
+                        "ALTER TABLE decision_history "
+                        "ADD COLUMN analytics_persistence_version "
+                        "INTEGER NOT NULL DEFAULT 0;"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
                 try:
                     conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_decision_history_symbol "
@@ -1049,16 +1078,43 @@ class SQLiteDB:
         derivative index. `decision_snapshot` itself is never
         modified; the child tables are additive mirrors.
 
-        Returns True if a new row was inserted, False otherwise
-        (existing row already present, or transient error).
+        PHASE-C14B-2B VERSION CONTRACT:
+        The parent is INSERTed with analytics_persistence_version=0.
+        ONLY after both _persist_gate_evaluations and
+        _persist_execution_checks have returned successfully (without
+        raising) does this method UPDATE the parent row to
+        analytics_persistence_version=1. Because both the initial
+        INSERT and the follow-up UPDATE run inside the SAME
+        `with _get_conn() as conn:` transaction, the atomicity
+        invariant holds end-to-end:
+          * If either child helper raises, the `with` block exits via
+            exception → SQLite rolls back the implicit transaction →
+            neither the parent INSERT nor the version=1 UPDATE is
+            visible to subsequent readers. A future observer never
+            sees a parent row with analytics_persistence_version=1
+            whose child persistence failed.
+          * If both child helpers succeed, the subsequent UPDATE is
+            applied in the same transaction and is committed together
+            with the parent INSERT and the child rows.
+          * The two-step ordering (INSERT 0, then UPDATE 1 after
+            children succeed) is preferred over direct INSERT-as-1
+            because it makes the invariant observable from the code
+            path: any parent whose child helpers raised was rolled
+            back as version=0, never reached version=1, and never
+            committed.
+
+        Returns True if a new row was inserted (and analytics child
+        rows persisted), False otherwise (existing row already present,
+        or transient error, or child helper failure).
         """
         try:
             with _get_conn() as conn:
                 cur = conn.execute(
                     """INSERT INTO decision_history
                        (cycle_id, symbol, cycle_start, session_id,
-                        decision_schema_version, decision_snapshot)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                        decision_schema_version, decision_snapshot,
+                        analytics_persistence_version)
+                       VALUES (?, ?, ?, ?, ?, ?, 0)""",
                     (
                         cycle_id,
                         symbol,
@@ -1074,7 +1130,9 @@ class SQLiteDB:
                 # extra SELECT (cheap, atomic). If the child INSERTs
                 # raise, the implicit transaction is rolled back when
                 # the `with` block exits via exception — decision_history
-                # is not committed unless the child rows also succeed.
+                # is not committed unless the child rows also succeed,
+                # and the parent's analytics_persistence_version is
+                # never promoted to 1.
                 parent_id = cur.lastrowid
                 if parent_id is not None:
                     self._persist_gate_evaluations(
@@ -1090,6 +1148,20 @@ class SQLiteDB:
                         symbol=symbol,
                         cycle_start=cycle_start,
                         decision_snapshot=decision_snapshot,
+                    )
+                    # PHASE-C14B-2B: both child helpers returned
+                    # without raising. The parent's analytics
+                    # persistence is now genuinely complete; promote
+                    # to version=1 in the SAME transaction. Any
+                    # failure inside this UPDATE statement would also
+                    # roll back the transaction (with-block exit via
+                    # exception), and the parent would never be
+                    # visible at version=1.
+                    conn.execute(
+                        """UPDATE decision_history
+                           SET analytics_persistence_version = 1
+                           WHERE id = ?""",
+                        (parent_id,),
                     )
                 return cur.rowcount > 0
         except sqlite3.IntegrityError as e:
