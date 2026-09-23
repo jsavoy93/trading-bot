@@ -50,7 +50,17 @@ CHAT_HISTORY_MAX_CHARS = 64_000
 OPENCLAW_GATEWAY_TRUNCATION_MARKER = "\n...(truncated)..."
 # Outbound user-input hard bound (Josh -> Trading Manager). Separate from
 # the inbound response bound. Enforced as a rejection, never as a silent cut.
-CHAT_SEND_MAX_CHARS = 4_000
+#
+# 32,000 chars (chosen 2026-09-23):
+#   - Comfortable headroom over Josh's 20,000-char target.
+#   - Below the inbound-response 64K safety bound (CHAT_MESSAGE_MAX_CHARS)
+#     so user prompts can never exceed the largest possible responses.
+#   - Below the chat_persistence TEXT column bound (no schema limit).
+#   - Below the OpenClaw chat.send RPC per-message cap (none observed).
+# The dashboard frontend mirrors this constant via the textarea
+# `maxlength` attribute and the JS-side length check, both rendered from
+# the same source-of-truth value below.
+CHAT_SEND_MAX_CHARS = 32_000
 GATEWAY_HISTORY_TIMEOUT_SECONDS = 15
 # Send-accept timeout for the dashboard's Node subprocess wrapping the
 # OpenClaw Gateway `chat.send` RPC. `chat.send` semantics are accepted-with-
@@ -344,7 +354,16 @@ class GatewayChatHistoryClient:
         if normalized is None:
             return ChatSendResult(ok=False, status="rejected", error="message must be non-empty text", timestamp=_now_iso())
         if len(normalized) > CHAT_SEND_MAX_CHARS:
-            return ChatSendResult(ok=False, status="rejected", error="message exceeds 4000 characters", timestamp=_now_iso())
+            # Explicit rejection — never silently truncate. The length is
+            # rendered in the error so the dashboard UI can show the exact
+            # ceiling. The textarea frontend mirror (maxlength + JS check)
+            # blocks user input earlier with a more actionable message.
+            return ChatSendResult(
+                ok=False,
+                status="rejected",
+                error=f"message exceeds {CHAT_SEND_MAX_CHARS} characters",
+                timestamp=_now_iso(),
+            )
         try:
             raw = self._call_gateway_send(normalized)
             payload = json.loads(raw)

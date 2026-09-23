@@ -818,8 +818,18 @@ def test_send_failure_preserves_draft_history_and_shows_bounded_warning() -> Non
 
 
 def test_send_rejects_oversize_message_without_calling_send() -> None:
-    """Outbound 4,000-char bound and non-text rejection are preserved
-    (PR #64 / PR #65 contracts). An over-limit submit MUST NOT POST."""
+    """Outbound send-side rejection is preserved when the draft exceeds the
+    dashboard's outbound character ceiling (CHAT_SEND_MAX_CHARS, currently
+    32,000; raised from 4,000 on 2026-09-23 so 20K manager prompts fit with
+    headroom). The over-limit submit MUST NOT POST and the chat-state
+    banner MUST surface a length-aware error.
+
+    This test uses an over-limit value that is one character above the
+    current ceiling, so it survives future ceiling changes.
+    """
+    # Lazy import so the dashboard module isn't required to import.
+    from dashboard_api.chat_gateway import CHAT_SEND_MAX_CHARS
+    over_limit_size = CHAT_SEND_MAX_CHARS + 1
     html = render_dashboard(_populated_snapshot())
     script = _dashboard_script(html)
     body = """
@@ -836,7 +846,7 @@ def test_send_rejects_oversize_message_without_calling_send() -> None:
         : id === 'update-warning' ? {textContent: '', style: {display: 'none'}}
         : id === 'chat-state' ? chatState
         : id === 'chat-history' ? chatHistory
-        : id === 'chat-message' ? {value: 'x'.repeat(4001)}
+        : id === 'chat-message' ? {value: 'x'.repeat(__OVER_LIMIT__)}
         : id === 'chat-send' ? {disabled: false, textContent: 'Send'}
         : id === 'chat-load-older' ? {hidden: true, disabled: true, dataset: {}, addEventListener: () => {}}
         : null,
@@ -846,9 +856,11 @@ def test_send_rejects_oversize_message_without_calling_send() -> None:
     (async () => {
       await window.engineeringDashboard.sendChatMessage(document.getElementById('chat-message').value);
       assert.strictEqual(calls.length, 0, 'no fetch issued for over-limit message');
-      assert(chatState.textContent.toLowerCase().includes('long') || chatState.textContent.toLowerCase().includes('4000'));
+      assert(chatState.textContent.toLowerCase().includes('long'),
+        'chat-state banner must surface a length-aware error; got: ' + chatState.textContent);
     })().catch((e) => { console.error(e); process.exit(1); });
     """
+    body = body.replace("__OVER_LIMIT__", str(over_limit_size))
     _run_dashboard_script_case(script, body)
 
 

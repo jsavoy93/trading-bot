@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from dashboard_api.app import CHAT_HISTORY_DURABLE_ROUTE, CHAT_HISTORY_ROUTE, CHAT_SEND_ROUTE, DASHBOARD_ROUTE, HEALTHZ_ROUTE, SNAPSHOT_ROUTE, create_app, render_dashboard
+from dashboard_api import chat_gateway
 from dashboard_api.providers import EngineeringDashboardProviderConfig, create_engineering_dashboard_provider
 from dashboard_api.engineering_read_model import (
     AgentActivitySummary,
@@ -776,8 +777,8 @@ class StaticChatHistoryProvider:
         self.last_message = message
         if not isinstance(message, str) or not message.strip():
             return {"ok": False, "status": "rejected", "error": "message must be non-empty text"}
-        if len(message.strip()) > 4000:
-            return {"ok": False, "status": "rejected", "error": "message exceeds 4000 characters"}
+        if len(message.strip()) > chat_gateway.CHAT_SEND_MAX_CHARS:
+            return {"ok": False, "status": "rejected", "error": f"message exceeds {chat_gateway.CHAT_SEND_MAX_CHARS} characters"}
         return {
             "ok": True,
             "status": "sent",
@@ -810,7 +811,8 @@ def test_chat_send_endpoint_accepts_only_bounded_message_and_no_control_routes()
     assert client.post("/api/engineering/chat/send", json={"message": "hello"}).status_code == 200
     assert client.post("/api/engineering/chat/send", json={"message": ""}).status_code == 400
     assert client.post("/api/engineering/chat/send", json={"message": "   "}).status_code == 400
-    assert client.post("/api/engineering/chat/send", json={"message": "x" * 4001}).status_code == 400
+    # One character over the new outbound ceiling (CHAT_SEND_MAX_CHARS)
+    assert client.post("/api/engineering/chat/send", json={"message": "x" * (chat_gateway.CHAT_SEND_MAX_CHARS + 1)}).status_code == 400
     assert client.post("/api/engineering/chat/send", json={"message": {"text": "hello"}}).status_code == 400
     assert client.post("/api/engineering/chat/send", json={"message": "hello", "agentId": "evil"}).status_code == 400
     assert client.post("/api/engineering/chat/send", json={"message": "hello", "sessionKey": "evil"}).status_code == 400
@@ -834,7 +836,10 @@ def test_dashboard_chat_tab_has_bounded_send_form_and_existing_tabs_remain():
     assert "id='tab-chat' class='tab-panel' role='tabpanel' data-tab-panel='chat' hidden" in html
     assert "Conversation with the existing OpenClaw trading-manager session" in html
     assert "<textarea" in html.lower()
-    assert "maxlength='4000'" in html
+    # The textarea's maxlength must reflect the current outbound ceiling
+    # (CHAT_SEND_MAX_CHARS = 32,000 as of 2026-09-23). Tested via the
+    # constant so future ceiling changes do not require touching this test.
+    assert f"maxlength='{chat_gateway.CHAT_SEND_MAX_CHARS}'" in html
     assert "type='submit'" in html.lower()
     assert "/api/engineering/chat/send" in html
     assert "chat.abort" not in html
