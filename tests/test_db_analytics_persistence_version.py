@@ -79,8 +79,16 @@ import pytest
 # Fixtures
 # ────────────────────────────────────────────────────────────────────────
 
-PRODUCTION_DB_PATH = (
-    pathlib.Path(__file__).resolve().parent.parent.parent / "trading_bot.db"
+# PHASE-OBS-001-ISO: PRODUCTION_DB_PATH is sourced from the
+# application module's DB_PATH at import time — NOT from duplicated
+# path arithmetic. This guarantees the guard checks against the
+# actual production DB the application sees at runtime, so any future
+# change to how src.database.sqlite_db resolves its DB (different
+# parent depth, env var override, config file) is automatically
+# followed without needing to maintain a parallel arithmetic here.
+import src.database.sqlite_db as _sqlite_db_module_for_path_capture  # noqa: E402
+PRODUCTION_DB_PATH = pathlib.Path(
+    str(_sqlite_db_module_for_path_capture.DB_PATH)
 ).resolve()
 
 
@@ -747,15 +755,34 @@ class TestProductionDBSafetyGuard:
     """
 
     def test_guard_path_is_production_trading_bot_db(self):
-        """PRODUCTION_DB_PATH must equal the project-root trading_bot.db.
-
-        This pins the guard's target so a future move of the production
-        DB doesn't silently disarm the safety check.
+        """PRODUCTION_DB_PATH must equal the application module's
+        DB_PATH at module-import time. This pins the guard to the
+        application's actual production DB configuration rather than
+        duplicated path arithmetic — so any future change to how
+        src.database.sqlite_db resolves its DB (different parent depth,
+        env var override, config file) is automatically followed
+        without needing to maintain a parallel arithmetic here. The
+        exact bug this PR fixed was caused by duplicated path math
+        silently pointing somewhere else; this assertion is the
+        regression guard against that class of bug recurring.
         """
-        expected = (
-            Path(__file__).resolve().parent.parent.parent / "trading_bot.db"
-        ).resolve()
-        assert PRODUCTION_DB_PATH == expected
+        # Re-read DB_PATH to confirm it still matches what we captured
+        # at import time. monkeypatch restores DB_PATH to its original
+        # value after each test, so this comparison should hold across
+        # the entire test session. If anyone ever writes to
+        # sqlite_db_module.DB_PATH without monkeypatch (a permanent
+        # mutation), this assertion would fail.
+        expected = Path(str(_sqlite_db_module_for_path_capture.DB_PATH)).resolve()
+        assert PRODUCTION_DB_PATH == expected, (
+            f"PRODUCTION_DB_PATH={PRODUCTION_DB_PATH!s} but application "
+            f"DB_PATH now resolves to {expected!s}. The guard target "
+            f"drifted from the application's actual production DB — "
+            f"refactor capture."
+        )
+        assert PRODUCTION_DB_PATH.is_file(), (
+            f"PRODUCTION_DB_PATH={PRODUCTION_DB_PATH!s} is not a file; "
+            f"the guard target is broken."
+        )
         assert PRODUCTION_DB_PATH.name == "trading_bot.db"
         assert PRODUCTION_DB_PATH.is_absolute()
 
