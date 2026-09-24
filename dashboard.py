@@ -2039,6 +2039,104 @@ def _phase_c_open_db():
     return conn
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# PHASE-C14B-2C: hybrid normalized read path for analytics persistence
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Every decision_history parent carries an `analytics_persistence_version`
+# column whose value determines which read path is authoritative for that
+# parent's analytics facts:
+#
+#   analytics_persistence_version = 0 (legacy / pre-C14B-2B deploy):
+#       The persisted `decision_snapshot` JSON column is the SOLE
+#       authoritative source for gate evaluations and execution checks.
+#       `decision_gate_evaluations` / `decision_execution_checks` MAY
+#       have rows for these parents (because the C14B-2B deploy left
+#       partial historical child rows), but those child rows are NOT
+#       authoritative for analytics reads and MUST be ignored.
+#
+#   analytics_persistence_version = 1 (normalized / post-C14B-2B deploy):
+#       The child tables (`decision_gate_evaluations` and
+#       `decision_execution_checks`) are authoritative. We MUST NOT
+#       parse `decision_snapshot` JSON for these parents — the JSON is
+#       still populated (for observability / fallback) but is no longer
+#       the read-path source of truth.
+#
+# A v1 parent with ZERO rows in either child table is VALID and
+# contributes zero to the relevant aggregation. There is NO fallback
+# to JSON for v1 parents — that is exactly the invariant
+# `analytics_persistence_version` was introduced to enforce.
+#
+# The only authority signal is the `analytics_persistence_version`
+# column. We MUST NOT use:
+#   - parent ID cutover (FIRST_V1_PARENT_ID)
+#   - timestamp cutover (C14B-2B deploy timestamp)
+#   - child-row existence as a fallback trigger
+#   - outcome text
+#   - child-table minimum ID
+#   - any historical assumption about which parents have child rows
+#
+# This split mirrors the forward-only versioning contract agreed in
+# C14B-2B: no historical UPDATE / no backfill. Pre-deploy parents stay
+# at v=0 forever; only new parents post-restart are v=1.
+_PHASE_C_HYBRID_VERSION_DOC = (
+    "PHASE-C14B-2C: authority is analytics_persistence_version "
+    "(0=decision_snapshot, 1=normalized child tables). No "
+    "cutover ID, timestamp, or child-existence fallback."
+)
+
+
+def _phase_c_hybrid_window_predicates(range_name: str, cohort: str, column: str):
+    """PHASE-C14B-2C: return per-version cohort+range predicates.
+
+    Like `_phase_c_window_predicates` but returns TWO sets of
+    (cohort_sql, range_sql, cohort_params, range_params) — one
+    for v0 parents and one for v1 parents. The v0 cohort fragment
+    appends `analytics_persistence_version = 0`; the v1 fragment
+    appends `analytics_persistence_version = 1`.
+
+    Alias handling flows through `_phase_c_qualify_column` (same
+    internal allowlist). User-supplied values stay bound via `?`
+    parameters. Parameters are split (cohort_params, range_params)
+    so callers can bind them in the right order against the cohort
+    fragment and the range fragment separately.
+
+    Returns:
+        v0_cohort_sql, v0_range_sql, v0_cohort_params, v0_range_params,
+        v1_cohort_sql, v1_range_sql, v1_cohort_params, v1_range_params,
+    """
+    cohort_sql, range_sql, params = _phase_c_window_predicates(
+        range_name, cohort, column
+    )
+    # Decompose combined params back into cohort + range so we
+    # can reuse the cohort subset against the v0/v1 cohort
+    # fragments (the range fragment is unchanged between v0 and v1).
+    # We re-call the underlying helpers directly to obtain the
+    # separate param tuples — cheaper and safer than re-parsing
+    # the already-combined params.
+    qualified = _phase_c_qualify_column(column)
+    if "." in qualified:
+        alias = qualified.split(".", 1)[0]
+    else:
+        raise ValueError(
+            "PHASE-C14B-2C hybrid reads require an aliased column "
+            f"(e.g. 'dh.cycle_start'); got '{column}'."
+        )
+    # Re-call the cohort and range helpers directly so we get the
+    # separate param tuples (cheaper than re-parsing params).
+    _, cohort_params = _phase_c_cohort_clause(cohort, column)
+    _, range_params = _phase_c_range_clause(range_name, column)
+    # Strip the outer parens of cohort_sql and append version filter.
+    inner = cohort_sql[1:-1]
+    v0_cohort_sql = f"({inner} AND {alias}.analytics_persistence_version = 0)"
+    v1_cohort_sql = f"({inner} AND {alias}.analytics_persistence_version = 1)"
+    return (
+        v0_cohort_sql, range_sql, cohort_params, range_params,
+        v1_cohort_sql, range_sql, cohort_params, range_params,
+    )
+
+
+
 def _phase_c_validate(range_name: str, cohort: str):
     """Validate Phase C query params. Returns error envelope or None."""
     if range_name not in _VALID_PHASE_C_RANGES:
@@ -2151,10 +2249,37 @@ def api_phase_c_funnel(range_name: str = Query("7d", alias="range"), cohort: str
 def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), cohort: str = "post_obs002"):
     """OBS-001 Phase C: aggregate `strategy_eligibility.gates[]`.
 
-    Source of truth: `decision_history.decision_snapshot ->
-    $.strategy_eligibility.gates[]`. Each gate record has
-    `{name, category, applied, passed, observed_value,
-    threshold_value, reason}`. We never parse `primary_reason`.
+    **PHASE-C14B-2C hybrid read path** (replaces C9 single JSON path):
+
+    The authority for each parent's gate facts is determined ONLY by
+    `decision_history.analytics_persistence_version`:
+
+      analytics_persistence_version = 0 (legacy / pre-C14B-2B deploy):
+        `decision_history.decision_snapshot -> $.strategy_eligibility.gates[]`
+        is authoritative. The SQL restricts `analytics_persistence_version = 0`
+        at the join level so any partial historical child rows for v0
+        parents are ignored (they are NOT authoritative for v0 parents).
+
+      analytics_persistence_version = 1 (normalized / post-C14B-2B deploy):
+        `decision_gate_evaluations` rows are authoritative. The SQL
+        restricts `analytics_persistence_version = 1` via EXISTS on
+        `decision_history.id`. The snapshot JSON is NEVER parsed for
+        these parents — that is exactly the invariant
+        `analytics_persistence_version` was introduced to enforce.
+        A v1 parent with zero child gate rows is VALID and contributes
+        zero to the aggregation; no JSON fallback.
+
+    Authority is determined ONLY by `analytics_persistence_version`.
+    Parent ID cutover, deploy timestamp, child-row existence, and
+    outcome text are NOT used as authority signals.
+
+    The two result streams are merged in Python by
+    `(gate_name, gate_category)`. Ordering (failures DESC then name ASC)
+    is preserved post-merge.
+
+    Each gate record has `{name, category, applied, passed,
+    observed_value, threshold_value, reason}`. We never parse
+    `primary_reason`.
 
     For each distinct gate `name`, returns:
       total_evaluations, passed, failed, failure_rate, applied.
@@ -2184,14 +2309,17 @@ def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), coh
                                                    and total
                                                    (fails closed)
 
-    The SQL filters at the join level:
+    The v0 SQL filters at the join level:
       WHERE COALESCE(json_extract(gate.value, '$.applied'), 0) = 1
 
     so `COUNT(*)` per gate equals the number of applied=true gate
-    evaluations (the denominator). `failure_rate` = failed / total
-    uses only the applied=true denominator. See
+    evaluations (the denominator). The v1 SQL filters
+    `g.applied = 1` on `decision_gate_evaluations` (the column is
+    already INT 0/1 by the persistence contract). `failure_rate` =
+    failed / total uses only the applied=true denominator. See
     `tests/test_dashboard_phase_c_obs_analytics.py ::
-    TestGateAggregationAppliedFilter` for regression coverage.
+    TestGateAggregationAppliedFilter` for regression coverage, and
+    `TestStrategyGatesHybridReadPath` for C14B-2C hybrid coverage.
     """
     err = _phase_c_validate(range_name, cohort)
     if err: return err
@@ -2201,25 +2329,29 @@ def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), coh
 
     try:
         cur = conn.cursor()
-        # PHASE-C9: use the bundle helper. The alias is internal
-        # ("dh" for decision_history) and goes through
-        # `_phase_c_qualify_column`'s allowlist. No request data
-        # is interpolated.
-        cohort_clause_sql, range_clause_sql, params = _phase_c_window_predicates(
+        # PHASE-C14B-2C: per-version window predicates.
+        # Alias "dh" for decision_history; flows through
+        # `_phase_c_qualify_column`'s allowlist. No request data is
+        # interpolated; user-supplied values stay bound via `?`.
+        (
+            v0_cohort_sql, v0_range_sql, v0_cohort_params, v0_range_params,
+            v1_cohort_sql, v1_range_sql, v1_cohort_params, v1_range_params,
+        ) = _phase_c_hybrid_window_predicates(
             range_name, cohort, "dh.cycle_start"
         )
 
         # Count rows in the cohort (for the explicit coverage footer).
         # This is a fast COUNT(*) — no JSON extraction — so it stays
-        # under a second on the production DB. JSON-derived cohort
-        # counts would extract JSON for every row and take 10s+.
+        # under a second on the production DB. Counts ALL parents in
+        # the window regardless of version.
         rows_in_cohort = int(cur.execute(
             "SELECT COUNT(*) AS c FROM decision_history dh "
-            f"WHERE {cohort_clause_sql} AND {range_clause_sql}",
-            params,
+            f"WHERE {v0_cohort_sql} OR {v1_cohort_sql}",
+            v0_cohort_params + v1_cohort_params,
         ).fetchone()["c"])
 
-        sql = (
+        # v0 path: JSON extraction from decision_snapshot.
+        sql_v0 = (
             "SELECT "
             "  json_extract(gate.value, '$.name') AS gate_name, "
             "  json_extract(gate.value, '$.category') AS gate_category, "
@@ -2242,46 +2374,124 @@ def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), coh
             "           ELSE NULL END) AS sampled_threshold_max "
             "FROM decision_history dh, "
             "     json_each(json_extract(dh.decision_snapshot, '$.strategy_eligibility.gates')) AS gate "
-            f"WHERE {cohort_clause_sql} AND {range_clause_sql} "
+            f"WHERE {v0_cohort_sql} AND {v0_range_sql} "
             # PHASE-C7: only persisted applied=true gate evaluations contribute.
             # Missing or malformed `applied` is coalesced to 0 (fail closed).
             "  AND COALESCE(json_extract(gate.value, '$.applied'), 0) = 1 "
-            "GROUP BY gate_name, gate_category "
-            "ORDER BY SUM(CASE WHEN COALESCE(json_extract(gate.value, '$.passed'), 0) = 0 "
-            "                  THEN 1 ELSE 0 END) DESC, gate_name ASC"
+            "GROUP BY gate_name, gate_category"
         )
-        rows = cur.execute(sql, params).fetchall()
+        rows_v0 = cur.execute(
+            sql_v0,
+            v0_cohort_params + v0_range_params,
+        ).fetchall()
 
-        # Aggregate per gate_name. Deterministic ordering: failures DESC
-        # then name ASC (already enforced by the ORDER BY clause above).
-        gates_list = []
-        for r in rows:
+        # v1 path: read from decision_gate_evaluations. The child table's
+        # own cycle_start column drives the range index (idx_dge_cycle_start).
+        # EXISTS on decision_history restricts to v1 parents (cannot trust
+        # child rows without verifying parent version). Filter applied=1
+        # mirrors the v0 fail-closed contract.
+        #
+        # IMPORTANT: the child-table range filter uses v1_range_sql
+        # directly after column re-qualification. Do NOT hardcode an
+        # extra `g.cycle_start >= ?` here — the latest range produces
+        # no parameter (a `=` subquery), and time ranges already include
+        # their own `>= ?` cutoff. Prepending a hardcoded `?` would
+        # either consume a param that does not exist (latest -> SQL
+        # error) or duplicate a cutoff (24h/7d/today -> wrong binding).
+        sql_v1 = (
+            "SELECT "
+            "  g.gate_name AS gate_name, "
+            "  g.gate_category AS gate_category, "
+            "  SUM(CASE WHEN g.passed = 1 THEN 1 ELSE 0 END) AS passed_count, "
+            "  SUM(g.applied) AS applied_count, "
+            "  COUNT(*) AS total_count, "
+            "  MIN(g.observed_value) AS sampled_observed_min, "
+            "  MAX(g.observed_value) AS sampled_observed_max, "
+            "  MIN(g.threshold_value) AS sampled_threshold_min, "
+            "  MAX(g.threshold_value) AS sampled_threshold_max "
+            "FROM decision_gate_evaluations g INDEXED BY idx_dge_cycle_start "
+            f"WHERE {v1_range_sql.replace('dh.cycle_start', 'g.cycle_start')} "
+            "  AND g.applied = 1 "
+            "  AND EXISTS (SELECT 1 FROM decision_history dh "
+            "              WHERE dh.id = g.decision_history_id "
+            "                AND dh.analytics_persistence_version = 1) "
+            "GROUP BY g.gate_name, g.gate_category"
+        )
+        rows_v1 = cur.execute(sql_v1, v1_range_params).fetchall()
+
+        # Merge by (gate_name, gate_category). A gate present in both
+        # streams has its counts summed. The (gate_name, gate_category)
+        # tuple is the unique key because _persist_gate_evaluations
+        # preserves (name, category) from the JSON.
+        merged = {}
+        for r in list(rows_v0) + list(rows_v1):
             name = r["gate_name"]
             if name is None or name == "":
                 continue
-            total = int(r["total_count"])
-            passed = int(r["passed_count"])
-            # PHASE-C7: the WHERE filter restricted the join to
-            # applied=true rows, so total = COUNT of applied=true
-            # gate evaluations, and failed = total - passed counts
-            # only applied=true + passed=false (NOT applied=false,
-            # NOT missing/malformed applied).
+            cat = r["gate_category"]
+            key = (name, cat)
+            if key not in merged:
+                merged[key] = {
+                    "gate_name": name,
+                    "category": cat,
+                    "total_count": 0,
+                    "passed_count": 0,
+                    "applied_count": 0,
+                    "sampled_observed_min": None,
+                    "sampled_observed_max": None,
+                    "sampled_threshold_min": None,
+                    "sampled_threshold_max": None,
+                }
+            slot = merged[key]
+            slot["total_count"] += int(r["total_count"])
+            slot["passed_count"] += int(r["passed_count"])
+            slot["applied_count"] += int(r["applied_count"])
+            # observed/threshold samples: take non-NULL from either side
+            for k_sample in (
+                "sampled_observed_min", "sampled_observed_max",
+                "sampled_threshold_min", "sampled_threshold_max",
+            ):
+                if r[k_sample] is not None:
+                    val = float(r[k_sample])
+                    cur_val = slot[k_sample]
+                    if k_sample.endswith("_min"):
+                        slot[k_sample] = val if cur_val is None else min(cur_val, val)
+                    else:
+                        slot[k_sample] = val if cur_val is None else max(cur_val, val)
+
+        # Deterministic ordering: failures DESC, then name ASC. The
+        # single-stream ORDER BY used to guarantee this for one
+        # query; with merged streams we re-sort post-merge.
+        ordered = sorted(
+            merged.values(),
+            key=lambda s: (-(s["total_count"] - s["passed_count"]), s["gate_name"]),
+        )
+
+        gates_list = []
+        for slot in ordered:
+            total = int(slot["total_count"])
+            passed = int(slot["passed_count"])
+            # PHASE-C7: total = COUNT of applied=true gate evaluations
+            # (both v0 WHERE filter and v1 g.applied=1 restrict to
+            # applied=true); failed = total - passed counts only
+            # applied=true + passed=false (NOT applied=false, NOT
+            # missing/malformed applied).
             failed = total - passed
-            slot = {
-                "gate_name": name,
-                "category": r["gate_category"],
+            out = {
+                "gate_name": slot["gate_name"],
+                "category": slot["category"],
                 "total_evaluations": total,
                 "passed": passed,
                 "failed": failed,
-                "applied_count": int(r["applied_count"]),
+                "applied_count": int(slot["applied_count"]),
                 "failure_rate": (failed / total) if total else 0.0,
             }
-            if r["sampled_observed_min"] is not None:
-                slot["sampled_observed_min"] = float(r["sampled_observed_min"])
-                slot["sampled_observed_max"] = float(r["sampled_observed_max"])
-                slot["sampled_threshold_min"] = float(r["sampled_threshold_min"])
-                slot["sampled_threshold_max"] = float(r["sampled_threshold_max"])
-            gates_list.append(slot)
+            if slot["sampled_observed_min"] is not None:
+                out["sampled_observed_min"] = float(slot["sampled_observed_min"])
+                out["sampled_observed_max"] = float(slot["sampled_observed_max"])
+                out["sampled_threshold_min"] = float(slot["sampled_threshold_min"])
+                out["sampled_threshold_max"] = float(slot["sampled_threshold_max"])
+            gates_list.append(out)
 
         return {
             "range": range_name,
@@ -2289,12 +2499,17 @@ def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), coh
             "rows_in_cohort": rows_in_cohort,
             "gate_rows_aggregated": sum(g["total_evaluations"] for g in gates_list),
             "gates": gates_list,
-            "source": "decision_history.decision_snapshot -> $.strategy_eligibility.gates[]",
+            "source": (
+                "PHASE-C14B-2C hybrid: v0=decision_history.decision_snapshot -> "
+                "$.strategy_eligibility.gates[] (analytics_persistence_version=0); "
+                "v1=decision_gate_evaluations (analytics_persistence_version=1)"
+            ),
             "inference_rule": (
                 "failures counted only where gate.passed == false AND "
                 "gate.applied == true; gate.applied == false and "
                 "malformed/missing applied both contribute 0 (fail closed); "
-                "never from HOLD_INELIGIBLE outcome"
+                "never from HOLD_INELIGIBLE outcome; "
+                "v1 zero-child parent contributes zero with no JSON fallback"
             ),
         }
     except Exception as e:
@@ -2310,6 +2525,35 @@ def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), coh
 @app.get("/api/phase-c/execution-blockers")
 def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"), cohort: str = "post_obs002"):
     """OBS-001 Phase C: aggregate `execution_checks.checks[]`.
+
+    **PHASE-C14B-2C hybrid read path** (replaces C14 single JSON path):
+
+    The authority for each parent's execution-check facts is determined
+    ONLY by `decision_history.analytics_persistence_version`:
+
+      analytics_persistence_version = 0 (legacy / pre-C14B-2B deploy):
+        `decision_history.decision_snapshot -> $.execution_checks.checks[]`
+        is authoritative. The SQL restricts
+        `analytics_persistence_version = 0` so any partial historical
+        child rows for v0 parents are ignored (they are NOT
+        authoritative for v0 parents).
+
+      analytics_persistence_version = 1 (normalized / post-C14B-2B deploy):
+        `decision_execution_checks` rows are authoritative. The SQL
+        restricts `analytics_persistence_version = 1` via EXISTS on
+        `decision_history.id`. The snapshot JSON is NEVER parsed for
+        these parents. A v1 parent with zero child exec-check rows is
+        VALID and contributes zero to the aggregation; no JSON
+        fallback.
+
+    Authority is determined ONLY by `analytics_persistence_version`.
+    Parent ID cutover, deploy timestamp, child-row existence, and
+    outcome text are NOT used as authority signals.
+
+    The two result streams are merged in Python by `check_name`.
+    Ordering (failed DESC then check_name ASC for the checks list;
+    cnt DESC then blocker ASC for first_blocking) is preserved
+    post-merge.
 
     Honest universe: only `decision_history` rows whose snapshot has
     a populated `$.execution_checks.checks[]` contribute. In current
@@ -2332,50 +2576,37 @@ def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"),
 
     try:
         cur = conn.cursor()
-        # PHASE-C9: use the bundle helper. The alias is internal
-        # ("dh" for decision_history) and goes through
-        # `_phase_c_qualify_column`'s allowlist. No request data
-        # is interpolated.
-        cohort_clause_sql, range_clause_sql, params = _phase_c_window_predicates(
+        # PHASE-C14B-2C: per-version window predicates.
+        (
+            v0_cohort_sql, v0_range_sql, v0_cohort_params, v0_range_params,
+            v1_cohort_sql, v1_range_sql, v1_cohort_params, v1_range_params,
+        ) = _phase_c_hybrid_window_predicates(
             range_name, cohort, "dh.cycle_start"
         )
 
-        # Single-statement CTE chain. `cohort` materializes the
-        # filtered set once (uses idx_decision_history_cycle_start);
-        # `parsed` materializes the JSON-extracted columns once per
-        # cohort row so the four aggregate subqueries reuse them
-        # instead of re-parsing `decision_snapshot`. MATERIALIZED
-        # forces single evaluation — without it SQLite may inline
-        # the CTE on each reference and re-do the JSON work.
-        # `decision_history` is scanned at most once per request;
-        # `parsed` consumers read from the materialized CTE only.
-        #
-        # Filter semantics (preserved from the prior per-pass SQL):
-        #   * rows_with_checks: json_type='array' AND
-        #     json_array_length>0.
-        #   * per-check: checks_json IS NOT NULL AND
-        #     json_array_length>0; check_name IS NOT NULL AND !=''
-        #     AND !=0 (matches Python `if not name: continue`).
-        #   * first_blocker: first_blocker IS NOT NULL; null/empty
-        #     maps to 'unknown' (matches Python `r["blocker"] or
-        #     "unknown"`).
-        #   * checks sort: `failed DESC, check_name ASC`.
-        #     first_blocking sort: `cnt DESC, blocker ASC`.
-        # Regression tests: tests/test_phase_c14_execution_blockers_refactor.py.
-        single_sql = (
-            "WITH cohort AS MATERIALIZED ( "
+        # Count rows in the cohort (counts ALL parents in window
+        # regardless of version). Fast COUNT(*) — no JSON extraction.
+        rows_in_cohort = int(cur.execute(
+            "SELECT COUNT(*) AS c FROM decision_history dh "
+            f"WHERE {v0_cohort_sql} OR {v1_cohort_sql}",
+            v0_cohort_params + v1_cohort_params,
+        ).fetchone()["c"])
+
+        # v0 path: JSON extraction from decision_snapshot.
+        # Reuses the C14 single-CTE design (MATERIALIZED) for
+        # efficient JSON extraction on the v0 subset.
+        sql_v0 = (
+            "WITH v0_cohort AS MATERIALIZED ( "
             "  SELECT decision_snapshot FROM decision_history dh "
-            f"  WHERE {cohort_clause_sql} AND {range_clause_sql} "
-            "), parsed AS MATERIALIZED ( "
+            f"  WHERE {v0_cohort_sql} AND {v0_range_sql} "
+            "), v0_parsed AS MATERIALIZED ( "
             "  SELECT "
-            "    decision_snapshot, "
             "    json_extract(decision_snapshot, '$.execution_checks.checks') AS checks_json, "
             "    json_extract(decision_snapshot, '$.execution_checks.first_blocking_check') AS first_blocker "
-            "  FROM cohort "
+            "  FROM v0_cohort "
             ") "
             "SELECT "
-            "  (SELECT COUNT(*) FROM cohort) AS rows_in_cohort, "
-            "  (SELECT COUNT(*) FROM parsed "
+            "  (SELECT COUNT(*) FROM v0_parsed "
             "   WHERE json_type(checks_json) = 'array' "
             "     AND json_array_length(checks_json) > 0) AS rows_with_checks, "
             "  (SELECT json_group_array(json_object( "
@@ -2391,9 +2622,9 @@ def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"),
             "       SUM(CASE WHEN COALESCE(json_extract(\"check\".value, '$.passed'), 0) THEN 1 ELSE 0 END) AS passed, "
             "       SUM(CASE WHEN COALESCE(json_extract(\"check\".value, '$.passed'), 0) THEN 0 ELSE 1 END) AS failed, "
             "       SUM(CASE WHEN COALESCE(json_extract(\"check\".value, '$.applied'), 0) THEN 1 ELSE 0 END) AS applied_count "
-            "     FROM parsed, json_each(parsed.checks_json) AS \"check\" "
-            "     WHERE parsed.checks_json IS NOT NULL "
-            "       AND json_array_length(parsed.checks_json) > 0 "
+            "     FROM v0_parsed, json_each(v0_parsed.checks_json) AS \"check\" "
+            "     WHERE v0_parsed.checks_json IS NOT NULL "
+            "       AND json_array_length(v0_parsed.checks_json) > 0 "
             "       AND json_extract(\"check\".value, '$.name') IS NOT NULL "
             "       AND json_extract(\"check\".value, '$.name') != '' "
             "       AND json_extract(\"check\".value, '$.name') != 0 "
@@ -2406,40 +2637,136 @@ def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"),
             "       CASE WHEN first_blocker IS NULL OR first_blocker = '' "
             "            THEN 'unknown' ELSE first_blocker END AS blocker, "
             "       COUNT(*) AS cnt "
-            "     FROM parsed "
+            "     FROM v0_parsed "
             "     WHERE first_blocker IS NOT NULL "
             "     GROUP BY blocker "
             "     ORDER BY cnt DESC, blocker ASC "
             "   )) AS first_blocking_json "
         )
-        row = cur.execute(single_sql, params).fetchone()
-        rows_in_cohort = int(row["rows_in_cohort"])
-        rows_with_checks = int(row["rows_with_checks"])
-        # `json_group_array` returns a JSON array string (or '[]' for
-        # empty input). json.loads decodes it back into Python lists.
+        row_v0 = cur.execute(
+            sql_v0, v0_cohort_params + v0_range_params,
+        ).fetchone()
+        rows_with_checks_v0 = int(row_v0["rows_with_checks"] or 0)
         import json as _json
-        checks_raw = _json.loads(row["checks_json"] or "[]")
-        first_blocking_raw = _json.loads(row["first_blocking_json"] or "[]")
-        # The SQL aggregations already produce the exact field shape
-        # and ordering used in the response; no post-processing
-        # beyond the JSON decode is needed.
-        checks_list = [
-            {
-                "check_name": c["check_name"],
-                "total_evaluations": int(c["total_evaluations"]),
-                "passed": int(c["passed"]),
-                "failed": int(c["failed"]),
-                "applied_count": int(c["applied_count"]),
-            }
-            for c in checks_raw
-        ]
-        first_blocking = [
-            {
+        checks_v0_raw = _json.loads(row_v0["checks_json"] or "[]")
+        first_blocking_v0_raw = _json.loads(row_v0["first_blocking_json"] or "[]")
+
+        # v1 path: read from decision_execution_checks. The child
+        # table's own cycle_start column drives the range index
+        # (idx_dec_cycle_start). EXISTS on decision_history restricts
+        # to v1 parents. check_name filters mirror the v0 SQL.
+        #
+        # IMPORTANT: same binding contract as the strategy-gates v1
+        # path. The range clause already encodes the cycle_start
+        # filter (with the right `?` for time ranges, no `?` for
+        # latest); do NOT prepend `e.cycle_start >= ?` here.
+        sql_v1 = (
+            "SELECT "
+            "  e.check_name AS check_name, "
+            "  COUNT(*) AS total_evaluations, "
+            "  SUM(CASE WHEN e.passed = 1 THEN 1 ELSE 0 END) AS passed, "
+            "  SUM(CASE WHEN e.passed = 1 THEN 0 ELSE 1 END) AS failed, "
+            "  SUM(e.applied) AS applied_count "
+            "FROM decision_execution_checks e INDEXED BY idx_dec_cycle_start "
+            f"WHERE {v1_range_sql.replace('dh.cycle_start', 'e.cycle_start')} "
+            "  AND e.check_name IS NOT NULL "
+            "  AND e.check_name != '' "
+            "  AND e.check_name != 0 "
+            "  AND EXISTS (SELECT 1 FROM decision_history dh "
+            "              WHERE dh.id = e.decision_history_id "
+            "                AND dh.analytics_persistence_version = 1) "
+            "GROUP BY e.check_name"
+        )
+        rows_v1_checks = cur.execute(sql_v1, v1_range_params).fetchall()
+
+        # v1 first_blocking aggregation: count is_first_blocking=1 per name.
+        sql_v1_first = (
+            "SELECT "
+            "  e.check_name AS check_name, "
+            "  COUNT(*) AS cnt "
+            "FROM decision_execution_checks e INDEXED BY idx_dec_cycle_start "
+            f"WHERE {v1_range_sql.replace('dh.cycle_start', 'e.cycle_start')} "
+            "  AND e.is_first_blocking = 1 "
+            "  AND EXISTS (SELECT 1 FROM decision_history dh "
+            "              WHERE dh.id = e.decision_history_id "
+            "                AND dh.analytics_persistence_version = 1) "
+            "GROUP BY e.check_name"
+        )
+        rows_v1_first = cur.execute(sql_v1_first, v1_range_params).fetchall()
+
+        # Build v1 checks dict + first_blocking dict
+        v1_checks_map = {
+            r["check_name"]: {
                 "check_name": r["check_name"],
-                "count": int(r["count"]),
+                "total_evaluations": int(r["total_evaluations"]),
+                "passed": int(r["passed"]),
+                "failed": int(r["failed"]),
+                "applied_count": int(r["applied_count"]),
             }
-            for r in first_blocking_raw
-        ]
+            for r in rows_v1_checks
+        }
+        v1_first_map = {
+            r["check_name"]: int(r["cnt"]) for r in rows_v1_first
+        }
+
+        # Merge checks
+        merged_checks = {}
+        for c in list(checks_v0_raw) + list(v1_checks_map.values()):
+            name = c["check_name"]
+            if name is None or name == "" or name == 0:
+                continue
+            if name not in merged_checks:
+                merged_checks[name] = {
+                    "check_name": name,
+                    "total_evaluations": 0,
+                    "passed": 0,
+                    "failed": 0,
+                    "applied_count": 0,
+                }
+            merged_checks[name]["total_evaluations"] += int(c["total_evaluations"])
+            merged_checks[name]["passed"] += int(c["passed"])
+            merged_checks[name]["failed"] += int(c["failed"])
+            merged_checks[name]["applied_count"] += int(c["applied_count"])
+        # Deterministic ordering: failed DESC, check_name ASC.
+        checks_list = sorted(
+            merged_checks.values(),
+            key=lambda c: (-c["failed"], c["check_name"]),
+        )
+
+        # Merge first_blocking
+        merged_first = {}
+        for r in list(first_blocking_v0_raw) + list(v1_first_map.items()):
+            if isinstance(r, dict):
+                name = r["check_name"]
+                cnt = int(r["count"])
+            else:
+                name, cnt = r
+            if name is None or name == "":
+                # C14 mapped None/empty to 'unknown' only on the
+                # v0 path; v1 child rows always have a non-empty
+                # check_name (else they are dropped by the WHERE
+                # filter).
+                continue
+            if name not in merged_first:
+                merged_first[name] = {"check_name": name, "count": 0}
+            merged_first[name]["count"] += cnt
+        first_blocking = sorted(
+            merged_first.values(),
+            key=lambda b: (-b["count"], b["check_name"]),
+        )
+
+        # rows_with_checks: v0 rows + v1 parents that have >=1 child row.
+        # For v1, count parents that have any child row (not zero).
+        rows_with_checks_v1_parents = 0
+        if v1_cohort_params:
+            rows_with_checks_v1_parents = int(cur.execute(
+                "SELECT COUNT(DISTINCT dh.id) FROM decision_history dh "
+                "WHERE " + v1_cohort_sql + " AND " + v1_range_sql + " "
+                "  AND EXISTS (SELECT 1 FROM decision_execution_checks e "
+                "              WHERE e.decision_history_id = dh.id)",
+                v1_cohort_params + v1_range_params,
+            ).fetchone()[0])
+        rows_with_checks = rows_with_checks_v0 + rows_with_checks_v1_parents
 
         return {
             "range": range_name,
@@ -2454,7 +2781,11 @@ def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"),
             ),
             "checks": checks_list,
             "first_blocking_check": first_blocking,
-            "source": "decision_history.decision_snapshot -> $.execution_checks.checks[]",
+            "source": (
+                "PHASE-C14B-2C hybrid: v0=decision_history.decision_snapshot -> "
+                "$.execution_checks.checks[] (analytics_persistence_version=0); "
+                "v1=decision_execution_checks (analytics_persistence_version=1)"
+            ),
         }
     except Exception as e:
         logger.error(f"api_phase_c_execution_blockers failed: {e}")

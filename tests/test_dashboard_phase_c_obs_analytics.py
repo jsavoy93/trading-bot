@@ -81,11 +81,13 @@ def _build_synthetic_phase_c_db():
     cur.execute(
         """
         CREATE TABLE decision_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             cycle_id TEXT,
             symbol TEXT,
             cycle_start TEXT,
             decision_snapshot TEXT,
-            decision_schema_version INTEGER
+            decision_schema_version INTEGER,
+            analytics_persistence_version INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -206,6 +208,64 @@ def _build_synthetic_phase_c_db():
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ("c1", "2026-09-15T10:00:00+00:00", "2026-09-15T10:00:30+00:00",
          6, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+    )
+
+    # PHASE-C14B-2C: create empty child tables so the v1 path of the
+    # hybrid reader does not error with "no such table" for tests
+    # that pre-date the hybrid read path. With the synthetic rows
+    # defaulting to analytics_persistence_version=0, the v1 path
+    # returns no rows (it filters on parent version=1), so empty
+    # child tables are the correct shape.
+    cur.execute(
+        """
+        CREATE TABLE decision_gate_evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            gate_name TEXT NOT NULL,
+            gate_category TEXT,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE decision_execution_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            check_name TEXT NOT NULL,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT,
+            gap_note TEXT,
+            is_first_blocking INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    # PHASE-C14B-2C: the v1 SQL uses INDEXED BY hints to force the
+    # production cycle_start indexes on the child tables. The
+    # synthetic test DB must have matching indexes or INDEXED BY
+    # raises "no such index".
+    cur.execute(
+        "CREATE INDEX idx_dge_cycle_start "
+        "ON decision_gate_evaluations(cycle_start)"
+    )
+    cur.execute(
+        "CREATE INDEX idx_dec_cycle_start "
+        "ON decision_execution_checks(cycle_start)"
     )
     conn.commit()
     return conn
@@ -729,11 +789,13 @@ def _build_phase_c_db(decision_rows=None, funnel_rows=None, path=None):
     cur.execute(
         """
         CREATE TABLE decision_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             cycle_id TEXT,
             symbol TEXT,
             cycle_start TEXT,
             decision_snapshot TEXT,
-            decision_schema_version INTEGER
+            decision_schema_version INTEGER,
+            analytics_persistence_version INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -777,8 +839,306 @@ def _build_phase_c_db(decision_rows=None, funnel_rows=None, path=None):
             row,
         )
 
+    # PHASE-C14B-2C: create empty child tables so the v1 path of
+    # the hybrid reader doesn't error on "no such table" when
+    # running pre-hybrid test data. With analytics_persistence_version
+    # defaulting to 0, the v1 path returns no rows; this just
+    # makes the schema complete.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS decision_gate_evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            gate_name TEXT NOT NULL,
+            gate_category TEXT,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS decision_execution_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            check_name TEXT NOT NULL,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT,
+            gap_note TEXT,
+            is_first_blocking INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    # PHASE-C14B-2C: cycle_start indexes for v1 SQL INDEXED BY hints.
+    cur.execute(
+        "CREATE INDEX idx_dge_cycle_start "
+        "ON decision_gate_evaluations(cycle_start)"
+    )
+    cur.execute(
+        "CREATE INDEX idx_dec_cycle_start "
+        "ON decision_execution_checks(cycle_start)"
+    )
     conn.commit()
     return conn
+
+
+
+def _build_phase_c_db_with_hybrid(decision_rows=None, funnel_rows=None,
+                                    gate_rows_v1=None, exec_rows_v1=None,
+                                    decision_rows_extended=None,
+                                    path=None):
+    """PHASE-C14B-2C: build a synthetic Phase C DB for hybrid-read tests.
+
+    Like `_build_phase_c_db`, but:
+      * Adds the `analytics_persistence_version` column to decision_history
+        (defaulting to 0 if `decision_rows` tuples don't supply one).
+      * Creates `decision_gate_evaluations` and `decision_execution_checks`
+        child tables so the v1 path of the hybrid reader has somewhere
+        to read from.
+
+    `gate_rows_v1` / `exec_rows_v1` are lists of tuples matching the
+    production schemas (see src/database/sqlite_db.py CREATE TABLE).
+
+    `decision_rows_extended` is an optional override for `decision_rows`
+    that uses the full 6-column tuple
+    (cycle_id, symbol, cycle_start, snapshot_json, schema_version,
+    analytics_persistence_version). If supplied, it takes precedence
+    over `decision_rows`.
+    """
+    if decision_rows_extended is None and decision_rows is not None:
+        # Default all legacy rows to v0 unless overridden
+        decision_rows_extended = []
+        for row in decision_rows:
+            if len(row) >= 6:
+                decision_rows_extended.append(row)
+            else:
+                # Append analytics_persistence_version=0
+                decision_rows_extended.append(row + (0,))
+    elif decision_rows_extended is None:
+        decision_rows_extended = []
+        if decision_rows is None:
+            decision_rows = _PHASE_C7_DEFAULT_DECISION_ROWS
+        for row in decision_rows:
+            if len(row) >= 6:
+                decision_rows_extended.append(row)
+            else:
+                decision_rows_extended.append(row + (0,))
+
+    if funnel_rows is None:
+        funnel_rows = [_PHASE_C7_DEFAULT_FUNNEL_ROW]
+
+    if path is None:
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+    else:
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        CREATE TABLE decision_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle_id TEXT,
+            symbol TEXT,
+            cycle_start TEXT,
+            decision_snapshot TEXT,
+            decision_schema_version INTEGER,
+            analytics_persistence_version INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE cycle_funnel (
+            cycle_id TEXT,
+            cycle_start TEXT,
+            cycle_end TEXT,
+            analyzed_count INTEGER,
+            strategy_eligible_count INTEGER,
+            ranked_candidate_count INTEGER,
+            execution_attempt_count INTEGER,
+            execution_blocked_count INTEGER,
+            order_submission_attempt_count INTEGER,
+            order_submitted_count INTEGER,
+            order_failed_count INTEGER,
+            not_attempted_count INTEGER,
+            schema_version INTEGER
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE decision_gate_evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            gate_name TEXT NOT NULL,
+            gate_category TEXT,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE decision_execution_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            check_name TEXT NOT NULL,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT,
+            gap_note TEXT,
+            is_first_blocking INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    # PHASE-C14B-2C: cycle_start indexes for the v1 SQL INDEXED BY hints.
+    cur.execute(
+        "CREATE INDEX idx_dge_cycle_start "
+        "ON decision_gate_evaluations(cycle_start)"
+    )
+    cur.execute(
+        "CREATE INDEX idx_dec_cycle_start "
+        "ON decision_execution_checks(cycle_start)"
+    )
+
+    for row in decision_rows_extended:
+        cur.execute(
+            "INSERT INTO decision_history "
+            "(cycle_id, symbol, cycle_start, decision_snapshot, "
+            " decision_schema_version, analytics_persistence_version) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            row,
+        )
+
+    for row in funnel_rows:
+        cur.execute(
+            "INSERT INTO cycle_funnel "
+            "(cycle_id, cycle_start, cycle_end, "
+            " analyzed_count, strategy_eligible_count, ranked_candidate_count, "
+            " execution_attempt_count, execution_blocked_count, "
+            " order_submission_attempt_count, order_submitted_count, "
+            " order_failed_count, not_attempted_count, schema_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row,
+        )
+
+    if gate_rows_v1:
+        for row in gate_rows_v1:
+            cur.execute(
+                "INSERT INTO decision_gate_evaluations "
+                "(decision_history_id, cycle_id, symbol, cycle_start, "
+                " ordinality, gate_name, gate_category, "
+                " applied, passed, observed_value, threshold_value, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+
+    if exec_rows_v1:
+        for row in exec_rows_v1:
+            cur.execute(
+                "INSERT INTO decision_execution_checks "
+                "(decision_history_id, cycle_id, symbol, cycle_start, "
+                " ordinality, check_name, "
+                " applied, passed, observed_value, threshold_value, "
+                " reason, gap_note, is_first_blocking) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+
+    # PHASE-C14B-2C: cycle_start indexes are created at table-creation
+    # time (lines 888-892 above). No-op here to avoid
+    # "index already exists" if both code paths execute.
+    pass
+
+    conn.commit()
+    return conn
+
+
+@pytest.fixture
+def synthetic_phase_c_hybrid_db(monkeypatch, tmp_path):
+    """PHASE-C14B-2C: factory for synthetic DBs with v0/v1 split.
+
+    Usage:
+        def test_x(synthetic_phase_c_hybrid_db):
+            conn, opener = synthetic_phase_c_hybrid_db(
+                decision_rows=[...],         # v0 by default
+                decision_rows_extended=[...], # explicit version per row
+                gate_rows_v1=[...],          # normalized gate rows
+                exec_rows_v1=[...],          # normalized exec-check rows
+            )
+            ...
+    """
+    tracked = []
+    opened_paths = set()
+
+    def _make(decision_rows=None, decision_rows_extended=None,
+              funnel_rows=None, gate_rows_v1=None, exec_rows_v1=None):
+        db_path = tmp_path / "phase_c_hybrid_synthetic.db"
+        seed_conn = _build_phase_c_db_with_hybrid(
+            decision_rows=decision_rows,
+            decision_rows_extended=decision_rows_extended,
+            funnel_rows=funnel_rows,
+            gate_rows_v1=gate_rows_v1,
+            exec_rows_v1=exec_rows_v1,
+            path=str(db_path),
+        )
+        opened_paths.add(str(db_path))
+        tracked.append((str(db_path), seed_conn))
+
+        def _opener(*args, **kwargs):
+            opened_paths.add(str(db_path))
+            new_conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            new_conn.row_factory = sqlite3.Row
+            return new_conn
+
+        import sys
+        sys.path.insert(0, str(REPO_ROOT))
+        import dashboard as _dashboard
+        monkeypatch.setattr(_dashboard, "_phase_c_open_db", _opener)
+        return seed_conn
+
+    try:
+        yield _make
+    finally:
+        # Safety canary: no opener should have resolved to production.
+        for path, _ in tracked:
+            assert path in opened_paths
+            assert path.startswith(str(tmp_path)), (
+                f"hybrid DB opened outside tmp_path: {path}"
+            )
+        for _, seed_conn in tracked:
+            try:
+                seed_conn.close()
+            except Exception:
+                pass
 
 
 @pytest.fixture
@@ -1055,7 +1415,11 @@ class TestSourceOfTruth:
         c = _client()
         r = c.get("/api/phase-c/strategy-gates?range=latest")
         body = r.json()
-        assert body["source"] == "decision_history.decision_snapshot -> $.strategy_eligibility.gates[]"
+        assert body["source"] == (
+            "PHASE-C14B-2C hybrid: v0=decision_history.decision_snapshot -> "
+            "$.strategy_eligibility.gates[] (analytics_persistence_version=0); "
+            "v1=decision_gate_evaluations (analytics_persistence_version=1)"
+        )
         # The inference rule is documented explicitly in the response.
         assert "HOLD_INELIGIBLE" in body["inference_rule"]
         assert "passed == false" in body["inference_rule"]
@@ -1068,7 +1432,11 @@ class TestSourceOfTruth:
         c = _client()
         r = c.get("/api/phase-c/execution-blockers?range=latest")
         body = r.json()
-        assert body["source"] == "decision_history.decision_snapshot -> $.execution_checks.checks[]"
+        assert body["source"] == (
+            "PHASE-C14B-2C hybrid: v0=decision_history.decision_snapshot -> "
+            "$.execution_checks.checks[] (analytics_persistence_version=0); "
+            "v1=decision_execution_checks (analytics_persistence_version=1)"
+        )
         # Honest universe caveat is present.
         caveat = body["universe_caveat"]
         assert "execute_trade" in caveat
@@ -3050,6 +3418,642 @@ class TestPhaseC10AFactorySelfTest:
         assert starts[1] >= OBS_002_BOUNDARY, (
             f"second cycle_start {starts[1]!r} should be post-OBS-002"
         )
+
+# ─────────────────────────────────────────────────────────────────────────
+# PHASE-C14B-2C: hybrid normalized read-path coverage
+# ─────────────────────────────────────────────────────────────────────────
+#
+# These tests prove the authority contract for the C14B-2C hybrid
+# read path on /api/phase-c/strategy-gates and
+# /api/phase-c/execution-blockers:
+#
+#   analytics_persistence_version = 0 → decision_snapshot JSON is
+#                                       authoritative; child rows for
+#                                       v0 parents MUST be ignored.
+#   analytics_persistence_version = 1 → decision_gate_evaluations /
+#                                       decision_execution_checks rows
+#                                       are authoritative; snapshot
+#                                       JSON MUST NOT be parsed.
+#   v1 parent with zero child rows is VALID — contributes zero with
+#                                       no JSON fallback.
+#
+# The fixture `synthetic_phase_c_hybrid_db` (defined earlier in
+# this file) routes `dashboard._phase_c_open_db` to a tmp-path DB
+# that has both child tables populated. All tests here use that
+# fixture — they never touch trading_bot.db.
+
+def _gate(ordinality, name, category, applied, passed, observed=None,
+          threshold=None, reason=None):
+    """Build a single strategy_eligibility.gates[] entry as JSON."""
+    return {
+        "ordinality": ordinality,
+        "name": name,
+        "category": category,
+        "applied": applied,
+        "passed": passed,
+        "observed_value": observed,
+        "threshold_value": threshold,
+        "reason": reason,
+    }
+
+
+def _check(ordinality, name, applied, passed, observed=None, threshold=None,
+           reason=None, gap_note=None, is_first_blocking=0):
+    """Build a single execution_checks.checks[] entry as JSON."""
+    return {
+        "ordinality": ordinality,
+        "name": name,
+        "applied": applied,
+        "passed": passed,
+        "observed_value": observed,
+        "threshold_value": threshold,
+        "reason": reason,
+        "gap_note": gap_note,
+        "is_first_blocking": is_first_blocking,
+    }
+
+
+class TestStrategyGatesHybridReadPath:
+    """PHASE-C14B-2C: hybrid v0/v1 read path for strategy-gates.
+
+    Each test pins ONE authority-contract rule. The contract is:
+
+      * v0 parent → snapshot JSON is authoritative; any child rows
+        that exist for the v0 parent MUST be ignored.
+      * v1 parent → normalized child rows are authoritative; the
+        snapshot JSON MUST NOT be parsed.
+      * v1 parent with zero child rows contributes zero to the
+        aggregation — there is NO JSON fallback.
+      * The merged output preserves ordering (failed DESC, name ASC).
+    """
+
+    # ── all-v0 window ─────────────────────────────────────────────────
+
+    def test_all_v0_window_reads_only_snapshot(self,
+                                               synthetic_phase_c_hybrid_db):
+        """3 v0 parents with gates in snapshot. Even if child rows
+        exist for these v0 parents, the hybrid reader must aggregate
+        from the snapshot JSON and ignore the child rows."""
+        snapshot_gates = json.dumps({"strategy_eligibility": {
+            "gates": [
+                _gate(1, "rsi_oversold", "trend", True, True, 25, 30),
+                _gate(2, "sma_uptrend", "trend", True, False, None, None),
+            ],
+        }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
+        snapshot_other = json.dumps({"decision": {"outcome": "HOLD_INELIGIBLE"}})
+
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot_gates, 1, 0),
+            ("c2", "BBB", "2026-09-24T10:00:01+00:00", snapshot_gates, 1, 0),
+            ("c3", "CCC", "2026-09-24T10:00:02+00:00", snapshot_gates, 1, 0),
+        ]
+        # Stale gate child rows for v0 parents — MUST be ignored.
+        # If the hybrid reader incorrectly joined, totals would
+        # double (snapshot 6 + children 6 = 12).
+        gate_rows_v1 = [
+            # (dh_id, cycle_id, symbol, cycle_start, ord, name,
+            #  category, applied, passed, observed, threshold, reason)
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1, "rsi_oversold",
+             "trend", 1, 1, 1.0, 30.0, "STALE CHILD — must be ignored"),
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2, "sma_uptrend",
+             "trend", 1, 1, 1.0, 0.0, "STALE CHILD — must be ignored"),
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "rsi_oversold",
+             "trend", 1, 1, 1.0, 30.0, "STALE CHILD — must be ignored"),
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "sma_uptrend",
+             "trend", 1, 1, 1.0, 0.0, "STALE CHILD — must be ignored"),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/strategy-gates?range=7d&cohort=all").json()
+
+        rsi = next((g for g in body["gates"] if g["gate_name"] == "rsi_oversold"), None)
+        sma = next((g for g in body["gates"] if g["gate_name"] == "sma_uptrend"), None)
+        # Each gate: 3 v0 parents × 1 applied=true evaluation.
+        # If stale child rows leaked: 3+3 = 6.
+        assert rsi is not None and sma is not None, "expected both gates"
+        assert rsi["total_evaluations"] == 3, (
+            f"v0 + stale child double-counted? got {rsi['total_evaluations']}"
+        )
+        assert rsi["passed"] == 3
+        assert rsi["failed"] == 0
+        assert sma["total_evaluations"] == 3
+        assert sma["passed"] == 0
+        assert sma["failed"] == 3
+
+    # ── all-v1 window ─────────────────────────────────────────────────
+
+    def test_all_v1_window_reads_only_child_rows_no_json_parse(
+            self, synthetic_phase_c_hybrid_db):
+        """3 v1 parents whose snapshot JSON contains DIFFERENT gate
+        data (decoy). The hybrid reader must aggregate from the
+        child rows and ignore the snapshot entirely."""
+        # Snapshot says rsi_oversold passes 1, sma_uptrend passes 1
+        # (DECOY). Child rows say rsi passes 0, sma passes 0.
+        # Hybrid output must follow the child rows.
+        decoy_snapshot = json.dumps({"strategy_eligibility": {
+            "gates": [
+                _gate(1, "rsi_oversold", "trend", True, True, 1, 30,
+                      "DECOY from snapshot"),
+                _gate(2, "sma_uptrend", "trend", True, True, 1, 0,
+                      "DECOY from snapshot"),
+            ]
+        }, "decision": {"outcome": "BUY_ELIGIBLE_NOT_SELECTED"}})
+
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+            ("c2", "BBB", "2026-09-24T10:00:01+00:00", decoy_snapshot, 1, 1),
+            ("c3", "CCC", "2026-09-24T10:00:02+00:00", decoy_snapshot, 1, 1),
+        ]
+        gate_rows_v1 = [
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1, "rsi_oversold",
+             "trend", 1, 0, 0.0, 30.0, "AUTHORITATIVE child row"),
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2, "sma_uptrend",
+             "trend", 1, 0, 0.0, 0.0, "AUTHORITATIVE child row"),
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "rsi_oversold",
+             "trend", 1, 0, 0.0, 30.0, "AUTHORITATIVE child row"),
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "sma_uptrend",
+             "trend", 1, 0, 0.0, 0.0, "AUTHORITATIVE child row"),
+            (3, "c3", "CCC", "2026-09-24T10:00:02+00:00", 1, "rsi_oversold",
+             "trend", 1, 1, 1.0, 30.0, "AUTHORITATIVE child row"),
+            (3, "c3", "CCC", "2026-09-24T10:00:02+00:00", 2, "sma_uptrend",
+             "trend", 1, 1, 1.0, 0.0, "AUTHORITATIVE child row"),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/strategy-gates?range=7d&cohort=all").json()
+
+        rsi = next((g for g in body["gates"] if g["gate_name"] == "rsi_oversold"), None)
+        sma = next((g for g in body["gates"] if g["gate_name"] == "sma_uptrend"), None)
+        assert rsi is not None and sma is not None
+        # If JSON was parsed for v1: rsi passed=3, sma passed=3.
+        # Authoritative child output: rsi passed=1, sma passed=1.
+        assert rsi["total_evaluations"] == 3
+        assert rsi["passed"] == 1, (
+            f"v1 must NOT parse snapshot — got passed={rsi['passed']}, "
+            f"expected 1"
+        )
+        assert rsi["failed"] == 2
+        assert sma["total_evaluations"] == 3
+        assert sma["passed"] == 1
+        assert sma["failed"] == 2
+
+    # ── mixed v0/v1 window ────────────────────────────────────────────
+
+    def test_mixed_v0_v1_window_sums_without_double_count(
+            self, synthetic_phase_c_hybrid_db):
+        """1 v0 parent (snapshot) + 1 v1 parent (child rows). The
+        output must combine both without double-counting."""
+        v0_snapshot = json.dumps({"strategy_eligibility": {
+            "gates": [
+                _gate(1, "rsi_oversold", "trend", True, True, 25, 30),
+                _gate(2, "sma_uptrend", "trend", True, False, None, None),
+            ]
+        }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
+
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", v0_snapshot, 1, 0),
+            ("c2", "BBB", "2026-09-24T10:00:01+00:00", v0_snapshot, 1, 1),
+        ]
+        gate_rows_v1 = [
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "rsi_oversold",
+             "trend", 1, 0, 0.0, 30.0, "child row"),
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "sma_uptrend",
+             "trend", 1, 1, 1.0, 0.0, "child row"),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/strategy-gates?range=7d&cohort=all").json()
+
+        rsi = next((g for g in body["gates"] if g["gate_name"] == "rsi_oversold"), None)
+        sma = next((g for g in body["gates"] if g["gate_name"] == "sma_uptrend"), None)
+        # Each gate: 1 v0 (applied=true) + 1 v1 (applied=true) = 2.
+        # If double-counted: 2 v0 + 2 v1 = 4 (with overlap).
+        # If only v1 read: 1. If only v0 read: 1.
+        assert rsi["total_evaluations"] == 2, (
+            f"mixed: rsi total={rsi['total_evaluations']}, expected 2 "
+            f"(1 v0 + 1 v1, NO double-count)"
+        )
+        # v0 rsi passed=1, v1 rsi passed=0 → total passed=1
+        assert rsi["passed"] == 1
+        assert rsi["failed"] == 1
+        assert sma["total_evaluations"] == 2
+        # v0 sma passed=0, v1 sma passed=1 → total passed=1
+        assert sma["passed"] == 1
+        assert sma["failed"] == 1
+
+    # ── v1 zero-gate parent ───────────────────────────────────────────
+
+    def test_v1_zero_gate_parent_contributes_zero_with_no_fallback(
+            self, synthetic_phase_c_hybrid_db):
+        """v1 parent with NO gate child rows, but with a snapshot
+        that DECLARES gates. The hybrid reader must NOT parse the
+        snapshot — the parent contributes zero, even though the
+        JSON contains data that would change the result."""
+        decoy_snapshot = json.dumps({"strategy_eligibility": {
+            "gates": [
+                _gate(1, "rsi_oversold", "trend", True, True, 1, 30,
+                      "DECOY — should never be parsed"),
+            ]
+        }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
+
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+        ]
+        # No gate_rows_v1 for c1.
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=[],
+        )
+        c = _client()
+        body = c.get("/api/phase-c/strategy-gates?range=7d&cohort=all").json()
+
+        # rsi_oversold must NOT appear — v1 zero-child contributes zero.
+        rsi = next((g for g in body["gates"] if g["gate_name"] == "rsi_oversold"), None)
+        assert rsi is None, (
+            "v1 zero-child parent must NOT contribute via JSON fallback. "
+            "rsi_oversold unexpectedly present in response."
+        )
+        assert body["rows_in_cohort"] == 1, "v1 parent counted in cohort"
+
+    # ── response shape / ordering parity ──────────────────────────────
+
+    def test_response_shape_matches_pre_hybrid_contract(
+            self, synthetic_phase_c_hybrid_db):
+        """The hybrid output must preserve the pre-hybrid JSON
+        response shape (keys, top-level envelope)."""
+        snapshot_gates = json.dumps({"strategy_eligibility": {
+            "gates": [_gate(1, "rsi_oversold", "trend", True, True, 25, 30)]
+        }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot_gates, 1, 0),
+        ]
+        synthetic_phase_c_hybrid_db(decision_rows=decision_rows, gate_rows_v1=[])
+        c = _client()
+        body = c.get("/api/phase-c/strategy-gates?range=7d&cohort=all").json()
+        # Top-level keys preserved.
+        for key in ("range", "cohort", "rows_in_cohort",
+                    "gate_rows_aggregated", "gates", "source",
+                    "inference_rule"):
+            assert key in body, f"response missing top-level key '{key}'"
+        # Gate row keys preserved.
+        assert body["gates"], "expected at least one gate"
+        for g in body["gates"]:
+            for key in ("gate_name", "category", "total_evaluations",
+                        "passed", "failed", "applied_count",
+                        "failure_rate"):
+                assert key in g, f"gate row missing key '{key}'"
+        # source string reflects hybrid.
+        assert "PHASE-C14B-2C hybrid" in body["source"]
+
+    def test_ordering_failures_desc_then_name_asc(
+            self, synthetic_phase_c_hybrid_db):
+        """Hybrid ordering rule: failed DESC, then gate_name ASC.
+        Mixed v0/v1 must preserve this."""
+        v0_snapshot = json.dumps({"strategy_eligibility": {
+            "gates": [
+                _gate(1, "alpha", "trend", True, True, 1, 1),
+                _gate(2, "beta", "trend", True, False, 1, 1),
+                _gate(3, "gamma", "trend", True, False, 1, 1),
+                _gate(4, "delta", "trend", True, True, 1, 1),
+            ]
+        }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", v0_snapshot, 1, 0),
+            ("c2", "BBB", "2026-09-24T10:00:01+00:00", v0_snapshot, 1, 1),
+        ]
+        # v1 parent adds 1 more failure to beta (so beta ends up
+        # with 2 failures total).
+        gate_rows_v1 = [
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "beta",
+             "trend", 1, 0, 0.0, 0.0, "extra v1 fail"),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/strategy-gates?range=7d&cohort=all").json()
+        names = [g["gate_name"] for g in body["gates"]]
+        # Expected order: gamma (1 fail), beta (2 fail), alpha (0),
+        # delta (0). Within failures DESC: beta (2), gamma (1),
+        # then alpha (0) and delta (0) tie on name ASC.
+        assert names == ["beta", "gamma", "alpha", "delta"], (
+            f"ordering broken: {names}"
+        )
+
+    def test_applied_false_still_excluded_in_v1_path(
+            self, synthetic_phase_c_hybrid_db):
+        """PHASE-C7 contract must hold on the v1 child path:
+        applied=0 rows are excluded by SQL (g.applied = 1 filter)
+        and contribute zero to totals."""
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", "{}", 1, 1),
+        ]
+        gate_rows_v1 = [
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1, "rsi_oversold",
+             "trend", 1, 1, 1.0, 30.0, "applied=true passed"),
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2, "rsi_oversold",
+             "trend", 1, 0, 0.0, 30.0, "applied=true failed"),
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 3, "rsi_oversold",
+             "trend", 0, None, None, None, "applied=false (excluded)"),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/strategy-gates?range=7d&cohort=all").json()
+        rsi = next((g for g in body["gates"] if g["gate_name"] == "rsi_oversold"), None)
+        assert rsi is not None
+        # 2 applied=true rows counted: 1 passed, 1 failed.
+        # The applied=false row is filtered out by `g.applied = 1`.
+        assert rsi["total_evaluations"] == 2, (
+            f"applied=0 row leaked? total={rsi['total_evaluations']}"
+        )
+        assert rsi["passed"] == 1
+        assert rsi["failed"] == 1
+
+
+class TestExecutionBlockersHybridReadPath:
+    """PHASE-C14B-2C: hybrid v0/v1 read path for execution-blockers."""
+
+    def test_v1_zero_check_parent_does_not_appear_with_decoy_snapshot(
+            self, synthetic_phase_c_hybrid_db):
+        """v1 parent with NO exec-check child rows but with a
+        snapshot that DECLARES checks. Hybrid reader must NOT
+        parse the snapshot — parent contributes zero."""
+        decoy_snapshot = json.dumps({"execution_checks": {
+            "checks": [
+                _check(1, "buying_power_check", True, False, 1, 0,
+                       reason="DECOY"),
+            ],
+            "first_blocking_check": "buying_power_check",
+        }, "decision": {"outcome": "BUY_BLOCKED_DYNAMIC"}})
+
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+        ]
+        # No exec_rows_v1.
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, exec_rows_v1=[],
+        )
+        c = _client()
+        body = c.get("/api/phase-c/execution-blockers?range=7d&cohort=all").json()
+        names = [chk["check_name"] for chk in body["checks"]]
+        assert "buying_power_check" not in names, (
+            "v1 zero-check parent must NOT contribute via JSON fallback. "
+            f"Got checks={names}"
+        )
+        assert body["rows_in_cohort"] == 1
+
+    def test_v0_stale_exec_check_children_are_ignored(
+            self, synthetic_phase_c_hybrid_db):
+        """v0 parent has exec-check child rows. Hybrid reader must
+        ignore them and aggregate from snapshot."""
+        snapshot = json.dumps({"execution_checks": {
+            "checks": [
+                _check(1, "buying_power_check", True, False, 1, 0,
+                       reason="v0 snapshot"),
+                _check(2, "position_existence_check", True, True, 1, 0),
+            ],
+            "first_blocking_check": "buying_power_check",
+        }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
+
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot, 1, 0),
+        ]
+        exec_rows_v1 = [
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+             "stale_child_check", 1, 1, 1, 0, "STALE", None, 1),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, exec_rows_v1=exec_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/execution-blockers?range=7d&cohort=all").json()
+        names = [chk["check_name"] for chk in body["checks"]]
+        assert "stale_child_check" not in names, (
+            f"v0 stale exec-check child leaked into output: {names}"
+        )
+        assert "buying_power_check" in names
+        assert "position_existence_check" in names
+
+    def test_all_v1_exec_check_path(self, synthetic_phase_c_hybrid_db):
+        """v1 parent with snapshot DECLARING different checks than
+        the child rows. Child rows win."""
+        decoy_snapshot = json.dumps({"execution_checks": {
+            "checks": [
+                _check(1, "decoy_check", True, False, 1, 0, reason="DECOY"),
+            ],
+            "first_blocking_check": "decoy_check",
+        }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
+
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+        ]
+        exec_rows_v1 = [
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+             "buying_power_check", 1, 0, 1, 0,
+             "v1 authoritative", None, 1),
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2,
+             "buying_power_check", 1, 1, 1, 0,
+             "v1 authoritative", None, 0),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, exec_rows_v1=exec_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/execution-blockers?range=7d&cohort=all").json()
+        names = [chk["check_name"] for chk in body["checks"]]
+        assert "decoy_check" not in names, (
+            f"v1 must not parse snapshot decoy: {names}"
+        )
+        assert "buying_power_check" in names
+        bp = next(chk for chk in body["checks"]
+                  if chk["check_name"] == "buying_power_check")
+        assert bp["total_evaluations"] == 2
+        assert bp["passed"] == 1
+        assert bp["failed"] == 1
+
+    def test_first_blocking_merges_v0_and_v1(self,
+                                             synthetic_phase_c_hybrid_db):
+        """first_blocking_check aggregation: v0 'a' (count=1) + v1
+        'b' (count=2) merges to [{b:2}, {a:1}] (cnt DESC, name ASC)."""
+        v0_snapshot = json.dumps({"execution_checks": {
+            "checks": [_check(1, "a", True, False, 1, 0,
+                              is_first_blocking=1)],
+            "first_blocking_check": "a",
+        }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", v0_snapshot, 1, 0),
+            ("c2", "BBB", "2026-09-24T10:00:01+00:00", v0_snapshot, 1, 1),
+        ]
+        exec_rows_v1 = [
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "b", 1, 0,
+             1, 0, "v1 fb", None, 1),
+            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "b", 1, 0,
+             1, 0, "v1 fb", None, 1),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, exec_rows_v1=exec_rows_v1,
+        )
+        c = _client()
+        body = c.get("/api/phase-c/execution-blockers?range=7d&cohort=all").json()
+        fb = body["first_blocking_check"]
+        # b (cnt=2) comes first, then a (cnt=1). Tied names sort by
+        # name ASC.
+        names = [(f["check_name"], f["count"]) for f in fb]
+        assert names == [("b", 2), ("a", 1)], (
+            f"first_blocking merge wrong: {names}"
+        )
+
+    def test_response_shape_matches_pre_hybrid_contract(
+            self, synthetic_phase_c_hybrid_db):
+        """execution-blockers response shape preserved under hybrid."""
+        snapshot = json.dumps({"execution_checks": {
+            "checks": [_check(1, "buying_power_check", True, False, 1, 0,
+                              is_first_blocking=1)],
+            "first_blocking_check": "buying_power_check",
+        }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot, 1, 0),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, exec_rows_v1=[],
+        )
+        c = _client()
+        body = c.get("/api/phase-c/execution-blockers?range=7d&cohort=all").json()
+        for key in ("range", "cohort", "rows_in_cohort",
+                    "rows_with_checks", "universe_caveat",
+                    "checks", "first_blocking_check", "source"):
+            assert key in body, f"missing top-level key '{key}'"
+        for chk in body["checks"]:
+            for key in ("check_name", "total_evaluations", "passed",
+                        "failed", "applied_count"):
+                assert key in chk, f"check missing key '{key}'"
+        assert "PHASE-C14B-2C hybrid" in body["source"]
+
+
+class TestHybridZeroBothParent:
+    """PHASE-C14B-2C: a v1 parent with ZERO gate rows AND ZERO
+    exec-check rows must remain fully valid. The snapshot may
+    contain rich data — it must NOT be parsed under any
+    circumstance for v1. This is the strongest test of the
+    authority contract."""
+
+    def test_v1_zero_both_does_not_parse_snapshot_for_any_fact(
+            self, synthetic_phase_c_hybrid_db):
+        """One v1 parent with:
+          * Snapshot containing a HOLD_INELIGIBLE outcome
+          * Snapshot containing rsi_oversold gate (applied=true,
+            passed=false)
+          * Snapshot containing 5 execution checks
+          * ZERO gate child rows
+          * ZERO exec-check child rows
+
+        Expected output:
+          * rsi_oversold NOT in /api/phase-c/strategy-gates
+          * No checks in /api/phase-c/execution-blockers
+          * rows_in_cohort = 1 (parent is counted)
+        """
+        decoy_snapshot = json.dumps({
+            "strategy_eligibility": {
+                "gates": [
+                    _gate(1, "rsi_oversold", "trend", True, False, 99, 30),
+                    _gate(2, "sma_uptrend", "trend", True, True, 1, 0),
+                ],
+            },
+            "execution_checks": {
+                "checks": [
+                    _check(1, "buying_power_check", True, False, 1, 0,
+                           is_first_blocking=1),
+                    _check(2, "position_concentration_check", True, False,
+                           1, 0, is_first_blocking=0),
+                    _check(3, "sector_concentration_check", True, True,
+                           1, 0, is_first_blocking=0),
+                    _check(4, "correlation_check", True, True, 1, 0,
+                           is_first_blocking=0),
+                    _check(5, "beta_check", True, True, 1, 0,
+                           is_first_blocking=0),
+                ],
+                "first_blocking_check": "buying_power_check",
+            },
+            "decision": {"outcome": "HOLD_INELIGIBLE"},
+        })
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+        ]
+        # NO gate_rows_v1, NO exec_rows_v1.
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=[], exec_rows_v1=[],
+        )
+        c = _client()
+
+        # Strategy gates: empty (zero both → zero both).
+        gates_body = c.get(
+            "/api/phase-c/strategy-gates?range=7d&cohort=all"
+        ).json()
+        gate_names = [g["gate_name"] for g in gates_body["gates"]]
+        assert "rsi_oversold" not in gate_names, (
+            f"v1 zero-both leaked gate from snapshot: {gate_names}"
+        )
+        assert "sma_uptrend" not in gate_names
+        assert gates_body["rows_in_cohort"] == 1
+
+        # Execution blockers: empty (zero both → zero both).
+        eb_body = c.get(
+            "/api/phase-c/execution-blockers?range=7d&cohort=all"
+        ).json()
+        check_names = [chk["check_name"] for chk in eb_body["checks"]]
+        assert "buying_power_check" not in check_names, (
+            f"v1 zero-both leaked check from snapshot: {check_names}"
+        )
+        assert "position_concentration_check" not in check_names
+        assert eb_body["rows_in_cohort"] == 1
+
+
+class TestHybridRangeParamBinding:
+    """PHASE-C14B-2C: prove the v1 SQL param-binding fix works
+    for every supported range, including 'latest' (which has zero
+    params in its range clause)."""
+
+    @pytest.mark.parametrize("range_name", ["latest", "today", "24h", "7d"])
+    def test_v1_path_works_for_every_range(self, range_name,
+                                            synthetic_phase_c_hybrid_db):
+        """All four supported ranges must execute the v1 child-table
+        path without SQL parameter-binding errors. Pre-fix, 'latest'
+        would crash because v1 SQL had a hardcoded extra '?'."""
+        decision_rows = [
+            ("c1", "AAA", "2026-09-24T10:00:00+00:00", "{}", 1, 1),
+        ]
+        gate_rows_v1 = [
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+             "rsi_oversold", "trend", 1, 1, 25, 30, "v1"),
+        ]
+        exec_rows_v1 = [
+            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+             "buying_power_check", 1, 1, 1, 0, "v1", None, 0),
+        ]
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+            exec_rows_v1=exec_rows_v1,
+        )
+        c = _client()
+        # No SQL error means the param binding is correct.
+        gates_resp = c.get(f"/api/phase-c/strategy-gates?range={range_name}&cohort=all")
+        assert gates_resp.status_code == 200, (
+            f"strategy-gates range={range_name} returned "
+            f"{gates_resp.status_code}: {gates_resp.text}"
+        )
+        eb_resp = c.get(f"/api/phase-c/execution-blockers?range={range_name}&cohort=all")
+        assert eb_resp.status_code == 200, (
+            f"execution-blockers range={range_name} returned "
+            f"{eb_resp.status_code}: {eb_resp.text}"
+        )
+
 
     def test_no_deterministic_test_uses_live_db_path(self):
         """PHASE-C10D static guard: walk this file's AST and assert that
