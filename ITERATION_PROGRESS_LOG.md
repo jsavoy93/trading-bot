@@ -3714,3 +3714,71 @@ trailing-blank fix in `MENTOR.md` (surfaced by
   **PHASE-C14 — execution-blockers / strategy-gates 24h SQL
   optimization** (the CTE consolidation identified in PHASE-C11
   that would cut execution-blockers 24h from ~10s to ~2.5s).
+
+## 2026-09-24 10:57–12:42 UTC — PHASE-C14B-2C: Hybrid Normalized Read Path
+
+**Objective**: Implement hybrid v0/v1 read path for
+`/api/phase-c/strategy-gates` and `/api/phase-c/execution-blockers`,
+where `analytics_persistence_version` decides authority (v0 = JSON,
+v1 = child tables).
+
+**Start**: 2026-09-24 10:57:00 UTC
+**End**: 2026-09-24 12:42:00 UTC
+**Elapsed**: ~1h45m (paused 12:23–12:42 for Josh's mid-task brief)
+**Continuity**: clean (single session, two Josh messages)
+**Backlog item**: PHASE-C14B-2C
+**Branch**: `agent/phase-c14b2c-hybrid-normalized-reads`
+**Base**: main `fa7f55d587153b9516835394d6a3db6f814e9205`
+**HEAD**: `fa7f55d587153b9516835394d6a3db6f814e9205` (0 commits ahead; uncommitted)
+**Status**: READY FOR REVIEW (not committed)
+
+**Files changed (uncommitted)**:
+- `dashboard.py` (+553 lines: hybrid v0+v1 paths in both endpoints, INDEXED BY hints)
+- `tests/test_dashboard_phase_c_obs_analytics.py` (+1012 lines: 4 new test classes + schema fixture updates)
+- `tests/test_phase_c14_execution_blockers_refactor.py` (+69 lines: schema fixture updates)
+
+**Tests run (final)**:
+- New hybrid tests: 18 pass, 0 fail
+- Broader relevant suite: 354 pass, 7 fail
+- 7 failures reproduce on clean main (verified via `git stash`):
+  - 6 × `TestGateAggregationAppliedFilter` (stale test data cycle_starts=2026-09-15)
+  - 1 × `TestExecutionChecksFidelity::test_live_alpxr_snapshot_renders_blocker_row_and_highlight`
+- 0 C14B-2C regressions introduced
+
+**Performance (median of 3 runs, prod read-only)**:
+- Strategy-Gates: 1h=3.76x faster, 6h=2.50x, 24h=1.53x; latest=0.73x (regression ~30ms)
+- Execution-Blockers: 1h=6.88x faster, 6h=6.95x, 24h=2.34x; latest=0.77x (regression ~27ms)
+
+**Semantic shadow comparison**:
+- Identical to current snapshot path when comparing same-instant data (0 mismatches)
+- Earlier +22 deltas = timing noise from live DB writes between queries
+- Hybrid correctly partitions v0 (snapshot) vs v1 (child rows) by version
+
+**Key code changes**:
+1. Removed 7 `[DEBUG-SG]` print() statements
+2. Fixed v1 SQL param-binding bug (hardcoded `g.cycle_start >= ?` broke `latest` range)
+3. Added `INDEXED BY idx_dge_cycle_start` / `INDEXED BY idx_dec_cycle_start` hints
+   (these indexes are durably created via `CREATE INDEX IF NOT EXISTS`
+   in `src/database/sqlite_db.py:419, 456`)
+
+**Service PIDs (pre==post, no restarts)**:
+- SmartBot `1082165`, cloudflared `656088`, openclaw gateway `965975`,
+  uvicorn `1028550`, uvicorn `1067605`
+
+**Production audit**:
+- v0 parents: 1.52M; v1 parents: 61k (growing)
+- v1 cycle_start range: 2026-09-23T23:53:16 → now
+- v1 zero-gate: 2,590; v1 zero-exec-check: 61,148; v1 zero-both: 2,591
+- 6h/1h/15m windows are 100% v1; 24h is 53.9% v1
+
+**Backup patch**: `/root/.openclaw/audit-archives/trading-bot/2026-09-24_110253_C14B-2C-inherited.patch`
+
+**Risks**:
+1. `latest` regression (~25-30ms absolute) — acceptable
+2. INDEXED BY depends on `idx_*_cycle_start` indexes existing — durably guaranteed
+3. 7 pre-existing test failures out of scope
+
+**Decision**: READY FOR REVIEW
+
+**Next**: Josh's call — commit+PR, or fix pre-existing failures first, or
+investigate `latest` regression. Do not commit until Josh approves.

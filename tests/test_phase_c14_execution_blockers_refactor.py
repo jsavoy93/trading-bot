@@ -67,13 +67,67 @@ def _build_blockers_db(decision_rows, path, idx_decision_history_cycle_start=Tru
     cur.execute(
         """
         CREATE TABLE decision_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             cycle_id TEXT,
             symbol TEXT,
             cycle_start TEXT,
             decision_snapshot TEXT,
-            decision_schema_version INTEGER
+            decision_schema_version INTEGER,
+            analytics_persistence_version INTEGER NOT NULL DEFAULT 0
         )
         """
+    )
+    # PHASE-C14B-2C: create empty child tables so the v1 path of
+    # the hybrid reader doesn't error with "no such table" for tests
+    # that pre-date the hybrid read path. With default v=0, the v1
+    # path returns no rows; empty child tables are the correct shape.
+    cur.execute(
+        """
+        CREATE TABLE decision_gate_evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            gate_name TEXT NOT NULL,
+            gate_category TEXT,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE decision_execution_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            check_name TEXT NOT NULL,
+            applied INTEGER NOT NULL,
+            passed INTEGER,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT,
+            gap_note TEXT,
+            is_first_blocking INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    # PHASE-C14B-2C: cycle_start indexes for v1 SQL INDEXED BY hints.
+    cur.execute(
+        "CREATE INDEX idx_dge_cycle_start "
+        "ON decision_gate_evaluations(cycle_start)"
+    )
+    cur.execute(
+        "CREATE INDEX idx_dec_cycle_start "
+        "ON decision_execution_checks(cycle_start)"
     )
     for row in decision_rows:
         cur.execute(
@@ -169,8 +223,11 @@ class TestExecutionBlockersEmpty:
         assert body["rows_with_checks"] == 0
         assert body["checks"] == []
         assert body["first_blocking_check"] == []
-        assert body["source"] == \
-            "decision_history.decision_snapshot -> $.execution_checks.checks[]"
+        # PHASE-C14B-2C: the source string is the hybrid read-path
+        # description (v0 + v1). Both authority signals must be named.
+        assert "PHASE-C14B-2C hybrid" in body["source"]
+        assert "analytics_persistence_version=0" in body["source"]
+        assert "analytics_persistence_version=1" in body["source"]
         assert "execute_trade" in body["universe_caveat"]
         seed_conn.close()
 
@@ -543,7 +600,11 @@ class TestExecutionBlockersCohortWindows:
         def _open_empty(*a, **kw):
             c = _sqlite.connect(":memory:")
             c.row_factory = _sqlite.Row
-            c.execute("CREATE TABLE decision_history (cycle_id TEXT, cycle_start TEXT, decision_snapshot TEXT, decision_schema_version INTEGER)")
+            c.execute("CREATE TABLE decision_history (id INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id TEXT, cycle_start TEXT, decision_snapshot TEXT, decision_schema_version INTEGER, analytics_persistence_version INTEGER NOT NULL DEFAULT 0)")
+            c.execute("CREATE TABLE decision_execution_checks (id INTEGER PRIMARY KEY AUTOINCREMENT, decision_history_id INTEGER NOT NULL, cycle_id TEXT NOT NULL, symbol TEXT NOT NULL, cycle_start TEXT NOT NULL, ordinality INTEGER NOT NULL, check_name TEXT NOT NULL, applied INTEGER NOT NULL, passed INTEGER, observed_value REAL, threshold_value REAL, reason TEXT, gap_note TEXT, is_first_blocking INTEGER NOT NULL DEFAULT 0)")
+            c.execute("CREATE TABLE decision_gate_evaluations (id INTEGER PRIMARY KEY AUTOINCREMENT, decision_history_id INTEGER NOT NULL, cycle_id TEXT NOT NULL, symbol TEXT NOT NULL, cycle_start TEXT NOT NULL, ordinality INTEGER NOT NULL, gate_name TEXT NOT NULL, gate_category TEXT, applied INTEGER NOT NULL, passed INTEGER, observed_value REAL, threshold_value REAL, reason TEXT)")
+            c.execute("CREATE INDEX idx_dge_cycle_start ON decision_gate_evaluations(cycle_start)")
+            c.execute("CREATE INDEX idx_dec_cycle_start ON decision_execution_checks(cycle_start)")
             return c
         monkeypatch.setattr(_dashboard, "_phase_c_open_db", _open_empty)
         c = _client()
