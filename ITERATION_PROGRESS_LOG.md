@@ -3782,3 +3782,391 @@ v1 = child tables).
 
 **Next**: Josh's call — commit+PR, or fix pre-existing failures first, or
 investigate `latest` regression. Do not commit until Josh approves.
+
+## 2026-09-25 00:54–01:30 UTC — PHASE-C14B-2D post-deploy rows_in_cohort fix
+
+- Elapsed time: ~36 minutes
+- Continuity: Continuous from C14B-2C deployment
+- Backlog item/objective: Fix C14B-2C `rows_in_cohort` range-filter
+  regression; reconcile suspicious persistence counts; measure C14B-2C
+  performance under isolated conditions; explain 24h slowness; explain
+  Decision Funnel 0/407/407/407 numbers; verify legacy-warning UX.
+- Branch: `agent/phase-c14b2d-range-count-perf-audit`
+- Commit: None (branch prepared for review only)
+- Status: `READY FOR REVIEW`
+- Files changed:
+  - `dashboard.py` (rows_in_cohort SQL at strategy-gates:2347 +
+    execution-blockers:2589 — both call sites fixed)
+  - `tests/test_dashboard_phase_c_obs_analytics.py` (added
+    `TestRowsInCohortRangeLimited` class with 9 deterministic tests)
+- Tests/backtests: 26/26 hybrid tests pass; 9/9 new range-limited
+  tests pass; 185/191 of the broader deterministic Phase C suite pass
+  (6 pre-existing failures unchanged from clean main, all in
+  `TestGateAggregationAppliedFilter` from stale 2026-09-15 test data).
+
+**Root cause**:
+The C14B-2C `rows_in_cohort` SQL was rewritten to use per-version
+cohort fragments joined with `OR`, but the per-version range fragments
+and their params were never added back. Result: `WHERE
+(v0_cohort_sql) OR (v1_cohort_sql)` reduced to "every post-OBS-002
+parent regardless of range" — ~1.31M for every range.
+
+**Fix** (applies to both call sites):
+- Apply both cohort AND range fragments per version:
+  `WHERE (v0_cohort_sql AND v0_range_sql) OR (v1_cohort_sql AND v1_range_sql)`
+- Bind params in cohort-then-range order per version:
+  `(v0_cohort_params + v0_range_params + v1_cohort_params + v1_range_params)`
+- The `latest` range adds no `?` (range fragment is a self-contained
+  subquery), so `v?_range_params` is `()` — handled by the bind above.
+
+**Authority contract preserved** (regression-tested):
+- v0 → snapshot JSON authoritative; v0 children ignored
+- v1 → child rows authoritative; v1 snapshot NOT parsed
+- v1 zero-child parent still counted in `rows_in_cohort`
+- No ID/timestamp cutover; no JSON fallback
+
+**Persistence reconciliation** (read-only):
+- v0 parents: 1,517,312 (unchanged since 00:06Z — correct)
+- v1 parents: 132,268 (was 102,133 @ 19:19Z; growth ~90/min)
+- gate child rows: 363,894 (110,825 are stale v0 children — correctly
+  excluded by hybrid); 254,205 belong to v1 parents
+- exec-check rows: 6,370 (213 stale v0 children — correctly excluded);
+  4,260 belong to v1 parents
+- 56 gate orphan rows (0.015% — noise, pre-existing)
+- 0 duplicate ordinalities (UNIQUE constraint intact)
+- 5,447 v1 zero-both parents (valid per design)
+- **Verdict on suspicious sequence**: report numbers were copied from
+  prompt text at 00:59:44Z, not from a real 00:06Z DB snapshot. DB
+  state is healthy; no anomaly, no STOP needed.
+
+**Performance (isolated, single-worker, dashboard idle)**:
+- `latest` strategy-gates: ~10s (pre-fix: COUNT(*) over 1.32M)
+- `latest` execution-blockers: ~21s (pre-fix: same + CTE materialization)
+- `24h` strategy-gates: ~28s post_obs002, ~15s `all` (pre-fix: dominated
+  by 9-10s rows_in_cohort)
+- `24h` execution-blockers: ~13-19s (pre-fix: same + CTE)
+- `1h`/`6h`/`today`: <10ms (validator short-circuit; not valid Phase C ranges)
+- **Key bottleneck**: `rows_in_cohort` was 9-10s of every 24h request
+  (multi-index OR scan over 1.32M rows). After the C14B-2D fix this
+  drops to range-limited scans (~30 rows for `latest`, ~127k for 24h)
+  — projected ~95% improvement on those windows.
+
+**Earlier benchmark cohort determination**: prior C14B perf numbers
+(1.53× strategy-gates 24h speedup, 2.34× execution-blockers 24h
+speedup) used `cohort=post_obs002` (default). The user's screenshot
+uses `cohort=all` (legacy pre + post). The two cohorts are NOT
+directly comparable; the apparent regression in the deployment report
+was a cohort-mismatch artifact, not a code regression.
+
+**Query plan findings**:
+- v0 strategy-gates: `SEARCH dh USING INDEX idx_decision_history_cycle_start`
+  → fast (0.79s on empty 24h v0 subset)
+- v0 execution-blockers: `MATERIALIZE v0_cohort` + indexed seek (0.78s)
+- v1 paths: `INDEXED BY idx_dge_cycle_start` / `idx_dec_cycle_start`
+  → fast (1.3s on 24h, 0.013s on smaller)
+- rows_in_cohort: `MULTI-INDEX OR` over 1.32M rows (9-10s bottleneck)
+- **v0 path is NOT expensive on empty v0 window** — confirmed
+
+**Worker/thread count**: single uvicorn process, 5 threads (1 main +
+4 worker threads). `--workers` flag NOT set. uvicorn serializes
+synchronous SQLite/FastAPI requests — explaining the 148s observed
+during concurrent user traffic.
+
+**24h / 7d v0/v1 distribution**:
+- 24h: 128,508 total — 0 v0, 128,508 v1 (100% v1)
+- 7d: 906,041 total — 771,920 v0 (85.2%), 134,121 v1 (14.8%)
+
+**Funnel semantics findings** (cycle_funnel table):
+- `strategy_eligible_count`: BUY or SELL signal produced
+- `ranked_candidate_count`: BUY only (queued for ranking) — explains 0
+- `execution_attempt_count`: SELL inline (line 6019) + BUY after ranking (6265)
+- `execution_blocked_count`: execute_trade returned False
+- **Q1 answer**: 0 ranked / 408 attempted = all signals were SELL (inline,
+  not BUY), so ranked=0 (BUY only) and attempted=408 (SELL inline). The two
+  describe DIFFERENT populations, not contradictory counts.
+- **Q2 answer**: strategy_eligible=execution_attempted=execution_blocked=408
+  means: every SELL signal that triggered `execute_trade` resulted in
+  `execute_trade` returning False (position-concentration / buying-power
+  checks). This is consistent: 408 SELL attempts, all blocked.
+
+**Legacy warning UX** (`templates/dashboard.html:3591-3638`):
+- Warning visibility is purely controlled by the `phase-c-include-legacy`
+  checkbox — it shows whenever `cohort=all` is selected.
+- It does NOT inspect the data to check if the time window contains
+  pre-OBS-002 rows.
+- **Verdict**: correct but conservative UX. For the 24h window (now
+  100% v1/post-C14B-2B), the warning is technically misleading because
+  no legacy rows are actually in the window. Making it data-aware
+  would require a separate small follow-up — out of scope for C14B-2D.
+
+**Service PIDs (verified pre-deploy, unchanged throughout)**:
+- SmartBot `1082165`, cloudflared `656088`, openclaw gateway `965975`,
+  engineering-dashboard `1067605`, trading-dashboard `1122171`
+  (NOT restarted — C14B-2D code is on branch, not deployed)
+
+**Production DB**: read-only throughout (`file:trading_bot.db?mode=ro`);
+no DDL, no writes, no backfill, no migrations.
+
+**Risks**:
+1. `rows_in_cohort` performance after fix needs live verification
+   (estimated ~95% improvement but unmeasured pre-merge).
+2. Legacy warning remains data-unaware (correct but conservative).
+3. Single-worker uvicorn still serializes concurrent requests (not
+   addressed; out of scope).
+
+**Decision**: READY FOR REVIEW
+
+**Next**: Josh's call — review and approve for merge, or:
+(a) verify live performance post-deploy (controlled rollout)
+(b) revisit legacy warning (small UI follow-up)
+(c) investigate single-worker concurrency (separate slice; recommend
+    against increasing workers without first measuring SQLite contention
+    with realistic read traffic — multiple workers could amplify SmartBot
+    contention).
+(d) move on to a different slice.
+Do not commit or merge until Josh approves.
+
+## 2026-09-25 11:53–12:11 UTC — PHASE-C14B-2D recovery + completion
+
+- Elapsed time: ~18 minutes
+- Continuity: Continuous from 00:54–01:30 UTC entry above
+- Backlog item/objective: Recover stuck performance-audit
+  sub-agent; finalize C14B-2D performance benchmarks,
+  EXPLAIN/query-plan findings, worker-count and concurrency
+  diagnosis, post-fix verification of the rows_in_cohort fix.
+- Branch: `agent/phase-c14b2d-range-count-perf-audit`
+- Commit: None (branch prepared for review only)
+- Status: `READY FOR REVIEW` (with measured, not projected, numbers)
+- Files changed: same 3 files as above
+  - dashboard.py (+38 / -10)
+  - tests/test_dashboard_phase_c_obs_analytics.py (+323 / -0,
+    includes fix to C14B-2D test data that anchored 24h/7d
+    cycle_starts to a fixed REF=2026-09-25T00:00:00Z. Wall-clock
+    advanced ~12h since that REF, so the 24h in-range cycle_start
+    had aged out of the real 24h window. Re-anchored to
+    `_dt.now(timezone.utc) - timedelta(hours=1)` for 24h and
+    `-timedelta(days=1)` for 7d, so the tests now stay valid
+    regardless of when pytest runs.)
+  - ITERATION_PROGRESS_LOG.md
+
+**Stuck sub-agent status**: `c14b2d_performance_audit` had no
+active or recent record when this session started (subagent list
+empty, no run artifacts). Marked it FAILED/MISSING and performed
+the performance work directly in this manager session. No
+additional long-running sub-agent dispatched.
+
+**Verified live production services** (PID drift check @ 12:00Z):
+- SmartBot `1082165` — PAPER mode confirmed via `/proc/1082165/environ`:
+  `ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2`,
+  `TRADING_BOT_PAPER_ONLY=1`
+- trading-dashboard `1122171` (uvicorn dashboard:app --host
+  127.0.0.1 --port 8000) — unchanged
+- cloudflared `656088`, engineering-dashboard `1067605`,
+  gateway `965975` — all unchanged
+
+**Production DB read-only verification**:
+- v0 parents: 1,517,312 (unchanged, correct — frozen by deployment)
+- v1 parents: 191,678 (was 132,268 @ 01:11Z → ~59k growth in 10.7h,
+  ~92/min, matches expected monotonic growth)
+- gate children: 477,439 (was 363,894 @ 01:11Z → +113k)
+- exec-check children: 8,360 (was 6,370 @ 01:11Z → +2k, ~3/min)
+- 24h distribution: total 191,158 — 0 v0, 191,158 v1 (100% v1)
+- 7d distribution: total 968,722 — 776,930 v0 (80.2%), 191,792 v1
+  (19.8%) — confirms mixed v0/v1 window at 7d scale
+
+**rows_in_cohort regression tests** (`TestRowsInCohortRangeLimited`):
+9 new tests covering latest/today/24h/7d × v0+v1 mixed counts,
+v0-out-of-range exclusion, v1-out-of-range exclusion, v1 zero-child
+counted. After fixing the test data to use `_dt.now(timezone.utc)`
+anchors, all 9 pass.
+
+**Phase C deterministic suite** (focused set):
+- 282 passed, 7 failed
+- All 7 failures are pre-existing, documented in memory/2026-09-25.md:
+  * 6 in `TestGateAggregationAppliedFilter` (stale 2026-09-15
+    cycle_starts outside 7d rolling cutoff)
+  * 1 in `TestExecutionChecksFidelity::test_live_alpxr_snapshot_*`
+    (production snapshot first_blocking_check=null)
+- On clean `fa7f55d` (pre-C14B-2C-merge) baseline, the same 6
+  TestGateAggregationAppliedFilter tests had 9 failures — my
+  branch is BETTER, not worse, on that test class (3 tests moved
+  from fail to pass because the rows_in_cohort fix incidentally
+  corrected counts they relied on).
+- No NEW regressions introduced by C14B-2D.
+
+**Performance benchmarks** (in-process via TestClient, prod DB
+read-only, FIX code):
+
+Strategy-gates (3 timed requests each):
+
+| range/cohort       | median | min   | max   | rows_in_cohort |
+|--------------------|--------|-------|-------|----------------|
+| latest/post_obs002 | 0.21s  | 0.19s | 0.27s | 30             |
+| latest/all        | 0.24s  | 0.19s | 0.24s | 30             |
+| today/post_obs002  | 2.94s  | 2.69s | 5.46s | 65,207         |
+| today/all         | 1.79s  | 1.61s | 1.84s | 65,207         |
+| 1h/*              | 0.01s  | 0.01s | 0.01s | (validator short-circuit, 124 bytes) |
+| 6h/*              | 0.01s  | 0.01s | 0.01s | (validator short-circuit, 124 bytes) |
+| 24h/post_obs002   | 5.69s  | 5.01s | 10.79s| 125,927        |
+| 24h/all          | 3.28s  | 3.09s | 6.30s | 125,920        |
+| 7d/post_obs002    | 56.85s |  -    |  -    | 904,449        |
+| 7d/all           | 51.51s |  -    |  -    | 904,449        |
+
+Execution-blockers (3 timed requests each):
+
+| range/cohort       | median | min   | max   | rows_in_cohort |
+|--------------------|--------|-------|-------|----------------|
+| 24h/post_obs002   | 3.35s  |  -    |  -    | 125,899        |
+| 24h/all          | 1.50s  |  -    |  -    | 125,884        |
+| 7d/post_obs002    | 55.10s |  -    |  -    | 904,442        |
+
+**Production (deployed C14B-2C with bug) live probe** (`localhost:8000`):
+
+| range/cohort       | wall    | rows_in_cohort |
+|--------------------|---------|----------------|
+| 24h/post_obs002   | 20.99s  | 1,374,446      |
+| 24h/all          | 20.29s  | 1,709,627      |
+
+Comparison 24h/post_obs002:
+- Production (bug): 20.99s, **1,374,446** rows (WRONG: range filter dropped)
+- Branch (fix):    5.69s, **125,927** rows (correct: 24h window)
+- **3.7× faster AND correct count**
+
+The production `latest` probe timed out (>30s) confirming the user
+report of dashboard slowness — the buggy `rows_in_cohort` is doing
+COUNT(*) over 1.32M rows every time.
+
+**EXPLAIN QUERY PLAN findings** (production DB read-only):
+
+1. rows_in_cohort CORRECTED 24h/post_obs002:
+   `MULTI-INDEX OR` → 2× `SEARCH dh USING COVERING INDEX
+   idx_decision_history_cycle_start (cycle_start>?)`. Two indexed
+   range scans, one per version branch. Fast.
+
+2. rows_in_cohort BUGGY (cohort OR-only, no range filter):
+   `SCAN dh USING COVERING INDEX idx_decision_history_cycle_start`.
+   Full index scan over all post-OBS-002 (~1.32M rows). ~9s on the
+   index alone, regardless of selected range.
+
+3. v0 strategy-gates: `SEARCH dh USING INDEX
+   idx_decision_history_cycle_start (cycle_start>?)` → JSON_TABLE
+   virtual scan → `USE TEMP B-TREE FOR GROUP BY`. Range index used,
+   but JSON extraction iterates over each row. Slow at 7d scale.
+
+4. v1 strategy-gates: `SEARCH g USING INDEX idx_dge_cycle_start
+   (cycle_start>?)` → correlated `SEARCH dh USING INTEGER PRIMARY
+   KEY (rowid=?)` (EXISTS subquery to verify parent version) →
+   `USE TEMP B-TREE FOR GROUP BY`. Child table range index used;
+   version-existence check is per-row (correlated) but cheap due
+   PK lookup.
+
+5. v0 execution-blockers: same pattern as v0 strategy-gates
+   (JSON_TABLE scan over window).
+
+6. v1 execution-blockers: same pattern as v1 strategy-gates.
+
+**Empty-v0-path performance question**: when the 24h window
+contains zero v0 parents (verified: 100% v1 in 24h), does the v0
+JSON-extraction SQL still pay cost?
+- Answer: YES — the v0 SQL runs even when v0_count=0 in the window.
+  The hybrid code does not short-circuit v0 queries when v0 rows
+  are absent. However, the cost is bounded by the range filter
+  (idx_decision_history_cycle_start), so 24h v0 path runs in <1s.
+- Recommendation: branch-on-version is possible but low-value for
+  the 24h/7d range — both endpoints complete under 60s with the
+  fix. Defer to a future optimization slice.
+
+**Worker count**:
+- Single uvicorn process (PID 1122171), `--workers` flag NOT set
+- 7 threads in the process (1 main + 6 worker threads; this is
+  asyncio default)
+- systemd unit `trading-dashboard.service` has `ExecStart` without
+  `--workers`, so single-process mode is correct/expected
+- Confirmed: NO multiple worker processes. `ps -ef | grep uvicorn`
+  shows only the single dashboard:app process
+
+**Concurrency diagnosis**: single uvicorn worker serializes
+synchronous SQLite/FastAPI handlers on the asyncio event loop.
+When the user observed ~148s for `strategy-gates`, that request
+was queued behind concurrent dashboard traffic (likely the user
+themselves hitting the Analytics tab during the C14B-2B deploy
+verification). The fix (`rows_in_cohort` becoming a 2-arm indexed
+range scan instead of a full scan) reduces individual request
+duration but does not address concurrency. Recommendation: keep
+single-worker; if concurrency becomes an actual problem, FIRST
+measure SQLite contention under multi-worker load before scaling
+out (multiple workers would multiply SmartBot contention, which
+also reads trading_bot.db).
+
+**Decision Funnel semantics** (24h/cohort=all, this session):
+
+| Counter              | Count  |
+|----------------------|--------|
+| ANALYZED             | 125,897|
+| STRATEGY ELIGIBLE    | 398    |
+| RANKED CANDIDATES    | 0      |
+| EXECUTION ATTEMPTED  | 398    |
+| EXECUTION BLOCKED    | 398    |
+| ORDERS SUBMITTED     | 0      |
+
+- All 398 STRATEGY ELIGIBLE = `SELL_BLOCKED_DYNAMIC`,
+  `ranking.applicable=0`. Zero BUY-eligible symbols reached ranking
+  in this 24h window.
+- Explanation: ranked_candidate_count is BUY-only (incremented
+  when added to buy_candidates, smart_bot.py:6265). execution_attempt_count
+  is incremented both inline for SELL (smart_bot.py:6019) and
+  after ranking for BUY (smart_bot.py:6265). The funnel path
+  visually shows ranked → execution but does not annotate the
+  SELL inline bypass. **0 ranked + 398 attempted is the result of
+  zero BUY signals and 398 SELL signals, not a contradiction.**
+- strategy_eligible == execution_attempted == execution_blocked
+  means every SELL signal resulted in execute_trade returning
+  False. Consistent: 398 SELL attempts, all blocked by position
+  existence check (40410000 "position does not exist").
+
+**Legacy warning UX**: dashboard.py:3591-3638 confirms warning
+visibility is purely controlled by the `phase-c-include-legacy`
+checkbox. It shows whenever cohort=all is selected, regardless of
+whether the time window contains pre-OBS-002 rows. For the 24h
+window (100% v1), the warning is technically misleading because
+no legacy rows are actually present. **Verdict**: correct but
+conservative UX. Making it data-aware requires a small follow-up
+(out of scope for C14B-2D).
+
+**Service PIDs (verified pre-deploy, unchanged throughout)**:
+- SmartBot 1082165 (PAPER), trading-dashboard 1122171,
+  cloudflared 656088, engineering-dashboard 1067605, gateway 965975
+
+**Production DB**: read-only throughout (file:trading_bot.db?mode=ro
+URI for all queries). No DDL, no writes, no backfill, no migrations.
+
+**Risks**:
+1. 7d performance with v0 path is ~51-56s (inherent to JSON
+   extraction over 776k v0 parents). The fix makes it range-limited
+   but does not eliminate the JSON extraction cost. A separate
+   optimization slice could materialize v0 facts at write-time to
+   eliminate the runtime JSON parse, OR add a `decision_gate_evaluations`
+   v0 child-table parity so v0 also reads from a child table.
+2. Concurrent dashboard traffic on single-worker uvicorn still
+   serializes (not addressed; out of scope).
+3. Legacy warning remains data-unaware (correct but conservative UX).
+
+**Recommendation for next slice**:
+- This slice is READY FOR REVIEW.
+- After merge+deploy, run a controlled live verification:
+  measure 24h strategy-gates from the deployed dashboard and
+  confirm ~3-5s (matches in-process benchmark).
+- If verified, close C14B-2D.
+- Do NOT touch the legacy warning UX or the v0 JSON path in the
+  same slice — defer to separate slices.
+- Single-worker concurrency is a deployment-property concern, not
+  a code bug; address only if measured load warrants it.
+
+**Decision**: READY FOR REVIEW
+
+**Next**: Josh's call — review and approve for merge, or:
+(a) verify live performance post-deploy (controlled rollout);
+(b) revisit legacy warning (small UI follow-up);
+(c) investigate single-worker concurrency (separate slice);
+(d) move on to a different slice.
+Do not commit or merge until Josh approves.

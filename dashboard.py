@@ -2340,14 +2340,22 @@ def api_phase_c_strategy_gates(range_name: str = Query("7d", alias="range"), coh
             range_name, cohort, "dh.cycle_start"
         )
 
-        # Count rows in the cohort (for the explicit coverage footer).
-        # This is a fast COUNT(*) — no JSON extraction — so it stays
-        # under a second on the production DB. Counts ALL parents in
-        # the window regardless of version.
+        # PHASE-C14B-2C: count parents satisfying the SELECTED cohort
+        # AND the SELECTED range, regardless of analytics_persistence_version.
+        # Version 0 and version 1 parents BOTH count toward rows_in_cohort —
+        # the authority split affects analytics FACTS (snapshot vs child
+        # tables), not whether a parent belongs to the cohort+range universe.
+        # Placeholders must be bound in cohort-then-range order per
+        # version, matching the SQL fragment order. The `latest` range
+        # adds no `?` (the range fragment is a self-contained subquery),
+        # so `v?_range_params` is `()` for `latest` and `(cutoff,)` for
+        # time windows — the binding below handles both cases.
         rows_in_cohort = int(cur.execute(
             "SELECT COUNT(*) AS c FROM decision_history dh "
-            f"WHERE {v0_cohort_sql} OR {v1_cohort_sql}",
-            v0_cohort_params + v1_cohort_params,
+            f"WHERE ({v0_cohort_sql} AND {v0_range_sql}) "
+            f"   OR ({v1_cohort_sql} AND {v1_range_sql})",
+            (v0_cohort_params + v0_range_params
+             + v1_cohort_params + v1_range_params),
         ).fetchone()["c"])
 
         # v0 path: JSON extraction from decision_snapshot.
@@ -2584,12 +2592,22 @@ def api_phase_c_execution_blockers(range_name: str = Query("7d", alias="range"),
             range_name, cohort, "dh.cycle_start"
         )
 
-        # Count rows in the cohort (counts ALL parents in window
-        # regardless of version). Fast COUNT(*) — no JSON extraction.
+        # PHASE-C14B-2C: count parents satisfying the SELECTED cohort
+        # AND the SELECTED range, regardless of analytics_persistence_version.
+        # Version 0 and version 1 parents BOTH count toward rows_in_cohort —
+        # the authority split affects analytics FACTS (snapshot vs child
+        # tables), not whether a parent belongs to the cohort+range universe.
+        # Placeholders must be bound in cohort-then-range order per
+        # version, matching the SQL fragment order. The `latest` range
+        # adds no `?` (the range fragment is a self-contained subquery),
+        # so `v?_range_params` is `()` for `latest` and `(cutoff,)` for
+        # time windows — the binding below handles both cases.
         rows_in_cohort = int(cur.execute(
             "SELECT COUNT(*) AS c FROM decision_history dh "
-            f"WHERE {v0_cohort_sql} OR {v1_cohort_sql}",
-            v0_cohort_params + v1_cohort_params,
+            f"WHERE ({v0_cohort_sql} AND {v0_range_sql}) "
+            f"   OR ({v1_cohort_sql} AND {v1_range_sql})",
+            (v0_cohort_params + v0_range_params
+             + v1_cohort_params + v1_range_params),
         ).fetchone()["c"])
 
         # v0 path: JSON extraction from decision_snapshot.
