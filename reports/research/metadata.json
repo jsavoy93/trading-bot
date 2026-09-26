@@ -1,0 +1,124 @@
+{
+  "pipeline": "OBS-003 retrospective forward-return research",
+  "ran_at_utc": "2026-09-26T18:58:56Z",
+  "elapsed_seconds": 447.5259852409363,
+  "research_window": {
+    "start_iso": "2026-09-23T23:53:16",
+    "end_iso": "2026-09-24T17:00:00",
+    "rationale": "v1 cutover = 2026-09-23T23:53:16Z. End = 2026-09-24T17:00:00Z. Latest decision can fit +240 trading-minute horizon within next-session Alpaca data (which extends through end-of-day 2026-09-25, including after-hours to 23:59 UTC)."
+  },
+  "horizons": [
+    "fwd_30m",
+    "fwd_60m",
+    "fwd_240m",
+    "fwd_next_session_open"
+  ],
+  "horizon_semantics": {
+    "fwd_30m": "30 trading-minute forward close (regular-session minutes only).",
+    "fwd_60m": "60 trading-minute forward close.",
+    "fwd_240m": "240 trading-minute forward close (= 4 trading hours).",
+    "fwd_next_session_open": "first regular-session bar of the next trading day.",
+    "trading_session": "13:30 <= t < 20:00 UTC (DST: 9:30-16:00 ET; the OBS-003 cohort dates fall in DST)"
+  },
+  "price_semantics": {
+    "decision_price": "1-minute bar close at-or-before cycle_start.",
+    "look_ahead_protection": "Decision bar is at-or-BEFORE cycle_start. Forward bar is at-or-AFTER target timestamp. No bars from the open interval are used for the label value."
+  },
+  "deduplication_rule": "Time-based: within (symbol, UTC trading date), keep at most one observation every 30 minutes. First observation in each 30-min window is retained; subsequent ones are dropped. Spacing is measured in wall-clock minutes from the kept observation's cycle_start. Rule documented in src/research/deduplication.py.",
+  "cohort": {
+    "raw_decisions": 91138,
+    "dedup_decisions": 88733,
+    "unique_symbols": 13522,
+    "unique_symbol_date_pairs": 14152,
+    "dedup_ratio": 0.9736114463780201,
+    "clarification_of_13_559_figure": "The '13,559' figure cited in the OBS-003A archive was the count of unique symbols seen in v1 since cutover up to the moment the probe was taken. The current cohort uses a slightly later window cutoff (2026-09-24T17:00Z) and contains 13,522 unique symbols. The numbers are equivalent (the same data, just a different cutoff endpoint) and represent 'unique symbols seen at least once in v1'."
+  },
+  "label_coverage": [
+    {
+      "view": "raw",
+      "horizon": "fwd_30m",
+      "n_total": 91138,
+      "n_ok": 17905,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 3308,
+      "n_no_next_session": 0,
+      "pct_ok": 19.646031293203713
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_30m",
+      "n_total": 88733,
+      "n_ok": 17585,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 3289,
+      "n_no_next_session": 0,
+      "pct_ok": 19.817880608116486
+    },
+    {
+      "view": "raw",
+      "horizon": "fwd_60m",
+      "n_total": 91138,
+      "n_ok": 16232,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 4981,
+      "n_no_next_session": 0,
+      "pct_ok": 17.810353529811934
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_60m",
+      "n_total": 88733,
+      "n_ok": 15931,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 4943,
+      "n_no_next_session": 0,
+      "pct_ok": 17.953861584754264
+    },
+    {
+      "view": "raw",
+      "horizon": "fwd_240m",
+      "n_total": 91138,
+      "n_ok": 11716,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 9497,
+      "n_no_next_session": 0,
+      "pct_ok": 12.855230529526652
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_240m",
+      "n_total": 88733,
+      "n_ok": 11505,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 9369,
+      "n_no_next_session": 0,
+      "pct_ok": 12.96586388378619
+    },
+    {
+      "view": "raw",
+      "horizon": "fwd_next_session_open",
+      "n_total": 91138,
+      "n_ok": 20919,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 0,
+      "n_no_next_session": 294,
+      "pct_ok": 22.9531040839167
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_next_session_open",
+      "n_total": 88733,
+      "n_ok": 20581,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 0,
+      "n_no_next_session": 293,
+      "pct_ok": 23.19430200714503
+    }
+  ],
+  "alpaca_data_used": true,
+  "production_db_writes": false,
+  "smartbot_modified": false,
+  "schema_modified": false,
+  "strategy_modified": false,
+  "thresholds_changed": false
+}
