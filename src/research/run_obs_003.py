@@ -185,7 +185,12 @@ def _build_metadata(cfg, raw, dedup, summary, elapsed) -> dict:
             "fwd_60m": "60 trading-minute forward close.",
             "fwd_240m": "240 trading-minute forward close (= 4 trading hours).",
             "fwd_next_session_open": "first regular-session bar of the next trading day.",
-            "trading_session": "13:30 <= t < 20:00 UTC (DST: 9:30-16:00 ET; the OBS-003 cohort dates fall in DST)",
+            "trading_session": "09:30 <= America/New_York local time < 16:00 (auto-shifts between 13:30-20:00 UTC during EDT and 14:30-21:00 UTC during EST via zoneinfo.ZoneInfo)",
+        },
+        "decision_price_freshness_rule": {
+            "rule": "decision bar = most recent bar at-or-before cycle_start AND (cycle_start - decision_bar) <= 240 minutes",
+            "max_age_minutes": 240,
+            "rationale": "240-minute cap covers same-session pre-market → regular transitions on liquid names (e.g., 13:30 UTC decision can use 09:30 UTC bar = exactly 4h old) and excludes overnight or weekend prior-session bars. Defense-in-depth against using stale prior-day prices for off-hours decisions."
         },
         "price_semantics": {
             "decision_price": "1-minute bar close at-or-before cycle_start.",

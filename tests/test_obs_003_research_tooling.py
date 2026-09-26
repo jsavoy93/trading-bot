@@ -96,45 +96,220 @@ def make_synthetic_bars(
 
 
 class TestRegularSessionFilter:
-    def test_session_minutes_are_in_window(self):
-        # DST: regular session = 13:30 - 20:00 UTC (= 9:30 - 16:00 ET).
+    """Session window must be DST-aware (US/Eastern) so that research
+    code is reusable across both EDT and EST calendar dates.
+
+    These tests prove:
+        SUMMER / EDT (e.g., 2026-06-15): 09:30 ET == 13:30 UTC; 16:00 ET == 20:00 UTC
+        WINTER / EST (e.g., 2026-01-15): 09:30 ET == 14:30 UTC; 16:00 ET == 21:00 UTC
+        Weekends are always excluded regardless of UTC offset.
+        The half-open [open, close) window excludes the close instant.
+    """
+
+    def test_dst_summer_session_open_utc(self):
+        # 2026-06-15 is during EDT (UTC-4). 09:30 ET == 13:30 UTC.
+        ts = pd.Timestamp("2026-06-15T13:30:00", tz="UTC")
+        assert is_regular_session_minute(ts)
+
+    def test_dst_summer_session_close_utc(self):
+        # 16:00 ET == 20:00 UTC. 19:59 UTC is inside the window.
+        ts = pd.Timestamp("2026-06-15T19:59:00", tz="UTC")
+        assert is_regular_session_minute(ts)
+
+    def test_dst_summer_after_close_excluded(self):
+        # 20:00 UTC is the close instant; the half-open window excludes it.
+        ts = pd.Timestamp("2026-06-15T20:00:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+        # 22:30 UTC is well after hours.
+        ts = pd.Timestamp("2026-06-15T22:30:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+
+    def test_dst_summer_pre_market_excluded(self):
+        ts = pd.Timestamp("2026-06-15T13:00:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+
+    def test_standard_winter_session_open_utc(self):
+        # 2026-01-15 is during EST (UTC-5). 09:30 ET == 14:30 UTC.
+        ts = pd.Timestamp("2026-01-15T14:30:00", tz="UTC")
+        assert is_regular_session_minute(ts)
+
+    def test_standard_winter_session_close_utc(self):
+        # 16:00 ET == 21:00 UTC. 20:59 UTC is inside the window.
+        ts = pd.Timestamp("2026-01-15T20:59:00", tz="UTC")
+        assert is_regular_session_minute(ts)
+
+    def test_standard_winter_after_close_excluded(self):
+        # 21:00 UTC is the close instant; the half-open window excludes it.
+        ts = pd.Timestamp("2026-01-15T21:00:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+        ts = pd.Timestamp("2026-01-15T23:30:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+
+    def test_standard_winter_pre_market_excluded(self):
+        ts = pd.Timestamp("2026-01-15T14:00:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+
+    def test_weekends_excluded_in_both_dst_and_est(self):
+        # Saturday
+        ts = pd.Timestamp("2026-09-26T15:00:00", tz="UTC")  # DST Saturday
+        assert not is_regular_session_minute(ts)
+        # Sunday
+        ts = pd.Timestamp("2027-01-17T17:00:00", tz="UTC")  # EST Sunday
+        assert not is_regular_session_minute(ts)
+
+    def test_dst_transition_boundary(self):
+        """DST 2026 ends at 02:00 local on Sun Nov 1, 2026.
+
+        Sat 2026-10-31 12:30 UTC = 08:30 EDT (regular Saturday — excluded).
+        Mon 2026-11-02 14:30 UTC = 09:30 EST (regular Monday — included).
+        """
+        # Saturday just before transition: still EDT
+        ts = pd.Timestamp("2026-10-31T12:30:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+        # First Monday after transition: EST
+        ts = pd.Timestamp("2026-11-02T14:30:00", tz="UTC")
+        assert is_regular_session_minute(ts)
+        # Same wall-clock UTC time on the prior Monday (still EDT)
+        ts = pd.Timestamp("2026-10-26T14:30:00", tz="UTC")
+        assert is_regular_session_minute(ts)
+        # But the prior Monday at 13:30 UTC is 09:30 EDT — included too
+        ts = pd.Timestamp("2026-10-26T13:30:00", tz="UTC")
+        assert is_regular_session_minute(ts)
+        # And after the transition, 13:30 UTC is 08:30 EST — pre-market
+        ts = pd.Timestamp("2026-11-02T13:30:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+
+    def test_obs_003_cohort_september_dst(self):
+        """The OBS-003 cohort is 2026-09-23..24, fully in DST.
+
+        Cross-check that the new ET-based logic produces IDENTICAL
+        session classification to the previously hard-coded 13:30-20:00
+        UTC window for these dates.
+        """
+        # Open
         ts = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
         assert is_regular_session_minute(ts)
         ts = pd.Timestamp("2026-09-24T19:59:00", tz="UTC")
         assert is_regular_session_minute(ts)
-
-    def test_pre_market_excluded(self):
+        # Close exclusive
+        ts = pd.Timestamp("2026-09-24T20:00:00", tz="UTC")
+        assert not is_regular_session_minute(ts)
+        # Pre-market
         ts = pd.Timestamp("2026-09-24T13:00:00", tz="UTC")
         assert not is_regular_session_minute(ts)
 
-    def test_after_hours_excluded(self):
-        # DST close is 20:00 UTC (= 4:00 PM ET). 20:00 UTC is the close
-        # instant itself, which the half-open [open, close) window
-        # excludes.
-        ts = pd.Timestamp("2026-09-24T20:00:00", tz="UTC")
-        assert not is_regular_session_minute(ts)
-        ts = pd.Timestamp("2026-09-24T22:30:00", tz="UTC")
-        assert not is_regular_session_minute(ts)
-
-    def test_dst_session_window_documented(self):
-        """Regression guard: September 2026 dates fall in DST.
-
-        ET = UTC - 4 in DST. The OBS-003 cohort (2026-09-23..24) is
-        fully inside DST, so SESSION_OPEN/SESSION_CLOSE must reflect
-        13:30 / 20:00 UTC, NOT 14:30 / 21:00 UTC (the standard-time
-        window).
-
-        Earlier prototypes used the standard-time window and
-        mis-classified the 20:00-21:00 UTC after-hours period as
-        "regular session". This test guards against regression.
-        """
-        from src.research.price_alignment import SESSION_OPEN, SESSION_CLOSE
-        assert SESSION_OPEN == time(13, 30), (
-            f"SESSION_OPEN must be 13:30 (DST 9:30 ET); got {SESSION_OPEN}"
+    def test_et_constants_documented(self):
+        """Regression guard: session constants must be ET-local time
+        (not hard-coded UTC), so the implementation is reusable across
+        DST and standard-time dates."""
+        from src.research.price_alignment import (
+            SESSION_OPEN_ET, SESSION_CLOSE_ET, NY_TZ,
+            DECISION_BAR_MAX_AGE_MINUTES,
         )
-        assert SESSION_CLOSE == time(20, 0), (
-            f"SESSION_CLOSE must be 20:00 (DST 16:00 ET); got {SESSION_CLOSE}"
+        assert SESSION_OPEN_ET == time(9, 30)
+        assert SESSION_CLOSE_ET == time(16, 0)
+        assert NY_TZ.key == "America/New_York"
+        assert DECISION_BAR_MAX_AGE_MINUTES == 240
+
+
+class TestDecisionBarFreshness:
+    """``decision_bar`` must reject stale prior-day bars that are
+    technically at-or-before ``cycle_start`` but represent a different
+    trading day.
+
+    The freshness limit is 240 minutes (4 hours) — long enough to
+    cover any same-session gap on liquid names (pre-market 08:00 UTC
+    bars for a 13:30 UTC regular-session decision = 5.5h, just over
+    the limit; pre-market 09:00 UTC bars = 4.5h; pre-market 09:30 UTC
+    bars = 4h exactly) and short enough to exclude overnight or
+    weekend prior-session bars.
+    """
+
+    def test_acceptable_recent_bar(self):
+        # Bar 1 minute before cycle_start is acceptable.
+        bars = pd.DataFrame(
+            {"close": [100.0]},
+            index=pd.DatetimeIndex(
+                ["2026-09-24T13:29:00"], tz="UTC"
+            ),
         )
+        cycle = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
+        ts = decision_bar(bars, cycle)
+        assert ts == pd.Timestamp("2026-09-24T13:29:00", tz="UTC")
+
+    def test_session_open_decision_uses_just_before_open_bar(self):
+        # 13:30 UTC decision with a 09:30 UTC (= 4h before) prior bar
+        # is at the boundary. The age is exactly 240 min = MAX_AGE, so
+        # the bar is acceptable.
+        bars = pd.DataFrame(
+            {"close": [100.0]},
+            index=pd.DatetimeIndex(
+                ["2026-09-24T09:30:00"], tz="UTC"
+            ),
+        )
+        cycle = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
+        ts = decision_bar(bars, cycle)
+        assert ts == pd.Timestamp("2026-09-24T09:30:00", tz="UTC")
+
+    def test_stale_prior_day_bar_rejected(self):
+        # Decision at 02:00 UTC on 2026-09-24. The previous session's
+        # last bar at 2026-09-23 20:00 UTC (= 6 hours earlier) is older
+        # than MAX_AGE and must NOT be returned.
+        bars = pd.DataFrame(
+            {"close": [100.0]},
+            index=pd.DatetimeIndex(
+                ["2026-09-23T20:00:00"], tz="UTC"
+            ),
+        )
+        cycle = pd.Timestamp("2026-09-24T02:00:00", tz="UTC")
+        ts = decision_bar(bars, cycle)
+        assert ts is None
+
+    def test_after_hours_prior_day_bar_rejected(self):
+        # Decision at 00:05 UTC on 2026-09-24. The previous day's
+        # after-hours 23:55 UTC bar = 10 minutes earlier, well within
+        # MAX_AGE — so technically still acceptable.
+        bars = pd.DataFrame(
+            {"close": [100.0]},
+            index=pd.DatetimeIndex(
+                ["2026-09-23T23:55:00"], tz="UTC"
+            ),
+        )
+        cycle = pd.Timestamp("2026-09-24T00:05:00", tz="UTC")
+        ts = decision_bar(bars, cycle)
+        # 10 minutes old — fresh enough. Returned.
+        assert ts == pd.Timestamp("2026-09-23T23:55:00", tz="UTC")
+
+    def test_weekend_prior_friday_bar_rejected(self):
+        # Decision on Sunday 2026-09-27 at 12:00 UTC. The previous
+        # Friday's 20:00 UTC close is 64 hours earlier — far over the
+        # 240-minute cap and must be rejected.
+        bars = pd.DataFrame(
+            {"close": [100.0]},
+            index=pd.DatetimeIndex(
+                ["2026-09-25T20:00:00"], tz="UTC"
+            ),
+        )
+        cycle = pd.Timestamp("2026-09-27T12:00:00", tz="UTC")
+        ts = decision_bar(bars, cycle)
+        assert ts is None
+
+    def test_one_minute_over_age_rejected(self):
+        # Bar at 241 minutes before cycle_start is rejected.
+        cycle = pd.Timestamp("2026-09-24T13:31:00", tz="UTC")
+        bar = pd.Timestamp("2026-09-24T09:30:00", tz="UTC")
+        # 4h 1min = 241 min — over the cap.
+        bars = pd.DataFrame({"close": [100.0]}, index=pd.DatetimeIndex([bar]))
+        assert decision_bar(bars, cycle) is None
+
+    def test_empty_bars_returns_none(self):
+        cycle = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
+        bars = pd.DataFrame({"close": []}, index=pd.DatetimeIndex([], tz="UTC"))
+        assert decision_bar(bars, cycle) is None
+
+    def test_freshness_limit_constant(self):
+        from src.research.price_alignment import DECISION_BAR_MAX_AGE_MINUTES
+        assert DECISION_BAR_MAX_AGE_MINUTES == 240
 
 
 class TestDecisionBar:

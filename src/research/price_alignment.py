@@ -15,7 +15,28 @@ DECISION-TIME BAR
     The 1-minute bar whose timestamp is at-or-before ``cycle_start`` and
     whose close is closest to (but not later than) ``cycle_start``.
     Decision price = its ``close``.
-    Rule: ``decision_bar_ts <= cycle_start``.
+    Rule: ``decision_bar_ts <= cycle_start`` AND
+    ``(cycle_start - decision_bar_ts) <= DECISION_BAR_MAX_AGE_MINUTES``.
+    The age cap prevents an overnight decision from silently using a
+    stale previous-day bar that happens to be at-or-before the cycle.
+
+    The freshness limit is 4 hours (240 minutes). Rationale:
+
+    * Long enough to cover any same-session gap on liquid names (e.g.,
+      a 09:00 UTC decision can use an 08:00 UTC pre-market bar = 60 min
+      old; a 13:30 UTC open decision can use a 09:30 UTC open bar =
+      240 min old).
+    * Short enough to exclude prior-session after-hours bars (the
+      2026-09-23 session ends at 20:00 UTC = 16:00 EDT; a 02:00 UTC
+      decision on 2026-09-24 would otherwise use a 2026-09-23 23:59 UTC
+      bar that is 125 min old but from a different trading day).
+    * Smaller than the 47-hour Alpaca paper-tier historical-data lag,
+      which is the only reason these rules matter for forward-return
+      labels.
+
+    If the freshness check fails, ``decision_bar`` returns ``None`` and
+    the label is ``MISSING_DECISION_BAR`` (specifically, the reason
+    ``NO_CONTEMPORANEOUS_BAR`` — no bar exists within tolerance).
 
 FUTURE BAR for a +N-trading-minutes horizon
     Walk N bars forward through the *trading-time* minute bar list of the
@@ -32,18 +53,19 @@ FUTURE BAR for a +next-session-open horizon
     decision date.
 
 TRADING SESSION
-    The set of timestamps that fall inside 13:30:00 <= t < 20:00:00 UTC
-    on a regular US trading day during Eastern Daylight Time (DST).
-    (Earlier OBS-003 prototypes used 14:30-21:00 UTC — that is the
-    standard-time window and is wrong for late-September 2026 dates.)
-    US market holidays are NOT in this set; we approximate by treating
-    any minute that has no Alpaca bars as outside the session.
+    09:30 <= America/New_York local time < 16:00, evaluated on a regular
+    US trading day. The conversion to UTC uses ``zoneinfo.ZoneInfo(
+    "America/New_York")`` so the window automatically shifts between
+    13:30-20:00 UTC (EDT, March-November) and 14:30-21:00 UTC (EST,
+    November-March). US market holidays are NOT in this set; we
+    approximate by treating any minute that has no Alpaca bars as
+    outside the session.
 
 MISSING BAR
     If a horizon cannot be reached inside the available bar list (e.g.,
     +240 trading minutes requested but only 120 trading minutes remain
     in the same session and no next-session data exists in the cache),
-    the label is ``MISSING_BAR_AT_HORIZON``.
+    the label is ``HORIZON_BEYOND_AVAILABLE_BARS``.
 
 STALE PRICE (after-hours)
     If a horizon lands in after-hours (e.g., a 19:50Z decision with a
@@ -58,31 +80,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 
-# US equity regular session in UTC.
-# 09:30 ET == 14:30 UTC (standard time) / 13:30 UTC (DST).
-# 16:00 ET == 21:00 UTC (standard time) / 20:00 UTC (DST).
-#
-# The OBS-003 research window (2026-09-23 to 2026-09-25) falls entirely
-# within US Eastern Daylight Time (DST: March 8 - November 1, 2026).
-# ET = UTC - 4. So 9:30 AM ET = 13:30 UTC and 4:00 PM ET = 20:00 UTC.
-#
-# Earlier prototypes used 14:30-21:00 UTC (the standard-time window),
-# which incorrectly counted the 20:00-21:00 UTC after-hours period as
-# "regular session" for late-September 2026 dates. The bug affected
-# ~63 % of HAS_DATA cache files (those with any 20:00-21:00 UTC bars)
-# and shifted late-day +30m/+60m/+240m forward prices into static
-# after-hours territory.
-#
-# SESSION_OPEN / SESSION_CLOSE below are the DST-correct UTC times.
-# If the OBS-003 window is ever extended into a non-DST period, this
-# module needs to grow DST-aware logic; see ``is_regular_session_minute``.
-SESSION_OPEN = time(13, 30)
-SESSION_CLOSE = time(20, 00)
-SESSION_TZ = timezone.utc
+# US/Eastern timezone for DST-aware session-window computation.
+NY_TZ = ZoneInfo("America/New_York")
+
+# US equity regular session in America/New_York local time.
+# 09:30-16:00 ET on a regular trading day.
+# Conversion to UTC happens inside ``is_regular_session_minute`` so the
+# result automatically shifts between EDT (13:30-20:00 UTC) and EST
+# (14:30-21:00 UTC) without any further code changes.
+SESSION_OPEN_ET = time(9, 30)
+SESSION_CLOSE_ET = time(16, 0)
+
+# Maximum age of a decision bar relative to cycle_start, in wall-clock
+# minutes. See module docstring for rationale. Used as a freshness
+# guard against using stale prior-day after-hours bars for overnight
+# or weekend-decision cases.
+DECISION_BAR_MAX_AGE_MINUTES: int = 4 * 60  # 240 minutes
 
 
 @dataclass(frozen=True)
@@ -96,11 +114,21 @@ class TradingSessionWindow:
 
 
 def is_regular_session_minute(ts: pd.Timestamp) -> bool:
-    """Return True if *ts* falls inside a US regular session minute (UTC)."""
+    """Return True if *ts* falls inside a US regular session minute (UTC).
+
+    Uses ``America/New_York`` to derive the local-time window
+    09:30 <= t < 16:00, so the result is automatically correct in
+    both EDT (13:30-20:00 UTC) and EST (14:30-21:00 UTC). Weekend
+    days are always excluded.
+    """
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
-    t = ts.tz_convert("UTC").time()
-    return SESSION_OPEN <= t < SESSION_CLOSE
+    ny = ts.tz_convert(NY_TZ)
+    # Saturday = 5, Sunday = 6 in Python weekday().
+    if ny.weekday() >= 5:
+        return False
+    t = ny.time()
+    return SESSION_OPEN_ET <= t < SESSION_CLOSE_ET
 
 
 def filter_trading_minutes(bar_index: pd.DatetimeIndex) -> pd.DatetimeIndex:
@@ -115,7 +143,10 @@ def decision_bar(bars: pd.DataFrame, cycle_start: pd.Timestamp) -> Optional[pd.T
     ``bars`` must have a single-level DatetimeIndex of bar timestamps
     (NOT a MultiIndex).
 
-    Returns None if no bar at-or-before ``cycle_start`` exists.
+    Returns None if no bar at-or-before ``cycle_start`` exists, OR if
+    the most recent at-or-before bar is older than
+    ``DECISION_BAR_MAX_AGE_MINUTES`` (the freshness rule — see module
+    docstring).
     """
     if bars.empty:
         return None
@@ -128,7 +159,13 @@ def decision_bar(bars: pd.DataFrame, cycle_start: pd.Timestamp) -> Optional[pd.T
     eligible = idx[idx <= cycle_start]
     if len(eligible) == 0:
         return None
-    return eligible[-1]
+    candidate = eligible[-1]
+    # Freshness check: reject stale prior-day bars that are technically
+    # at-or-before but represent a different trading day.
+    age_minutes = (cycle_start - candidate).total_seconds() / 60.0
+    if age_minutes > DECISION_BAR_MAX_AGE_MINUTES:
+        return None
+    return candidate
 
 
 def forward_bar_trading_minutes(
