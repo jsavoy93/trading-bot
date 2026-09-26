@@ -587,6 +587,138 @@ Each loop processes 30 symbols from the queue, then sleeps 5 minutes.
 
 ---
 
+## Phase C `rows_in_cohort` SQL Pattern (PHASE-C14B-2D)
+
+The C14B-2C hybrid analytics path counts parents satisfying
+the SELECTED cohort AND the SELECTED range. Both filters must
+be applied per version:
+
+```sql
+SELECT COUNT(*) FROM decision_history dh
+WHERE (v0_cohort_sql AND v0_range_sql)
+   OR (v1_cohort_sql AND v1_range_sql)
+```
+
+Params must be bound in cohort-then-range order per version:
+`(v0_cohort_params + v0_range_params + v1_cohort_params + v1_range_params)`.
+The `latest` range adds no `?` (range fragment is a self-contained
+subquery), so `v?_range_params` is `()` for `latest` and
+`(cutoff,)` for time windows.
+
+**PHASE-C14B-2D bug** (introduced by C14B-2C): the per-version
+range fragments and params were dropped, so `rows_in_cohort`
+became range-agnostic — returning ~1.31M for every range. Fix at
+two call sites: `api_phase_c_strategy_gates` line 2354 and
+`api_phase_c_execution_blockers` line 2607 in `dashboard.py`.
+
+**EXPLAIN**:
+- Corrected: `MULTI-INDEX OR` → 2× `SEARCH dh USING COVERING
+  INDEX idx_decision_history_cycle_start (cycle_start>?)`. Two
+  indexed range scans, fast.
+- Buggy: `SCAN dh USING COVERING INDEX
+  idx_decision_history_cycle_start`. Full index scan over all
+  post-OBS-002 (~1.32M rows), ~9s on the index alone.
+
+## Decision Funnel — SELL inline-bypass explanation (PHASE-C14B-2D)
+
+The funnel's forward path visually shows `Ranked Candidates → ... →
+Execution Attempted`, but the code has two branches that converge
+at `execution_attempt_count`:
+
+1. **BUY branch** (matches visual flow): Strategy Eligible (BUY)
+   → appended to `buy_candidates` → `ranked_candidate_count += 1`
+   → after analysis loop, ranked → chosen → `execution_attempt_count += 1`
+   → `execute_trade()`.
+
+2. **SELL branch** (does NOT match visual flow): Strategy Eligible
+   (SELL) → inline `execution_attempt_count += 1` → `execute_trade()`
+   → no ranking step.
+
+So `RANKED CANDIDATES = 0` while `EXECUTION ATTEMPTED = N` is
+**consistent** when all signals are SELL: zero BUY signals → zero
+ranked; N SELL signals → N inline `execute_trade` calls. The funnel
+label is technically accurate but visually misleading because it
+places Execution Attempted strictly downstream of Ranked Candidates
+without annotating the SELL inline-bypass.
+
+`strategy_eligible_count == execution_attempt_count == execution_blocked_count`
+is also consistent: every SELL signal that triggered `execute_trade`
+resulted in `execute_trade` returning False (all blocked by
+position existence check).
+
+## v0 JSON extraction performance bottleneck (PHASE-C14B-2D)
+
+The v0 analytics path reads from `decision_history.decision_snapshot`
+JSON via `json_each(json_extract(...))`. This is inherently slow
+at large scale:
+
+- 24h v0 (24h contains 0 v0 parents, but path still runs): <1s
+- 7d v0 (~776k v0 parents): ~50-56s for `strategy-gates 7d`
+
+EXPLAIN shows `SCAN gate VIRTUAL TABLE INDEX 1` (json_each) over
+every row in the range window. The `rows_in_cohort` fix does NOT
+eliminate this cost; it just makes it range-limited.
+
+Mitigation deferred: materialize v0 facts at write-time to eliminate
+runtime JSON parse, OR add a v0 child-table parity so v0 reads
+from a child table like v1 does.
+
+## Single-worker uvicorn concurrency (PHASE-C14B-2D)
+
+`trading-dashboard.service` runs uvicorn without `--workers`:
+- Single uvicorn process (PID 1122171), 7 threads (asyncio default)
+- systemd `ExecStart` has no `--workers`
+- Synchronous SQLite/FastAPI handlers serialize on the asyncio
+  event loop
+
+When multiple expensive requests arrive concurrently (e.g., user
+hitting Analytics tab while the bot is running), requests queue
+and last request can take very long (148s observed during C14B-2B
+deploy). The rows_in_cohort fix reduces individual request
+duration but does not address concurrency.
+
+**Do NOT increase worker count** without first measuring SQLite
+contention — multiple workers multiply SmartBot contention on the
+same DB.
+
+## Legacy warning UX — data-unaware (PHASE-C14B-2D)
+
+`templates/dashboard.html:3591-3638`: the "Legacy history included"
+warning visibility is purely controlled by the
+`phase-c-include-legacy` checkbox. It shows whenever `cohort=all`
+is selected, regardless of whether the time window contains
+pre-OBS-002 rows.
+
+For the 24h window (100% v1), the warning is technically misleading
+because no legacy rows are actually present. Making it data-aware
+(count v0 parents in window, only show warning if nonzero) is a
+small follow-up, currently deferred.
+
+## Test data anchoring — `_dt.now(timezone.utc)` not fixed REF (PHASE-C14B-2D)
+
+Phase C tests that build synthetic datasets with cycle_starts
+MUST anchor to `_dt.now(timezone.utc)` (with appropriate
+`timedelta` offsets) rather than a fixed wall-clock string. Wall
+clock advances during testing; a cycle_start that was "14 hours
+ago" when the test was written is "26 hours ago" 12 hours later,
+and falls outside the live 24h window the test is asserting against.
+
+Fixed `CYCLE_STARTS` dict with a static `REF=2026-09-25T00:00:00Z`
+will rot. Use helper methods that compute cycle_starts dynamically:
+```python
+@classmethod
+def _in_range_start(cls, range_name):
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = _dt.now(_tz.utc)
+    if range_name == "24h":
+        return cls._iso(now - _td(hours=1))
+    if range_name == "7d":
+        return cls._iso(now - _td(days=1))
+    ...
+```
+
+---
+
 ## Critical Settings (from `settings_service`)
 
 | Setting | Default | Meaning |

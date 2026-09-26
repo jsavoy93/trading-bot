@@ -4055,6 +4055,325 @@ class TestHybridRangeParamBinding:
         )
 
 
+class TestRowsInCohortRangeLimited:
+    """PHASE-C14B-2D: rows_in_cohort MUST be range-limited, NOT
+    range-agnostic.
+
+    Pre-C14B-2C and pre-C14B-2D contract:
+        rows_in_cohort = number of decision_history parents in the
+        SELECTED cohort AND SELECTED range/window, regardless of
+        analytics_persistence_version. The authority split affects
+        analytics FACTS, not the parent universe count.
+
+    C14B-2C bug: the rows_in_cohort SQL applied the cohort fragments
+    but DROPPED the range fragments, returning ~1.31M (the entire
+    post-OBS-002 universe) for every range, including `latest` and
+    `1h`.
+
+    These tests pin the range-limited contract across:
+        * latest   — single latest cycle only (~30 parents in prod)
+        * today    — today UTC only
+        * 1h       — last hour
+        * 6h       — last 6 hours
+        * 24h      — last 24 hours
+        * 7d       — last 7 days
+        * mixed v0/v1 within range — both versions counted
+        * v0 outside range — excluded
+        * v1 outside range — excluded
+        * v1 zero-child parent within range — STILL counted
+    """
+
+    # Cycle_starts are anchored RELATIVE TO REAL NOW (not to a
+    # fixed wall-clock date). Tests must pass regardless of when
+    # pytest is invoked, because the Phase C range predicates use
+    # `_dt.now(timezone.utc)` for 24h/7d/today windows.
+    @classmethod
+    def _iso(cls, dt):
+        return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    @classmethod
+    def _in_range_start(cls, range_name):
+        """Return cycle_start that IS in the requested range."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        now = _dt.now(_tz.utc)
+        if range_name == "latest":
+            # 5 min ago — paired with a matching cycle_end in the funnel.
+            return cls._iso(now - _td(minutes=5))
+        if range_name == "today":
+            today_prefix = now.strftime("%Y-%m-%d")
+            return f"{today_prefix}T00:00:00+00:00"
+        if range_name == "24h":
+            return cls._iso(now - _td(hours=1))
+        if range_name == "7d":
+            return cls._iso(now - _td(days=1))
+        raise ValueError(f"unknown range: {range_name}")
+
+    @classmethod
+    def _out_of_range_start(cls, range_name):
+        """Return cycle_start that is NOT in the requested range."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        now = _dt.now(_tz.utc)
+        if range_name == "latest":
+            return cls._iso(now - _td(days=5))
+        if range_name == "today":
+            # Yesterday at 23:30 UTC — definitely before today's UTC midnight.
+            yday = (now - _td(days=1)).replace(
+                hour=23, minute=30, second=0, microsecond=0
+            )
+            return cls._iso(yday)
+        if range_name == "24h":
+            return cls._iso(now - _td(hours=30))
+        if range_name == "7d":
+            return cls._iso(now - _td(days=10))
+        raise ValueError(f"unknown range: {range_name}")
+
+    @classmethod
+    def _latest_cycle_end(cls):
+        from datetime import datetime as _dt, timezone as _tz
+        return cls._iso(_dt.now(_tz.utc))
+
+    def _build_dataset(self, range_name, *, with_cycle_funnel=True,
+                       include_outside=True, version_mix=True,
+                       v1_zero_child=False):
+        """Build a deterministic dataset for a given range.
+
+        Returns (decision_rows, gate_rows_v1, exec_rows_v1,
+        funnel_rows).
+
+        Layout (per range):
+          - 1 v0 parent at in-range cycle_start
+          - 1 v1 parent at in-range cycle_start
+            - if v1_zero_child: NO child rows
+            - else: 2 gate rows + 2 exec-check rows
+          - 1 v0 parent at out-of-range cycle_start
+          - 1 v1 parent at out-of-range cycle_start
+        """
+        in_start = self._in_range_start(range_name)
+        out_start = self._out_of_range_start(range_name)
+        snapshot_v0 = json.dumps({"decision": {"outcome": "HOLD_INELIGIBLE"}})
+        snapshot_v1 = json.dumps({"decision": {"outcome": "BUY_ELIGIBLE_NOT_SELECTED"}})
+
+        decision_rows = []
+        # In-range v0 parent (id 1)
+        decision_rows.append(("c_in_v0", "AAA", in_start, snapshot_v0, 1, 0))
+        # In-range v1 parent (id 2)
+        decision_rows.append(("c_in_v1", "BBB", in_start, snapshot_v1, 1, 1))
+        if include_outside:
+            # Out-of-range v0 parent (id 3)
+            decision_rows.append(("c_out_v0", "CCC", out_start, snapshot_v0, 1, 0))
+            # Out-of-range v1 parent (id 4)
+            decision_rows.append(("c_out_v1", "DDD", out_start, snapshot_v1, 1, 1))
+
+        gate_rows_v1 = []
+        exec_rows_v1 = []
+        if not v1_zero_child:
+            # In-range v1 parent (id 2) gets 2 gate rows + 2 exec-check rows.
+            gate_rows_v1 = [
+                (2, "c_in_v1", "BBB", in_start, 1, "rsi_oversold",
+                 "trend", 1, 1, 25, 30, "v1 in-range"),
+                (2, "c_in_v1", "BBB", in_start, 2, "sma_uptrend",
+                 "trend", 1, 0, 0, 0, "v1 in-range"),
+            ]
+            exec_rows_v1 = [
+                (2, "c_in_v1", "BBB", in_start, 1,
+                 "buying_power_check", 1, 1, 1, 0, "v1 in-range", None, 0),
+                (2, "c_in_v1", "BBB", in_start, 2,
+                 "margin_check", 1, 0, 1, 0, "v1 in-range", None, 1),
+            ]
+
+        funnel_rows = []
+        if with_cycle_funnel and range_name == "latest":
+            funnel_rows = [
+                phase_c_funnel_row(
+                    "latest", self._in_range_start("latest"), self._latest_cycle_end(),
+                    analyzed=2, strategy_eligible=1, ranked=1,
+                    exec_attempt=1, exec_blocked=1,
+                    order_submit_attempt=0, order_submitted=0,
+                    order_failed=0, not_attempted=0,
+                ),
+            ]
+
+        return decision_rows, gate_rows_v1, exec_rows_v1, funnel_rows
+
+    # ── latest: only the latest cycle ──────────────────────────────
+
+    def test_latest_includes_only_latest_cycle(
+            self, synthetic_phase_c_hybrid_db):
+        """`range=latest` should return rows_in_cohort=2 (only the
+        in-range v0+v1 parents). Pre-fix, this returned ~1.31M
+        because the range predicate was dropped."""
+        decision_rows, gate_rows_v1, exec_rows_v1, funnel_rows = (
+            self._build_dataset("latest")
+        )
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+            exec_rows_v1=exec_rows_v1, funnel_rows=funnel_rows,
+        )
+        c = _client()
+        gates_body = c.get(
+            "/api/phase-c/strategy-gates?range=latest&cohort=all"
+        ).json()
+        assert gates_body["rows_in_cohort"] == 2, (
+            f"latest rows_in_cohort={gates_body['rows_in_cohort']}, "
+            f"expected 2 (in-range v0+v1). Bug C14B-2D regressed: "
+            f"range predicate was dropped."
+        )
+        eb_body = c.get(
+            "/api/phase-c/execution-blockers?range=latest&cohort=all"
+        ).json()
+        assert eb_body["rows_in_cohort"] == 2, (
+            f"latest eb rows_in_cohort={eb_body['rows_in_cohort']}, "
+            f"expected 2"
+        )
+
+    # ── parameterized: every supported range, in/out counted ────────
+
+    @pytest.mark.parametrize("range_name", ["today", "24h", "7d"])
+    def test_each_range_excludes_outside_window(
+            self, range_name, synthetic_phase_c_hybrid_db):
+        """For each time range, rows_in_cohort must include ONLY the
+        in-range parents (not the ones at OUTSIDE_STARTS).
+
+        Expected: 2 (1 v0 + 1 v1 at the in-range cycle_start).
+        Pre-fix, this returned the entire post-OBS-002 universe."""
+        decision_rows, gate_rows_v1, exec_rows_v1, funnel_rows = (
+            self._build_dataset(range_name, with_cycle_funnel=False)
+        )
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+            exec_rows_v1=exec_rows_v1, funnel_rows=funnel_rows,
+        )
+        c = _client()
+        gates_body = c.get(
+            f"/api/phase-c/strategy-gates?range={range_name}&cohort=all"
+        ).json()
+        assert gates_body["rows_in_cohort"] == 2, (
+            f"strategy-gates rows_in_cohort for range={range_name}: "
+            f"got {gates_body['rows_in_cohort']}, expected 2"
+        )
+        eb_body = c.get(
+            f"/api/phase-c/execution-blockers?range={range_name}&cohort=all"
+        ).json()
+        assert eb_body["rows_in_cohort"] == 2, (
+            f"execution-blockers rows_in_cohort for range={range_name}: "
+            f"got {eb_body['rows_in_cohort']}, expected 2"
+        )
+
+    # ── v0/v1 mix within range counts both ──────────────────────────
+
+    def test_mixed_v0_v1_within_range_counts_both_versions(
+            self, synthetic_phase_c_hybrid_db):
+        """In a 24h window containing both v0 and v1 parents, both
+        versions count toward rows_in_cohort. The authority split
+        affects FACTS, not the parent universe."""
+        decision_rows, gate_rows_v1, exec_rows_v1, funnel_rows = (
+            self._build_dataset("24h", with_cycle_funnel=False)
+        )
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+            exec_rows_v1=exec_rows_v1, funnel_rows=funnel_rows,
+        )
+        c = _client()
+        # 2 in-range parents: 1 v0 + 1 v1 = both count.
+        gates_body = c.get(
+            "/api/phase-c/strategy-gates?range=24h&cohort=all"
+        ).json()
+        assert gates_body["rows_in_cohort"] == 2, (
+            f"mixed v0/v1 rows_in_cohort={gates_body['rows_in_cohort']}, "
+            f"expected 2 (1 v0 + 1 v1)"
+        )
+
+    # ── v0 outside range excluded ──────────────────────────────────
+
+    def test_v0_outside_range_excluded(
+            self, synthetic_phase_c_hybrid_db):
+        """A v0 parent at OUTSIDE_STARTS must NOT be counted in
+        rows_in_cohort for `range=24h`."""
+        decision_rows, gate_rows_v1, exec_rows_v1, funnel_rows = (
+            self._build_dataset("24h", with_cycle_funnel=False)
+        )
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+            exec_rows_v1=exec_rows_v1, funnel_rows=funnel_rows,
+        )
+        c = _client()
+        eb_body = c.get(
+            "/api/phase-c/execution-blockers?range=24h&cohort=all"
+        ).json()
+        # 4 total parents, but 2 are out-of-range (1 v0 + 1 v1).
+        # rows_in_cohort MUST be 2.
+        assert eb_body["rows_in_cohort"] == 2, (
+            f"v0 outside range leaked? rows_in_cohort="
+            f"{eb_body['rows_in_cohort']}, expected 2"
+        )
+
+    # ── v1 zero-child within range STILL counts ─────────────────────
+
+    def test_v1_zero_child_within_range_still_counted(
+            self, synthetic_phase_c_hybrid_db):
+        """CRITICAL: a v1 parent with ZERO normalized child rows
+        must STILL count toward rows_in_cohort. The authority
+        contract for facts is independent of the parent universe
+        count — v1 zero-child means zero FACTS but the parent
+        itself remains a valid cohort member."""
+        decision_rows, gate_rows_v1, exec_rows_v1, funnel_rows = (
+            self._build_dataset("24h", with_cycle_funnel=False,
+                                v1_zero_child=True)
+        )
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=[],
+            exec_rows_v1=[], funnel_rows=funnel_rows,
+        )
+        c = _client()
+        gates_body = c.get(
+            "/api/phase-c/strategy-gates?range=24h&cohort=all"
+        ).json()
+        # 2 in-range parents, neither with v1 child rows. Both still
+        # count in rows_in_cohort.
+        assert gates_body["rows_in_cohort"] == 2, (
+            f"v1 zero-child within range wrongly excluded? "
+            f"rows_in_cohort={gates_body['rows_in_cohort']}, expected 2"
+        )
+        # The v1 parent's contribution to FACTS is zero (no child rows).
+        # gates list is empty (v0 parent has no gates in snapshot).
+        assert gates_body["gates"] == [], (
+            f"v1 zero-child must NOT contribute facts from snapshot: "
+            f"got gates={[g['gate_name'] for g in gates_body['gates']]}"
+        )
+        # Same for execution-blockers.
+        eb_body = c.get(
+            "/api/phase-c/execution-blockers?range=24h&cohort=all"
+        ).json()
+        assert eb_body["rows_in_cohort"] == 2
+        assert eb_body["checks"] == [], (
+            "v1 zero-child must NOT contribute facts from snapshot"
+        )
+
+    # ── range=7d excludes parents 8+ days old ──────────────────────
+
+    def test_7d_excludes_parents_older_than_seven_days(
+            self, synthetic_phase_c_hybrid_db):
+        """Sanity check that 7d truly excludes the 8+ day-old parent
+        that the C14B-2C bug would have included."""
+        decision_rows, gate_rows_v1, exec_rows_v1, funnel_rows = (
+            self._build_dataset("7d", with_cycle_funnel=False)
+        )
+        synthetic_phase_c_hybrid_db(
+            decision_rows=decision_rows, gate_rows_v1=gate_rows_v1,
+            exec_rows_v1=exec_rows_v1, funnel_rows=funnel_rows,
+        )
+        c = _client()
+        # OUTSIDE_STARTS["7d"] is ~10.5 days old. Only the 2 in-range
+        # parents (~5.5 days old) count.
+        gates_body = c.get(
+            "/api/phase-c/strategy-gates?range=7d&cohort=all"
+        ).json()
+        assert gates_body["rows_in_cohort"] == 2, (
+            f"7d window includes stale parent? rows_in_cohort="
+            f"{gates_body['rows_in_cohort']}, expected 2"
+        )
+
+
     def test_no_deterministic_test_uses_live_db_path(self):
         """PHASE-C10D static guard: walk this file's AST and assert that
         no test method (other than this one) is structured to read the
