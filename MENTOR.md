@@ -734,6 +734,56 @@ def _in_range_start(cls, range_name):
 
 ---
 
+## Scope Control — Stop When Done (project reset 2026-09-26)
+
+Durable policy to prevent rabbit-hole optimization chains after a feature lands.
+
+### Acceptance criteria define done
+
+Every implementation task must have explicit acceptance criteria. When those criteria are satisfied, the default action is to **close the task**. Additional possible improvements do not keep the task open.
+
+### Findings must be classified before becoming work
+
+When a new issue is discovered, classify it first:
+
+- **BLOCKER** — prevents the current task from being correct, safe, deployable, or usable. Must be resolved before the task can close.
+- **SHOULD-FIX** — materially important and strongly related to the current task. Owner decides whether it belongs in the current iteration.
+- **PARKING LOT** — optimization, polish, cleanup, speculative improvement, adjacent feature, or non-blocking issue. Record it and move on. A parking-lot item **must not** automatically become the next task.
+
+### No automatic adjacent work
+
+Completing task X does not authorize task X+1. Do not begin a follow-up task merely because the previous task exposed another possible improvement. Explicit owner authorization is required for every new implementation.
+
+### Two-hop circuit breaker
+
+If work has already produced a follow-up and that follow-up produces another follow-up, **stop**. Before starting the next adjacent task, return to the overall project roadmap and compare it against unrelated backlog priorities. Do not continue drilling downward automatically.
+
+### Opportunity cost
+
+Before recommending substantial follow-up work, ask: *"What higher-value roadmap work would we delay by doing this?"* Technical neatness alone is not sufficient justification.
+
+### Performance requires a target
+
+Performance work must have a predefined usability target or a material production problem. Once the target is met, optimization stops. *"Could be faster"* is not sufficient reason for another optimization phase.
+
+### Transitional problems
+
+Do not heavily optimize temporary/transitional behavior unless it creates a material current problem. Prefer letting transitional states age out when that is safe and cheaper (e.g. v0 analytics rows naturally rolling out of the 7-day window).
+
+### Audits do not authorize implementation
+
+An audit may identify improvements. Those findings must be reported. They must not be implemented automatically unless implementation was explicitly authorized by the owner.
+
+### Final stop question
+
+Every substantial final report should answer: *"If we stop here, what material capability or risk remains unresolved?"* If the answer is effectively none, recommend closure rather than another adjacent phase.
+
+### Roadmap reset
+
+After a substantial feature chain or two levels of follow-up work, return to the project roadmap before proposing additional adjacent work. The goal is not to perfect the current subsystem. The goal is to improve the overall trading system.
+
+---
+
 ## Common Mistakes to Avoid
 
 1. **Never say "X% of symbols failed" without checking `failed_analyses.blocked_by`** — the vast majority of records are normal HOLD signals, not errors.

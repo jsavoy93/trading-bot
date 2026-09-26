@@ -143,6 +143,20 @@ still required, and residual risk for every pending operational check.
 - Read-only reporting writes no repository artifact. Its only archive is `/root/.openclaw/audit-archives/<repository-name>/YYYY-MM-DD_HHMMSS_<task>.md`.
 - If classification is uncertain, use read-only mode. Never require the user to request an exception, and never fall back to a repository-local report if the external archive fails.
 
+## Scope Control (project reset 2026-09-26)
+
+Durable rules to prevent rabbit-hole optimization chains after a feature lands. Full exposition lives in `MENTOR.md` under "Scope Control — Stop When Done". The condensed operating rules:
+
+1. **Acceptance criteria define done.** When criteria are satisfied, close the task. Possible future improvements do not keep the task open.
+2. **Classify findings before acting.** `BLOCKER` / `SHOULD-FIX` / `PARKING LOT`. A parking-lot item must not automatically become the next task.
+3. **No automatic adjacent work.** Completing task X does not authorize task X+1. Explicit owner authorization is required for every new implementation.
+4. **Two-hop circuit breaker.** If a follow-up produces another follow-up, stop and return to the roadmap before drilling further downward.
+5. **Performance requires a target.** "Could be faster" is not sufficient reason for another optimization phase. Once a usability target is met, optimization stops.
+6. **Transitional problems.** Do not heavily optimize temporary/transitional behavior unless it creates a material current problem. Prefer letting transitional states age out when doing so is safe and cheaper.
+7. **Audits do not authorize implementation.** Audit findings must be reported; they are not implemented unless the owner explicitly authorizes implementation.
+8. **Final stop question.** Every substantial final report should answer: "If we stop here, what material capability or risk remains unresolved?" If the answer is effectively none, recommend closure rather than another adjacent phase.
+9. **Roadmap reset.** After a substantial feature chain or two levels of follow-up work, return to the project roadmap before proposing additional adjacent work. The goal is to improve the overall trading system, not to perfect the current subsystem.
+
 ## Approved Engineering-Platform Roadmap Priority (2026-08-05)
 
 After ENGDASH-004 merged via PR #13 at merge commit
