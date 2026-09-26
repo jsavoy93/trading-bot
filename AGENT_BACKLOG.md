@@ -5229,6 +5229,179 @@ Test results: 1001/1001 full safe suite pass (979 pre-PR4 + 22 PR4).
 
 ---
 
+## Phase C14B — Dashboard OBS Analytics (PHASE-C14)
+
+Phase C14B tracks the OBS-001/OBS-002 dashboard analytics slices deployed
+in September 2026. The purpose of these slices is to make observed bot
+behavior legible in the dashboard, NOT to optimize trading.
+
+### C14B-2C — Hybrid v0/v1 normalized reads (DONE)
+
+**Owner:** trading-manager
+**Branch:** merged via PR #93
+**Status:** DONE (deployed at `7e8059c3b3290e2249717c1e0db832e0b0c88f3f`)
+
+Hybrid authority contract:
+- v0 facts → `decision_snapshot` JSON
+- v1 facts → normalized child tables (`decision_gate_evaluations`,
+  `decision_execution_checks`)
+- v1 zero-child → zero normalized facts; NO JSON fallback
+- v0 stale children → ignored
+
+Source fields exposed by `/api/phase-c/strategy-gates` and
+`/api/phase-c/execution-blockers` describe this hybrid split.
+
+### C14B-2D — `rows_in_cohort` range-filter regression fix (DONE)
+
+**Owner:** trading-manager
+**Branch:** merged via PR #94 (commit `51ccb07`, merge `df7649f`)
+**Status:** DONE (deployed at 2026-09-26T00:17:03Z)
+
+Restored `rows_in_cohort` = number of `decision_history` parents
+satisfying BOTH selected cohort AND selected range, regardless of
+`analytics_persistence_version`. Authority split preserved.
+
+Success invariant verified: `latest < 24h < 7d` for both endpoints
+and both cohorts (30 → 123,551 → 898,903). Direct SQL proof within
+0.03% drift. Cross-endpoint consistency within 0.005% drift. C14B-2C
+hybrid authority intact.
+
+### C14B-2E — V1 normalized analytics performance audit (NOT STARTED, AWAITING RESEND)
+
+**Status:** Awaiting Josh's explicit resend after project reset on
+2026-09-26. Per project reset decision, this audit is **NOT** to be
+auto-resumed. Re-authorization is required even though the work was
+previously implied. Performance is parked (see below).
+
+### Parking lot (Phase C14B — performance and UX)
+
+The following items were observed during C14B-2D verification and are
+parked. They do not authorize future work; each requires its own
+explicit owner authorization.
+
+- **Phase C analytics performance (24h ~4–5s; 7d ~40–50s).** 24h is
+  within usability target. 7d slowness is dominated by inherent v0 JSON
+  extraction over ~777k v0 parents in the rolling window and will
+  reduce naturally as v0 ages out beyond 7 days post-C14B-2B cutover.
+  Revisit only if analytics performance materially interferes with
+  actual use, or after v0 ages out so permanent v1-only performance can
+  be evaluated cleanly.
+- **Decision Funnel SELL inline-bypass semantics.** `ranked_candidate`
+  is BUY-only; `execution_attempted` increments inline for SELL and
+  after ranking for BUY. The current funnel placement can therefore
+  show `ranked=0` while `execution_attempted>0` when zero BUY
+  candidates reach ranking. This is correct but visually confusing.
+  Tracked under "Dashboard Phase C funnel placement". Do not change
+  funnel UI without explicit owner approval.
+- **Legacy-warning UX is data-unaware.** The "Legacy history included"
+  warning fires on `cohort=all` regardless of whether the selected
+  window actually contains pre-OBS-002 rows. Correct but conservative.
+  Tracked under "Dashboard Phase C UX consistency". Do not change
+  without explicit owner approval.
+- **Single-worker uvicorn concurrency.** Concurrent dashboard traffic
+  serializes behind a single worker process. Scaling out would multiply
+  SmartBot contention on the same SQLite file. Address only if measured
+  load warrants it; do not change worker count speculatively.
+
+---
+
+## Project Reset — Roadmap Candidates (added 2026-09-26)
+
+The following items were identified during the project reset review
+(see `reports/2026-09-26_022021_project-reset-c14b-closed-roadmap-review.md`).
+They are recorded for owner selection; they are **NOT** auto-implemented.
+Each requires explicit owner authorization before any work begins.
+These items are separate from the Phase C14B parking lot above. They
+represent candidate next projects across trading intelligence,
+correctness, and research capability.
+
+### STRAT-001 — Strategy reachability / BUY-absence investigation (read-only audit)
+
+**Status:** NOT STARTED. Pending explicit owner authorization.
+
+**Purpose:** Determine why the currently configured strategy has
+produced zero BUY signals in the observed period and whether BUY
+eligibility is realistically reachable under current configuration
+and market observations.
+
+**STRAT-001 may analyze:**
+- gate failure distributions
+- gate pass rates
+- proximity to thresholds
+- combinations of failed gates
+- configured threshold reachability
+- BUY-path logic / configuration
+- whether a logical / configuration condition makes BUY impossible
+
+**STRAT-001 must NOT claim to determine:**
+- whether rejected opportunities would have been profitable
+- whether loosening thresholds would improve returns
+- whether scores predict future returns
+- whether the strategy has positive expected value
+- whether the strategy has measurable edge
+
+Those questions require forward-return / outcome research (see OBS-003).
+
+**Cost:** Large (read-only investigation; no code changes).
+**Risk:** None (read-only; production DB stays read-only).
+
+### STRAT-002 — Threshold / indicator tuning audit (depends on STRAT-001)
+
+**Status:** NOT STARTED. Pending explicit owner authorization.
+**Dependencies:** STRAT-001.
+
+**Purpose:** If STRAT-001 concludes gates are "reachable but tight",
+quantify how close each gate-rejected candidate is to passing.
+Distinguishes "tight market" from "thresholds unreachable".
+
+### OBS-003 — Forward-return analysis of decisions / rejected opportunities
+
+**Status:** NOT STARTED. Pending explicit owner authorization.
+**Dependencies:** STRAT-001 (must know whether gate-rejections are
+meaningful before instrumenting forward-return collection).
+
+**Purpose:** Enable forward-return analysis of decisions and rejected
+opportunities **without requiring live trade execution**. This is a
+research capability, not a live-trading path. Implementation requires
+a separate explicit owner decision and is **NOT** automatically
+authorized after STRAT-001 completes.
+
+### OBS-004 — Accept-and-submit outcome tracking
+
+**Status:** NOT STARTED. Pending explicit owner authorization.
+**Dependencies:** At least one filled order. The application database
+currently contains zero recorded completed trades (see precise wording
+below), so no accept-and-track data is yet available.
+
+### EXEC-005 — SELL inline-bypass funnel-semantics verification (PARKED)
+
+**Status:** PARKED. Do not investigate.
+
+**Context:** Existing evidence indicates no current BLOCKER-level
+trading correctness issue. The remaining question is primarily funnel
+semantics / labeling around `execution_attempted`. `ranked_candidate`
+is BUY-only; `execution_attempted` increments inline for SELL and after
+ranking for BUY. The funnel placement can therefore show `ranked=0`
+while `execution_attempted>0` when zero BUY candidates reach ranking.
+This is correct but visually confusing.
+
+Do not restart this investigation without explicit owner authorization.
+
+### Zero-trade observation (precise wording)
+
+**Factual:** The application database contains zero recorded completed
+trades.
+
+**This statement does NOT establish:**
+- whether the bot is correctly avoiding bad trades, or
+- whether the bot is incorrectly missing profitable opportunities.
+
+Determining which requires forward-return / outcome evidence (see OBS-003).
+"Zero recorded completed trades" is a row-count observation, not a
+statement about edge, selectivity, or trade quality.
+
+---
+
 ## BOT-001 — SmartBot runtime readiness and session correctness (PR-ready)
 
 **Owner:** trading-manager
