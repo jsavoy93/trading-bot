@@ -33,6 +33,7 @@ from src.research.price_alignment import (
     filter_trading_minutes,
     forward_bar_next_session_open,
     forward_bar_trading_minutes,
+    forward_bar_wall_clock,
     is_regular_session_minute,
     label_horizons,
 )
@@ -392,6 +393,111 @@ class TestForwardBarNextSessionOpen:
         fwd, reason = forward_bar_next_session_open(bars, dec)
         assert fwd is None
         assert reason == "NO_NEXT_SESSION_BAR"
+
+
+class TestForwardBarWallClock:
+    """OBS-003 CURRENT CONTRACT.
+
+    Wall-clock elapsed minutes from cycle_start, NOT trading-minute
+    walking. The forward bar is the first bar at-or-after
+    cycle_start + N wall-clock minutes, regardless of session.
+    """
+
+    def test_30m_target_is_exactly_30_wall_clock_minutes_later(self):
+        bars = make_synthetic_bars()
+        dec = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
+        fwd, reason = forward_bar_wall_clock(bars, dec, 30)
+        assert reason == "OK"
+        # +30 wall-clock minutes = 14:00 UTC
+        assert fwd == pd.Timestamp("2026-09-24T14:00:00", tz="UTC")
+
+    def test_decision_at_1550_et_targets_1620_et_not_next_morning(self):
+        """The owner-cited test: a 15:50 ET decision's +30m is 16:20 ET,
+        NOT next-session's 10:20 ET."""
+        bars = make_synthetic_bars()
+        # 15:50 ET during DST = 19:50 UTC
+        dec = pd.Timestamp("2026-09-24T19:50:00", tz="UTC")
+        fwd, reason = forward_bar_wall_clock(bars, dec, 30)
+        assert reason == "OK"
+        # +30 wall-clock minutes = 20:20 UTC (after-hours territory but
+        # bar exists in the synthetic barset since we include after-hours).
+        expected = pd.Timestamp("2026-09-24T20:20:00", tz="UTC")
+        assert fwd == expected, f"expected {expected}, got {fwd}"
+
+    def test_decision_at_1900_utc_targets_2000_utc_regardless_of_close(self):
+        """A 19:00 UTC decision's +60m is 20:00 UTC, even though 20:00 UTC
+        is exactly the regular-session close. The wall-clock contract
+        does not stop at session boundaries."""
+        bars = make_synthetic_bars()
+        dec = pd.Timestamp("2026-09-24T19:00:00", tz="UTC")
+        fwd, reason = forward_bar_wall_clock(bars, dec, 60)
+        assert reason == "OK"
+        expected = pd.Timestamp("2026-09-24T20:00:00", tz="UTC")
+        assert fwd == expected, f"expected {expected}, got {fwd}"
+
+    def test_240m_target_is_exactly_240_wall_clock_minutes_not_240_market_minutes(self):
+        """A 13:30 UTC decision's +240m is 17:30 UTC, NOT 240 regular-
+        session minutes later (which would be next-day morning)."""
+        bars = make_synthetic_bars()
+        dec = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
+        fwd, reason = forward_bar_wall_clock(bars, dec, 240)
+        assert reason == "OK"
+        expected = pd.Timestamp("2026-09-24T17:30:00", tz="UTC")
+        assert fwd == expected, f"expected {expected}, got {fwd}"
+
+    def test_uses_after_hours_bars_when_target_falls_there(self):
+        """The +30m target of a 19:50 UTC decision falls in after-hours
+        (20:20 UTC); the wall-clock contract should still return a bar
+        from that territory rather than rolling to next session."""
+        bars = make_synthetic_bars()
+        dec = pd.Timestamp("2026-09-24T19:50:00", tz="UTC")
+        fwd, reason = forward_bar_wall_clock(bars, dec, 30)
+        # Confirm the bar is in after-hours territory.
+        assert fwd.hour == 20
+        assert fwd.minute == 20
+
+    def test_returns_horizon_beyond_when_target_exceeds_available_bars(self):
+        bars = make_synthetic_bars()
+        # Truncate bars to end at 16:00 UTC, BEFORE the +240m target of 17:30 UTC.
+        bars = bars[bars.index <= pd.Timestamp("2026-09-24T16:00:00", tz="UTC")]
+        dec = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
+        fwd, reason = forward_bar_wall_clock(bars, dec, 240)
+        assert fwd is None
+        assert reason == "HORIZON_BEYOND_AVAILABLE_BARS"
+
+    def test_returns_first_bar_at_or_after_target_not_after(self):
+        bars = make_synthetic_bars()
+        dec = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
+        fwd, reason = forward_bar_wall_clock(bars, dec, 30)
+        # Target = 14:00 UTC. First bar at-or-after = exactly 14:00.
+        assert fwd == pd.Timestamp("2026-09-24T14:00:00", tz="UTC")
+        # And not 14:01 or later.
+        assert fwd <= pd.Timestamp("2026-09-24T14:00:00", tz="UTC")
+
+
+class TestLabelHorizonsWallClockContract:
+    """Verify label_horizons uses the wall-clock contract by default
+    (replacing the legacy trading-minute walking default)."""
+
+    def test_default_horizon_uses_wall_clock_not_trading_minutes(self):
+        # Same setup as the legacy trading-minute test, but expect
+        # the wall-clock result.
+        bars = make_synthetic_bars()
+        dec = pd.Timestamp("2026-09-24T19:50:00", tz="UTC")
+        labs = label_horizons(
+            bars, dec,
+            [("fwd_30m", 30), ("fwd_60m", 60), ("fwd_240m", 240)],
+        )
+        # +30m wall-clock target = 20:20 UTC (after-hours, but bar exists)
+        assert labs["fwd_30m"].forward_price_ts == pd.Timestamp(
+            "2026-09-24T20:20:00", tz="UTC"
+        )
+        # +60m wall-clock target = 20:50 UTC
+        assert labs["fwd_60m"].forward_price_ts == pd.Timestamp(
+            "2026-09-24T20:50:00", tz="UTC"
+        )
+        # +240m wall-clock target = next day 23:50 UTC (after-hours + cross-day)
+        assert labs["fwd_240m"].forward_price_ts is not None
 
 
 class TestLabelHorizons:

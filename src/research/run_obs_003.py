@@ -181,19 +181,22 @@ def _build_metadata(cfg, raw, dedup, summary, elapsed) -> dict:
         },
         "horizons": [h[0] for h in (cfg.horizons or DEFAULT_HORIZONS)],
         "horizon_semantics": {
-            "fwd_30m": "30 trading-minute forward close (regular-session minutes only).",
-            "fwd_60m": "60 trading-minute forward close.",
-            "fwd_240m": "240 trading-minute forward close (= 4 trading hours).",
+            "fwd_30m": "first bar at-or-after cycle_start + 30 elapsed wall-clock minutes (any session).",
+            "fwd_60m": "first bar at-or-after cycle_start + 60 elapsed wall-clock minutes (any session).",
+            "fwd_240m": "first bar at-or-after cycle_start + 240 elapsed wall-clock minutes (= 4 hours, any session).",
             "fwd_next_session_open": "first regular-session bar of the next trading day.",
-            "trading_session": "09:30 <= America/New_York local time < 16:00 (auto-shifts between 13:30-20:00 UTC during EDT and 14:30-21:00 UTC during EST via zoneinfo.ZoneInfo)",
+            "horizon_contract": "Wall-clock elapsed minutes from cycle_start, per the original OBS-003A authorization. Pre-market, regular-session, and after-hours bars are all eligible at-or-after the target. NOT accumulated regular-session trading minutes (the legacy trading-minute walking implementation has been superseded).",
+            "trading_session": "09:30 <= America/New_York local time < 16:00 (auto-shifts between 13:30-20:00 UTC during EDT and 14:30-21:00 UTC during EST via zoneinfo.ZoneInfo). Used for next-session-open horizon and weekend exclusion. Not applied to wall-clock forward-horizon selection."
         },
         "decision_price_freshness_rule": {
             "rule": "decision bar = most recent bar at-or-before cycle_start AND (cycle_start - decision_bar) <= 240 minutes",
             "max_age_minutes": 240,
-            "rationale": "240-minute cap covers same-session pre-market → regular transitions on liquid names (e.g., 13:30 UTC decision can use 09:30 UTC bar = exactly 4h old) and excludes overnight or weekend prior-session bars. Defense-in-depth against using stale prior-day prices for off-hours decisions."
+            "eligible_date_partitions": "label_decisions only loads bars for [decision_date, decision_date + 1] into the per-decision frame. Prior-day bars are NEVER in the frame, so the freshness cap is reinforced by the date-partition boundary.",
+            "rationale": "240-minute cap covers same-session pre-market → regular transitions on liquid names (e.g., 13:30 UTC decision can use 09:30 UTC bar = exactly 4h old). The eligible-date-partition constraint (label_decisions loads only [decision_date, decision_date+1]) is what actually prevents prior-day bars from being used — the 240-min cap alone does not. Combined behavior: a 02:00 UTC decision on date D sees no eligible bar (no D date bars exist that early; D-1 bars are never loaded); a 13:30 UTC decision can use the 09:30 UTC bar (exactly 240 min old, at the boundary)."
         },
         "price_semantics": {
             "decision_price": "1-minute bar close at-or-before cycle_start.",
+            "decision_price_synthetic_reference": "This 1-minute reference price is a SYNTHETIC COUNTERFACTUAL research reference, NOT the price SmartBot itself uses. SmartBot's analyze_symbol reads daily bars via get_stock_bars(TimeFrame.Day) and uses df.iloc[-1]['close'] (yesterday's daily close for most decisions during market hours). decision_snapshot stores gate results (RSI/SMA/MACD) but does NOT persist raw bar price or bar timestamp. OBS-003 asks: 'what 1-minute Alpaca bar would a real-time observer have seen at-or-before cycle_start?'",
             "look_ahead_protection": (
                 "Decision bar is at-or-BEFORE cycle_start. "
                 "Forward bar is at-or-AFTER target timestamp. "
