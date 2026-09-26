@@ -56,8 +56,9 @@ def main() -> int:
 
     # Research window: v1 cutover -> 2026-09-24T17:00:00Z.
     # End chosen so every decision has full +240 trading-minute horizon
-    # available through 2026-09-25T21:00:00Z (next-session close), which
-    # is confirmed by the Alpaca paper-tier historical-bar probe.
+    # available within the next-session Alpaca data (which extends
+    # through end-of-day 2026-09-25, including after-hours to 23:59 UTC),
+    # as confirmed by the Alpaca paper-tier historical-bar probe.
     cfg = PipelineConfig(
         start_iso="2026-09-23T23:53:16",
         end_iso="2026-09-24T17:00:00",
@@ -174,7 +175,8 @@ def _build_metadata(cfg, raw, dedup, summary, elapsed) -> dict:
             "rationale": (
                 "v1 cutover = 2026-09-23T23:53:16Z. End = 2026-09-24T17:00:00Z. "
                 "Latest decision can fit +240 trading-minute horizon within "
-                "next-session Alpaca data (which extends through 2026-09-25T21:00Z)."
+                "next-session Alpaca data (which extends through end-of-day "
+                "2026-09-25, including after-hours to 23:59 UTC)."
             ),
         },
         "horizons": [h[0] for h in (cfg.horizons or DEFAULT_HORIZONS)],
@@ -183,7 +185,7 @@ def _build_metadata(cfg, raw, dedup, summary, elapsed) -> dict:
             "fwd_60m": "60 trading-minute forward close.",
             "fwd_240m": "240 trading-minute forward close (= 4 trading hours).",
             "fwd_next_session_open": "first regular-session bar of the next trading day.",
-            "trading_session": "14:30 <= t < 21:00 UTC",
+            "trading_session": "13:30 <= t < 20:00 UTC (DST: 9:30-16:00 ET; the OBS-003 cohort dates fall in DST)",
         },
         "price_semantics": {
             "decision_price": "1-minute bar close at-or-before cycle_start.",

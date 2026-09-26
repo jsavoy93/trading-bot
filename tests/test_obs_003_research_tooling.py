@@ -15,7 +15,7 @@ touches. These tests prove:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -53,11 +53,11 @@ def make_synthetic_bars(
     excluded from trading-minute counts.
     """
     date = datetime.fromisoformat(day).replace(tzinfo=timezone.utc)
-    # Pre-market starts at 08:00 UTC (04:00 ET), session 14:30-21:00 UTC,
-    # after-hours to 23:59 UTC.
+    # Pre-market starts at 08:00 UTC (04:00 ET), regular session
+    # 13:30-20:00 UTC (DST: 9:30 AM - 4:00 PM ET), after-hours to 23:59 UTC.
     pre_start = date.replace(hour=8, minute=0)
-    sess_open = date.replace(hour=14, minute=30)
-    sess_close = date.replace(hour=21, minute=0)
+    sess_open = date.replace(hour=13, minute=30)
+    sess_close = date.replace(hour=20, minute=0)
     after_end = date.replace(hour=23, minute=59)
 
     idx = []
@@ -97,9 +97,10 @@ def make_synthetic_bars(
 
 class TestRegularSessionFilter:
     def test_session_minutes_are_in_window(self):
-        ts = pd.Timestamp("2026-09-24T14:30:00", tz="UTC")
+        # DST: regular session = 13:30 - 20:00 UTC (= 9:30 - 16:00 ET).
+        ts = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
         assert is_regular_session_minute(ts)
-        ts = pd.Timestamp("2026-09-24T20:59:00", tz="UTC")
+        ts = pd.Timestamp("2026-09-24T19:59:00", tz="UTC")
         assert is_regular_session_minute(ts)
 
     def test_pre_market_excluded(self):
@@ -107,10 +108,33 @@ class TestRegularSessionFilter:
         assert not is_regular_session_minute(ts)
 
     def test_after_hours_excluded(self):
-        ts = pd.Timestamp("2026-09-24T21:00:00", tz="UTC")
+        # DST close is 20:00 UTC (= 4:00 PM ET). 20:00 UTC is the close
+        # instant itself, which the half-open [open, close) window
+        # excludes.
+        ts = pd.Timestamp("2026-09-24T20:00:00", tz="UTC")
         assert not is_regular_session_minute(ts)
         ts = pd.Timestamp("2026-09-24T22:30:00", tz="UTC")
         assert not is_regular_session_minute(ts)
+
+    def test_dst_session_window_documented(self):
+        """Regression guard: September 2026 dates fall in DST.
+
+        ET = UTC - 4 in DST. The OBS-003 cohort (2026-09-23..24) is
+        fully inside DST, so SESSION_OPEN/SESSION_CLOSE must reflect
+        13:30 / 20:00 UTC, NOT 14:30 / 21:00 UTC (the standard-time
+        window).
+
+        Earlier prototypes used the standard-time window and
+        mis-classified the 20:00-21:00 UTC after-hours period as
+        "regular session". This test guards against regression.
+        """
+        from src.research.price_alignment import SESSION_OPEN, SESSION_CLOSE
+        assert SESSION_OPEN == time(13, 30), (
+            f"SESSION_OPEN must be 13:30 (DST 9:30 ET); got {SESSION_OPEN}"
+        )
+        assert SESSION_CLOSE == time(20, 0), (
+            f"SESSION_CLOSE must be 20:00 (DST 16:00 ET); got {SESSION_CLOSE}"
+        )
 
 
 class TestDecisionBar:
@@ -130,7 +154,7 @@ class TestDecisionBar:
 class TestForwardBarTradingMinutes:
     def test_30_minute_walk_stays_in_session(self):
         bars = make_synthetic_bars()
-        dec = pd.Timestamp("2026-09-24T14:30:00", tz="UTC")
+        dec = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
         fwd, reason = forward_bar_trading_minutes(bars, dec, 30)
         assert reason == "OK"
         # The 30th trading minute after the decision.
@@ -142,19 +166,19 @@ class TestForwardBarTradingMinutes:
         # verify +30 returns the 30th session minute, NOT the 30th
         # wall-clock minute.
         bars = make_synthetic_bars()
-        dec = pd.Timestamp("2026-09-24T14:30:00", tz="UTC")
+        dec = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
         fwd, reason = forward_bar_trading_minutes(bars, dec, 30)
         assert reason == "OK"
-        # 30 wall-clock minutes lands at 15:00. The 30th session minute
-        # is also 15:00 (since session starts at 14:30 and runs
-        # continuously). Verify fwd is exactly at 15:00.
-        assert fwd == pd.Timestamp("2026-09-24T15:00:00", tz="UTC")
+        # 30 wall-clock minutes lands at 14:00. The 30th session minute
+        # is also 14:00 (since session starts at 13:30 and runs
+        # continuously). Verify fwd is exactly at 14:00.
+        assert fwd == pd.Timestamp("2026-09-24T14:00:00", tz="UTC")
 
     def test_returns_missing_when_horizon_beyond_session(self):
         # Build a barset that ends mid-session.
         bars = make_synthetic_bars()
         bars = bars[bars.index < pd.Timestamp("2026-09-24T15:00:00", tz="UTC")]
-        dec = pd.Timestamp("2026-09-24T14:30:00", tz="UTC")
+        dec = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
         fwd, reason = forward_bar_trading_minutes(bars, dec, 240)
         assert fwd is None
         assert reason == "HORIZON_BEYOND_AVAILABLE_BARS"
@@ -163,9 +187,9 @@ class TestForwardBarTradingMinutes:
         # Critical: a 3:50 PM (+30m) horizon MUST NOT be silently turned
         # into a next-morning observation.
         bars = make_synthetic_bars()
-        # Decision at 20:50 UTC (2:50 PM ET) with only 10 session minutes
-        # left until close at 21:00 UTC.
-        dec = pd.Timestamp("2026-09-24T20:50:00", tz="UTC")
+        # Decision at 19:50 UTC (2:50 PM ET during DST) with only 10 session minutes
+        # left until close at 20:00 UTC.
+        dec = pd.Timestamp("2026-09-24T19:50:00", tz="UTC")
         fwd, reason = forward_bar_trading_minutes(bars, dec, 30)
         # Only 10 session minutes after this decision; +30m exceeds them.
         assert fwd is None
@@ -184,8 +208,8 @@ class TestForwardBarNextSessionOpen:
         dec = pd.Timestamp("2026-09-24T20:00:00", tz="UTC")
         fwd, reason = forward_bar_next_session_open(bars, dec)
         assert reason == "OK"
-        # Next-day first regular minute is 2026-09-25T14:30Z.
-        assert fwd == pd.Timestamp("2026-09-25T14:30:00", tz="UTC")
+        # Next-day first regular minute is 2026-09-25T13:30Z.
+        assert fwd == pd.Timestamp("2026-09-25T13:30:00", tz="UTC")
 
     def test_returns_missing_when_no_next_day(self):
         bars = make_synthetic_bars(day="2026-09-24")
@@ -198,12 +222,12 @@ class TestForwardBarNextSessionOpen:
 class TestLabelHorizons:
     def test_label_horizons_computes_correct_returns(self):
         bars = make_synthetic_bars(open_price=100.0, minute_step=0.05)
-        cycle = pd.Timestamp("2026-09-24T14:30:00", tz="UTC")
+        cycle = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
         labels = label_horizons(
             bars, cycle,
             [("fwd_30m", 30), ("fwd_60m", 60), ("fwd_240m", 240)],
         )
-        # Decision bar is 14:30, close=100.0
+        # Decision bar is 13:30, close=100.0
         # 30 minutes later = 15:00, close = 100 + 30*0.05 = 101.5
         assert labels["fwd_30m"].label_status == "OK"
         assert abs(labels["fwd_30m"].decision_price - 100.0) < 1e-9
@@ -218,22 +242,22 @@ class TestLabelHorizons:
         assert abs(labels["fwd_240m"].forward_return - 0.12) < 1e-9
 
     def test_decision_price_uses_bar_at_or_before_cycle(self):
-        # Cycle 14:30:30; decision bar is 14:30 (last bar at-or-before).
+        # Cycle 13:30:30; decision bar is 13:30 (last bar at-or-before).
         bars = make_synthetic_bars()
-        cycle = pd.Timestamp("2026-09-24T14:30:30", tz="UTC")
+        cycle = pd.Timestamp("2026-09-24T13:30:30", tz="UTC")
         labels = label_horizons(bars, cycle, [("fwd_30m", 30)])
         assert labels["fwd_30m"].decision_price_ts == pd.Timestamp(
-            "2026-09-24T14:30:00", tz="UTC"
+            "2026-09-24T13:30:00", tz="UTC"
         )
 
     def test_no_lookahead_when_cycle_lands_in_gap(self):
         # If cycle_start lands exactly between two bars, the decision bar
         # is the EARLIER (at-or-before) bar, never the later (at-or-after).
         bars = make_synthetic_bars()
-        cycle = pd.Timestamp("2026-09-24T14:35:00", tz="UTC")
+        cycle = pd.Timestamp("2026-09-24T13:35:00", tz="UTC")
         labels = label_horizons(bars, cycle, [("fwd_30m", 30)])
         assert labels["fwd_30m"].decision_price_ts == pd.Timestamp(
-            "2026-09-24T14:35:00", tz="UTC"
+            "2026-09-24T13:35:00", tz="UTC"
         )
 
     def test_missing_decision_bar_marks_all_missing(self):
@@ -247,9 +271,9 @@ class TestLabelHorizons:
     def test_horizon_beyond_available_does_not_substitute(self):
         bars = make_synthetic_bars()
         # Truncate after 90 minutes of session bars
-        cutoff = pd.Timestamp("2026-09-24T14:30:00", tz="UTC") + timedelta(minutes=90)
+        cutoff = pd.Timestamp("2026-09-24T13:30:00", tz="UTC") + timedelta(minutes=90)
         bars = bars[bars.index < cutoff]
-        cycle = pd.Timestamp("2026-09-24T14:30:00", tz="UTC")
+        cycle = pd.Timestamp("2026-09-24T13:30:00", tz="UTC")
         labels = label_horizons(bars, cycle, [("fwd_240m", 240)])
         assert labels["fwd_240m"].label_status == "HORIZON_BEYOND_AVAILABLE_BARS"
         assert labels["fwd_240m"].forward_return is None
@@ -417,7 +441,7 @@ class TestGateStateDeduplication:
             {"symbol": "AA01", "cycle_start": pd.Timestamp("2026-09-24T14:00:00", tz="UTC")},
             {"symbol": "BB01", "cycle_start": pd.Timestamp("2026-09-24T14:05:00", tz="UTC")},
             {"symbol": "AA01", "cycle_start": pd.Timestamp("2026-09-24T14:10:00", tz="UTC")},
-            {"symbol": "AA01", "cycle_start": pd.Timestamp("2026-09-24T14:35:00", tz="UTC")},
+            {"symbol": "AA01", "cycle_start": pd.Timestamp("2026-09-24T13:35:00", tz="UTC")},
         ]
         df = pd.DataFrame(rows)
         raw, dedup = deduplicate_by_gate_state(df, spacing_minutes=30)

@@ -32,10 +32,12 @@ FUTURE BAR for a +next-session-open horizon
     decision date.
 
 TRADING SESSION
-    The set of timestamps that fall inside 14:30:00 <= t < 21:00:00 UTC
-    on a regular US trading day. US market holidays are NOT in this set;
-    we approximate by treating any minute that has no Alpaca bars as
-    outside the session.
+    The set of timestamps that fall inside 13:30:00 <= t < 20:00:00 UTC
+    on a regular US trading day during Eastern Daylight Time (DST).
+    (Earlier OBS-003 prototypes used 14:30-21:00 UTC — that is the
+    standard-time window and is wrong for late-September 2026 dates.)
+    US market holidays are NOT in this set; we approximate by treating
+    any minute that has no Alpaca bars as outside the session.
 
 MISSING BAR
     If a horizon cannot be reached inside the available bar list (e.g.,
@@ -61,11 +63,25 @@ import pandas as pd
 
 
 # US equity regular session in UTC.
-# 09:30 ET == 14:30 UTC (standard time); 13:30 UTC (DST).
-# We approximate with the DST-equivalent UTC window for late September.
-# 2026-09-22..2026-09-25 are post-DST-start dates, so 14:30-21:00 UTC is correct.
-SESSION_OPEN = time(14, 30)
-SESSION_CLOSE = time(21, 00)
+# 09:30 ET == 14:30 UTC (standard time) / 13:30 UTC (DST).
+# 16:00 ET == 21:00 UTC (standard time) / 20:00 UTC (DST).
+#
+# The OBS-003 research window (2026-09-23 to 2026-09-25) falls entirely
+# within US Eastern Daylight Time (DST: March 8 - November 1, 2026).
+# ET = UTC - 4. So 9:30 AM ET = 13:30 UTC and 4:00 PM ET = 20:00 UTC.
+#
+# Earlier prototypes used 14:30-21:00 UTC (the standard-time window),
+# which incorrectly counted the 20:00-21:00 UTC after-hours period as
+# "regular session" for late-September 2026 dates. The bug affected
+# ~63 % of HAS_DATA cache files (those with any 20:00-21:00 UTC bars)
+# and shifted late-day +30m/+60m/+240m forward prices into static
+# after-hours territory.
+#
+# SESSION_OPEN / SESSION_CLOSE below are the DST-correct UTC times.
+# If the OBS-003 window is ever extended into a non-DST period, this
+# module needs to grow DST-aware logic; see ``is_regular_session_minute``.
+SESSION_OPEN = time(13, 30)
+SESSION_CLOSE = time(20, 00)
 SESSION_TZ = timezone.utc
 
 
