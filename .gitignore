@@ -142,6 +142,11 @@ USER.md
 
 # Current rolling agent report (timestamped reports/ archives remain reviewable)
 REPORT.md
+
+# OBS-003 retrospective research bulk outputs (regenerable from cache + DB)
+reports/research/labeled_dataset.csv
+reports/research/labeled_dataset_dedup.csv
+reports/research/bar_cache/
 # Node/Next generated dependencies and build artifacts
 node_modules/
 .next/

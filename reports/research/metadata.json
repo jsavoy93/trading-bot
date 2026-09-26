@@ -1,0 +1,124 @@
+{
+  "pipeline": "OBS-003 retrospective forward-return research",
+  "ran_at_utc": "2026-09-26T17:53:14Z",
+  "elapsed_seconds": 457.11823630332947,
+  "research_window": {
+    "start_iso": "2026-09-23T23:53:16",
+    "end_iso": "2026-09-24T17:00:00",
+    "rationale": "v1 cutover = 2026-09-23T23:53:16Z. End = 2026-09-24T17:00:00Z. Latest decision can fit +240 trading-minute horizon within next-session Alpaca data (which extends through 2026-09-25T21:00Z)."
+  },
+  "horizons": [
+    "fwd_30m",
+    "fwd_60m",
+    "fwd_240m",
+    "fwd_next_session_open"
+  ],
+  "horizon_semantics": {
+    "fwd_30m": "30 trading-minute forward close (regular-session minutes only).",
+    "fwd_60m": "60 trading-minute forward close.",
+    "fwd_240m": "240 trading-minute forward close (= 4 trading hours).",
+    "fwd_next_session_open": "first regular-session bar of the next trading day.",
+    "trading_session": "14:30 <= t < 21:00 UTC"
+  },
+  "price_semantics": {
+    "decision_price": "1-minute bar close at-or-before cycle_start.",
+    "look_ahead_protection": "Decision bar is at-or-BEFORE cycle_start. Forward bar is at-or-AFTER target timestamp. No bars from the open interval are used for the label value."
+  },
+  "deduplication_rule": "Time-based: within (symbol, UTC trading date), keep at most one observation every 30 minutes. First observation in each 30-min window is retained; subsequent ones are dropped. Spacing is measured in wall-clock minutes from the kept observation's cycle_start. Rule documented in src/research/deduplication.py.",
+  "cohort": {
+    "raw_decisions": 91138,
+    "dedup_decisions": 88733,
+    "unique_symbols": 13522,
+    "unique_symbol_date_pairs": 14152,
+    "dedup_ratio": 0.9736114463780201,
+    "clarification_of_13_559_figure": "The '13,559' figure cited in the OBS-003A archive was the count of unique symbols seen in v1 since cutover up to the moment the probe was taken. The current cohort uses a slightly later window cutoff (2026-09-24T17:00Z) and contains 13,522 unique symbols. The numbers are equivalent (the same data, just a different cutoff endpoint) and represent 'unique symbols seen at least once in v1'."
+  },
+  "label_coverage": [
+    {
+      "view": "raw",
+      "horizon": "fwd_30m",
+      "n_total": 91138,
+      "n_ok": 17640,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 3573,
+      "n_no_next_session": 0,
+      "pct_ok": 19.355263446641356
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_30m",
+      "n_total": 88733,
+      "n_ok": 17322,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 3552,
+      "n_no_next_session": 0,
+      "pct_ok": 19.521485805731803
+    },
+    {
+      "view": "raw",
+      "horizon": "fwd_60m",
+      "n_total": 91138,
+      "n_ok": 15846,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 5367,
+      "n_no_next_session": 0,
+      "pct_ok": 17.386819987272048
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_60m",
+      "n_total": 88733,
+      "n_ok": 15555,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 5319,
+      "n_no_next_session": 0,
+      "pct_ok": 17.53011844522331
+    },
+    {
+      "view": "raw",
+      "horizon": "fwd_240m",
+      "n_total": 91138,
+      "n_ok": 11282,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 9931,
+      "n_no_next_session": 0,
+      "pct_ok": 12.379029603458491
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_240m",
+      "n_total": 88733,
+      "n_ok": 11081,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 9793,
+      "n_no_next_session": 0,
+      "pct_ok": 12.488025875378947
+    },
+    {
+      "view": "raw",
+      "horizon": "fwd_next_session_open",
+      "n_total": 91138,
+      "n_ok": 20792,
+      "n_missing_decision_bar": 69925,
+      "n_horizon_beyond": 0,
+      "n_no_next_session": 421,
+      "pct_ok": 22.813754964998136
+    },
+    {
+      "view": "dedup",
+      "horizon": "fwd_next_session_open",
+      "n_total": 88733,
+      "n_ok": 20455,
+      "n_missing_decision_bar": 67859,
+      "n_horizon_beyond": 0,
+      "n_no_next_session": 419,
+      "pct_ok": 23.052302976344766
+    }
+  ],
+  "alpaca_data_used": true,
+  "production_db_writes": false,
+  "smartbot_modified": false,
+  "schema_modified": false,
+  "strategy_modified": false,
+  "thresholds_changed": false
+}
