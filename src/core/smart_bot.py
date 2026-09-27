@@ -5060,7 +5060,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     'status': 'SUBMITTED',
                     'broker_order_id': str(order.id) if order.id else None,
                 }
-                self.db.log_trade(self.session_id, trade_data)
+                # EXEC-003.1 review: capture the return value so a
+                # persistence failure surfaces as an explicit ERROR-level
+                # log. We do NOT roll back the broker submission:
+                # broker fill (or non-fill) remains authoritative; the
+                # application DB is a downstream audit log.
+                persisted = self.db.log_trade(self.session_id, trade_data)
+                if not persisted:
+                    logging.error(
+                        f"PERSISTENCE FAILURE: broker accepted order "
+                        f"for {signal} {quantity} {symbol} "
+                        f"(broker_order_id={order.id}) but the trades "
+                        f"row was NOT persisted. The broker-side order "
+                        f"remains authoritative; do NOT re-submit. "
+                        f"Inspect trading_bot.db for the missing row."
+                    )
 
             # Mark tranche 1 as filled now that the order is submitted
             if signal == 'BUY' and symbol in self._pending_entry_tranches:

@@ -517,3 +517,43 @@ def test_F_pending_order_prevents_duplicate_submission_and_persistence(tmp_path,
         f"No row should be persisted when submit_order was blocked "
         f"by the pending-order guard; got {rows}"
     )
+
+def test_G_persistence_failure_emits_explicit_error_log(tmp_path, monkeypatch, caplog):
+    """EXEC-003.1 review correction: execute_trade must capture log_trade's
+    return value and emit an explicit ERROR-level log when persistence
+    fails. The broker-side order remains authoritative; we do NOT
+    roll back. We verify the error-log fires (and at ERROR level) so
+    that a future operator notices DB persistence loss without having
+    to scan DEBUG-level log lines."""
+    db, db_path = _initialised_db(tmp_path, monkeypatch)
+    _seed_session(db_path)
+
+    bot = _bot_with_real_db(db_path, position_qty=0)
+
+    # Force persistence failure by patching the bot's db.log_trade to
+    # always return False (simulating the production tolerance path).
+    monkeypatch.setattr(bot.db, "log_trade", lambda *a, **kw: False)
+
+    caplog.set_level("ERROR", logger="src.core.smart_bot")
+    # execute_trade should still complete (broker order remains
+    # authoritative; the failure is observed, not thrown).
+    result = _execute(bot, "BUY")
+
+    assert result is True, "execute_trade must NOT raise — broker order remains authoritative"
+    assert bot.trading_client.submit_order.called, "submit_order should still be called"
+
+    # Check that an explicit PERSISTENCE FAILURE error log was emitted.
+    error_msgs = [
+        r for r in caplog.records
+        if r.levelname == "ERROR" and "PERSISTENCE FAILURE" in r.getMessage()
+    ]
+    assert error_msgs, (
+        "execute_trade must emit ERROR-level 'PERSISTENCE FAILURE' log "
+        "when log_trade returns False; got records="
+        f"{[r.levelname for r in caplog.records]}"
+    )
+    msg = error_msgs[0].getMessage()
+    assert "broker" in msg.lower(), f"log message must mention broker: {msg}"
+    assert "do NOT re-submit" in msg or "do not re-submit" in msg.lower(), (
+        f"log message must instruct operator not to re-submit: {msg}"
+    )
