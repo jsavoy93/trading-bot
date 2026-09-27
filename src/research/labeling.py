@@ -77,10 +77,40 @@ def label_decisions(
     df: pd.DataFrame,
     bar_cache: BarCache,
     horizons: Optional[list[tuple[str, Optional[int]]]] = None,
+    extra_next_day_lookahead: int = 0,
 ) -> pd.DataFrame:
     """Label every decision in *df* using cached bars.
 
-    Returns a DataFrame with one row per decision plus horizon columns.
+    Parameters
+    ----------
+    extra_next_day_lookahead:
+        When ``fwd_next_session_open`` is in ``horizons``, extend the
+        per-decision merged frame by this many additional calendar
+        days beyond the default ``cur_date + 1`` day. Required when
+        the next actual trading session is more than one calendar day
+        away — e.g., a Friday decision whose next session is Monday
+        (Sat + Sun are empty in Alpaca).
+
+        Default ``0`` preserves the original OBS-003 behavior:
+        ``merged_frame = [cur_date, cur_date + 1 calendar day]`` and
+        the ``forward_bar_next_session_open`` helper resolves any
+        next-session bar inside that window.
+
+        With ``extra_next_day_lookahead >= 2``, the merged frame
+        becomes ``[cur_date, cur_date+1, cur_date+2, cur_date+3]``
+        (5 dates for lookahead=3), allowing Friday decisions to
+        resolve to Monday's regular-session open via the unchanged
+        ``forward_bar_next_session_open`` math.
+
+        This is a STRAT-002 correctness repair. The mathematical
+        definition of ``next_session_open`` (find the first
+        regular-session bar after ``decision_date``) is unchanged;
+        only the data-partition / cache window is extended so that
+        the math has access to the next actual session's bars.
+
+    Returns
+    -------
+    A DataFrame with one row per decision plus horizon columns.
     """
     horizons = horizons or DEFAULT_HORIZONS
     if df.empty:
@@ -98,9 +128,40 @@ def label_decisions(
     for sym, date in pairs:
         by_pair[(sym, date)] = bar_cache.fetch_day(sym, date)
 
+    # When next_session_open is requested and the user has asked for
+    # additional lookahead days, pre-populate those too. This is the
+    # only behavior change from the original OBS-003 helper: extend
+    # the per-decision merged frame so the unchanged
+    # ``forward_bar_next_session_open`` math can see the next actual
+    # session's bars (e.g., Friday → Monday across a weekend).
+    if extra_next_day_lookahead > 0:
+        from datetime import timedelta
+        unique_keys_for_lookahead: set[tuple[str, str]] = set()
+        for cs, sym in zip(df["cycle_start"], df["symbol"]):
+            unique_keys_for_lookahead.add(
+                (sym, cs.tz_convert("UTC").strftime("%Y-%m-%d"))
+            )
+        lookahead_pairs: set[tuple[str, str]] = set()
+        for sym, cur_date in unique_keys_for_lookahead:
+            try:
+                cur_dt = pd.Timestamp(cur_date).to_pydatetime()
+            except Exception:
+                continue
+            for k in range(2, 2 + extra_next_day_lookahead):
+                d = (cur_dt + timedelta(days=k)).strftime("%Y-%m-%d")
+                lookahead_pairs.add((sym, d))
+        if lookahead_pairs:
+            # Idempotent: ``ensure_many`` skips pairs already in cache.
+            bar_cache.ensure_many(
+                sorted(lookahead_pairs), batch_size=100, progress_every=5
+            )
+            for sym, date in lookahead_pairs:
+                if (sym, date) not in by_pair:
+                    by_pair[(sym, date)] = bar_cache.fetch_day(sym, date)
+
     # For each (symbol, decision_date), build a merged frame covering
-    # decision_date + next_date so forward horizons and next-session can
-    # resolve. Sort and de-dup.
+    # decision_date + next_date (and any additional lookahead dates)
+    # so forward horizons and next-session can resolve. Sort and de-dup.
     from datetime import timedelta
 
     by_merged: dict[tuple[str, str], pd.DataFrame] = {}
@@ -116,16 +177,24 @@ def label_decisions(
         if cur_dt is None:
             by_merged[(sym, cur_date)] = cur
             continue
-        nxt_date = (cur_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-        nxt = by_pair.get((sym, nxt_date), pd.DataFrame())
-        if cur.empty and nxt.empty:
+        # Build the list of dates to merge into the per-decision frame:
+        #   cur_date + (cur_date+1) + (cur_date+2) + ... + (cur_date+1+lookahead)
+        merge_dates: list[str] = [cur_date]
+        for k in range(1, 2 + extra_next_day_lookahead):
+            merge_dates.append(
+                (cur_dt + timedelta(days=k)).strftime("%Y-%m-%d")
+            )
+        frames: list[pd.DataFrame] = []
+        for d in merge_dates:
+            f = by_pair.get((sym, d), pd.DataFrame())
+            if not f.empty:
+                frames.append(f)
+        if not frames:
             merged = pd.DataFrame()
-        elif cur.empty:
-            merged = nxt
-        elif nxt.empty:
-            merged = cur
+        elif len(frames) == 1:
+            merged = frames[0]
         else:
-            merged = pd.concat([cur, nxt]).sort_index()
+            merged = pd.concat(frames).sort_index()
             merged = merged[~merged.index.duplicated(keep="first")]
         by_merged[(sym, cur_date)] = merged
 
