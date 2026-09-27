@@ -3793,13 +3793,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return False
 
     def get_win_rate(self) -> float:
-        """Get current win rate from trades"""
+        """Get current win rate from trades.
+
+        EXEC-003.1: SUBMITTED != FILLED. Only rows with status='FILLED'
+        count as completed trades. SUBMITTED, REJECTED, CANCELED,
+        UNKNOWN and NULL rows are excluded so the win rate reflects
+        only filled, closed trades.
+        """
         try:
             if self.db.is_available():
                 trades = self.db.get_all_trades()
-                if trades:
-                    winners = sum(1 for t in trades if t.get('pnl', 0) > 0)
-                    return (winners / len(trades)) * 100
+                # EXEC-003.1 contract: filter to completed trades only.
+                completed = [
+                    t for t in trades if t.get('status') == 'FILLED'
+                ]
+                if completed:
+                    winners = sum(1 for t in completed if t.get('pnl', 0) > 0)
+                    return (winners / len(completed)) * 100
         except:
             pass
         return 0.0
@@ -5025,24 +5035,46 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             order = self.trading_client.submit_order(order_data=market_order_data)
 
-            # Log to database if available
+            # EXEC-003.1: persist a SUBMITTED order-lifecycle event.
+            # The dict keys here MUST match the current `trades`
+            # schema exactly. log_trade refuses to INSERT a row with
+            # non-schema columns (raises sqlite3.OperationalError).
+            # SUBMITTED != FILLED is the hard invariant: this row
+            # proves only that the broker accepted the order. PnL is
+            # left NULL until fill confirmation exists (NOT set in
+            # this PR; deferred per authorization). Any consumer that
+            # treats a trades row as a completed trade MUST filter
+            # on `pnl IS NOT NULL AND status = 'FILLED'` — see the
+            # dashboard win-rate filter for the canonical example.
             if self.db.is_available() and self.session_id:
                 trade_data = {
                     'session_id': self.session_id,
-                    'alpaca_order_id': str(order.id) if order.id else None,
                     'symbol': symbol,
                     'side': side.upper(),
-                    'quantity': quantity,
-                    'order_price': price,
-                    'signal_time': self._get_safe_timestamp(analysis.get('timestamp')),
-                    'order_time': datetime.now(timezone.utc).isoformat(),
-                    'sma_fast': analysis['sma_fast'],
-                    'sma_slow': analysis['sma_slow'],
+                    'qty': quantity,
+                    'price': price,
+                    'pnl': None,  # EXEC-003.1: NULL until fill confirmed.
+                    'signal': signal,
                     'rsi': analysis['rsi'],
-                    'signal_strength': analysis['signal_strength'],
-                    'status': 'SUBMITTED'
+                    'order_time': datetime.now(timezone.utc).isoformat(),
+                    'status': 'SUBMITTED',
+                    'broker_order_id': str(order.id) if order.id else None,
                 }
-                self.db.log_trade(self.session_id, trade_data)
+                # EXEC-003.1 review: capture the return value so a
+                # persistence failure surfaces as an explicit ERROR-level
+                # log. We do NOT roll back the broker submission:
+                # broker fill (or non-fill) remains authoritative; the
+                # application DB is a downstream audit log.
+                persisted = self.db.log_trade(self.session_id, trade_data)
+                if not persisted:
+                    logging.error(
+                        f"PERSISTENCE FAILURE: broker accepted order "
+                        f"for {signal} {quantity} {symbol} "
+                        f"(broker_order_id={order.id}) but the trades "
+                        f"row was NOT persisted. The broker-side order "
+                        f"remains authoritative; do NOT re-submit. "
+                        f"Inspect trading_bot.db for the missing row."
+                    )
 
             # Mark tranche 1 as filled now that the order is submitted
             if signal == 'BUY' and symbol in self._pending_entry_tranches:

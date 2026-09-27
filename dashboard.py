@@ -1652,6 +1652,21 @@ def api_analytics_overview():
     
     try:
         trades = db.get_all_trades()
+
+        # EXEC-003.1: SUBMITTED != FILLED. A trades row whose status
+        # is anything other than 'FILLED' is NOT a completed trade.
+        # Count only rows with status='FILLED' (pnl IS NOT NULL is
+        # implied for any legitimately closed trade; this PR does NOT
+        # set status='FILLED' anywhere yet — reserved for the future
+        # fill-confirmation path). Rows with status='SUBMITTED',
+        # 'REJECTED', 'CANCELED', 'UNKNOWN' or NULL are excluded from
+        # win-rate, closed-pnl, winners, losers, by-signal, by-symbol,
+        # and top-winners/lists so they cannot be misrepresented as
+        # completed trades.
+        completed_trades = [
+            t for t in trades if t.get('status') == 'FILLED'
+        ]
+        trades = completed_trades
         
         # Get unrealized P&L from open positions
         positions_data = get_positions()
@@ -1727,6 +1742,14 @@ def api_analytics_timing():
     
     try:
         trades = db.get_all_trades()
+
+        # EXEC-003.1: SUBMITTED != FILLED. Exclude any row whose
+        # status is not 'FILLED'. See api_analytics_overview for the
+        # canonical contract.
+        completed_trades = [
+            t for t in trades if t.get('status') == 'FILLED'
+        ]
+        trades = completed_trades
         if not trades:
             return {"error": "No trades found"}
         
@@ -1805,6 +1828,14 @@ def api_analytics_rsi():
     
     try:
         trades = db.get_all_trades()
+
+        # EXEC-003.1: SUBMITTED != FILLED. Exclude any row whose
+        # status is not 'FILLED'. See api_analytics_overview for the
+        # canonical contract.
+        completed_trades = [
+            t for t in trades if t.get('status') == 'FILLED'
+        ]
+        trades = completed_trades
         if not trades:
             return {"error": "No trades found"}
         

@@ -4379,15 +4379,41 @@ Acceptance criteria:
 
 ### SCORE-002 — Separate eligibility from ranking
 
-Status: TODO
+Status: DONE — VERIFIED 2026-09-27 (EXEC-003.1 governance reconciliation)
 Owner: trading-exec
 Priority: P2
 
-Acceptance criteria:
+Acceptance criteria (from prior TODO):
 
 - Core strategy gates determine eligibility.
 - Score ranks otherwise eligible candidates.
 - Score does not silently duplicate strategy gates.
+
+Reconciliation evidence (EXEC-003.1 audit, 2026-09-27):
+
+- "Core strategy gates determine eligibility" is implemented in
+  `src/core/smart_bot.py` `analyze_symbol` (line 2929) and
+  `analyze_multi_timeframe` (line 2222). Non-score gates
+  (RSI threshold, SMA uptrend, MACD positive, Volume ≥ avg) decide
+  BUY-eligibility.
+- "Score ranks otherwise eligible candidates" is implemented in
+  `run_analysis` line 6218: `sorted(buy_candidates, key=lambda a:
+  (-total_score, symbol))` then sliced to top-N.
+- "Score does not silently duplicate strategy gates": `min_score_buy`
+  is preserved in the schema as deprecated (preserved for
+  dashboards/tests, never consulted by BUY/SELL/HOLD logic).
+  MENTOR.md (lines 165, 179, 726, 1283, 795) and code lines
+  `src/core/smart_bot.py` 400, 407 and `src/core/settings_service.py`
+  57-67 document this.
+- Code is on `main` (commit `d65ddc0` and earlier). No drift
+  introduced by EXEC-003.1.
+- Tests: `tests/test_smart_bot_decision_paths.py` and related
+  modules continue to pass without regression.
+
+Implication: backlog entry was stale; task is functionally DONE.
+Close as DONE. No further work required unless the owner wishes to
+introduce a new scoring gate that explicitly relies on a numeric
+threshold (which would be a strategy change, NOT a SCORE-002 task).
 
 ---
 
@@ -4425,27 +4451,135 @@ Acceptance criteria:
 
 ### EXEC-001 — Repair daily-only analysis
 
-Status: TODO
+Status: VERIFIED CLOSED — 2026-09-27 (Phase D audit)
 Owner: trading-exec
 Priority: P2
+
+Reconciliation evidence:
+
+- Backlog wording "Repair daily-only analysis" was obsolete.
+- `analyze_symbol` (`src/core/smart_bot.py` line 2929) feeds
+  RSI / SMA fast / SMA slow / MACD + signal + histogram /
+  Bollinger bands / ATR / volume SMA + ratio / VWAP from
+  `get_market_data` (line 1926), which fetches
+  `TimeFrame.Day` bars. This is the **documented baseline**
+  for single-timeframe analysis, not a defect.
+- `analyze_multi_timeframe` (line 2222) is the multi-timeframe
+  path (daily + hourly) used when
+  `self.enable_multi_timeframe=True`.
+- Daily-only analysis is therefore by design, NOT a defect
+  to repair. Close as VERIFIED; no code change required.
 
 ### EXEC-002 — Verify multi-timeframe analysis
 
-Status: TODO
+Status: VERIFIED IMPLEMENTED — pending test expansion (2026-09-27)
 Owner: trading-exec
 Priority: P2
+
+Reconciliation evidence:
+
+- `analyze_multi_timeframe` (`src/core/smart_bot.py` line 2222)
+  requests daily (`TimeFrame.Day`, 100d) + hourly (`TimeFrame.Hour`,
+  168h) bars, computes RSI / SMA fast / SMA slow / MACD per
+  timeframe, and requires both timeframes to agree on signal
+  direction (conflict → HOLD, missing hourly → DAILY_ONLY).
+- `run_analysis` (line 5600) calls
+  `self.analyze_multi_timeframe(...)` when
+  `self.enable_multi_timeframe=True` (default).
+- Eligibility effect: MTF-conflict / volume-downgrade /
+  AI-conflict filters can convert BUY→HOLD.
+- Score effect: only ranks; never gates.
+- Implemented behavior matches the MENTOR.md architectural
+  statement that `enable_multi_timeframe=True` requires
+  daily + hourly agreement.
+- ⚠ Pending test gap: no dedicated deterministic test names
+  `test_mtf_conflict`, `test_daily_only_signal_strength`,
+  `test_volume_downgrade_block` cover these MTF branches.
+  No SHOULD-FIX / task is created in this governance pass
+  per authorization ("Do NOT create implementation tasks for
+  the SHOULD-FIX/PARKING LOT findings during this
+  reconciliation.").
 
 ### EXEC-003 — Verify BUY and SELL order paths
 
-Status: TODO
+Status: VERIFIED with bounded repair in flight (EXEC-003.1)
 Owner: trading-exec
 Priority: P2
+
+Reconciliation evidence:
+
+- BUY trace: `run_analysis` → `execute_trade` → signal gate,
+  margin guard, pending-order guard, cooldown (BUY only),
+  position sizing, position-concentration cap, sector cap,
+  correlation cap, beta cap, tranche split (in-memory),
+  quantity check, `MarketOrderRequest(DAY)`,
+  `trading_client.submit_order()`, `db.log_trade(...)`.
+- SELL trace: position-existence guard (`get_open_position.qty>0`),
+  quantity determination, same risk guards, `submit_order`,
+  `log_trade`.
+- Asymmetries: BUY uses cooldown + position-scaling;
+  SELL uses position-existence guard.
+- PAPER_ONLY guard: `trading_bot_paper_only_guard()` invoked in
+  `__init__` (line 371) BEFORE `TradingClient` construction;
+  hardcoded `paper=True` defense-in-depth (line 386).
+- Duplicate-order protection: per-execution
+  `has_pending_orders(symbol)` from broker.
+- Position check: live `get_open_position` per call.
+- Broker exception: generic `Exception` handler increments
+  `errors_count` and returns False.
+- **Confirmed defect repaired under EXEC-003.1** (separate
+  branch `agent/exec-003-1-trade-persistence`): the
+  execute_trade persistence dict passed nine non-schema
+  columns (`alpaca_order_id`, `quantity`, `order_price`,
+  `signal_time`, `signal_strength`, `sma_fast`, `sma_slow`,
+  `status`) which caused silent OperationalError swallow in
+  `log_trade`. Repair: additive `status`, `broker_order_id`
+  columns + schema-aligned dict + dashboard / smart_bot
+  consumers filter to `status='FILLED'` rows. SUBMITTED !=
+  FILLED contract documented in
+  `tests/test_exec_003_1_trade_persistence.py` and the
+  schema migration block.
+
+Defects deferred (NOT repaired under EXEC-003.1 per
+authorization):
+
+- SHOULD-FIX #1: trades_executed counter, cooldown,
+  tranche-1 mark-filled, notifications, trade-detail
+  bookkeeping all fire on `submit_order` return rather than
+  confirmed fill. No fill polling added.
+- SHOULD-FIX #2: in-memory `_pending_entry_tranches` is
+  lost on restart (silent loss; no duplicate risk).
+- PARKING LOT: no buying-power pre-check; no broker
+  exception taxonomy; no MTF test expansion.
 
 ### EXEC-004 — Verify restart and recovery behavior
 
-Status: TODO
+Status: VERIFIED IMPLEMENTED with SHOULD-FIX for tranche
+persistence (2026-09-27)
 Owner: trading-exec
 Priority: P2
+
+Reconciliation evidence:
+
+- Restart-state reconstruction:
+  | state | source |
+  |---|---|
+  | open positions | `trading_client.get_all_positions()` per-cycle |
+  | account.cash / buying_power | `trading_client.get_account()` per-cycle |
+  | pending orders | `trading_client.get_orders()` per-execute_trade attempt |
+  | cooldowns | `research_cooldowns` / `trade_cooldowns` / `position_sell_cooldowns` DB tables |
+  | session lifecycle (BOT-001) | `trading_sessions.status` column (PR #75, merged 2026-09-10) |
+  | OBS-001 cycle state | `decision_history` rows (immediately persisted) |
+  | `_pending_entry_tranches` | in-memory only — silent loss on restart |
+- Single-instance: `/tmp/trading_bot.lock` held by
+  SmartBot PID 1082165.
+- Duplicate risk: none. Per-execution `has_pending_orders`
+  reads broker state.
+- ⚠ SHOULD-FIX (preserved, separately scoped): the
+  in-memory `_pending_entry_tranches` dict is lost on any
+  process restart. Tranches 2/3 of position-scaled BUYs are
+  silently dropped. NOT repaired under EXEC-003.1 per
+  authorization.
 
 ---
 
@@ -5528,7 +5662,9 @@ statement about edge, selectivity, or trade quality.
 
 **Owner:** trading-manager
 **Branch:** `agent/bot-001-smartbot-runtime-readiness`
-**Status:** Complete, awaiting Josh review/merge approval.
+**Status:** DONE (PR #75, merged 2026-09-10T12:19:32Z, commit 4d7de83).
+
+Reconciliation evidence (EXEC-003.1 governance audit, 2026-09-27): BOT-001's functional changes (session-counter correctness, session-state column OPEN/ACTIVE/ENDED/FAILED, dashboard runtime-status endpoint, smartbot-runner.service.template, get_active_session / get_stale_open_sessions / close_stale_sessions / mark_session_failed helpers) are all on `main` (reachable from `main` HEAD `d65ddc0` via `git merge-base --is-ancestor ea807c6 main`). The remaining `agent/bot-001-smartbot-runtime-readiness` branch is ~38k lines behind main and carries only audit-archive reports; it is stale but no functional code diverges. PR #75 has been in production for ~17 days. Backlog entry now reads DONE; no further work required by the original BOT-001 scope.
 **Constraint:** No bot started, no live trading, no SCORE-001 yet, no Cloudflare/dashboard infra changes beyond what's required to correct misleading runtime status.
 
 Scope (per Josh 2026-09-10 02:57 UTC approval):
