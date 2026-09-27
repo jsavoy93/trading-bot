@@ -213,11 +213,11 @@ def test_sept_14_2026_is_monday():
 # ---------------------------------------------------------------------------
 
 def test_next_session_open_column_mapping():
-    """Frozen: primary horizon next_session_open maps to
+    """Frozen: primary horizon fwd_next_session_open maps to
     fwd_next_session_open_return and fwd_next_session_open_status columns."""
     from src.research.run_strat_002 import HORIZON_RETURN_COL, HORIZON_STATUS_COL
-    assert HORIZON_RETURN_COL["next_session_open"] == "fwd_next_session_open_return"
-    assert HORIZON_STATUS_COL["next_session_open"] == "fwd_next_session_open_status"
+    assert HORIZON_RETURN_COL["fwd_next_session_open"] == "fwd_next_session_open_return"
+    assert HORIZON_STATUS_COL["fwd_next_session_open"] == "fwd_next_session_open_status"
 
 
 # ---------------------------------------------------------------------------
