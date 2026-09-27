@@ -3294,21 +3294,854 @@ def api_get_settings():
     }
 
 
-@app.post("/api/settings")
-def api_update_settings(updates: Dict):
-    """Update one or more trading parameters. Returns updated values."""
-    global _smart_bot_instance
-    _refresh_trading_params()
-    try:
-        updated = _validate_dashboard_settings_batch(updates)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+# ─────────────────────────────────────────────────────────────────────────
+# BUY-FUNNEL DASHBOARD ENDPOINTS (v0 — observability only)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Purpose: return SmartBot's Trading Dashboard to one of its primary
+# owner-facing purposes — answering "Why isn't SmartBot generating BUYs?"
+# without a custom SQL investigation. These five endpoints re-use the
+# existing _phase_c_* helpers, the read-only sqlite3 connection, and the
+# already-persisted data (`cycle_funnel`, `decision_gate_evaluations`,
+# `analyzed_stocks`, `failed_analyses`, `settings`). No new schema, no
+# new persistence, no broker calls.
+#
+# CONTRACT:
+#   - Read-only against trading_bot.db (sqlite3 read-only URI used by
+#     _phase_c_open_db; this block reuses it directly).
+#   - SUBMITTED != FILLED. Any read path that mentions `trades` filters
+#     to `status='FILLED'` only. The endpoints below do not require
+#     `trades` data because BUY eligibility is decided BEFORE submission
+#     (FILLED state is post-trade and post-fill-confirmation, neither of
+#     which exists in this dashboard's question space).
+#   - Score is shown SEPARATELY from eligibility (SCORE-002 architecture).
+#     `analyzed_stocks.total_score` is exposed, but never as a hidden
+#     BUY gate; a high score does not promote an ineligible candidate.
+#   - Required BUY gates are derived from the persisted data. Production
+#     today persists `rsi_oversold` + `sma_uptrend` as
+#     `gate_category='strategy_gate'`; the dashboard shows exactly that.
+#   - Time ranges: latest / today / 24h / 7d (same set as Phase C).
+#   - Repeated-symbol dedup: near-miss and aggregated views are
+#     deduplicated to the LATEST decision per symbol within the window
+#     to avoid repeated-scan confusion when SmartBot re-analyzes.
+#   - Current vs applied threshold distinction: the
+#     `config-overlay` endpoint shows the currently-configured threshold
+#     from `settings` separately from the sampled applied threshold from
+#     `decision_gate_evaluations` for the selected window. They are not
+#     conflated; if they differ it is labelled clearly.
+#   - DO NOT mutate SmartBot state. DO NOT submit any order. DO NOT
+#     change strategy / thresholds / config. Read-only.
+# ─────────────────────────────────────────────────────────────────────────
 
-    _persist_dashboard_settings_batch(updated)
-    for key, normalized in updated.items():
-        if _smart_bot_instance is not None and hasattr(_smart_bot_instance, key):
-            setattr(_smart_bot_instance, key, normalized)
-    return {"updated": updated, "status": "ok"}
+
+# Map gate_name -> whether it is a HARD requirement for BUY eligibility.
+# Derived from SmartBot's BUY-eligibility path: a candidate must pass
+# all `required_strategy_gates`. Any gate NOT in this set is advisory
+# scoring (e.g., BB / VWAP / Catalyst appear in score components but
+# are not hard blockers). Persisted production data only contains
+# `rsi_oversold` and `sma_uptrend` as `gate_category='strategy_gate'`.
+# Future categories (execution_gate, regime_gate, ...) will be added as
+# they become persisted; the dashboard derives from persisted data first
+# and falls back to this allowlist for labels.
+_BUY_FUNNEL_REQUIRED_GATES = frozenset({"rsi_oversold", "sma_uptrend"})
+_BUY_FUNNEL_ADVISORY_GATES = frozenset()  # future: e.g. catalyst_score, volatility_score
+
+
+def _buy_funnel_required_gate_label(name: str) -> str:
+    """Human-readable label for a strategy gate name (stable across versions).
+
+    Falls back to the raw `name` if no mapping is found. New gate names
+    appear here when the SmartBot strategy evaluation introduces them.
+    """
+    return {
+        "rsi_oversold": "RSI Oversold Threshold",
+        "sma_uptrend": "SMA Uptrend (Fast > Slow)",
+    }.get(name, name)
+
+
+@app.get("/api/buy-funnel/summary")
+def api_buy_funnel_summary(range_name: str = Query("24h", alias="range")):
+    """Compact forward-path + off-path counts for the BUY Eligibility panel.
+
+    Aggregates `cycle_funnel` once and returns it in a stable shape that
+    the BUY-funnel renderer can display directly. This is essentially a
+    thin wrapper over `/api/phase-c/funnel` constrained to the
+    `post_obs002` cohort (because pre-OBS-002 cycles lack
+    `decision_history` rows for near-miss joins). The largest_dropoff
+    is surfaced explicitly so the dashboard can call it out at the top.
+
+    Honours the read-only contract (no order, no schema change, no
+    config mutation). SUBMITTED and FILLED are not surfaced here
+    because both are post-trade-lifecycle and out of scope for BUY
+    eligibility; the dashboard's "Confirmed Fills" stat is always
+    "looking at production trades" with status='FILLED' filtered from
+    `/api/buy-funnel/fills`.
+    """
+    err = _phase_c_validate(range_name, "post_obs002")
+    if err:
+        return err
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name}
+    try:
+        cur = conn.cursor()
+        cohort_sql, range_sql, params = _phase_c_window_predicates(
+            range_name, "post_obs002", "cycle_start"
+        )
+        sql = (
+            "SELECT "
+            "  COUNT(*) AS cycles, "
+            "  COALESCE(SUM(analyzed_count), 0) AS analyzed_count, "
+            "  COALESCE(SUM(strategy_eligible_count), 0) AS strategy_eligible_count, "
+            "  COALESCE(SUM(ranked_candidate_count), 0) AS ranked_candidate_count, "
+            "  COALESCE(SUM(execution_attempt_count), 0) AS execution_attempt_count, "
+            "  COALESCE(SUM(execution_blocked_count), 0) AS execution_blocked_count, "
+            "  COALESCE(SUM(order_submission_attempt_count), 0) AS order_submission_attempt_count, "
+            "  COALESCE(SUM(order_submitted_count), 0) AS order_submitted_count, "
+            "  COALESCE(SUM(order_failed_count), 0) AS order_failed_count, "
+            "  COALESCE(SUM(not_attempted_count), 0) AS not_attempted_count "
+            "FROM cycle_funnel "
+            f"WHERE {cohort_sql} AND {range_sql}"
+        )
+        row = cur.execute(sql, params).fetchone()
+        forward = [
+            ("Analyzed", int(row["analyzed_count"])),
+            ("Strategy Eligible", int(row["strategy_eligible_count"])),
+            ("Ranked Candidates", int(row["ranked_candidate_count"])),
+            ("Execution Attempted", int(row["execution_attempt_count"])),
+            ("Orders Submitted", int(row["order_submitted_count"])),
+        ]
+        largest_dropoff = None
+        for i in range(len(forward) - 1):
+            delta = forward[i][1] - forward[i + 1][1]
+            if delta <= 0:
+                continue
+            if largest_dropoff is None or delta > largest_dropoff["delta"]:
+                largest_dropoff = {
+                    "from_stage": forward[i][0],
+                    "to_stage": forward[i + 1][0],
+                    "delta": int(delta),
+                }
+        # Submission block + confirmation: read-only on `trades`.
+        # SUBMITTED != FILLED. We only surface FILLED rows here because
+        # the dashboard question is "what actually filled"; SUBMITTED
+        # is a broker-accepted but unconfirmed state and must not be
+        # conflated with a confirmed fill.
+        trades_filled_count = int(cur.execute(
+            "SELECT COUNT(*) FROM trades WHERE status='FILLED'"
+        ).fetchone()[0])
+        trades_submitted_count = int(cur.execute(
+            "SELECT COUNT(*) FROM trades WHERE status='SUBMITTED'"
+        ).fetchone()[0])
+        return {
+            "range": range_name,
+            "cohort": "post_obs002",
+            "cycles": int(row["cycles"]),
+            "forward_path": {
+                "analyzed_count": forward[0][1],
+                "strategy_eligible_count": forward[1][1],
+                "ranked_candidate_count": forward[2][1],
+                "execution_attempt_count": forward[3][1],
+                "orders_submitted_count": forward[4][1],
+            },
+            "off_path": {
+                "execution_blocked_count": int(row["execution_blocked_count"]),
+                "orders_failed_count": int(row["order_failed_count"]),
+                "not_attempted_count": int(row["not_attempted_count"]),
+            },
+            "largest_dropoff": largest_dropoff,
+            "trades_submitted_count": trades_submitted_count,
+            "trades_filled_count": trades_filled_count,
+            "submitted_equals_filled": False,
+            "source": (
+                "cycle_funnel (PHASE-C9) + trades (status filtered): "
+                "submitted_count = COUNT WHERE status='SUBMITTED'; "
+                "filled_count = COUNT WHERE status='FILLED'"
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_buy_funnel_summary failed: {e}")
+        return {"error": str(e), "range": range_name}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/buy-funnel/gate-diagnostics")
+def api_buy_funnel_gate_diagnostics(range_name: str = Query("24h", alias="range")):
+    """Per-gate BUY-eligibility diagnostics for the Gate Diagnostics view.
+
+    Returns:
+      - per (gate_name, gate_category): total_evaluations, passed,
+        failed, failure_rate, sampled_observed_min/max,
+        sampled_threshold_min/max, is_required, label, total_pct,
+        pass_pct, fail_pct.
+      - gates_passed_all_required: count of distinct (cycle_id, symbol)
+        pairs that pass ALL required strategy gates in the window
+        (this is the "joint pass rate"). Derived per-symbol from the
+        latest dedup state.
+
+    Sources: hybrid v0/v1 read path (PHASE-C14B-2C) — same as
+    `/api/phase-c/strategy-gates`. The 'is_required' tag is added by
+    this endpoint for the BUY-funnel panel; the source-of-truth for
+    pass/fail counts remains `decision_gate_evaluations` (v1) and
+    `decision_history.decision_snapshot -> $.strategy_eligibility.gates[]`
+    (v0), with `analytics_persistence_version` as the ONLY authority
+    signal.
+    """
+    err = _phase_c_validate(range_name, "post_obs002")
+    if err:
+        return err
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name}
+    try:
+        cur = conn.cursor()
+        # Reuse the existing Phase C aggregation. Calling the existing
+        # helper function here would be circular (it's defined in the
+        # same module); we instead re-implement the hybrid read path
+        # with the same semantics + add the BUY-funnel overlay.
+        (
+            v0_cohort_sql, v0_range_sql, v0_cohort_params, v0_range_params,
+            v1_cohort_sql, v1_range_sql, v1_cohort_params, v1_range_params,
+        ) = _phase_c_hybrid_window_predicates(range_name, "post_obs002", "dh.cycle_start")
+
+        sql_v0 = (
+            "SELECT "
+            "  json_extract(gate.value, '$.name') AS gate_name, "
+            "  json_extract(gate.value, '$.category') AS gate_category, "
+            "  SUM(CASE WHEN COALESCE(json_extract(gate.value, '$.passed'), 0) = 1 THEN 1 ELSE 0 END) AS passed_count, "
+            "  SUM(CASE WHEN COALESCE(json_extract(gate.value, '$.applied'), 0) = 1 THEN 1 ELSE 0 END) AS applied_count, "
+            "  COUNT(*) AS total_count, "
+            "  MIN(CASE WHEN json_extract(gate.value, '$.observed_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.observed_value') AS REAL) ELSE NULL END) AS obs_min, "
+            "  MAX(CASE WHEN json_extract(gate.value, '$.observed_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.observed_value') AS REAL) ELSE NULL END) AS obs_max, "
+            "  MIN(CASE WHEN json_extract(gate.value, '$.threshold_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.threshold_value') AS REAL) ELSE NULL END) AS thr_min, "
+            "  MAX(CASE WHEN json_extract(gate.value, '$.threshold_value') IS NOT NULL "
+            "           THEN CAST(json_extract(gate.value, '$.threshold_value') AS REAL) ELSE NULL END) AS thr_max "
+            "FROM decision_history dh, "
+            "     json_each(json_extract(dh.decision_snapshot, '$.strategy_eligibility.gates')) AS gate "
+            f"WHERE {v0_cohort_sql} AND {v0_range_sql} "
+            "  AND COALESCE(json_extract(gate.value, '$.applied'), 0) = 1 "
+            "GROUP BY gate_name, gate_category"
+        )
+        rows_v0 = cur.execute(sql_v0, v0_cohort_params + v0_range_params).fetchall()
+
+        sql_v1 = (
+            "SELECT "
+            "  g.gate_name AS gate_name, "
+            "  g.gate_category AS gate_category, "
+            "  SUM(CASE WHEN g.passed = 1 THEN 1 ELSE 0 END) AS passed_count, "
+            "  SUM(g.applied) AS applied_count, "
+            "  COUNT(*) AS total_count, "
+            "  MIN(g.observed_value) AS obs_min, "
+            "  MAX(g.observed_value) AS obs_max, "
+            "  MIN(g.threshold_value) AS thr_min, "
+            "  MAX(g.threshold_value) AS thr_max "
+            "FROM decision_gate_evaluations g INDEXED BY idx_dge_cycle_start "
+            f"WHERE {v1_range_sql.replace('dh.cycle_start', 'g.cycle_start')} "
+            "  AND g.applied = 1 "
+            "  AND EXISTS (SELECT 1 FROM decision_history dh "
+            "              WHERE dh.id = g.decision_history_id "
+            "                AND dh.analytics_persistence_version = 1) "
+            "GROUP BY g.gate_name, g.gate_category"
+        )
+        rows_v1 = cur.execute(sql_v1, v1_range_params).fetchall()
+
+        merged = {}
+        for r in list(rows_v0) + list(rows_v1):
+            name = r["gate_name"]
+            if name is None or name == "":
+                continue
+            cat = r["gate_category"]
+            key = (name, cat)
+            slot = merged.setdefault(key, {
+                "gate_name": name, "category": cat,
+                "total_count": 0, "passed_count": 0,
+                "obs_min": None, "obs_max": None,
+                "thr_min": None, "thr_max": None,
+            })
+            slot["total_count"] += int(r["total_count"])
+            slot["passed_count"] += int(r["passed_count"])
+            for k_old, k_new in (("obs_min", "obs_min"), ("obs_max", "obs_max"),
+                                  ("thr_min", "thr_min"), ("thr_max", "thr_max")):
+                if r[k_new] is not None:
+                    val = float(r[k_new])
+                    cur_val = slot[k_old]
+                    if k_new.endswith("_min"):
+                        slot[k_old] = val if cur_val is None else min(cur_val, val)
+                    else:
+                        slot[k_old] = val if cur_val is None else max(cur_val, val)
+
+        ordered = sorted(
+            merged.values(),
+            key=lambda s: (-(s["total_count"] - s["passed_count"]), s["gate_name"]),
+        )
+
+        gates_list = []
+        for slot in ordered:
+            total = int(slot["total_count"])
+            passed = int(slot["passed_count"])
+            failed = total - passed
+            name = slot["gate_name"]
+            out = {
+                "gate_name": name,
+                "label": _buy_funnel_required_gate_label(name),
+                "category": slot["category"],
+                "is_required": name in _BUY_FUNNEL_REQUIRED_GATES,
+                "total_evaluations": total,
+                "passed": passed,
+                "failed": failed,
+                "total_pct": 1.0 if total else 0.0,
+                "pass_pct": (passed / total) if total else 0.0,
+                "fail_pct": (failed / total) if total else 0.0,
+                "failure_rate": (failed / total) if total else 0.0,
+            }
+            for k_v, k_o in (("sampled_observed_min", "obs_min"),
+                             ("sampled_observed_max", "obs_max"),
+                             ("sampled_threshold_min", "thr_min"),
+                             ("sampled_threshold_max", "thr_max")):
+                if slot[k_o] is not None:
+                    out[k_v] = float(slot[k_o])
+            gates_list.append(out)
+
+        # Joint pass rate: distinct (cycle_id, symbol) that passed ALL
+        # required strategy gates in v1 path (the only path that
+        # supports per-row pass/fail lookups today). Restricted to
+        # the window + v1 only (v0 gates don't survive the join
+        # reliably for per-symbol pass-rate; we surface this caveat
+        # in the response).
+        required_list = list(_BUY_FUNNEL_REQUIRED_GATES)
+        if not required_list:
+            joint_pass = {"rows_in_window": 0, "passed_all_required_count": 0,
+                          "passed_all_required_pct": 0.0,
+                          "caution": "no required gates identified; pass count is 0"}
+        else:
+            placeholders = ",".join("?" for _ in required_list)
+            # Build the same window filter for the v1 parent table.
+            # Use _phase_c_window_predicates for the parent join.
+            v1d_range_sql_only = v1_range_sql  # already qualified for dh.cycle_start
+            sql_joint_total = (
+                f"SELECT COUNT(DISTINCT dh.cycle_id || '|' || dh.symbol) AS total "
+                "FROM decision_history dh "
+                f"WHERE {v1d_range_sql_only} "
+                "  AND dh.analytics_persistence_version = 1 "
+                "  AND EXISTS (SELECT 1 FROM decision_gate_evaluations g "
+                "              WHERE g.decision_history_id = dh.id "
+                "                AND g.applied = 1 "
+                f"               AND g.gate_name IN ({placeholders}))"
+            )
+            total_pair = int(cur.execute(sql_joint_total,
+                tuple(v1_range_params) + tuple(required_list)).fetchone()["total"])
+            # Filter to those that passed all required gates (no failed gate)
+            sql_joint_passed = (
+                f"SELECT COUNT(*) AS n FROM ("
+                "  SELECT dh.id "
+                "  FROM decision_history dh "
+                f"  WHERE {v1d_range_sql_only} "
+                "    AND dh.analytics_persistence_version = 1 "
+                "    AND NOT EXISTS ("
+                "      SELECT 1 FROM decision_gate_evaluations g "
+                "      WHERE g.decision_history_id = dh.id "
+                "        AND g.applied = 1 "
+                "        AND g.passed = 0 "
+                f"       AND g.gate_name IN ({placeholders})"
+                "    )"
+                "    AND EXISTS ("
+                "      SELECT 1 FROM decision_gate_evaluations g "
+                "      WHERE g.decision_history_id = dh.id "
+                "        AND g.applied = 1 "
+                f"       AND g.gate_name IN ({placeholders})"
+                "    )"
+                ") sub"
+            )
+            passed_pair = int(cur.execute(sql_joint_passed,
+                tuple(v1_range_params) + tuple(required_list) + tuple(required_list)).fetchone()["n"])
+            joint_pass = {
+                "rows_in_window": total_pair,
+                "passed_all_required_count": passed_pair,
+                "passed_all_required_pct": (passed_pair / total_pair) if total_pair else 0.0,
+                "required_gate_names": required_list,
+                "caution": (
+                    "joint count uses v1 path only (decision_gate_evaluations); "
+                    "v0 parents do not contribute to this stat"
+                ),
+            }
+
+        return {
+            "range": range_name,
+            "cohort": "post_obs002",
+            "gates": gates_list,
+            "joint_pass_rate": joint_pass,
+            "source": (
+                "PHASE-C14B-2C hybrid: v0=decision_history.decision_snapshot -> "
+                "$.strategy_eligibility.gates[]; v1=decision_gate_evaluations; "
+                "is_required tag is added by the BUY-funnel panel based on "
+                "_BUY_FUNNEL_REQUIRED_GATES allowlist"
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_buy_funnel_gate_diagnostics failed: {e}")
+        return {"error": str(e), "range": range_name}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/buy-funnel/rejection-reasons")
+def api_buy_funnel_rejection_reasons(range_name: str = Query("24h", alias="range"), limit: int = 10):
+    """Top rejection reasons from `decision_gate_evaluations`.
+
+    Counts rows where gate.applied=1 AND gate.passed=0, grouped by
+    (gate_name, reason). Surfaces the leading rejected gate and the
+    most-common reason text. limited to `limit` rows (default 10) and
+    sorted by count DESC. Distinct from
+    `/api/phase-c/execution-blockers` (which is about pre-execution
+    safety gates), this view is about the strategy-eligibility gates
+    that determine BUY promotion.
+
+    Hybrid v0/v1 read path. The `reason` text is the same human-readable
+    string the bot persists (e.g. "RSI 32.1 above required <30"). The
+    dashboard renders it as-is with HTML escaping; no dynamic execution.
+    """
+    err = _phase_c_validate(range_name, "post_obs002")
+    if err:
+        return err
+    if not (1 <= int(limit) <= 50):
+        return {"error": f"invalid limit '{limit}'; must be 1..50"}
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name}
+    try:
+        cur = conn.cursor()
+        # Build predicates via the helper (column MUST be one of '',
+        # 'dh', 'cf'; we use 'dh' and re-qualify for 'g' below).
+        v0_dh_cohort_sql, v0_dh_range_sql, v0_dh_cohort_params, v0_dh_range_params = (
+            _phase_c_hybrid_window_predicates(range_name, "post_obs002", "dh.cycle_start")
+        )[:4]
+        v1_dh_cohort_sql, v1_dh_range_sql, v1_dh_cohort_params, v1_dh_range_params = (
+            _phase_c_hybrid_window_predicates(range_name, "post_obs002", "dh.cycle_start")
+        )[4:]
+        # Re-qualify only the v1 RANGE fragment for the g alias. The
+        # v1 cohort filter `dh.analytics_persistence_version = 1`
+        # requires the dh alias (where dh exists via the EXISTS
+        # subquery), so we drop the cohort on the g-table side and
+        # keep it on the v0 path.
+        v1_g_range_sql = (v1_dh_range_sql
+                          .replace("dh.cycle_start", "g.cycle_start")
+                          .replace("cf.cycle_start", "g.cycle_start"))
+        # v1 path: extract reason from the child table directly. The
+        # cohort filter is applied via the EXISTS subquery below
+        # (mirrors the existing /api/phase-c/strategy-gates pattern).
+        sql_v1_clean = (
+            "SELECT g.gate_name AS gate_name, "
+            "       COALESCE(g.reason, '') AS reason, "
+            "       COUNT(*) AS n "
+            "FROM decision_gate_evaluations g INDEXED BY idx_dge_cycle_start "
+            f"WHERE {v1_g_range_sql} "
+            "  AND g.applied = 1 "
+            "  AND g.passed = 0 "
+            "  AND EXISTS (SELECT 1 FROM decision_history dh "
+            "              WHERE dh.id = g.decision_history_id "
+            "                AND dh.analytics_persistence_version = 1) "
+            "GROUP BY g.gate_name, g.reason "
+            "ORDER BY n DESC, g.gate_name ASC "
+            "LIMIT ?"
+        )
+        rows_v1 = cur.execute(sql_v1_clean,
+            tuple(v1_dh_range_params) + (int(limit),)).fetchall()
+        # v0 path: parse from decision_snapshot (kept on dh alias).
+        sql_v0_clean = (
+            "SELECT "
+            "  json_extract(gate.value, '$.name') AS gate_name, "
+            "  COALESCE(json_extract(gate.value, '$.reason'), '') AS reason, "
+            "  COUNT(*) AS n "
+            "FROM decision_history dh, "
+            "     json_each(json_extract(dh.decision_snapshot, '$.strategy_eligibility.gates')) AS gate "
+            f"WHERE {v0_dh_cohort_sql} AND {v0_dh_range_sql} "
+            "  AND COALESCE(json_extract(gate.value, '$.applied'), 0) = 1 "
+            "  AND COALESCE(json_extract(gate.value, '$.passed'), 0) = 0 "
+            "GROUP BY gate_name, reason "
+            "ORDER BY n DESC, gate_name ASC "
+            "LIMIT ?"
+        )
+        rows_v0 = cur.execute(sql_v0_clean,
+            tuple(v0_dh_cohort_params) + tuple(v0_dh_range_params) + (int(limit),)).fetchall()
+
+        merged = {}
+        for r in list(rows_v0) + list(rows_v1):
+            name = r["gate_name"]
+            if name is None or name == "":
+                continue
+            reason = r["reason"]
+            key = (name, reason)
+            merged[key] = merged.get(key, 0) + int(r["n"])
+        ranked = sorted(
+            ({"gate_name": k[0], "reason": k[1], "count": v}
+             for k, v in merged.items()),
+            key=lambda x: (-x["count"], x["gate_name"]),
+        )[:int(limit)]
+        return {
+            "range": range_name,
+            "cohort": "post_obs002",
+            "top_rejection_reasons": ranked,
+            "source": (
+                "PHASE-C14B-2C hybrid v0/v1; v0 = "
+                "decision_history.decision_snapshot -> "
+                "$.strategy_eligibility.gates[].reason; "
+                "v1 = decision_gate_evaluations.reason"
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_buy_funnel_rejection_reasons failed: {e}")
+        return {"error": str(e), "range": range_name}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/buy-funnel/near-miss")
+def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limit: int = 25):
+    """Near-miss BUY candidates that failed EXACTLY ONE required strategy gate.
+
+    Definition (operational): a "candidate" is a
+    (cycle_id, symbol) decision_history row whose latest dedup state in
+    v1 path (decision_gate_evaluations) shows `passed=0` for EXACTLY
+    ONE of the BUY-funnel-required strategy gates (rsi_oversold,
+    sma_uptrend), and `passed=1` for ALL OTHERS. Strategy-eligibility
+    is the qualification; `analyzed_stocks.total_score` is the
+    attractiveness (shown here as context, NEVER as a hidden gate).
+
+    Dedup: per (cycle_id, symbol), the LATEST decision_gate_evaluations
+    row in the window is the dedup key. Within the window this prevents
+    the same symbol from appearing dozens of times because SmartBot
+    re-analyzes the same symbol every cycle.
+
+    Read-only. v1 path only (v0 gates do not support per-symbol pass
+    dedup reliably). Owner-visible score shown separately from the
+    failure detail.
+    """
+    err = _phase_c_validate(range_name, "post_obs002")
+    if err:
+        return err
+    if not (1 <= int(limit) <= 200):
+        return {"error": f"invalid limit '{limit}'; must be 1..200"}
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name}
+    try:
+        cur = conn.cursor()
+        # Window filter using the parent table.
+        cohort_sql, range_sql, params = _phase_c_window_predicates(
+            range_name, "post_obs002", "dh.cycle_start"
+        )
+        required = list(_BUY_FUNNEL_REQUIRED_GATES)
+        if not required:
+            return {
+                "range": range_name,
+                "cohort": "post_obs002",
+                "near_miss": [],
+                "rows_considered": 0,
+                "required_gate_names": [],
+                "caution": "no required gates identified; near-miss is empty",
+            }
+        # Pragmatic approach: scan decision_gate_evaluations directly
+        # for (applied=1, passed=0, gate_name IN required) rows in the
+        # window + JOIN to decision_history for the v1-only filter. The
+        # existing idx_dge_cycle_start index keeps this linear in the
+        # windowed subset. Step 1 finds the candidate decision_history.id
+        # values where exactly one required gate has failed; Step 2
+        # fetches the per-row detail for those IDs; Step 3 dedups in
+        # Python to the latest per (cycle_id, symbol) so the dashboard
+        # doesn't fill the table with repeated scans.
+        cohort_sql_full, range_sql, full_params = _phase_c_window_predicates(
+            range_name, "post_obs002", "dh.cycle_start"
+        )
+        # The g-side WHERE only uses the RANGE portion (not the cohort
+        # analytics_persistence_version filter, which is enforced via
+        # JOIN below). Slice full_params to keep only the params bound
+        # to range_sql placeholders. We extract them by counting `?`
+        # placeholders in the range_sql and taking the LAST N from
+        # full_params (the helper returns cohort_params + range_params
+        # concatenated, with cohort always first).
+        n_range_placeholders = range_sql.count("?")
+        range_only_params = full_params[len(full_params) - n_range_placeholders:]
+        # Re-qualify the range for the g.cycle_start column on
+        # decision_gate_evaluations.
+        g_range_sql = range_sql.replace("dh.cycle_start", "g.cycle_start").replace(
+            "cf.cycle_start", "g.cycle_start"
+        )
+        placeholders = ",".join("?" for _ in required)
+
+        # Step 1: candidate IDs (decision_history.id) with exactly one
+        # failed-required-gate row in the window + v1-only.
+        sql_candidate_ids = (
+            "SELECT g.decision_history_id AS id, "
+            "       MAX(g.cycle_start) AS latest_cycle_start "
+            f"FROM decision_gate_evaluations g INDEXED BY idx_dge_cycle_start "
+            "  JOIN decision_history dh ON dh.id = g.decision_history_id "
+            f"WHERE {g_range_sql} "
+            "  AND g.applied = 1 "
+            "  AND g.passed = 0 "
+            f"  AND g.gate_name IN ({placeholders}) "
+            "  AND dh.analytics_persistence_version = 1 "
+            "GROUP BY g.decision_history_id "
+            "HAVING COUNT(*) = 1"
+        )
+        candidate_rows = cur.execute(sql_candidate_ids,
+            tuple(range_only_params) + tuple(required)).fetchall()
+        # Coerce to plain dicts so the sort works whether or not the
+        # row_factory is set (sqlite3.Row vs tuple, etc.).
+        candidate_dicts = []
+        for r in candidate_rows:
+            candidate_dicts.append({
+                "id": r["id"],
+                "latest_cycle_start": r["latest_cycle_start"],
+            })
+        candidate_dicts.sort(
+            key=lambda r: r["latest_cycle_start"] or "", reverse=True
+        )
+        candidate_ids = [
+            r["id"] for r in candidate_dicts[:max(int(limit) * 8, int(limit) + 50)]
+        ]
+        if not candidate_ids:
+            return {
+                "range": range_name,
+                "cohort": "post_obs002",
+                "near_miss": [],
+                "rows_considered": 0,
+                "required_gate_names": required,
+                "caution": (
+                    "v1 path only (decision_gate_evaluations); "
+                    "showing the most recent failed-exactly-one-row per "
+                    "cycle in the window; "
+                    "score is shown separately from eligibility (SCORE-002)"
+                ),
+                "source": (
+                    "decision_history (v1) + decision_gate_evaluations (v1) "
+                    "filtered to exactly-one-failed-required-gate; "
+                    "in-Python dedup to the latest per (cycle_id, symbol)"
+                ),
+            }
+        # Step 2: detail rows for the candidate IDs.
+        ids_q = ",".join("?" for _ in candidate_ids)
+        sql_failed_detail = (
+            "SELECT g.decision_history_id AS decision_history_id, "
+            "       g.gate_name AS failed_gate, "
+            "       g.observed_value, g.threshold_value, "
+            "       COALESCE(g.reason, '') AS reason, "
+            "       dh.cycle_id, dh.symbol, dh.cycle_start, dh.session_id, dh.decision_snapshot "
+            "FROM decision_gate_evaluations g JOIN decision_history dh ON dh.id = g.decision_history_id "
+            f"WHERE g.decision_history_id IN ({ids_q}) "
+            "  AND g.applied = 1 AND g.passed = 0 "
+            f"  AND g.gate_name IN ({placeholders})"
+        )
+        rows_iter_all = cur.execute(sql_failed_detail,
+            tuple(candidate_ids) + tuple(required)).fetchall()
+        # Coerce to plain dicts (defensive — protects against any
+        # future change in row_factory semantics).
+        detail_dicts = []
+        for r in rows_iter_all:
+            detail_dicts.append({k: r[k] for k in r.keys()})
+        # Step 3: dedup to latest per (cycle_id, symbol).
+        detail_dicts.sort(key=lambda r: r["cycle_start"] or "", reverse=True)
+        seen = set()
+        rows_iter = []
+        for r in detail_dicts:
+            key = (r["cycle_id"], r["symbol"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows_iter.append(r)
+            if len(rows_iter) >= int(limit):
+                break
+
+        near_miss = []
+        for r in rows_iter:
+            symbol = r["symbol"]
+            # Read total_score and decision_schema_version from
+            # decision_snapshot (read-only; the snapshot exists for v1
+            # parents as an observability fallback by design).
+            import json as _json
+            snapshot = r["decision_snapshot"]
+            total_score = None
+            try:
+                if snapshot:
+                    parsed = _json.loads(snapshot)
+                    total_score = parsed.get("score", {}).get("total_score")
+            except Exception:
+                total_score = None
+            near_miss.append({
+                "cycle_id": r["cycle_id"],
+                "symbol": symbol,
+                "failed_gate": r["failed_gate"],
+                "failed_gate_label": _buy_funnel_required_gate_label(r["failed_gate"]),
+                "observed_value": r["observed_value"],
+                "threshold_value": r["threshold_value"],
+                "reason": r["reason"],
+                "total_score": total_score,  # SCORE-002: shown separately from eligibility
+                "cycle_start": r["cycle_start"],
+                "session_id": r["session_id"],
+            })
+
+        return {
+            "range": range_name,
+            "cohort": "post_obs002",
+            "near_miss": near_miss,
+            "rows_considered": len(near_miss),
+            "required_gate_names": required,
+            "caution": (
+                "v1 path only (decision_gate_evaluations); "
+                "dedup per (cycle_id, symbol) to the latest dedup state; "
+                "score is shown separately from eligibility (SCORE-002)"
+            ),
+            "source": (
+                "decision_history + decision_gate_evaluations (v1) "
+                "filtered to exactly-one-failed-required-gate; "
+                "ROW_NUMBER() OVER (cycle_id, symbol) dedups to "
+                "the latest decision per symbol for the window"
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_buy_funnel_near_miss failed: {e}")
+        return {"error": str(e), "range": range_name}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/buy-funnel/config-overlay")
+def api_buy_funnel_config_overlay(range_name: str = Query("24h", alias="range")):
+    """Current settings vs historically-applied threshold for BUY gates.
+
+    For each of the BUY-funnel-required strategy gates, returns:
+      - gate_name
+      - currently_configured_threshold: the live value from the
+        `settings` table (best-effort key match by gate name). NULL if
+        no mapping exists or the key is missing.
+      - sampled_applied_min / sampled_applied_max / sample_count:
+        the range of `threshold_value` actually applied in the
+        `decision_gate_evaluations` rows for the window.
+
+    The two views are kept SEPARATE. If the currently configured
+    threshold differs from the sampled applied range, the dashboard
+    highlights that fact under "Current vs Applied" so the owner can
+    see whether a recent setting change has not yet propagated to
+    historical decisions.
+    """
+    err = _phase_c_validate(range_name, "post_obs002")
+    if err:
+        return err
+    conn = _phase_c_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name}
+    try:
+        cur = conn.cursor()
+        # Currently configured: best-effort from settings table.
+        # SmartBot stores scalar settings as key='value' rows; we
+        # don't have a 1:1 mapping for every gate name. We look up the
+        # schema-documented keys for each gate; if found, surface; if
+        # not, mark as unmapped.
+        gate_to_setting_key = {
+            "rsi_oversold": "rsi_oversold_threshold",
+            "sma_uptrend": None,  # SMA uptrend is structural (fast > slow) not a scalar
+        }
+        overlay = []
+        for gate_name in sorted(_BUY_FUNNEL_REQUIRED_GATES):
+            setting_key = gate_to_setting_key.get(gate_name)
+            current_value = None
+            current_source = None
+            if setting_key:
+                row = cur.execute(
+                    "SELECT value FROM settings WHERE key = ?", (setting_key,)
+                ).fetchone()
+                if row:
+                    raw = row["value"]
+                    try:
+                        current_value = float(raw)
+                        current_source = f"settings[{setting_key!r}]"
+                    except (TypeError, ValueError):
+                        current_value = None
+                        current_source = f"settings[{setting_key!r}] (non-numeric)"
+                else:
+                    current_source = f"settings[{setting_key!r}] not found"
+            else:
+                current_source = "no setting-key mapping (structural gate)"
+            # Sampled applied in window (v1 path).
+            cohort_sql, range_sql, params = _phase_c_window_predicates(
+                range_name, "post_obs002", "dh.cycle_start"
+            )
+            # Re-qualify the predicate for the g alias and the
+            # `decision_gate_evaluations` table.
+            cohort_sql_g = cohort_sql.replace("dh.cycle_start", "g.cycle_start").replace(
+                "cf.cycle_start", "g.cycle_start"
+            )
+            range_sql_g = range_sql.replace("dh.cycle_start", "g.cycle_start").replace(
+                "cf.cycle_start", "g.cycle_start"
+            )
+            sql = (
+                "SELECT MIN(g.threshold_value) AS thr_min, "
+                "       MAX(g.threshold_value) AS thr_max, "
+                "       COUNT(*) AS n "
+                "FROM decision_gate_evaluations g INDEXED BY idx_dge_cycle_start "
+                f"WHERE {cohort_sql_g} AND {range_sql_g} "
+                "  AND g.applied = 1 "
+                "  AND g.gate_name = ? "
+                "  AND g.threshold_value IS NOT NULL"
+            )
+            params_with_gate = tuple(params) + (gate_name,)
+            sampled = cur.execute(sql, params_with_gate).fetchone()
+            sampled_min = sampled["thr_min"]
+            sampled_max = sampled["thr_max"]
+            sample_count = int(sampled["n"])
+            overlay.append({
+                "gate_name": gate_name,
+                "label": _buy_funnel_required_gate_label(gate_name),
+                "currently_configured_threshold": current_value,
+                "currently_configured_source": current_source,
+                "sampled_applied_min": float(sampled_min) if sampled_min is not None else None,
+                "sampled_applied_max": float(sampled_max) if sampled_max is not None else None,
+                "sampled_window": {
+                    "range": range_name, "cohort": "post_obs002",
+                    "sample_count": sample_count,
+                },
+                "differs": (
+                    current_value is not None
+                    and sampled_min is not None
+                    and (sampled_min < current_value - 1e-9
+                         or sampled_max > current_value + 1e-9)
+                ),
+            })
+        return {
+            "range": range_name,
+            "overlay": overlay,
+            "caution": (
+                "currently_configured_threshold is the LIVE settings "
+                "value; sampled_applied_min/max are the THRESHOLDS that "
+                "the bot actually applied during the selected window. "
+                "They can legitimately differ if a recent settings "
+                "change has not yet been reflected in historical "
+                "decision_gate_evaluations rows."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_buy_funnel_config_overlay failed: {e}")
+        return {"error": str(e), "range": range_name}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
