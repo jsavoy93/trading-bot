@@ -1,7 +1,7 @@
 {
   "pipeline": "OBS-003 retrospective forward-return research",
-  "ran_at_utc": "2026-09-26T18:58:56Z",
-  "elapsed_seconds": 447.5259852409363,
+  "ran_at_utc": "2026-09-26T22:39:24Z",
+  "elapsed_seconds": 228.9803488254547,
   "research_window": {
     "start_iso": "2026-09-23T23:53:16",
     "end_iso": "2026-09-24T17:00:00",
@@ -14,14 +14,22 @@
     "fwd_next_session_open"
   ],
   "horizon_semantics": {
-    "fwd_30m": "30 trading-minute forward close (regular-session minutes only).",
-    "fwd_60m": "60 trading-minute forward close.",
-    "fwd_240m": "240 trading-minute forward close (= 4 trading hours).",
+    "fwd_30m": "first bar at-or-after cycle_start + 30 elapsed wall-clock minutes (any session).",
+    "fwd_60m": "first bar at-or-after cycle_start + 60 elapsed wall-clock minutes (any session).",
+    "fwd_240m": "first bar at-or-after cycle_start + 240 elapsed wall-clock minutes (= 4 hours, any session).",
     "fwd_next_session_open": "first regular-session bar of the next trading day.",
-    "trading_session": "13:30 <= t < 20:00 UTC (DST: 9:30-16:00 ET; the OBS-003 cohort dates fall in DST)"
+    "horizon_contract": "Wall-clock elapsed minutes from cycle_start, per the original OBS-003A authorization. Pre-market, regular-session, and after-hours bars are all eligible at-or-after the target. NOT accumulated regular-session trading minutes (the legacy trading-minute walking implementation has been superseded).",
+    "trading_session": "09:30 <= America/New_York local time < 16:00 (auto-shifts between 13:30-20:00 UTC during EDT and 14:30-21:00 UTC during EST via zoneinfo.ZoneInfo). Used for next-session-open horizon and weekend exclusion. Not applied to wall-clock forward-horizon selection."
+  },
+  "decision_price_freshness_rule": {
+    "rule": "decision bar = most recent bar at-or-before cycle_start AND (cycle_start - decision_bar) <= 240 minutes",
+    "max_age_minutes": 240,
+    "eligible_date_partitions": "label_decisions only loads bars for [decision_date, decision_date + 1] into the per-decision frame. Prior-day bars are NEVER in the frame, so the freshness cap is reinforced by the date-partition boundary.",
+    "rationale": "240-minute cap covers same-session pre-market \u2192 regular transitions on liquid names (e.g., 13:30 UTC decision can use 09:30 UTC bar = exactly 4h old). The eligible-date-partition constraint (label_decisions loads only [decision_date, decision_date+1]) is what actually prevents prior-day bars from being used \u2014 the 240-min cap alone does not. Combined behavior: a 02:00 UTC decision on date D sees no eligible bar (no D date bars exist that early; D-1 bars are never loaded); a 13:30 UTC decision can use the 09:30 UTC bar (exactly 240 min old, at the boundary)."
   },
   "price_semantics": {
     "decision_price": "1-minute bar close at-or-before cycle_start.",
+    "decision_price_synthetic_reference": "This 1-minute reference price is a SYNTHETIC COUNTERFACTUAL research reference, NOT the price SmartBot itself uses. SmartBot's analyze_symbol reads daily bars via get_stock_bars(TimeFrame.Day) and uses df.iloc[-1]['close'] (yesterday's daily close for most decisions during market hours). decision_snapshot stores gate results (RSI/SMA/MACD) but does NOT persist raw bar price or bar timestamp. OBS-003 asks: 'what 1-minute Alpaca bar would a real-time observer have seen at-or-before cycle_start?'",
     "look_ahead_protection": "Decision bar is at-or-BEFORE cycle_start. Forward bar is at-or-AFTER target timestamp. No bars from the open interval are used for the label value."
   },
   "deduplication_rule": "Time-based: within (symbol, UTC trading date), keep at most one observation every 30 minutes. First observation in each 30-min window is retained; subsequent ones are dropped. Spacing is measured in wall-clock minutes from the kept observation's cycle_start. Rule documented in src/research/deduplication.py.",
@@ -38,81 +46,81 @@
       "view": "raw",
       "horizon": "fwd_30m",
       "n_total": 91138,
-      "n_ok": 17905,
-      "n_missing_decision_bar": 69925,
-      "n_horizon_beyond": 3308,
+      "n_ok": 20669,
+      "n_missing_decision_bar": 70344,
+      "n_horizon_beyond": 125,
       "n_no_next_session": 0,
-      "pct_ok": 19.646031293203713
+      "pct_ok": 22.678794794706928
     },
     {
       "view": "dedup",
       "horizon": "fwd_30m",
       "n_total": 88733,
-      "n_ok": 17585,
-      "n_missing_decision_bar": 67859,
-      "n_horizon_beyond": 3289,
+      "n_ok": 20340,
+      "n_missing_decision_bar": 68268,
+      "n_horizon_beyond": 125,
       "n_no_next_session": 0,
-      "pct_ok": 19.817880608116486
+      "pct_ok": 22.92270068632865
     },
     {
       "view": "raw",
       "horizon": "fwd_60m",
       "n_total": 91138,
-      "n_ok": 16232,
-      "n_missing_decision_bar": 69925,
-      "n_horizon_beyond": 4981,
+      "n_ok": 20659,
+      "n_missing_decision_bar": 70344,
+      "n_horizon_beyond": 135,
       "n_no_next_session": 0,
-      "pct_ok": 17.810353529811934
+      "pct_ok": 22.66782242313854
     },
     {
       "view": "dedup",
       "horizon": "fwd_60m",
       "n_total": 88733,
-      "n_ok": 15931,
-      "n_missing_decision_bar": 67859,
-      "n_horizon_beyond": 4943,
+      "n_ok": 20330,
+      "n_missing_decision_bar": 68268,
+      "n_horizon_beyond": 135,
       "n_no_next_session": 0,
-      "pct_ok": 17.953861584754264
+      "pct_ok": 22.91143092197942
     },
     {
       "view": "raw",
       "horizon": "fwd_240m",
       "n_total": 91138,
-      "n_ok": 11716,
-      "n_missing_decision_bar": 69925,
-      "n_horizon_beyond": 9497,
+      "n_ok": 20596,
+      "n_missing_decision_bar": 70344,
+      "n_horizon_beyond": 198,
       "n_no_next_session": 0,
-      "pct_ok": 12.855230529526652
+      "pct_ok": 22.598696482257676
     },
     {
       "view": "dedup",
       "horizon": "fwd_240m",
       "n_total": 88733,
-      "n_ok": 11505,
-      "n_missing_decision_bar": 67859,
-      "n_horizon_beyond": 9369,
+      "n_ok": 20267,
+      "n_missing_decision_bar": 68268,
+      "n_horizon_beyond": 198,
       "n_no_next_session": 0,
-      "pct_ok": 12.96586388378619
+      "pct_ok": 22.840431406579288
     },
     {
       "view": "raw",
       "horizon": "fwd_next_session_open",
       "n_total": 91138,
-      "n_ok": 20919,
-      "n_missing_decision_bar": 69925,
+      "n_ok": 20529,
+      "n_missing_decision_bar": 70344,
       "n_horizon_beyond": 0,
-      "n_no_next_session": 294,
-      "pct_ok": 22.9531040839167
+      "n_no_next_session": 265,
+      "pct_ok": 22.52518159274946
     },
     {
       "view": "dedup",
       "horizon": "fwd_next_session_open",
       "n_total": 88733,
-      "n_ok": 20581,
-      "n_missing_decision_bar": 67859,
+      "n_ok": 20201,
+      "n_missing_decision_bar": 68268,
       "n_horizon_beyond": 0,
-      "n_no_next_session": 293,
-      "pct_ok": 23.19430200714503
+      "n_no_next_session": 264,
+      "pct_ok": 22.766050961874388
     }
   ],
   "alpaca_data_used": true,
