@@ -5395,12 +5395,12 @@ is not superseded.
 **STRAT-002** is now the pre-registered out-of-sample replication of
 the high-RSI next_session_open finding on the v0 holdout window.
 
-### STRAT-002 — Out-of-sample hypothesis-validation experiment (pre-registered)
+### STRAT-002 — Out-of-sample hypothesis-validation experiment (pre-registered, corrigendum applied)
 
 **Status:** EXPERIMENT DESIGNED — AWAITING EXECUTION AUTHORIZATION.
 **Dependencies:** STRAT-001 (COMPLETE), OBS-003 (COMPLETE).
 **Branch:** `governance/strat-002-preregistration` (no code changes
-yet; pre-registration governance PR).
+yet; pre-registration governance PR; corrigendum applied 2026-09-27).
 
 **Purpose:** Test whether the OBS-003 high-RSI next-session-open
 finding REPLICATES on independent out-of-sample v0 data, with
@@ -5408,36 +5408,38 @@ predeclared criteria. STRAT-002 is **NOT** threshold tuning,
 strategy tuning, or a search for new hyperparameters. It is a
 bounded out-of-sample replication study.
 
-**Pre-registration (frozen):**
+**Pre-registration (frozen after corrigendum):**
 
 | element | value |
 |---------|-------|
-| hypothesis (H1) | high-RSI (RSI ≥ 55) symbol-days have positive median next-session-open return AND p_positive > 55 % on the v0 holdout, REPLICATING OBS-003 |
-| counter-hypothesis (H0) | either median ≤ 0 % or p_positive ≤ 53 % — finding does not replicate |
-| discovery baseline | OBS-003 finding (commit 289e9a1): high-RSI next_session_open median +0.71 %, p_positive 64.6 % |
-| holdout period | 2026-09-12 through 2026-09-22 (11 days; Sept 23 excluded to avoid overlap with OBS-003 discovery cohort starting 2026-09-23T23:53:16Z) |
-| historical threshold status | UNKNOWN for the holdout (not persisted in snapshots); **does not block H1** because the RSI ≥ 55 classifier is computed from raw observed RSI values, independent of any historical oversold threshold |
-| independent unit | symbol × trading day (one primary observation per symbol per date) |
-| representative-decision rule | for each (date, symbol), use the LAST cycle whose cycle_start is at-or-before 20:00:00 UTC on the given date (always within US regular session; deterministic; no future-outcome conditioning) |
-| high-RSI classifier | RSI ≥ 55 (FROZEN, derived from raw observed RSI; NOT optimized on holdout) |
-| comparison group | non-high-RSI symbol-days with RSI < 55 and RSI present (same eligible universe; controls for general market direction) |
-| primary horizon | next_session_open (synthetic 1-min reference price at-or-before cycle_start, target = first regular-session bar of next trading day per OBS-003 wall-clock contract) |
-| secondary horizon | +240m wall-clock (same synthetic reference; 240-min elapsed minutes from cycle_start) |
-| primary effect measure | (i) high-RSI next_session_open median return > +0.10 % AND (ii) high-RSI next_session_open p_positive > 55 % |
-| comparison-group effect measure | non-high-RSI next_session_open median AND p_positive (report alongside; do not use as success criterion — it is a control) |
-| secondary measures | high-RSI +240m median; high-RSI next_session_open by date (consistency view); high-RSI − non-high-RSI next_session_open median difference |
-| minimum sample | n_high_rsi_symboldays_with_OK_label ≥ 200 AND n_high_rsi_symboldays_with_persisted_RSI ≥ 5,000 |
-| missing-data rule | exclude symbol-days where Alpaca paper-tier has no reference-price bar OR no next-session-open bar; report missing-data fraction separately; do NOT filter by post-hoc outcome availability |
-| directional replication | both primary measures pass → REPLICATED |
-| material replication | REPLICATED AND (high-RSI − non-high-RSI) median difference > +0.10 % AND p_positive difference > +5 pp |
-| inconclusive | 53 % < p_positive ≤ 55 % OR 0 % < median ≤ +0.10 % — neither replicated nor failed |
-| failure | either median ≤ 0 % OR p_positive ≤ 53 % — FAILED TO REPLICATE |
-| underpowered | min sample not met — UNDERPOWERED; do not interpret |
-| stopping rule | report PASS / FAIL / INCONCLUSIVE / UNDERPOWERED, then **STOP**. No iteration. No threshold grid search. No variant exploration. |
-| no-retuning rule | RSI = 55 is FROZEN. If the hypothesis fails, report failure and stop. Do not mine the holdout for nearby thresholds. |
-| transaction-cost caveat | experiment measures return distributions from synthetic 1-min reference prices, NOT realized trade P&L. No commissions, slippage, or fills modeled. Any production deployment requires separate cost analysis. |
-| next step if REPLICATED | propose prospective forward-collection confirmatory study on post-2026-09-27 data, separate pre-registration, separate owner authorization |
-| next step if FAILED / INCONCLUSIVE / UNDERPOWERED | report result; do not iterate on this holdout; do not introduce alternative thresholds |
+| hypothesis (H1) | On the v0 holdout, between-group effect — delta_median = median(high-RSI next_session_open return) − median(comparison next_session_open return) — is positive AND delta_p_positive = p_positive(high-RSI) − p_positive(comparison) is positive, with magnitude meeting the predeclared practical-replication thresholds |
+| discovery evidence | OBS-003 wall-clock (commit 289e9a1): high-RSI RAW next_session_open median +0.71 %, p_positive 64.6 %; the BETWEEN-GROUP comparison was not isolated in discovery |
+| eligible trading dates | **7 trading dates: 2026-09-14 (Mon), 2026-09-15 (Tue), 2026-09-16 (Wed), 2026-09-17 (Thu), 2026-09-18 (Fri), 2026-09-21 (Mon), 2026-09-22 (Tue)**. Sept 12-13 and Sept 19-20 are weekends and excluded. No NYSE holidays or early closes in this window. |
+| holdout period | 2026-09-12T00:00:00Z through 2026-09-22T23:59:59Z (calendar window; effective observations are the 7 trading dates above) |
+| historical threshold status | UNKNOWN for the holdout (RSI/SMA thresholds not persisted in snapshots; settings table has no audit history); **does NOT block H1** because the RSI ≥ 55 classifier is computed from raw observed RSI values, independent of any historical oversold threshold |
+| independent unit | symbol × trading day (one symbol, one NY trading date = at most one primary observation; verified: RSI is daily-bar-derived so multiple score/MTF episodes on the same day do not yield additional RSI information) |
+| representative-decision rule | For each (NY trading date, symbol): select the **LAST** decision whose cycle_start, when converted to America/New_York local time via ZoneInfo, has local_time in `[09:30, 16:00)` ET AND weekday < 5. This reuses the OBS-003 `is_regular_session_minute()` predicate (`SESSION_OPEN_ET = time(9,30); SESSION_CLOSE_ET = time(16,0); NY_TZ = ZoneInfo("America/New_York")`). Symbol-days with no regular-session decision are EXCLUDED. The 16:00 ET bound is exclusive (matches OBS-003 contract). |
+| high-RSI classifier | **RSI ≥ 55** (FROZEN, derived from raw observed RSI; NOT optimized on holdout; no grid search at 50, 52.5, 55, 57.5, 60, etc.) |
+| comparison group | **RSI < 55 with RSI present** in the same eligible universe (eligible symbol-days with regular-session representative decision and a non-null RSI observation). Controls for general market direction. NOT optimized; no band-search. |
+| primary horizon | **next_session_open** (per OBS-003 wall-clock contract: synthetic 1-min reference price at-or-before cycle_start, subject to 240-min max age + eligible date partitions; target = first regular-session bar of next trading day) |
+| secondary horizon | **+240m wall-clock** (same synthetic reference; 240-min elapsed minutes from cycle_start). Supporting only; cannot rescue a failed primary result. |
+| primary between-group effect | `delta_median = median(returns_high_rsi) − median(returns_comparison)` over the next_session_open horizon; must exceed practical-replication thresholds for REPLICATED |
+| primary supporting metrics | (i) absolute high-RSI next_session_open median (reported, not decisive); (ii) absolute comparison-group next_session_open median (reported, not decisive); (iii) delta_p_positive = p_positive_high_rsi − p_positive_comparison |
+| secondary measures | high-RSI +240m median; per-date consistency view of high-RSI next_session_open median; n_unique_symbols alongside n_OK to expose symbol concentration |
+| minimum sample | n_high_rsi_with_OK_next_session_open_label ≥ 200 AND n_high_rsi_with_persisted_RSI ≥ 5,000 AND n_comparison_with_OK_next_session_open_label ≥ 5,000 (so both cohorts have adequate precision) |
+| missing-data rule | exclude symbol-days where Alpaca paper-tier has no reference-price bar OR no next-session-open bar; report per-reason missingness separately; do NOT filter by post-hoc outcome availability; no liquidity filter; if missingness > 50 % of either cohort, report INCONCLUSIVE_DUE_TO_COVERAGE in addition to primary verdict |
+| practical-replication thresholds | `delta_median > +0.10 pp` (percentage-point median-return advantage) AND `delta_p_positive > +5 pp` (percentage-point p_positive advantage). Justified as: +0.10 pp on a $10k position ≈ $10/session, compounding meaningfully over many trades but small enough to be achievable by an out-of-sample replication of a noisy signal; +5 pp p_positive = a measurable improvement over the comparison group's expected ~50 % baseline. Both frozen before execution. |
+| REPLICATED criteria | min_sample met AND `delta_median > +0.10 pp` AND `delta_p_positive > +5 pp` |
+| DIRECTIONALLY CONSISTENT BUT WEAK criteria | min_sample met AND NOT REPLICATED AND high-RSI outperforms comparison in the predicted direction (`delta_median > 0` OR `delta_p_positive > 0`) |
+| FAILED TO REPLICATE criteria | min_sample met AND `delta_median ≤ 0` AND `delta_p_positive ≤ 0` |
+| UNDERPOWERED criteria | min_sample not met (any of the three minimum-sample thresholds) |
+| stopping rule | report one of {REPLICATED, DIRECTIONALLY CONSISTENT BUT WEAK, FAILED, UNDERPOWERED} plus optional INCONCLUSIVE_DUE_TO_COVERAGE flag, then **STOP**. No iteration. No threshold grid. No variant search. No comparison-group redesign. No holdout extension. |
+| no-retuning rule | RSI = 55 frozen; comparison cutoff at 55 frozen; no search of nearby thresholds (50, 52.5, 55, 57.5, 60); no RSI-band-search; if the hypothesis fails, REPORT FAILURE AND STOP. Do not mine the holdout for the next hypothesis. |
+| transaction-cost caveat | experiment measures return distributions from synthetic 1-min reference prices, NOT realized trade P&L. No commissions, slippage, or fills modeled. Statistical significance does NOT imply profitability after costs. |
+| next step if REPLICATED or DIRECTIONALLY CONSISTENT BUT WEAK | propose prospective forward-collection confirmatory study on post-2026-09-27 data; separate pre-registration; separate owner authorization; not auto-implemented |
+| next step if FAILED or UNDERPOWERED | report result; do not iterate; do not re-design; do not introduce alternative thresholds |
+
+**Mutually exclusive verdict precedence:** UNDERPOWERED > REPLICATED > DIRECTIONALLY CONSISTENT BUT WEAK > FAILED. (Evaluated top-down; first match wins.)
 
 **Execution authorization gate:** No historical Alpaca fetches,
 no pipeline runs, no SmartBot changes, no settings changes may
