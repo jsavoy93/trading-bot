@@ -5317,7 +5317,10 @@ correctness, and research capability.
 
 ### STRAT-001 — Strategy reachability / BUY-absence investigation (read-only audit)
 
-**Status:** NOT STARTED. Pending explicit owner authorization.
+**Status:** COMPLETE (2026-09-26). Audit archive:
+`/root/.openclaw/audit-archives/trading-bot/2026-09-26_141500_strat-001-reachability-audit.md`.
+Closed at commit `235f9a9` via PR #96 merge. No production behavior
+was changed by this audit.
 
 **Purpose:** Determine why the currently configured strategy has
 produced zero BUY signals in the observed period and whether BUY
@@ -5342,29 +5345,105 @@ and market observations.
 
 Those questions require forward-return / outcome research (see OBS-003).
 
+**Headline findings (final):** BUY signals = 0 in 24h and 14d
+windows; HOLD_INELIGIBLE 94.31 %, SKIPPED_INVALID_DATA 5.93 %,
+SELL_BLOCKED_DYNAMIC 0.25 %; cycle funnel ranked_candidate = 0
+(BUY-only by definition), strategy_eligible = 304 (all SELL);
+RSI gate pass rate ≈ 40 %, SMA ≈ 29 %, joint-pass 1.10 % of
+evaluations. **No correctness defect was found.** Zero BUY is a
+configuration outcome, not a logic error.
+
 **Cost:** Large (read-only investigation; no code changes).
 **Risk:** None (read-only; production DB stays read-only).
 
-### STRAT-002 — Threshold / indicator tuning audit (depends on STRAT-001)
-
-**Status:** NOT STARTED. Pending explicit owner authorization.
-**Dependencies:** STRAT-001.
-
-**Purpose:** If STRAT-001 concludes gates are "reachable but tight",
-quantify how close each gate-rejected candidate is to passing.
-Distinguishes "tight market" from "thresholds unreachable".
-
 ### OBS-003 — Forward-return analysis of decisions / rejected opportunities
 
-**Status:** NOT STARTED. Pending explicit owner authorization.
-**Dependencies:** STRAT-001 (must know whether gate-rejections are
-meaningful before instrumenting forward-return collection).
+**Status:** COMPLETE (2026-09-27). Implementation commits `f28aea1`
++ `7c77044` (DST fix) + `ae4267d` (timezone/freshness) +
+`7422b46` (final semantics review) + `289e9a1` (wall-clock
+contract fix). Closed at commit `289e9a1` via PR #97 merge.
+
+- Pre-registration (feasibility/design):
+  `/root/.openclaw/audit-archives/trading-bot/2026-09-26_155500_obs-003a-forward-return-feasibility.md`
+- Original retrospective research archive:
+  `reports/2026-09-26_175839_obs-003-retrospective-research.md`
+- DST validity check: `reports/2026-09-26_185143_obs-003-validity-check.md`
+- Time/price semantics verification:
+  `reports/2026-09-26_203320_obs-003-time-price-semantics-verified.md`
+- Final semantics review:
+  `reports/2026-09-26_210946_obs-003-final-semantics-review.md`
+- Wall-clock contract fix (authoritative):
+  `reports/2026-09-26_224018_obs-003-wall-clock-contract-fix.md`
 
 **Purpose:** Enable forward-return analysis of decisions and rejected
 opportunities **without requiring live trade execution**. This is a
-research capability, not a live-trading path. Implementation requires
-a separate explicit owner decision and is **NOT** automatically
-authorized after STRAT-001 completes.
+research capability, not a live-trading path.
+
+**Headline findings (FINAL wall-clock contract):**
+- Joint-pass (RSI pass AND SMA pass) — RAW view:
+  +30m median +0.04 % p_pos 52.4 %; +60m +0.00 % p_pos 49.1 %;
+  +240m +0.05 % p_pos 51.4 %; next_session_open +0.00 % p_pos 48.7 %.
+- High-RSI (RSI ≥ 55) — RAW view:
+  +30m +0.00 % p_pos 49.3 %; +60m +0.00 % p_pos 49.5 %;
+  +240m +0.29 % p_pos 60.0 %; next_session_open +0.71 % p_pos 64.6 %.
+
+**SUPERSEDED:** trading-minute +30 / +60 / +240 findings (from
+commit `f28aea1`) are superseded by wall-clock results (commit
+`289e9a1`). The next_session_open horizon uses independent logic and
+is not superseded.
+
+**STRAT-002** is now the pre-registered out-of-sample replication of
+the high-RSI next_session_open finding on the v0 holdout window.
+
+### STRAT-002 — Out-of-sample hypothesis-validation experiment (pre-registered)
+
+**Status:** EXPERIMENT DESIGNED — AWAITING EXECUTION AUTHORIZATION.
+**Dependencies:** STRAT-001 (COMPLETE), OBS-003 (COMPLETE).
+**Branch:** `governance/strat-002-preregistration` (no code changes
+yet; pre-registration governance PR).
+
+**Purpose:** Test whether the OBS-003 high-RSI next-session-open
+finding REPLICATES on independent out-of-sample v0 data, with
+predeclared criteria. STRAT-002 is **NOT** threshold tuning,
+strategy tuning, or a search for new hyperparameters. It is a
+bounded out-of-sample replication study.
+
+**Pre-registration (frozen):**
+
+| element | value |
+|---------|-------|
+| hypothesis (H1) | high-RSI (RSI ≥ 55) symbol-days have positive median next-session-open return AND p_positive > 55 % on the v0 holdout, REPLICATING OBS-003 |
+| counter-hypothesis (H0) | either median ≤ 0 % or p_positive ≤ 53 % — finding does not replicate |
+| discovery baseline | OBS-003 finding (commit 289e9a1): high-RSI next_session_open median +0.71 %, p_positive 64.6 % |
+| holdout period | 2026-09-12 through 2026-09-22 (11 days; Sept 23 excluded to avoid overlap with OBS-003 discovery cohort starting 2026-09-23T23:53:16Z) |
+| historical threshold status | UNKNOWN for the holdout (not persisted in snapshots); **does not block H1** because the RSI ≥ 55 classifier is computed from raw observed RSI values, independent of any historical oversold threshold |
+| independent unit | symbol × trading day (one primary observation per symbol per date) |
+| representative-decision rule | for each (date, symbol), use the LAST cycle whose cycle_start is at-or-before 20:00:00 UTC on the given date (always within US regular session; deterministic; no future-outcome conditioning) |
+| high-RSI classifier | RSI ≥ 55 (FROZEN, derived from raw observed RSI; NOT optimized on holdout) |
+| comparison group | non-high-RSI symbol-days with RSI < 55 and RSI present (same eligible universe; controls for general market direction) |
+| primary horizon | next_session_open (synthetic 1-min reference price at-or-before cycle_start, target = first regular-session bar of next trading day per OBS-003 wall-clock contract) |
+| secondary horizon | +240m wall-clock (same synthetic reference; 240-min elapsed minutes from cycle_start) |
+| primary effect measure | (i) high-RSI next_session_open median return > +0.10 % AND (ii) high-RSI next_session_open p_positive > 55 % |
+| comparison-group effect measure | non-high-RSI next_session_open median AND p_positive (report alongside; do not use as success criterion — it is a control) |
+| secondary measures | high-RSI +240m median; high-RSI next_session_open by date (consistency view); high-RSI − non-high-RSI next_session_open median difference |
+| minimum sample | n_high_rsi_symboldays_with_OK_label ≥ 200 AND n_high_rsi_symboldays_with_persisted_RSI ≥ 5,000 |
+| missing-data rule | exclude symbol-days where Alpaca paper-tier has no reference-price bar OR no next-session-open bar; report missing-data fraction separately; do NOT filter by post-hoc outcome availability |
+| directional replication | both primary measures pass → REPLICATED |
+| material replication | REPLICATED AND (high-RSI − non-high-RSI) median difference > +0.10 % AND p_positive difference > +5 pp |
+| inconclusive | 53 % < p_positive ≤ 55 % OR 0 % < median ≤ +0.10 % — neither replicated nor failed |
+| failure | either median ≤ 0 % OR p_positive ≤ 53 % — FAILED TO REPLICATE |
+| underpowered | min sample not met — UNDERPOWERED; do not interpret |
+| stopping rule | report PASS / FAIL / INCONCLUSIVE / UNDERPOWERED, then **STOP**. No iteration. No threshold grid search. No variant exploration. |
+| no-retuning rule | RSI = 55 is FROZEN. If the hypothesis fails, report failure and stop. Do not mine the holdout for nearby thresholds. |
+| transaction-cost caveat | experiment measures return distributions from synthetic 1-min reference prices, NOT realized trade P&L. No commissions, slippage, or fills modeled. Any production deployment requires separate cost analysis. |
+| next step if REPLICATED | propose prospective forward-collection confirmatory study on post-2026-09-27 data, separate pre-registration, separate owner authorization |
+| next step if FAILED / INCONCLUSIVE / UNDERPOWERED | report result; do not iterate on this holdout; do not introduce alternative thresholds |
+
+**Execution authorization gate:** No historical Alpaca fetches,
+no pipeline runs, no SmartBot changes, no settings changes may
+occur until owner authorizes with explicit single-run scope.
+The exact command/task authorized should be a single bounded
+STRAT-002 pipeline invocation against the frozen pre-registration.
 
 ### OBS-004 — Accept-and-submit outcome tracking
 
