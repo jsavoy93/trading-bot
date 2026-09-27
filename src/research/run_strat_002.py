@@ -94,15 +94,15 @@ DEFAULT_HOLDOUT_END = "2026-09-23T00:00:00+00:00"
 
 FROZEN_HIGH_RSI_CUTOFF = 55.0
 FROZEN_COMPARISON_CUTOFF = 55.0
-FROZEN_PRIMARY_HORIZON = "next_session_open"
+FROZEN_PRIMARY_HORIZON = "fwd_next_session_open"
 FROZEN_SECONDARY_HORIZON = "fwd_240m"
 
 HORIZON_RETURN_COL = {
-    "next_session_open": "fwd_next_session_open_return",
+    "fwd_next_session_open": "fwd_next_session_open_return",
     "fwd_240m": "fwd_240m_return",
 }
 HORIZON_STATUS_COL = {
-    "next_session_open": "fwd_next_session_open_status",
+    "fwd_next_session_open": "fwd_next_session_open_status",
     "fwd_240m": "fwd_240m_status",
 }
 
@@ -159,7 +159,7 @@ def load_v0_decisions(
     df["decision_snapshot"] = df["decision_snapshot"].apply(
         lambda s: _json.loads(s) if isinstance(s, str) else s
     )
-    df["cycle_start"] = pd.to_datetime(df["cycle_start"], utc=True)
+    df["cycle_start"] = pd.to_datetime(df["cycle_start"], utc=True, format="ISO8601")
     # Convert cycle_start to NY-local date and keep only those whose
     # NY trading date is in the eligible set. This is a coarse filter
     # before the regular-session filter.
@@ -186,7 +186,7 @@ def apply_strat_002_unit_and_cohort(
         return symbol_day, excluded
 
     symbol_day = symbol_day.copy()
-    symbol_day["strat_002_cohort"] = symbol_day["feat_rsi_value"].map(
+    symbol_day["strat_002_cohort"] = symbol_day["rsi_value"].map(
         lambda v: assign_strat_002_cohort(v, high_rsi_cutoff=high_rsi_cutoff)
     )
     # Exclude symbol-days where RSI is unknown (None / NaN)
@@ -243,6 +243,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("[strat_002] no decisions in eligible dates; aborting", flush=True)
             return 0
         decisions = build_features(decisions)
+        # Pull rsi_value out of the per-row features dict so the cohort
+        # classifier can use it without first flattening to feat_* cols.
+        if "rsi_value" not in decisions.columns and "features" in decisions.columns:
+            decisions = decisions.copy()
+            decisions["rsi_value"] = decisions["features"].map(
+                lambda f: f.get("rsi_value") if isinstance(f, dict) else None
+            )
         symbol_day, excluded = apply_strat_002_unit_and_cohort(
             decisions, high_rsi_cutoff=args.high_rsi_cutoff
         )
@@ -268,12 +275,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             max_age_hours=args.max_cache_age_hours,
         )
 
-        horizons = [
-            (args.primary_horizon.replace("fwd_", "fwd_").replace("next_session_open", "next_session_open"), None)
-            if args.primary_horizon == "next_session_open"
-            else (args.primary_horizon, int(args.primary_horizon.replace("fwd_", "").replace("m", ""))),
-            (args.secondary_horizon, int(args.secondary_horizon.replace("fwd_", "").replace("m", ""))),
-        ]
+        # horizons: list of (name, n_wall_clock_minutes). None means
+        # next-session-open (uses the OBS-003 forward_bar_next_session_open
+        # branch). The OBS-003 DEFAULT_HORIZONS uses the same names.
+        horizons = []
+        for h in (args.primary_horizon, args.secondary_horizon):
+            if h == "fwd_next_session_open":
+                horizons.append((h, None))
+            elif h.startswith("fwd_") and h.endswith("m"):
+                horizons.append((h, int(h[4:-1])))
+            else:
+                raise ValueError(f"Unknown horizon name: {h}")
         # Label the symbol-day frame
         labeled = label_decisions(symbol_day, bar_cache, horizons=horizons)
         print(f"[strat_002] labeled: {len(labeled):,}", flush=True)
