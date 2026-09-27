@@ -5,6 +5,7 @@ Replaces Supabase REST API with a local SQLite database.
 import sqlite3
 import logging
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -60,6 +61,16 @@ class SQLiteDB:
                         signal TEXT,
                         rsi REAL,
                         order_time TEXT,
+                        -- EXEC-003.1: order-lifecycle state. SUBMITTED
+                        -- is set on submit_order success; FILLED is
+                        -- reserved for future fill confirmation; REJECTED
+                        -- / CANCELED reflect broker-side terminal states.
+                        -- A row is a 'completed trade' only when pnl IS
+                        -- NOT NULL AND status = 'FILLED'. See log_trade
+                        -- and dashboard win-rate filter for the
+                        -- SUBMITTED != FILLED contract.
+                        status TEXT DEFAULT 'SUBMITTED',
+                        broker_order_id TEXT,
                         created_at TEXT DEFAULT (datetime('now')),
                         FOREIGN KEY (session_id) REFERENCES trading_sessions(id)
                     );
@@ -466,6 +477,82 @@ class SQLiteDB:
                 except sqlite3.OperationalError:
                     pass
 
+                # ── EXEC-003.1: trades.order_lifecycle columns ───────────────────────
+                # Minimal additive migration to express the order-lifecycle
+                # contract truthfully.
+                #
+                # Pre-EXEC-003.1, the existing trades schema (id, session_id,
+                # symbol, side, qty, price, pnl, signal, rsi, order_time,
+                # created_at) was treated by dashboard consumers as a
+                # 'completed trade with realized P&L' table. Inserting a row
+                # from execute_trade on submit_order alone would mislabel a
+                # SUBMITTED order as a completed trade.
+                #
+                # The previous execute_trade persistence path passed a dict
+                # with NINE non-schema columns (alpaca_order_id, quantity,
+                # order_price, signal_time, signal_strength, sma_fast,
+                # sma_slow, status) causing log_trade to raise an
+                # OperationalError that was silently swallowed. No real
+                # trade ever landed in the table.
+                #
+                # The additive migration below keeps the existing columns
+                # intact (so dashboard readers, index targets, and existing
+                # decision-paths tests remain compatible) and adds two new
+                # nullable columns:
+                #
+                #   status           TEXT  — order-lifecycle vocabulary:
+                #                              SUBMITTED  : broker accepted the
+                #                                           order; fill not
+                #                                           confirmed
+                #                              FILLED     : confirmed filled
+                #                                           (NOT persisted by
+                #                                            this PR; reserved
+                #                                            for future fill
+                #                                            confirmation)
+                #                              REJECTED   : broker rejected
+                #                              CANCELED   : broker canceled
+                #                                            before fill
+                #   broker_order_id  TEXT  — Alpaca order.id when known
+                #                              (NULL otherwise)
+                #
+                # Backfill: existing rows (none in production today)
+                # get status='UNKNOWN' to make their pre-migration state
+                # explicit; pnl IS NULL distinguishes them from any
+                # legitimately closed trade.
+                #
+                # SUBMITTED != FILLED is the hard invariant enforced by
+                # this contract:
+                #   - execute_trade on submit_order success persists a
+                #     row with status='SUBMITTED' and pnl IS NULL.
+                #   - A row is only a 'completed trade' when pnl IS
+                #     NOT NULL AND status IN ('FILLED', 'REJECTED',
+                #     'CANCELED') — and even then, REJECTED and CANCELED
+                #     rows are NOT winners. The dashboard win-rate filter
+                #     treats pnl IS NULL OR status NOT IN ('FILLED') as
+                #     'not a completed trade' and excludes it.
+                try:
+                    conn.execute(
+                        "ALTER TABLE trades ADD COLUMN status TEXT DEFAULT 'SUBMITTED';"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                try:
+                    conn.execute(
+                        "ALTER TABLE trades ADD COLUMN broker_order_id TEXT;"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+                # Backfill: historical rows lacking a status get UNKNOWN
+                # explicitly. Idempotent — only affects rows where status
+                # IS NULL (e.g., legacy data without the column). New
+                # rows always set status explicitly via log_trade.
+                conn.execute(
+                    "UPDATE trades SET status = 'UNKNOWN' "
+                    "WHERE status IS NULL;"
+                )
+
             self.available = True
             logging.info(f"✅ SQLite database ready: {DB_PATH}")
         except Exception as e:
@@ -810,11 +897,55 @@ class SQLiteDB:
     # ------------------------------------------------------------------
 
     def log_trade(self, session_id: int, trade_data: Dict) -> bool:
+        """Persist a trade-lifecycle event to the `trades` table.
+
+        EXEC-003.1 contract:
+
+        - Accepts a dict whose keys MUST be a subset of the current
+          `trades` schema columns. Unknown keys are rejected with a
+          clear error rather than silently forwarded to SQLite (where
+          they would raise OperationalError and be swallowed).
+        - The caller is responsible for setting `status` truthfully:
+            SUBMITTED : broker accepted the order; fill not confirmed
+            FILLED    : only set by future fill-confirmation logic
+                        (NOT this PR)
+            REJECTED   : broker rejected the order
+            CANCELED   : broker canceled before fill
+          Other values are accepted and stored as-is so that legacy
+          callers can be migrated incrementally without losing data,
+          but the canonical vocabulary above is what dashboard win-rate
+          filters against.
+        - A persistence failure is logged clearly (warning level) and
+          returns False. Production behaviour intentionally tolerates
+          telemetry failure to avoid losing trades that already
+          executed at the broker. Tests can opt into a louder failure
+          path by setting ``TRADING_BOT_TESTING_FATAL_PERSISTENCE=1``
+          in the environment, which causes schema-mismatch and other
+          persistence errors to raise instead of log+return False.
+        """
         try:
             cols = list(trade_data.keys())
             placeholders = ", ".join("?" * len(cols))
             col_names = ", ".join(cols)
             with _get_conn() as conn:
+                # EXEC-003.1: validate the requested columns against the
+                # current schema BEFORE building the INSERT. This
+                # prevents the pre-EXEC-003.1 silent failure where
+                # trade_data with non-schema keys raised OperationalError
+                # at execute_trade call sites and the trade never
+                # landed.
+                schema_cols = {
+                    row["name"] for row in conn.execute(
+                        "PRAGMA table_info(trades)"
+                    ).fetchall()
+                }
+                unknown = [c for c in cols if c not in schema_cols]
+                if unknown:
+                    raise sqlite3.OperationalError(
+                        f"log_trade called with columns not in trades "
+                        f"schema: {unknown}; refusing to persist a row "
+                        f"that the schema cannot represent."
+                    )
                 conn.execute(
                     f"INSERT INTO trades ({col_names}) VALUES ({placeholders})",
                     [trade_data[c] for c in cols],
@@ -823,6 +954,13 @@ class SQLiteDB:
             return True
         except Exception as e:
             logging.warning(f"Exception logging trade: {e}")
+            # EXEC-003.1: in tests, surface the persistence failure
+            # loudly so the test framework can assert on it. Production
+            # tolerates persistence failure to avoid losing trades
+            # that already executed at the broker (a failed INSERT
+            # must not roll back the broker-side submission).
+            if os.getenv("TRADING_BOT_TESTING_FATAL_PERSISTENCE") == "1":
+                raise
             return False
 
     def get_all_trades(self, limit: int = 1000) -> List[Dict]:
