@@ -284,7 +284,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             gc.collect()
 
             # 5. Label horizons for this date's symbol-days.
-            labeled = label_decisions(sd, bar_cache, horizons=horizons)
+            # extra_next_day_lookahead=3 ensures Friday decisions (e.g.,
+            # 2026-09-18) can see Monday's bars (2026-09-21) for the
+            # fwd_next_session_open horizon. The frozen pre-outcome
+            # execution at 8c7a37d lacked this lookahead, which caused
+            # every Friday row to be labeled NO_NEXT_SESSION_BAR. The
+            # owner-authorized correctness repair (commit on top of
+            # 8c7a37d) restores the frozen next_session_open semantic
+            # without changing any analytical choice.
+            labeled = label_decisions(
+                sd, bar_cache,
+                horizons=horizons,
+                extra_next_day_lookahead=3,
+            )
             print(f"[strat_002]   labeled: {len(labeled):,} ({time.time()-t0:.1f}s)", flush=True)
             del sd
             gc.collect()
