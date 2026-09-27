@@ -5397,7 +5397,7 @@ the high-RSI next_session_open finding on the v0 holdout window.
 
 ### STRAT-002 — Out-of-sample hypothesis-validation experiment (pre-registered, corrigendum applied)
 
-**Status:** EXPERIMENT DESIGNED — AWAITING EXECUTION AUTHORIZATION.
+**Status:** COMPLETE — FAILED TO REPLICATE.
 **Dependencies:** STRAT-001 (COMPLETE), OBS-003 (COMPLETE).
 **Branch:** `governance/strat-002-preregistration` (no code changes
 yet; pre-registration governance PR; corrigendum applied 2026-09-27).
@@ -5446,6 +5446,47 @@ no pipeline runs, no SmartBot changes, no settings changes may
 occur until owner authorizes with explicit single-run scope.
 The exact command/task authorized should be a single bounded
 STRAT-002 pipeline invocation against the frozen pre-registration.
+
+**Final result (corrected authoritative execution, 2026-09-27T11:23:52Z → 11:47:23Z, all 7 frozen eligible dates contributing data, holdout 2026-09-14..2026-09-22):**
+
+- PRIMARY `next_session_open`: HIGH_RSI n_OK = 13,977, median −0.079 pp, p_positive 42.96 %; COMPARISON n_OK = 58,850, median +0.055 pp, p_positive 53.05 %; delta_median = **−0.134 pp**, delta_p_positive = **−10.09 pp**. Min-sample adequacy: n_high_rsi_OK 13,977 ≫ 200; n_high_rsi_with_RSI 16,678 ≫ 5,000; n_comparison_OK 58,850 ≫ 5,000. Verdict precedence: not UNDERPOWERED → not REPLICATED (delta_median not > +0.10 pp; delta_p_positive not > +5 pp) → not DCBW (both deltas ≤ 0) → **FAILED TO REPLICATE**.
+- SECONDARY `+240m`: delta_median = −0.046 pp; delta_p_positive = −5.36 pp (negative and on the opposite side of the pre-registered +5 pp replication threshold). Verdict: FAILED TO REPLICATE.
+
+**Defective first execution (preserved at `reports/research/strat_002_FIRST_EXECUTION_SUPERSEDED/`, status `SUPERSEDED — next_session_open weekend-partition correctness defect`):**
+- Only 6 of 7 frozen dates contributed data because the OBS-003 `label_decisions` per-decision merged frame for Friday 2026-09-18 contained only `[decision_date, decision_date + 1 calendar day] = [Fri, Sat]` and Saturday is empty in Alpaca.
+- Primary headline: delta_median = −0.118 pp, delta_p_positive = −9.30 pp; n_high_rsi_OK = 11,885; n_comparison_OK = 49,144; Sept 18 n_OK = 0/0. Same verdict (FAILED TO REPLICATE) on its own merits but with the weekend-partition defect pending.
+
+**Correctness-repair commit:** `d58cd78` on branch `agent/strat-002-replication` — added optional `extra_next_day_lookahead: int = 0` parameter to `src/research/labeling.label_decisions` (default `0` preserves OBS-003 byte-for-byte); runner passes `lookahead=3`; 19 deterministic synthetic tests in `tests/test_strat_002_friday_repair.py` (Friday→Monday, Sat/Sun skip, Mon..Fri ordinary mappings, Tuesday Sept 22→Wednesday Sept 23, timezone-aware regular-session semantics, +240m unchanged, frozen verdict boundaries, default-lookahead=0 preserves OBS-003). The mathematical definition of `next_session_open` is unchanged; only the data-partition/cache window is extended so the existing math has access to the next actual session's bars.
+
+**Holdout status:** CONSUMED. Both the defective and corrected runs use the same 2026-09-14..2026-09-22 window. **Do NOT reopen this holdout** for threshold selection, alternative RSI cutoffs (50, 52.5, 57.5, 60, …), alternative horizons, sector inspection, or any other retrospective hypothesis search.
+
+**High-RSI hypothesis status:** CLOSED. The OBS-003 discovery-period high-RSI next_session_open association (median ≈ +0.71 %, p_positive ≈ 64.6 %) did NOT survive independent out-of-sample replication on the pre-registered frozen cohort definition, even after a deterministic correction to the weekend-partition data window. We currently do NOT have evidence that changing the BUY strategy toward RSI ≥ 55 would improve outcomes. **STRAT-003 must NOT be created** as a consequence of STRAT-002 failure.
+
+**Files (authoritative corrected outputs in `reports/research/strat_002/`; defective outputs archived in `reports/research/strat_002_FIRST_EXECUTION_SUPERSEDED/`):**
+- `summary.json`, `verdict_primary.json`, `verdict_secondary.json`
+- `high_rsi_stats.csv`, `comparison_stats.csv`, `between_group_delta_primary.csv`, `between_group_delta_secondary.csv`
+- `per_date_diagnostic.csv` (includes Sept 18 corrected data)
+- `symbol_day_labeled.csv` (409 MB)
+- `acquisition.log` (per-date timing + cache growth)
+
+**Reports:**
+- `REPORT.md` (executive summary)
+- `reports/2026-09-27_114827_strat-002-corrected.md` (full authoritative archive, 18 sections, acceptance-evidence table, frozen-spec reference, defect adjudication, repair description, acquisition/runtime, corrected primary, corrected secondary, per-date diagnostic, defective vs corrected side-by-side, cache footprint, production-safety verification, holdout-consumed audit, post-hoc-analysis audit, PR state, manager decision, recommended next action)
+- `reports/2026-09-27_110241_strat-002-complete.md` (prior-session report from the first execution; preserved for audit trail; superseded)
+
+**Tests:** 99 / 99 PASSED (24 STRAT-002 + 19 defect-repair + 56 OBS-003).
+
+**PR:** #99 (`agent/strat-002-replication` → `main`) opened 2026-09-27T11:49:58Z; contains the frozen implementation, runner fixes, memory-safe execution, deterministic Friday → next-session repair, tests, authoritative corrected report, and the explicit `SUPERSEDED` supersession note for the defective first execution. Merged 2026-09-27 (see merge SHA recorded in REPORT.md).
+
+**Confirmation checklist:**
+- no third execution ✓
+- no analytical choices changed after outcome exposure ✓
+- no post-hoc tuning / mining ✓
+- holdout CONSUMED ✓
+- production DB remained read-only ✓
+- SmartBot untouched ✓
+- no services restarted ✓
+- no strategy / config / schema changes ✓
 
 ### OBS-004 — Accept-and-submit outcome tracking
 
