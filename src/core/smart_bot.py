@@ -10,7 +10,7 @@ import random
 import asyncio
 import requests
 from datetime import datetime, timedelta, timezone, date
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 from alpaca.trading.client import TradingClient
@@ -389,6 +389,13 @@ class SmartTradingBot:
             api_key=self.api_key,
             secret_key=self.api_secret
         )
+
+        # SCORE-002 observability: per-call scratch field set by the
+        # analysis helpers when they fail closed. Cleared at the start
+        # of each analyze_*() call so a stale value from one symbol
+        # cannot leak into the next symbol's SKIPPED_INVALID_DATA
+        # persistence record.
+        self._last_score_error_reason: Optional[str] = None
 
         # Trading parameters
         self.trade_amount = 1000  # $1000 per trade
@@ -1572,6 +1579,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             "total_score": analysis.get("total_score"),
             "score_invalid_data": analysis.get("score_invalid_data", False),
         }
+        # SCORE-002 observability: persist the fail-closed reason when
+        # the caller supplied one. This is a stable, machine-readable
+        # token (see SCORE_REASON_* class constants) identifying the
+        # exact validation that tripped. ``None`` for non-SKIP paths and
+        # for older callers that did not pass the kwarg. Downstream
+        # dashboards group SKIPPED_INVALID_DATA by this field.
+        if analysis.get("score_error_reason") is not None:
+            scoring_block["score_error_reason"] = analysis["score_error_reason"]
 
         if ranking_state is None:
             ranking_state = {}
@@ -2221,6 +2236,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
     def analyze_multi_timeframe(self, symbol: str, use_ai: bool = False) -> Optional[Dict]:
         """Analyze symbol using multiple timeframes (daily + hourly)"""
+        # SCORE-002 observability: clear the scratch reason field at the
+        # start of each call so a stale value from a prior analysis
+        # cannot leak into the SKIPPED_INVALID_DATA persistence path.
+        self._last_score_error_reason = None
         try:
             # Get daily data
             df_daily = self.get_market_data(symbol)
@@ -2409,27 +2428,38 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # non-actionable. The persisted total_score / rsi_score_daily
             # / buy_criteria fields are NOT updated.
             latest_daily = df_daily.iloc[-1]
-            mtf_components = self._score_components(latest_daily)
+            # SCORE-002 observability: capture the fail-closed reason on
+            # ``self._last_score_error_reason`` so the SKIPPED_INVALID_DATA
+            # persistence path can record exactly which validation tripped
+            # in the MTF path. Same scratch-field pattern as
+            # ``analyze_symbol``; cleared at the start of each call.
+            mtf_components, mtf_score_reason = self._score_components_with_reason(
+                latest_daily,
+            )
             if mtf_components is None:
                 logging.debug(
                     f"⏸ {symbol}: SCORE-001 fail-closed; MTF daily bar has "
-                    f"non-finite indicator data, skipping analysis"
+                    f"non-finite indicator data ({mtf_score_reason}), skipping analysis"
                 )
+                self._last_score_error_reason = mtf_score_reason
                 return None
             _rsi_score_daily = mtf_components['rsi_score']
             _sma_score_daily = mtf_components['sma_score']
             _macd_score_daily = mtf_components['macd_score']
             _bb_score_daily = mtf_components['bb_score']
-            rsi_score_daily = self._clamp_total_score(50.0 + _rsi_score_daily)
+            rsi_score_daily, rsi_clamp_reason = self._clamp_total_score_with_reason(
+                50.0 + _rsi_score_daily,
+            )
             if rsi_score_daily is None:
                 logging.debug(
                     f"⏸ {symbol}: SCORE-001 fail-closed; MTF rsi_score_daily "
                     f"clamp received non-finite input, skipping analysis"
                 )
+                self._last_score_error_reason = rsi_clamp_reason
                 return None
             macd_hist = latest_daily.get('MACD_histogram', None)
             # Total score: 0..100 bounded, centered at 50.
-            total_score = self._clamp_total_score(
+            total_score, total_clamp_reason = self._clamp_total_score_with_reason(
                 50.0 + _rsi_score_daily + _sma_score_daily + _macd_score_daily + _bb_score_daily
             )
             if total_score is None:
@@ -2437,6 +2467,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     f"⏸ {symbol}: SCORE-001 fail-closed; MTF total_score "
                     f"clamp received non-finite input, skipping analysis"
                 )
+                self._last_score_error_reason = total_clamp_reason
                 return None
 
             # Build buy_criteria for storage.
@@ -2653,6 +2684,44 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return False
         return math.isfinite(f)
 
+    # ---- SCORE-002 observability: fail-closed reason codes ---------------
+    #
+    # Stable, machine-readable tokens that identify which validation check
+    # caused ``_score_components`` or ``_clamp_total_score`` to return
+    # ``None``. The fallback persistence path (SKIPPED_INVALID_DATA rows)
+    # uses these reasons to make the exact failure point visible after
+    # the fact. They MUST NOT change without updating dashboards/tests.
+    #
+    # The full set of possible reasons (single-field):
+    #   - rsi_non_finite
+    #   - sma_fast_non_finite
+    #   - sma_slow_non_finite
+    #   - macd_histogram_non_finite
+    #   - atr_non_finite
+    #   - atr_zero
+    #   - bb_upper_non_finite
+    #   - bb_lower_non_finite
+    #   - close_non_finite
+    #   - catalyst_non_finite
+    #   - macd_ratio_non_finite   (defensive: macd_hist/atr non-finite)
+    #   - clamp_total_score_non_finite
+    # When multiple fields are invalid simultaneously, the reason string
+    # is the comma-joined ordered list of those tokens (so the first
+    # invalid field is the first token, matching the existing first-fail
+    # short-circuit contract preserved by callers).
+    SCORE_REASON_RSI_NON_FINITE = "rsi_non_finite"
+    SCORE_REASON_SMA_FAST_NON_FINITE = "sma_fast_non_finite"
+    SCORE_REASON_SMA_SLOW_NON_FINITE = "sma_slow_non_finite"
+    SCORE_REASON_MACD_HISTOGRAM_NON_FINITE = "macd_histogram_non_finite"
+    SCORE_REASON_ATR_NON_FINITE = "atr_non_finite"
+    SCORE_REASON_ATR_ZERO = "atr_zero"
+    SCORE_REASON_BB_UPPER_NON_FINITE = "bb_upper_non_finite"
+    SCORE_REASON_BB_LOWER_NON_FINITE = "bb_lower_non_finite"
+    SCORE_REASON_CLOSE_NON_FINITE = "close_non_finite"
+    SCORE_REASON_CATALYST_NON_FINITE = "catalyst_non_finite"
+    SCORE_REASON_MACD_RATIO_NON_FINITE = "macd_ratio_non_finite"
+    SCORE_REASON_CLAMP_NON_FINITE = "clamp_total_score_non_finite"
+
     def _score_components(
         self,
         latest: pd.Series,
@@ -2682,32 +2751,78 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         silently substitute a neutral 0, which would let a missing MACD
         or ATR pass other components' bullish contribution through and
         produce a false BUY.
-        """
-        # --- Validate every required input up-front (fail closed) -------
-        required = {
-            'RSI': latest.get('RSI') if hasattr(latest, 'get') else None,
-            f'SMA_{self.sma_fast}': latest.get(f'SMA_{self.sma_fast}') if hasattr(latest, 'get') else None,
-            f'SMA_{self.slow_getter()}': latest.get(f'SMA_{self.slow_getter()}') if hasattr(latest, 'get') else None,
-            'MACD_histogram': latest.get('MACD_histogram') if hasattr(latest, 'get') else None,
-            'ATR': latest.get('ATR') if hasattr(latest, 'get') else None,
-            'BB_upper': latest.get('BB_upper') if hasattr(latest, 'get') else None,
-            'BB_lower': latest.get('BB_lower') if hasattr(latest, 'get') else None,
-            'close': latest.get('close') if hasattr(latest, 'get') else None,
-        }
-        for name, value in required.items():
-            if not self._is_finite_number(value):
-                return None
-        if not self._is_finite_number(catalyst_score):
-            return None
 
-        rsi = float(required['RSI'])
-        sma_fast_val = float(required[f'SMA_{self.sma_fast}'])
-        sma_slow_val = float(required[f'SMA_{self.slow_getter()}'])
-        macd_hist = float(required['MACD_histogram'])
-        atr = float(required['ATR'])
-        bb_upper = float(required['BB_upper'])
-        bb_lower = float(required['BB_lower'])
-        price = float(required['close'])
+        This is a thin wrapper over :meth:`_score_components_with_reason`
+        that preserves the existing call-site contract (returns just the
+        dict on success, ``None`` on failure). See
+        :meth:`_score_components_with_reason` for the reason token.
+        """
+        components, _reason = self._score_components_with_reason(
+            latest, catalyst_score=catalyst_score,
+        )
+        return components
+
+    def _score_components_with_reason(
+        self,
+        latest: pd.Series,
+        catalyst_score: float = 0.0,
+    ) -> Tuple[Optional[Dict[str, float]], Optional[str]]:
+        """Compute bounded component scores and report a fail-closed reason.
+
+        Returns ``(components_dict_or_None, reason_token_or_None)``.
+
+        On success: ``(dict, None)`` — components are within their
+        documented ranges; the reason slot is unused.
+
+        On fail-closed: ``(None, reason_token_or_comma_joined_tokens)``
+        where the reason identifies which validation(s) failed. The token
+        list is ordered (left-to-right) by the order in which the
+        offending fields appear in ``SCORE_REASON_*``. When multiple
+        fields are invalid, every invalid field is reported so the
+        production dashboard can distinguish "only MACD was bad" from
+        "everything was bad" without rerunning analysis.
+
+        This helper is intentionally a pure function (no DB / logging
+        side-effects) so tests can assert exact reason tokens for each
+        fail-closed case.
+        """
+        # Map each required indicator to its reason token. Order is
+        # preserved for multi-field reports so the first-listed token
+        # corresponds to the first invalid field detected.
+        required: List[Tuple[str, str]] = [
+            ("RSI", self.SCORE_REASON_RSI_NON_FINITE),
+            (f"SMA_{self.sma_fast}", self.SCORE_REASON_SMA_FAST_NON_FINITE),
+            (f"SMA_{self.slow_getter()}", self.SCORE_REASON_SMA_SLOW_NON_FINITE),
+            ("MACD_histogram", self.SCORE_REASON_MACD_HISTOGRAM_NON_FINITE),
+            ("ATR", self.SCORE_REASON_ATR_NON_FINITE),
+            ("BB_upper", self.SCORE_REASON_BB_UPPER_NON_FINITE),
+            ("BB_lower", self.SCORE_REASON_BB_LOWER_NON_FINITE),
+            ("close", self.SCORE_REASON_CLOSE_NON_FINITE),
+        ]
+        values: Dict[str, object] = {}
+        invalid: List[str] = []
+        for field, reason_token in required:
+            v = latest.get(field) if hasattr(latest, "get") else None
+            if not self._is_finite_number(v):
+                invalid.append(reason_token)
+            else:
+                values[field] = v
+        if not self._is_finite_number(catalyst_score):
+            invalid.append(self.SCORE_REASON_CATALYST_NON_FINITE)
+        if invalid:
+            # Preserve the existing first-fail short-circuit semantic for
+            # callers that compare against a single reason token: the
+            # first invalid token is the dominant one.
+            return None, ",".join(invalid)
+
+        rsi = float(values["RSI"])
+        sma_fast_val = float(values[f"SMA_{self.sma_fast}"])
+        sma_slow_val = float(values[f"SMA_{self.slow_getter()}"])
+        macd_hist = float(values["MACD_histogram"])
+        atr = float(values["ATR"])
+        bb_upper = float(values["BB_upper"])
+        bb_lower = float(values["BB_lower"])
+        price = float(values["close"])
         catalyst = float(catalyst_score)
 
         # RSI: monotonic linear. RSI=0 -> +25 (max bullish), RSI=50 -> 0,
@@ -2730,12 +2845,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         if atr > 0:
             macd_ratio = macd_hist / atr
             if not self._is_finite_number(macd_ratio):
-                return None
+                return None, self.SCORE_REASON_MACD_RATIO_NON_FINITE
             macd_score = max(-25.0, min(25.0, macd_ratio * 25.0))
         else:
             # ATR is required to be strictly positive for the MACD
             # ratio to be well-defined. ATR=0 fails closed.
-            return None
+            return None, self.SCORE_REASON_ATR_ZERO
 
         # BB: position-based. lower band -> +25, upper band -> -25.
         bb_score = 0.0
@@ -2744,16 +2859,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             bb_score = max(-25.0, min(25.0, 25.0 - (bb_position * 50.0)))
 
         return {
-            'rsi_score': rsi_score,
-            'sma_score': sma_score,
-            'macd_score': macd_score,
-            'bb_score': bb_score,
-            'catalyst_score': catalyst,
+            "rsi_score": rsi_score,
+            "sma_score": sma_score,
+            "macd_score": macd_score,
+            "bb_score": bb_score,
+            "catalyst_score": catalyst,
             # Diagnostic field: the raw dimensionless MACD ratio
             # (macd_histogram / ATR) is exposed for tests and audit so the
             # normalization can be inspected without re-deriving it.
-            'macd_atr_ratio': macd_ratio,
-        }
+            "macd_atr_ratio": macd_ratio,
+        }, None
 
     def slow_getter(self) -> int:
         """Compatibility shim: returns the configured slow SMA period.
@@ -2777,10 +2892,29 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         skip/HOLD" rather than substituting 0 (which would appear as the
         most extreme bearish score and could in principle corrupt the
         ``total_score`` history of a symbol with malformed data).
+
+        Thin wrapper over :meth:`_clamp_total_score_with_reason`; preserves
+        the existing call-site contract. See that method for the reason
+        token.
+        """
+        value, _reason = self._clamp_total_score_with_reason(raw_score)
+        return value
+
+    def _clamp_total_score_with_reason(
+        self, raw_score: object,
+    ) -> Tuple[Optional[float], Optional[str]]:
+        """Compute the 0..100 clamped total and report a fail-closed reason.
+
+        Returns ``(clamped_value_or_None, reason_token_or_None)``.
+
+        On success: ``(float in 0..100, None)``.
+
+        On fail-closed: ``(None, self.SCORE_REASON_CLAMP_NON_FINITE)``.
+        This helper is a pure function so tests can assert the reason.
         """
         if not self._is_finite_number(raw_score):
-            return None
-        return max(0.0, min(100.0, float(raw_score)))
+            return None, self.SCORE_REASON_CLAMP_NON_FINITE
+        return max(0.0, min(100.0, float(raw_score))), None
 
     def check_sp_relative_strength(self, symbol: str, df: pd.DataFrame, lookback_days: int = 20) -> tuple:
         """
@@ -2928,6 +3062,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
     def analyze_symbol(self, symbol: str, use_ai: bool = False) -> Optional[Dict]:
         """Analyze symbol for trading opportunities with optional AI enhancement"""
+        # SCORE-002 observability: clear the scratch reason field at the
+        # start of each call so a stale value from a prior analysis
+        # cannot leak into the SKIPPED_INVALID_DATA persistence path.
+        self._last_score_error_reason = None
         try:
             df = self.get_market_data(symbol)
             if df is None or len(df) < self.sma_slow:
@@ -2985,12 +3123,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # No BUY, no SELL, and no published 0/100 score is emitted.
             catalyst_data = self.scan_catalysts(symbol)
             catalyst_score = catalyst_data.get('catalyst_score', 0)
-            components = self._score_components(latest, catalyst_score=catalyst_score)
+            # SCORE-002 observability: capture the fail-closed reason so
+            # the SKIPPED_INVALID_DATA persistence path can record
+            # exactly which validation tripped. The plain helper is still
+            # used by every other caller (signature unchanged); this is
+            # the only call site that needs the reason token. The reason
+            # is exposed via ``self._last_score_error_reason`` because
+            # ``analyze_symbol`` is contractually ``-> Optional[Dict]``
+            # and we MUST NOT change that contract (callers branch on
+            # ``None`` to decide whether to enter the fallback HOLD
+            # score path).
+            components, score_error_reason = self._score_components_with_reason(
+                latest, catalyst_score=catalyst_score,
+            )
             if components is None:
                 logging.debug(
-                    f"⏸ {symbol}: SCORE-001 fail-closed; invalid indicator or "
-                    f"catalyst data, skipping analysis"
+                    f"⏸ {symbol}: SCORE-001 fail-closed; invalid indicator "
+                    f"or catalyst data ({score_error_reason}), skipping analysis"
                 )
+                # Per-symbol scratch field; cleared at the start of each
+                # analysis call so a stale value cannot leak between
+                # symbols or cycles.
+                self._last_score_error_reason = score_error_reason
                 return None
             rsi_score = components['rsi_score']
             sma_score = components['sma_score']
@@ -3067,12 +3221,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # function aborts with None rather than publishing a 0/100
             # bearish score.
             daily_raw_signed = rsi_score + sma_score + macd_score + bb_score + catalyst_score
-            daily_score = self._clamp_total_score(50.0 + daily_raw_signed)
+            daily_score, daily_clamp_reason = self._clamp_total_score_with_reason(
+                50.0 + daily_raw_signed,
+            )
             if daily_score is None:
                 logging.debug(
                     f"⏸ {symbol}: SCORE-001 fail-closed; daily_score clamp "
-                    f"received non-finite input, skipping analysis"
+                    f"received non-finite input ({daily_clamp_reason}), skipping analysis"
                 )
+                self._last_score_error_reason = daily_clamp_reason
                 return None
 
             if hourly_score is not None:
@@ -3081,12 +3238,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     daily_raw_signed * (1 - self.hourly_weight)
                     + hourly_score * self.hourly_weight
                 )
-                total_score = self._clamp_total_score(50.0 + blended_signed)
+                total_score, blended_clamp_reason = self._clamp_total_score_with_reason(
+                    50.0 + blended_signed,
+                )
                 if total_score is None:
                     logging.debug(
                         f"⏸ {symbol}: SCORE-001 fail-closed; blended total "
-                        f"clamp received non-finite input, skipping analysis"
+                        f"clamp received non-finite input ({blended_clamp_reason}), skipping analysis"
                     )
+                    self._last_score_error_reason = blended_clamp_reason
                     return None
                 logging.debug(
                     f"MTF blend {symbol}: daily_signed={daily_raw_signed:.1f} "
@@ -3354,12 +3514,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     insider_score = get_insider_score(symbol)
                     if insider_score > 50:
                         # Boost signal strength for strong insider buying
-                        clamped = self._clamp_total_score(total_score + 10)
+                        clamped, insider_clamp_reason = self._clamp_total_score_with_reason(
+                            total_score + 10,
+                        )
                         if clamped is None:
                             logging.debug(
                                 f"⏸ {symbol}: SCORE-001 fail-closed; insider "
-                                f"boost produced non-finite total, skipping"
+                                f"boost produced non-finite total "
+                                f"({insider_clamp_reason}), skipping"
                             )
+                            self._last_score_error_reason = insider_clamp_reason
                             return None
                         total_score = clamped
                         logging.info(f"📋 {symbol}: Insider score {insider_score} - signal boosted")
@@ -5680,6 +5844,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                     f"no market data (needs {self.sma_slow} bars)"
                                 ),
                                 baseline_diagnostics=obs_001_baseline_diagnostics,
+                                # SCORE-002: distinguish "no market data"
+                                # upstream from "indicator validation
+                                # failed" downstream so dashboards can
+                                # group by root cause without log-mining.
+                                score_error_reason="no_market_data",
                             )
                         except Exception as e:
                             logging.debug(
@@ -5866,6 +6035,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                     primary_reason=nan_reason,
                                     analysis={"price": price, "rsi": rsi},
                                     baseline_diagnostics=obs_001_baseline_diagnostics,
+                                    # SCORE-002: the NaN-guard in the
+                                    # fallback score path identified a
+                                    # specific indicator that was NaN
+                                    # (e.g. ``bb_pos is NaN``). Tag the
+                                    # row with ``fallback_nan`` so the
+                                    # downstream diagnostic dashboard
+                                    # can split these from the strict
+                                    # ``_score_components`` failures
+                                    # above.
+                                    score_error_reason="fallback_nan",
                                 )
                             except Exception as e:
                                 logging.debug(
@@ -5914,6 +6093,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                     "total_score": int(total),
                                 },
                                 baseline_diagnostics=obs_001_baseline_diagnostics,
+                                # SCORE-002: forward the per-call
+                                # ``_last_score_error_reason`` set by
+                                # the analysis helpers (one of the
+                                # ``SCORE_REASON_*`` tokens) so the
+                                # dashboard can attribute each
+                                # SKIPPED_INVALID_DATA row to a
+                                # specific validation failure. The
+                                # ``getattr`` default keeps the call
+                                # safe for older test harnesses that
+                                # bypass ``analyze_symbol`` entirely.
+                                score_error_reason=(
+                                    getattr(self, "_last_score_error_reason", None)
+                                    or "score_components_unknown"
+                                ),
                             )
                         except Exception as e:
                             logging.debug(
@@ -6231,6 +6424,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         ),
                         analysis={"signal": "HOLD", "signal_strength": "WEAK"},
                         baseline_diagnostics=obs_001_baseline_diagnostics,
+                        # SCORE-002: this is the catch-all path that
+                        # fires when an unexpected exception escaped the
+                        # analyzer. Distinct from the strict
+                        # score-component validation reasons so the
+                        # dashboard can separate "data was bad" from
+                        # "code crashed" without parsing primary_reason.
+                        score_error_reason="analysis_body_exception",
                     )
                 except Exception as persist_err:
                     logging.debug(
@@ -6747,6 +6947,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         execution_state: Optional[Dict] = None,
         order_state: Optional[Dict] = None,
         baseline_diagnostics: Optional[Dict] = None,
+        score_error_reason: Optional[str] = None,
     ) -> Optional[Dict]:
         """Persist one OBS-001 decision_history row for a skipped/never-
         actioned symbol path. Reuses _build_decision_snapshot and the
@@ -6802,7 +7003,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 "volatility_multiplier_rsi", "volatility_multiplier_sma",
                 "insider_score", "blended_signed", "total_score",
                 "macd_histogram", "volume_ratio", "rsi_buy_threshold",
-                "sma_fast", "sma_slow",
+                "sma_fast", "sma_slow", "score_error_reason",
             ):
                 if k in analysis:
                     _v = analysis[k]
@@ -6823,6 +7024,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             analysis is None or "total_score" not in analysis
         ):
             minimal_analysis["total_score"] = None
+
+        # SCORE-002 observability: the explicit ``score_error_reason``
+        # kwarg is the canonical place for the fail-closed reason.
+        # Prefer the kwarg (set by SCORE-002-aware callers in the main
+        # loop) over the analysis-dict field so we can never lose the
+        # reason to the analysis-dict filtering in the loop above.
+        if score_error_reason is not None:
+            minimal_analysis["score_error_reason"] = str(score_error_reason)
 
         # All skipped/never-actioned paths share the same "not applicable"
         # placeholders for ranking, selection, execution, and order.
