@@ -4170,3 +4170,55 @@ URI for all queries). No DDL, no writes, no backfill, no migrations.
 (c) investigate single-worker concurrency (separate slice);
 (d) move on to a different slice.
 Do not commit or merge until Josh approves.
+
+---
+
+## 2026-09-28 12:08 UTC — BUY-FUNNEL FINAL CORRECTNESS PASS v0.2 (PR #101)
+
+**Backlog**: BUY-FUNNEL FINAL CORRECTNESS (owner-flagged correctness gaps)
+**Branch**: `agent/exec-003-1-trade-persistence`
+**Commit**: `5077fb6` (BUY-FUNNEL FINAL CORRECTNESS PASS v0.2)
+**Status**: `DONE` (ready for merge authorization)
+
+**What changed**:
+- Replaced module-level `_BUY_FUNNEL_REQUIRED_GATES = {rsi_oversold, sma_uptrend}` with runtime helper `_buy_funnel_required_gates_runtime()` that reads `enable_volume_confirmation` from `settings_service` and always includes `macd_positive`. The hardcoded set was the OWNER-FLAGGED CONTRADICTION in the BUY contract.
+- Rewrote `api_buy_funnel_near_miss` SQL:
+  - Added `latest_per_symbol` CTE with NOT EXISTS correlated subquery for per-symbol latest-state dedup (replaced buggy filter-then-dedup).
+  - Tightened to require `applied_required_n = required_count` so absent required gates EXCLUDE the candidate (was the v0.1 leaky "absent != pass" contract).
+- Created `tests/test_signal_emission_buy_reachability.py` with 12 deterministic tests that prove the BUY emission path IS REACHABLE when all four required conditions are satisfied.
+
+**Files**: dashboard.py (+248 / -85), tests/test_buy_funnel_dashboard.py (+319 / -30), tests/test_signal_emission_buy_reachability.py (new +270), templates/dashboard.html (unchanged-from-prior-session HOLD-reason breakdown rendering).
+
+**Tests run**:
+- `pytest tests/test_signal_emission_buy_reachability.py` — 12/12 PASS in 3.08s
+- `pytest` v0.2 final-correctness synthetic — 14/14 PASS in 4.32s
+- Combined: 26/26 PASS in 4.77s
+- Pre-existing production-DB-touching tests NOT re-run (perf + WAL contention; already passed in v0.1)
+- `git diff --check`: clean
+
+**Decisions / discoveries**:
+1. The buy_eligible expression in `src/core/smart_bot.py` line ~3134 is INLINE within `analyze_symbol`, not extractable as a free function without strategy-code refactor (out of scope). Solution: mirror the expression as `compute_buy_eligible(...)` in the new test file with comment "update both together if production changes."
+2. Live re-probe of joint-pass / near-miss numbers against the 9 GB production DB hangs indefinitely due to SmartBot WAL contention (PID 1196517 holds 9 file descriptors on DB; 6.7 GB WAL file). Owner prohibited service restart. V0.1 numbers in the previous report remain the last trusted 24h picture.
+3. Settings import order: when settings_service can't be imported (e.g. test loader without PYTHONPATH), fallback is `enable_volume_confirmation=True`. This matches the documented production default in settings_service.py line 95-96.
+
+**Risks / known gaps**:
+- The new SQL with NOT EXISTS may be slow against the 9 GB prod DB even after WAL contention clears; recommend adding covering index `(symbol, cycle_start, id)` on `decision_history` in a separate perf slice (schema change prohibited in this PR).
+- SmartBot / smartbot-runner.service failed state UNCHANGED — BLOCKER for next SmartBot restart.
+
+**Acceptance Evidence**:
+- Each v0.2 correction is verified by deterministic synthetic tests (NOT live DB).
+- The owner's three explicit gaps are resolved:
+  1. Latest-per-symbol dedup: latest-per-symbol-shadowed-by-newer-non-NM scenario + newer-NM-replaces-older-NM scenario both pass.
+  2. Required-gate set includes macd_positive: test_near_miss_required_gates_include_macd_and_volume PASS.
+  3. Absent required gates exclude: test_near_miss_absent_macd_excludes PASS, test_near_miss_absent_volume_excludes PASS.
+- BUY reachability: test_all_required_conditions_satisfied_is_reachable PASS, plus 11 negative cases proving each required gate is independently necessary.
+
+**Report**: `REPORT.md` + `reports/2026-09-28_120800_buy-funnel-final-correctness.md`
+**PR**: #101 OPEN (https://github.com/jsavoy93/trading-bot/pull/101)
+**Decision**: `READY FOR OWNER MERGE AUTHORIZATION`
+
+**Next**:
+- Owner reviews PR #101 and merges (or rejects with feedback).
+- After merge + deploy, live re-probe of joint-pass-flow + near-miss endpoints to enumerate the corrected 24h picture (deferred until perf + WAL contention are manageable).
+- SmartBot / smartbot-runner.service ownership remains a separate BLOCKER for next restart.
+- PERF / 7d optimization remains in PARKING LOT (C14B-2E).

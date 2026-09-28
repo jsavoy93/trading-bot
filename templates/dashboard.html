@@ -935,6 +935,7 @@
     <div class="top-tabs">
         <button class="top-tab active" onclick="showTopTab('dashboard', this)">📊 Dashboard</button>
         <button class="top-tab" onclick="showTopTab('analytics', this)">📈 Analytics</button>
+        <button class="top-tab" onclick="showTopTab('buyfunnel', this)">🎯 BUY Eligibility</button>
         <button class="top-tab" onclick="showTopTab('settings', this)">⚙️ Settings</button>
         <button class="top-tab" onclick="showTopTab('history', this)">📜 History</button>
     </div>
@@ -1387,7 +1388,138 @@
             <div id="filter-status" style="font-size: 12px; color: #484f58; margin-top: 0.5rem;"></div>
         </div>
 
-    </div><!-- /top-tab-analytics -->
+    <div id="top-tab-buyfunnel" class="top-tab-panel" style="display:none;">
+
+        <!-- BUY-FUNNEL DASHBOARD (observability only; no order actions) -->
+        <!-- Two clearly-distinguished views per the owner authorization: -->
+        <!--   A) ACTUAL PIPELINE FUNNEL — persisted lifecycle stages -->
+        <!--   B) BUY-CRITERIA GATE DIAGNOSTICS — per-gate pass/fail/observed/threshold -->
+
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🎯 Time range</span>
+                <span id="buy-funnel-range-summary" style="font-size:12px;color:#8b949e;"></span>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                <label style="font-size:13px;color:#8b949e;">Window:</label>
+                <select id="buy-funnel-range" onchange="loadBuyFunnel()" style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:4px 8px;border-radius:6px;font-size:13px;">
+                    <option value="latest" selected>Latest completed cycle</option>
+                    <option value="today">Today</option>
+                    <option value="24h">Last 24 hours</option>
+                    <option value="7d">Last 7 days</option>
+                </select>
+                <button onclick="loadBuyFunnel()" class="btn btn-secondary" style="padding:4px 10px;font-size:12px;">🔄 Refresh</button>
+                <span style="font-size:12px;color:#8b949e;margin-left:auto;">
+                    SUBMITTED ≠ FILLED. Score shown separately from eligibility.
+                </span>
+            </div>
+        </div>
+
+        <!-- A. ACTUAL PIPELINE FUNNEL (persisted lifecycle stages) -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">📊 Actual Pipeline Funnel</span>
+                <span style="font-size:12px;color:#8b949e;">
+                    Real persisted stages from cycle_funnel.
+                    Not implied by gate order.
+                </span>
+            </div>
+            <div id="buy-funnel-summary-body" style="display:none;"></div>
+            <div id="buy-funnel-summary-loading" style="color:#8b949e;padding:8px;">Loading…</div>
+            <div id="buy-funnel-summary-error" style="display:none;color:#f85149;padding:8px;"></div>
+            <div id="buy-funnel-summary-empty" style="display:none;color:#8b949e;padding:8px;">No cycles in this window.</div>
+        </div>
+
+        <!-- B0. RSI+SMA joint-pass diagnostic: what stops them becoming BUY? -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🔀 RSI+SMA Joint-Pass Diagnostic</span>
+                <span style="font-size:12px;color:#8b949e;">
+                    Decision_history rows where BOTH rsi_oversold AND sma_uptrend PASSED.
+                    What happens next? (v1 path)
+                </span>
+            </div>
+            <div id="buy-funnel-joint-pass-body" style="display:none;"></div>
+            <div id="buy-funnel-joint-pass-loading" style="color:#8b949e;padding:8px;">Loading…</div>
+            <div id="buy-funnel-joint-pass-error" style="display:none;color:#f85149;padding:8px;"></div>
+            <div id="buy-funnel-joint-pass-empty" style="display:none;color:#8b949e;padding:8px;">No joint-pass observations in this window.</div>
+        </div>
+
+        <!-- B. BUY-CRITERIA GATE DIAGNOSTICS (per-gate) -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🧩 BUY-Criteria Gate Diagnostics</span>
+                <span style="font-size:12px;color:#8b949e;">
+                    Per-gate pass/fail (PHASE-C14B-2C hybrid v0/v1).
+                    <strong>Required</strong> gates are hard BUY blockers.
+                </span>
+            </div>
+            <div id="buy-funnel-gates-body" style="display:none;"></div>
+            <div id="buy-funnel-gates-loading" style="color:#8b949e;padding:8px;">Loading…</div>
+            <div id="buy-funnel-gates-error" style="display:none;color:#f85149;padding:8px;"></div>
+            <div id="buy-funnel-gates-empty" style="display:none;color:#8b949e;padding:8px;">No structured gate data in this window.</div>
+        </div>
+
+        <!-- Top rejection reasons -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🚫 Top Rejection Reasons</span>
+                <span style="font-size:12px;color:#8b949e;">
+                    Most-common (gate, reason) tuples from decision_gate_evaluations (v0/v1 hybrid).
+                </span>
+            </div>
+            <div id="buy-funnel-rejection-reasons-denominator" style="display:none;font-size:12px;color:#d29922;padding:8px 12px;background:#161b22;border:1px solid #d29922;border-radius:6px;margin-bottom:8px;"></div>
+            <div id="buy-funnel-rejection-reasons-body" style="display:none;"></div>
+            <div id="buy-funnel-rejection-reasons-loading" style="color:#8b949e;padding:8px;">Loading…</div>
+            <div id="buy-funnel-rejection-reasons-error" style="display:none;color:#f85149;padding:8px;"></div>
+            <div id="buy-funnel-rejection-reasons-empty" style="display:none;color:#8b949e;padding:8px;">No rejection reasons in this window.</div>
+        </div>
+
+        <!-- Closest to BUY (near-miss, latest per symbol) -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🥈 Closest to BUY (failed exactly one required gate)</span>
+                <span style="font-size:12px;color:#8b949e;">
+                    v1 path. Dedup to the latest per (cycle_id, symbol).
+                    Score shown separately from eligibility (SCORE-002).
+                </span>
+            </div>
+            <div id="buy-funnel-near-miss-body" style="display:none;"></div>
+            <div id="buy-funnel-near-miss-loading" style="color:#8b949e;padding:8px;">Loading…</div>
+            <div id="buy-funnel-near-miss-error" style="display:none;color:#f85149;padding:8px;"></div>
+            <div id="buy-funnel-near-miss-empty" style="display:none;color:#8b949e;padding:8px;">No near-miss candidates (failed exactly one required gate) in this window.</div>
+        </div>
+
+        <!-- Current Settings vs Applied Thresholds -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">⚙️ Current Settings vs Applied Thresholds</span>
+                <span style="font-size:12px;color:#8b949e;">
+                    Live configured value (settings) and the observed applied threshold range (decision_gate_evaluations).
+                    They may differ if settings changed recently.
+                </span>
+            </div>
+            <div id="buy-funnel-config-overlay-body" style="display:none;"></div>
+            <div id="buy-funnel-config-overlay-loading" style="color:#8b949e;padding:8px;">Loading…</div>
+            <div id="buy-funnel-config-overlay-error" style="display:none;color:#f85149;padding:8px;"></div>
+            <div id="buy-funnel-config-overlay-empty" style="display:none;color:#8b949e;padding:8px;">No required gates identified.</div>
+        </div>
+
+        <!-- Navigation to settings editor -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">🔧 Configure BUY criteria</span>
+                <button onclick="showTopTab('settings', document.querySelector('.top-tab'))" class="btn btn-secondary" style="padding:6px 14px;font-size:13px;">
+                    ➡️ Edit Strategy Settings
+                </button>
+            </div>
+            <div style="font-size:12px;color:#8b949e;padding:4px 0;">
+                The settings editor is the existing dashboard tab
+                (Phase 2 of the dashboard). No new configuration surface.
+            </div>
+        </div>
+
+    </div><!-- /top-tab-buyfunnel -->
 
     <div id="top-tab-settings" class="top-tab-panel" style="display:none;">
 
@@ -1504,6 +1636,489 @@
             if (panel) panel.style.display = 'block';
             if (btn) btn.classList.add('active');
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // BUY-FUNNEL DASHBOARD (v0 — observability only; no order actions)
+        //
+        // Five fetchers. All XSS-safe via _lc_escapeHtml. Score remains
+        // separate from eligibility. SUBMITTED != FILLED (the trades
+        // counter shows the actual SUBMITTED / FILLED split).
+        // ─────────────────────────────────────────────────────────────────────
+        async function _bf_fetchJson(url) {
+            const r = await fetch(url);
+            if (!r.ok) {
+                const text = await r.text();
+                throw new Error(`HTTP ${r.status}: ${text.slice(0, 120)}`);
+            }
+            return r.json();
+        }
+
+        async function loadBuyFunnel() {
+            const range = document.getElementById('buy-funnel-range').value;
+            // Show loading on all cards
+            ['summary', 'gates', 'rejection-reasons', 'near-miss', 'config-overlay', 'joint-pass'].forEach((k) => {
+                const body = document.getElementById(`buy-funnel-${k}-body`);
+                const load = document.getElementById(`buy-funnel-${k}-loading`);
+                const err = document.getElementById(`buy-funnel-${k}-error`);
+                const empty = document.getElementById(`buy-funnel-${k}-empty`);
+                if (body) body.style.display = 'none';
+                if (load) load.style.display = 'block';
+                if (err) err.style.display = 'none';
+                if (empty) empty.style.display = 'none';
+            });
+            const denomBanner = document.getElementById('buy-funnel-rejection-reasons-denominator');
+            if (denomBanner) denomBanner.style.display = 'none';
+            document.getElementById('buy-funnel-range-summary').textContent = `Range: ${range}`;
+            // Fetch all five in parallel
+            const [sumRes, gateRes, rejRes, nmRes, cfgRes, jpRes] = await Promise.allSettled([
+                _bf_fetchJson(`/api/buy-funnel/summary?range=${encodeURIComponent(range)}`),
+                _bf_fetchJson(`/api/buy-funnel/gate-diagnostics?range=${encodeURIComponent(range)}`),
+                _bf_fetchJson(`/api/buy-funnel/rejection-reasons?range=${encodeURIComponent(range)}&limit=10`),
+                _bf_fetchJson(`/api/buy-funnel/near-miss?range=${encodeURIComponent(range)}&limit=25`),
+                _bf_fetchJson(`/api/buy-funnel/config-overlay?range=${encodeURIComponent(range)}`),
+                _bf_fetchJson(`/api/buy-funnel/joint-pass-flow?range=${encodeURIComponent(range)}`),
+            ]);
+            _bf_renderSummary(sumRes);
+            _bf_renderGates(gateRes);
+            _bf_renderRejectionReasons(rejRes);
+            _bf_renderJointPassFlow(jpRes);
+            _bf_renderNearMiss(nmRes);
+            _bf_renderConfigOverlay(cfgRes);
+        }
+
+        function _bf_renderSummary(r) {
+            const body = document.getElementById('buy-funnel-summary-body');
+            const load = document.getElementById('buy-funnel-summary-loading');
+            const err = document.getElementById('buy-funnel-summary-error');
+            const empty = document.getElementById('buy-funnel-summary-empty');
+            load.style.display = 'none';
+            if (r.status !== 'fulfilled') {
+                err.textContent = 'Error: ' + (r.reason && r.reason.message || String(r.reason));
+                err.style.display = 'block';
+                return;
+            }
+            const d = r.value;
+            if (d.error) {
+                err.textContent = d.error;
+                err.style.display = 'block';
+                return;
+            }
+            if (!d.cycles || d.cycles === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+            const fp = d.buy_funnel_v1 || { stages: [] };
+            const mixed = d.cycle_funnel_persistence_mixed || { stages: [], largest_dropoff_mixed: {} };
+            const off = d.off_path_mixed || {};
+            const lp = d.lifecycle_persistence || {};
+            const so = d.signal_outcomes || {};
+            let html = '';
+
+            // v0.1: BUY/SELL/HOLD/INVALID split alert (most actionable)
+            if (so.buy_is_zero) {
+                html += `<div style="background:#3a0a0a;border:1px solid #f85149;color:#f85149;padding:12px;border-radius:6px;margin-bottom:12px;font-size:13px;">
+                    <strong>⚠ Zero BUY signals in this window.</strong>
+                    ${Number(so.buy_count).toLocaleString()} BUY · ${Number(so.sell_count).toLocaleString()} SELL · ${Number(so.hold_count).toLocaleString()} HOLD · ${Number(so.invalid_count).toLocaleString()} invalid.
+                    The pipeline has not emitted any BUY signals.
+                </div>`;
+            }
+
+            // BUY-only funnel stages (semantic View B)
+            html += '<div style="font-size:12px;font-weight:600;color:#3fb950;text-transform:uppercase;margin-bottom:6px;">BUY-only signal funnel (v1 path)</div>';
+            html += '<div style="display:grid;grid-template-columns:repeat(6, 1fr);gap:8px;margin-bottom:12px;">';
+            for (const stage of fp.stages) {
+                const v = stage.count;
+                const display = (v === null || v === undefined) ? '—' : Number(v).toLocaleString();
+                html += `<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 8px;text-align:center;">
+                    <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">${_lc_escapeHtml(stage.name)}</div>
+                    <div style="font-size:20px;font-weight:600;color:${v === 0 ? '#f85149' : '#c9d1d9'};margin-top:4px;">${display}</div>
+                </div>`;
+            }
+            html += '</div>';
+
+            // cycle_funnel aggregates labelled MIXED (semantic View A)
+            html += '<div style="font-size:12px;font-weight:600;color:#d29922;text-transform:uppercase;margin-bottom:6px;">cycle_funnel aggregates (MIXED BUY+SELL — operational sanity only)</div>';
+            html += `<div style="font-size:11px;color:#d29922;margin-bottom:6px;">⚠ ${_lc_escapeHtml(mixed.warning || '')}</div>`;
+            html += '<div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:8px;margin-bottom:12px;">';
+            for (const stage of mixed.stages || []) {
+                const v = stage.count;
+                html += `<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 8px;text-align:center;">
+                    <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">${_lc_escapeHtml(stage.name)}</div>
+                    <div style="font-size:18px;font-weight:600;color:#c9d1d9;margin-top:4px;">${Number(v || 0).toLocaleString()}</div>
+                </div>`;
+            }
+            html += '</div>';
+
+            const ldm = mixed.largest_dropoff_mixed;
+            if (ldm && ldm.delta && ldm.delta > 0) {
+                html += `<div style="background:#3a2e0a;border:1px solid #d29922;color:#f0c674;padding:10px 12px;border-radius:6px;margin-bottom:12px;font-size:13px;">
+                    <strong>MIXED largest dropoff:</strong>
+                    ${_lc_escapeHtml(ldm.from_stage)} → ${_lc_escapeHtml(ldm.to_stage)}:
+                    <strong>${Number(ldm.delta).toLocaleString()}</strong> candidates (BUY+SELL combined).
+                </div>`;
+            }
+
+            // Off-path MIXED counts (note MIXED warning)
+            html += '<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;margin-bottom:12px;">';
+            html += `<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 12px;">
+                <div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Execution blocked (MIXED)</div>
+                <div style="font-size:16px;font-weight:600;color:#c9d1d9;">${Number(off.execution_blocked_count || 0).toLocaleString()}</div>
+                <div style="font-size:10px;color:#d29922;">${_lc_escapeHtml(off.warning || '')}</div>
+            </div>`;
+            html += `<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 12px;">
+                <div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Orders failed (MIXED)</div>
+                <div style="font-size:16px;font-weight:600;color:#c9d1d9;">${Number(off.orders_failed_count || 0).toLocaleString()}</div>
+            </div>`;
+            html += '</div>';
+
+            // SUBMITTED vs FILLED (clear distinction)
+            html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:10px 12px;font-size:13px;">';
+            html += '<div style="font-size:12px;font-weight:600;color:#8b949e;text-transform:uppercase;margin-bottom:6px;">Post-submission lifecycle (trades table)</div>';
+            html += '<div style="display:flex;gap:24px;align-items:baseline;">';
+            html += `<div><span style="color:#8b949e;">SUBMITTED rows:</span> <strong>${Number(lp.trades_submitted_count || 0).toLocaleString()}</strong></div>`;
+            html += `<div><span style="color:#8b949e;">FILLED rows:</span> <strong style="color:#3fb950;">${Number(lp.trades_filled_count || 0).toLocaleString()}</strong></div>`;
+            html += '</div>';
+            html += `<div style="font-size:11px;color:#8b949e;margin-top:6px;">
+                ${_lc_escapeHtml(lp.note || 'SUBMITTED ≠ FILLED; broker-accepted rows only become FILLED on fill-confirmation.')}
+            </div>`;
+            html += '</div>';
+            body.innerHTML = html;
+            body.style.display = 'block';
+        }
+
+        function _bf_pct(n, d) {
+            if (!d) return '0.0%';
+            return ((n / d) * 100).toFixed(1) + '%';
+        }
+
+        function _bf_renderGates(r) {
+            const body = document.getElementById('buy-funnel-gates-body');
+            const load = document.getElementById('buy-funnel-gates-loading');
+            const err = document.getElementById('buy-funnel-gates-error');
+            const empty = document.getElementById('buy-funnel-gates-empty');
+            load.style.display = 'none';
+            if (r.status !== 'fulfilled') {
+                err.textContent = 'Error: ' + (r.reason && r.reason.message || String(r.reason));
+                err.style.display = 'block';
+                return;
+            }
+            const d = r.value;
+            if (d.error) {
+                err.textContent = d.error;
+                err.style.display = 'block';
+                return;
+            }
+            if (!d.gates || d.gates.length === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+            // Gate table
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr style="border-bottom:1px solid #30363d;text-align:left;">';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Criterion</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Internal</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Pass</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Fail</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Pass %</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Fail %</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">N</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Observed range</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Applied threshold range</th>';
+            html += '</tr></thead><tbody>';
+            for (const g of d.gates) {
+                const reqTag = g.is_required
+                    ? '<span style="background:#da3633;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;margin-left:6px;vertical-align:middle;">REQUIRED</span>'
+                    : '<span style="background:#6e7681;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;margin-left:6px;vertical-align:middle;">ADVISORY</span>';
+                const failColor = g.is_required && g.fail_pct > 0.5 ? '#f85149' : '#c9d1d9';
+                html += '<tr style="border-bottom:1px solid #21262d;">';
+                html += `<td style="padding:6px 8px;">${_lc_escapeHtml(g.label || g.gate_name)}${reqTag}</td>`;
+                html += `<td style="padding:6px 8px;font-family:monospace;color:#8b949e;font-size:11px;">${_lc_escapeHtml(g.gate_name)}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;color:#3fb950;">${Number(g.passed).toLocaleString()}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;color:${failColor};">${Number(g.failed).toLocaleString()}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;">${_bf_pct(g.passed, g.total_evaluations)}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;color:${failColor};">${_bf_pct(g.failed, g.total_evaluations)}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;color:#8b949e;">${Number(g.total_evaluations).toLocaleString()}</td>`;
+                const obsRange = (g.sampled_observed_min !== undefined && g.sampled_observed_max !== undefined)
+                    ? `${g.sampled_observed_min.toFixed(2)}\u2013${g.sampled_observed_max.toFixed(2)}`
+                    : '<span style="color:#8b949e;">—</span>';
+                const thrRange = (g.sampled_threshold_min !== undefined && g.sampled_threshold_max !== undefined)
+                    ? `${g.sampled_threshold_min.toFixed(2)}\u2013${g.sampled_threshold_max.toFixed(2)}`
+                    : '<span style="color:#8b949e;">—</span>';
+                html += `<td style="padding:6px 8px;font-family:monospace;font-size:12px;">${obsRange}</td>`;
+                html += `<td style="padding:6px 8px;font-family:monospace;font-size:12px;">${thrRange}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+            // Joint pass rate callout
+            if (d.joint_pass_rate && d.joint_pass_rate.caution) {
+                const j = d.joint_pass_rate;
+                html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:10px 12px;font-size:13px;margin-top:12px;">';
+                html += '<div style="font-size:12px;font-weight:600;color:#8b949e;text-transform:uppercase;margin-bottom:6px;">Joint pass rate (passed ALL required gates)</div>';
+                if (j.rows_in_window > 0) {
+                    html += `<div><strong>${Number(j.passed_all_required_count).toLocaleString()}</strong> of <strong>${Number(j.rows_in_window).toLocaleString()}</strong> v1 decisions passed every required gate: <strong style="color:#3fb950;">${(j.passed_all_required_pct * 100).toFixed(2)}%</strong></div>`;
+                } else {
+                    html += `<div><span style="color:#8b949e;">No v1 decisions in this window.</span></div>`;
+                }
+                html += `<div style="font-size:11px;color:#8b949e;margin-top:6px;">${_lc_escapeHtml(j.caution)}</div>`;
+                html += '</div>';
+            }
+            body.innerHTML = html;
+            body.style.display = 'block';
+        }
+
+        function _bf_renderJointPassFlow(r) {
+            const body = document.getElementById('buy-funnel-joint-pass-body');
+            const load = document.getElementById('buy-funnel-joint-pass-loading');
+            const err = document.getElementById('buy-funnel-joint-pass-error');
+            const empty = document.getElementById('buy-funnel-joint-pass-empty');
+            load.style.display = 'none';
+            if (r.status !== 'fulfilled') {
+                err.textContent = 'Error: ' + (r.reason && r.reason.message || String(r.reason));
+                err.style.display = 'block';
+                return;
+            }
+            const d = r.value;
+            if (d.error) {
+                err.textContent = d.error;
+                err.style.display = 'block';
+                return;
+            }
+            const pop = d.joint_pass_population || {};
+            if (!pop.total) {
+                empty.style.display = 'block';
+                return;
+            }
+            let html = '';
+            // Headline: how many observations cleared BOTH gates AND their final signal
+            html += `<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:10px 12px;margin-bottom:8px;font-size:13px;">
+                <strong>Joint-pass population:</strong> ${Number(pop.total).toLocaleString()} observations passed BOTH rsi_oversold AND sma_uptrend in this window.<br>
+                <span style="color:#3fb950;">Final BUY: <strong>${Number(pop.buy_final || 0).toLocaleString()}</strong></span> ·
+                <span style="color:#d29922;">Final SELL: <strong>${Number(pop.sell_final || 0).toLocaleString()}</strong></span> ·
+                <span style="color:#8b949e;">HOLD: <strong>${Number(pop.hold_final || 0).toLocaleString()}</strong></span> ·
+                <span style="color:#f85149;">Invalid: <strong>${Number(pop.invalid || 0).toLocaleString()}</strong>
+            </div>`;
+            // BUY pipeline downstream
+            html += '<div style="font-size:12px;font-weight:600;color:#3fb950;text-transform:uppercase;margin:8px 0 6px;">BUY pipeline downstream (from joint-pass pop)</div>';
+            html += '<div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:8px;margin-bottom:8px;">';
+            const ds = [
+                ['Ranked BUY', pop.ranked_candidates || 0],
+                ['Execution Attempted', pop.execution_attempted || 0],
+                ['Execution Blocked', pop.execution_blocked || 0],
+                ['Order Submitted', pop.buy_submitted || 0],
+            ];
+            for (const [lbl, v] of ds) {
+                html += `<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;text-align:center;">
+                    <div style="font-size:10px;color:#8b949e;text-transform:uppercase;">${_lc_escapeHtml(lbl)}</div>
+                    <div style="font-size:16px;font-weight:600;color:#c9d1d9;margin-top:2px;">${Number(v).toLocaleString()}</div>
+                </div>`;
+            }
+            html += '</div>';
+            // Subsequent required gates (post-joint-pass filters)
+            const subGates = d.subsequent_required_gates || {};
+            const subGateNames = Object.keys(subGates);
+            if (subGateNames.length) {
+                html += '<div style="font-size:12px;font-weight:600;color:#8b949e;text-transform:uppercase;margin:8px 0 6px;">Other gates evaluated on joint-pass pop</div>';
+                html += '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;">';
+                html += '<thead><tr style="border-bottom:1px solid #30363d;text-align:left;"><th style="padding:6px;color:#8b949e;font-weight:500;">Gate</th><th style="padding:6px;color:#8b949e;font-weight:500;text-align:right;">Pass</th><th style="padding:6px;color:#8b949e;font-weight:500;text-align:right;">Fail</th></tr></thead><tbody>';
+                for (const gn of subGateNames) {
+                    const g = subGates[gn];
+                    html += `<tr style="border-bottom:1px solid #21262d;"><td style="padding:6px;font-family:monospace;font-size:12px;">${_lc_escapeHtml(gn)}</td><td style="padding:6px;text-align:right;color:#3fb950;">${Number(g.passed).toLocaleString()}</td><td style="padding:6px;text-align:right;color:#f85149;">${Number(g.failed).toLocaleString()}</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            // v0.2: HOLD-reason breakdown — owner-facing classification
+            // of WHY each joint-pass row emitted HOLD (instead of BUY).
+            const reasonBuckets = pop.hold_reason_buckets || {};
+            const reasonBucketNames = Object.keys(reasonBuckets);
+            if (reasonBucketNames.length) {
+                const reasonLabels = {
+                    "INVALID_DATA_FALLBACK": "Analyze-symbol fallback (SKIPPED_INVALID_DATA — gates are fallback HOLDs, not real evaluations)",
+                    "MTF_DISAGREEMENT": "Multi-timeframe disagreement (daily vs hourly conflict or no hourly data)",
+                    "OTHER_HOLD": "Other HOLD (not classified into the standard buckets)",
+                };
+                html += '<div style="font-size:12px;font-weight:600;color:#d29922;text-transform:uppercase;margin:8px 0 6px;">Why these joint-pass observations are still HOLD</div>';
+                html += '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;">';
+                html += '<thead><tr style="border-bottom:1px solid #30363d;text-align:left;"><th style="padding:6px;color:#8b949e;font-weight:500;">Reason bucket</th><th style="padding:6px;color:#8b949e;font-weight:500;text-align:right;">Count</th><th style="padding:6px;color:#8b949e;font-weight:500;text-align:right;">% of joint-pass</th></tr></thead><tbody>';
+                for (const rb of reasonBucketNames) {
+                    const n = reasonBuckets[rb];
+                    const pct = pop.total ? ((n / pop.total) * 100).toFixed(1) : '0.0';
+                    const label = reasonLabels[rb] || rb;
+                    html += `<tr style="border-bottom:1px solid #21262d;"><td style="padding:6px;">${_lc_escapeHtml(label)}</td><td style="padding:6px;text-align:right;">${Number(n).toLocaleString()}</td><td style="padding:6px;text-align:right;">${pct}%</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            html += `<div style="font-size:11px;color:#8b949e;margin-top:8px;">${_lc_escapeHtml(d.caution || '')}<br>Source: ${_lc_escapeHtml(d.source || '')}</div>`;
+            body.innerHTML = html;
+            body.style.display = 'block';
+        }
+
+        function _bf_renderRejectionReasons(r) {
+            const body = document.getElementById('buy-funnel-rejection-reasons-body');
+            const load = document.getElementById('buy-funnel-rejection-reasons-loading');
+            const err = document.getElementById('buy-funnel-rejection-reasons-error');
+            const empty = document.getElementById('buy-funnel-rejection-reasons-empty');
+            const denomBanner = document.getElementById('buy-funnel-rejection-reasons-denominator');
+            load.style.display = 'none';
+            if (r.status !== 'fulfilled') {
+                err.textContent = 'Error: ' + (r.reason && r.reason.message || String(r.reason));
+                err.style.display = 'block';
+                return;
+            }
+            const d = r.value;
+            if (d.error) {
+                err.textContent = d.error;
+                err.style.display = 'block';
+                return;
+            }
+            const reasons = d.top_rejection_reasons || [];
+            if (reasons.length === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+            // v0.1: explicit denominator banner so percentages can't be
+            // misinterpreted as % of decisions.
+            if (d.denominator) {
+                denomBanner.innerHTML = `<strong>Denominator:</strong> ${_lc_escapeHtml(d.denominator.label)} — <strong>${Number(d.denominator.count).toLocaleString()}</strong> rows (v0: ${Number(d.denominator.v0_failed_rows).toLocaleString()}, v1: ${Number(d.denominator.v1_failed_rows).toLocaleString()}).<br><span style="font-size:11px;">${_lc_escapeHtml(d.denominator.note || '')}</span><br><span style="font-size:11px;color:#f85149;">${_lc_escapeHtml(d.caution || '')}</span>`;
+                denomBanner.style.display = 'block';
+            }
+            // Use the server-computed share_of_denominator_pct (which is
+            // based on the FULL denominator, not just the top-N rows).
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr style="border-bottom:1px solid #30363d;text-align:left;">';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Gate</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Reason</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Count</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">% of failed rows</th>';
+            html += '</tr></thead><tbody>';
+            for (const it of reasons) {
+                const pct = (it.share_of_denominator_pct !== undefined
+                    ? it.share_of_denominator_pct
+                    : 0).toFixed(2);
+                html += '<tr style="border-bottom:1px solid #21262d;">';
+                html += `<td style="padding:6px 8px;font-family:monospace;font-size:12px;color:#8b949e;">${_lc_escapeHtml(it.gate_name)}</td>`;
+                html += `<td style="padding:6px 8px;">${_lc_escapeHtml(it.reason)}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;">${Number(it.count).toLocaleString()}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;">${pct}%</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+            html += `<div style="font-size:11px;color:#8b949e;margin-top:8px;">Source: ${_lc_escapeHtml(d.source || '')}</div>`;
+            body.innerHTML = html;
+            body.style.display = 'block';
+        }
+
+        function _bf_renderNearMiss(r) {
+            const body = document.getElementById('buy-funnel-near-miss-body');
+            const load = document.getElementById('buy-funnel-near-miss-loading');
+            const err = document.getElementById('buy-funnel-near-miss-error');
+            const empty = document.getElementById('buy-funnel-near-miss-empty');
+            load.style.display = 'none';
+            if (r.status !== 'fulfilled') {
+                err.textContent = 'Error: ' + (r.reason && r.reason.message || String(r.reason));
+                err.style.display = 'block';
+                return;
+            }
+            const d = r.value;
+            if (d.error) {
+                err.textContent = d.error;
+                err.style.display = 'block';
+                return;
+            }
+            const nm = d.near_miss || [];
+            if (nm.length === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr style="border-bottom:1px solid #30363d;text-align:left;">';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Symbol</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Only failed</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Observed</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Required (threshold)</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Score</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Reason</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Last decision</th>';
+            html += '</tr></thead><tbody>';
+            for (const r of nm) {
+                const obs = r.observed_value !== null && r.observed_value !== undefined ? r.observed_value.toFixed(3) : '—';
+                const thr = r.threshold_value !== null && r.threshold_value !== undefined ? r.threshold_value.toFixed(3) : '—';
+                const score = (r.total_score !== null && r.total_score !== undefined) ? r.total_score : '<span style="color:#8b949e;">—</span>';
+                const last = r.cycle_start ? _lc_fmtIso(r.cycle_start) : '<span style="color:#8b949e;">—</span>';
+                html += '<tr style="border-bottom:1px solid #21262d;">';
+                html += `<td style="padding:6px 8px;font-weight:600;color:#c9d1d9;">${_lc_escapeHtml(r.symbol)}</td>`;
+                html += `<td style="padding:6px 8px;">${_lc_escapeHtml(r.failed_gate_label || r.failed_gate)}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;font-family:monospace;">${_lc_escapeHtml(String(obs))}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;font-family:monospace;color:#8b949e;">${_lc_escapeHtml(String(thr))}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;color:#8b949e;">${typeof score === 'string' ? score : _lc_escapeHtml(String(score))}</td>`;
+                html += `<td style="padding:6px 8px;color:#8b949e;font-size:12px;">${_lc_escapeHtml(r.reason)}</td>`;
+                html += `<td style="padding:6px 8px;color:#8b949e;font-size:11px;">${last}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+            html += `<div style="font-size:11px;color:#8b949e;margin-top:8px;">
+                Dedup to the latest per (cycle_id, symbol) so repeated SmartBot scans of the same symbol do NOT fill the table.
+                Score is shown separately from eligibility (SCORE-002 architecture).
+                ${_lc_escapeHtml(d.caution || '')}
+            </div>`;
+            body.innerHTML = html;
+            body.style.display = 'block';
+        }
+
+        function _bf_renderConfigOverlay(r) {
+            const body = document.getElementById('buy-funnel-config-overlay-body');
+            const load = document.getElementById('buy-funnel-config-overlay-loading');
+            const err = document.getElementById('buy-funnel-config-overlay-error');
+            const empty = document.getElementById('buy-funnel-config-overlay-empty');
+            load.style.display = 'none';
+            if (r.status !== 'fulfilled') {
+                err.textContent = 'Error: ' + (r.reason && r.reason.message || String(r.reason));
+                err.style.display = 'block';
+                return;
+            }
+            const d = r.value;
+            if (d.error) {
+                err.textContent = d.error;
+                err.style.display = 'block';
+                return;
+            }
+            const overlay = d.overlay || [];
+            if (overlay.length === 0) {
+                empty.style.display = 'block';
+                return;
+            }
+            let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">';
+            html += '<thead><tr style="border-bottom:1px solid #30363d;text-align:left;">';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Criterion</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Currently configured (live)</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Applied min</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Applied max</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;text-align:right;">Differs?</th>';
+            html += '<th style="padding:6px 8px;color:#8b949e;font-weight:500;">Source</th>';
+            html += '</tr></thead><tbody>';
+            for (const o of overlay) {
+                const cur = (o.currently_configured_threshold !== null && o.currently_configured_threshold !== undefined)
+                    ? o.currently_configured_threshold.toFixed(4) : '<span style="color:#8b949e;">— (no live setting key)</span>';
+                const min = (o.sampled_applied_min !== null && o.sampled_applied_min !== undefined)
+                    ? o.sampled_applied_min.toFixed(4) : '<span style="color:#8b949e;">—</span>';
+                const max = (o.sampled_applied_max !== null && o.sampled_applied_max !== undefined)
+                    ? o.sampled_applied_max.toFixed(4) : '<span style="color:#8b949e;">—</span>';
+                const diff = o.differs
+                    ? '<strong style="color:#f0c674;">YES</strong>' : '<span style="color:#3fb950;">No</span>';
+                html += '<tr style="border-bottom:1px solid #21262d;">';
+                html += `<td style="padding:6px 8px;">${_lc_escapeHtml(o.label || o.gate_name)}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;font-family:monospace;">${cur}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;font-family:monospace;">${min}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;font-family:monospace;">${max}</td>`;
+                html += `<td style="padding:6px 8px;text-align:right;">${diff}</td>`;
+                html += `<td style="padding:6px 8px;color:#8b949e;font-size:11px;">${_lc_escapeHtml(o.currently_configured_source || '—')}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+            html += `<div style="font-size:11px;color:#8b949e;margin-top:8px;">${_lc_escapeHtml(d.caution || '')}</div>`;
+            body.innerHTML = html;
+            body.style.display = 'block';
+        }
+
 
         function refresh() {
             window.location.reload();
