@@ -1926,6 +1926,27 @@
                 }
                 html += '</tbody></table>';
             }
+            // v0.2: HOLD-reason breakdown — owner-facing classification
+            // of WHY each joint-pass row emitted HOLD (instead of BUY).
+            const reasonBuckets = pop.hold_reason_buckets || {};
+            const reasonBucketNames = Object.keys(reasonBuckets);
+            if (reasonBucketNames.length) {
+                const reasonLabels = {
+                    "INVALID_DATA_FALLBACK": "Analyze-symbol fallback (SKIPPED_INVALID_DATA — gates are fallback HOLDs, not real evaluations)",
+                    "MTF_DISAGREEMENT": "Multi-timeframe disagreement (daily vs hourly conflict or no hourly data)",
+                    "OTHER_HOLD": "Other HOLD (not classified into the standard buckets)",
+                };
+                html += '<div style="font-size:12px;font-weight:600;color:#d29922;text-transform:uppercase;margin:8px 0 6px;">Why these joint-pass observations are still HOLD</div>';
+                html += '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;">';
+                html += '<thead><tr style="border-bottom:1px solid #30363d;text-align:left;"><th style="padding:6px;color:#8b949e;font-weight:500;">Reason bucket</th><th style="padding:6px;color:#8b949e;font-weight:500;text-align:right;">Count</th><th style="padding:6px;color:#8b949e;font-weight:500;text-align:right;">% of joint-pass</th></tr></thead><tbody>';
+                for (const rb of reasonBucketNames) {
+                    const n = reasonBuckets[rb];
+                    const pct = pop.total ? ((n / pop.total) * 100).toFixed(1) : '0.0';
+                    const label = reasonLabels[rb] || rb;
+                    html += `<tr style="border-bottom:1px solid #21262d;"><td style="padding:6px;">${_lc_escapeHtml(label)}</td><td style="padding:6px;text-align:right;">${Number(n).toLocaleString()}</td><td style="padding:6px;text-align:right;">${pct}%</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
             html += `<div style="font-size:11px;color:#8b949e;margin-top:8px;">${_lc_escapeHtml(d.caution || '')}<br>Source: ${_lc_escapeHtml(d.source || '')}</div>`;
             body.innerHTML = html;
             body.style.display = 'block';

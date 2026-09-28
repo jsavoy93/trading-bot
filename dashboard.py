@@ -3337,14 +3337,59 @@ def api_get_settings():
 # Map gate_name -> whether it is a HARD requirement for BUY eligibility.
 # Derived from SmartBot's BUY-eligibility path: a candidate must pass
 # all `required_strategy_gates`. Any gate NOT in this set is advisory
-# scoring (e.g., BB / VWAP / Catalyst appear in score components but
-# are not hard blockers). Persisted production data only contains
-# `rsi_oversold` and `sma_uptrend` as `gate_category='strategy_gate'`.
-# Future categories (execution_gate, regime_gate, ...) will be added as
-# they become persisted; the dashboard derives from persisted data first
-# and falls back to this allowlist for labels.
-_BUY_FUNNEL_REQUIRED_GATES = frozenset({"rsi_oversold", "sma_uptrend"})
+# Persisted required BUY-gate allowlist, derived at RUNTIME.
+#
+# v0.2 owner correction: the actual daily BUY emission in
+# `src/core/smart_bot.py` requires FOUR conditions simultaneously inside
+# the `buy_eligible` expression:
+#   - rsi_oversold:  RSI < rsi_buy_threshold
+#   - sma_uptrend:   SMA fast > SMA slow
+#   - macd_positive: MACD histogram > 0
+#   - volume_confirmation: volume_ratio >= 1.0
+#                          (ONLY when `enable_volume_confirmation` is True)
+#
+# The persisted required-gate set MUST mirror this contract. Prior to
+# v0.2, the dashboard hardcoded only {rsi_oversold, sma_uptrend},
+# omitting `macd_positive` and ignoring the volume gate conditionally.
+# That was the OWNER-FLAGGED CONTRADICTION: a true BUY could not be
+# reached in production without those checks, so calling the persisted
+# union "the required BUY gates" was unsound.
+#
+# The runtime helper below is called PER REQUEST so a config flip on
+# `enable_volume_confirmation` is honored without code restart.
 _BUY_FUNNEL_ADVISORY_GATES = frozenset()  # future: e.g. catalyst_score, volatility_score
+
+
+def _buy_funnel_required_gates_runtime() -> frozenset:
+    """Return the CURRENTLY-required BUY gates.
+
+    Always: rsi_oversold, sma_uptrend, macd_positive.
+    Conditionally: volume_confirmation (only if enable_volume_confirmation
+    is currently True).
+
+    Reads from settings_service when available; falls back to the
+    documented default `enable_volume_confirmation=True`. If the
+    settings module cannot be imported (e.g. light-weight test loader
+    without PYTHONPATH), the fallback mirrors the production default
+    (volume required).
+    """
+    gates = {"rsi_oversold", "sma_uptrend", "macd_positive"}
+    vol = True  # default matches settings_service.py deployment default
+    try:
+        from src.core.settings_service import (  # type: ignore
+            get_setting as _get_setting,
+        )
+        try:
+            vol = bool(_get_setting("enable_volume_confirmation", default=True))
+        except Exception:
+            vol = True
+    except Exception:
+        # settings_service not importable in this loader. Production
+        # deployment default is True; preserve that.
+        vol = True
+    if vol:
+        gates.add("volume_confirmation")
+    return frozenset(gates)
 
 
 def _buy_funnel_required_gate_label(name: str) -> str:
@@ -3356,7 +3401,30 @@ def _buy_funnel_required_gate_label(name: str) -> str:
     return {
         "rsi_oversold": "RSI Oversold Threshold",
         "sma_uptrend": "SMA Uptrend (Fast > Slow)",
+        "macd_positive": "MACD Histogram > 0",
+        "volume_confirmation": "Volume Confirmation (>= 20-day avg)",
     }.get(name, name)
+
+
+def _bucket_hold_reason(primary_reason: str, tf_mode: str, decision_outcome: str) -> str:
+    """Map a HOLD row's primary_reason + tf_mode + decision_outcome to one
+    of the owner-facing buckets. These buckets answer the question:
+    "Of the rows passing RSI+SMA, why are they still HOLD?"
+
+    Buckets:
+      - INVALID_DATA_FALLBACK: SKIPPED_INVALID_DATA (analyze_symbol
+        returned None; the RSI+SMA gates are fallback HOLDs, not real
+        strategy evaluations).
+      - MTF_DISAGREEMENT: multi_timeframe row with HOLD_INELIGIBLE
+        and "no actionable" reason (MTF disagreement).
+      - OTHER_HOLD: anything else that survived but is still HOLD.
+    """
+    reason_str = str(primary_reason or "")
+    if decision_outcome == "SKIPPED_INVALID_DATA":
+        return "INVALID_DATA_FALLBACK"
+    if tf_mode == "multi_timeframe" and "no actionable" in reason_str.lower():
+        return "MTF_DISAGREEMENT"
+    return f"OTHER_{tf_mode}_{decision_outcome}"
 
 
 @app.get("/api/buy-funnel/summary")
@@ -3687,7 +3755,7 @@ def api_buy_funnel_gate_diagnostics(range_name: str = Query("24h", alias="range"
                 "gate_name": name,
                 "label": _buy_funnel_required_gate_label(name),
                 "category": slot["category"],
-                "is_required": name in _BUY_FUNNEL_REQUIRED_GATES,
+                "is_required": name in _buy_funnel_required_gates_runtime(),
                 "total_evaluations": total,
                 "passed": passed,
                 "failed": failed,
@@ -3710,7 +3778,7 @@ def api_buy_funnel_gate_diagnostics(range_name: str = Query("24h", alias="range"
         # the window + v1 only (v0 gates don't survive the join
         # reliably for per-symbol pass-rate; we surface this caveat
         # in the response).
-        required_list = list(_BUY_FUNNEL_REQUIRED_GATES)
+        required_list = list(_buy_funnel_required_gates_runtime())
         if not required_list:
             joint_pass = {"rows_in_window": 0, "passed_all_required_count": 0,
                           "passed_all_required_pct": 0.0,
@@ -3776,7 +3844,7 @@ def api_buy_funnel_gate_diagnostics(range_name: str = Query("24h", alias="range"
                 "PHASE-C14B-2C hybrid: v0=decision_history.decision_snapshot -> "
                 "$.strategy_eligibility.gates[]; v1=decision_gate_evaluations; "
                 "is_required tag is added by the BUY-funnel panel based on "
-                "_BUY_FUNNEL_REQUIRED_GATES allowlist"
+                "_buy_funnel_required_gates_runtime() allowlist"
             ),
         }
     except Exception as e:
@@ -4108,10 +4176,26 @@ def api_buy_funnel_joint_pass_flow(range_name: str = Query("24h", alias="range")
                 pop["buy_submitted"] += 1
             if ord_status == "FILLED":
                 pop["buy_filled"] += 1
-            # Execution checks blocker extraction
+            # Hold reason breakdown: cross-tab tf_mode × decision.outcome
+            # This tells the owner WHICH path each HOLD row took.
             try:
                 import json as _jp
                 snap = _jp.loads(r["decision_snapshot"] or "{}")
+                tf_mode = snap.get("timeframe_mode") or "unknown"
+                decision_outcome = (snap.get("decision") or {}).get("outcome") or "NO_DECISION"
+                primary_reason = (snap.get("decision") or {}).get("primary_reason") or "NO_REASON"
+                breakdown_key = f"{tf_mode}|{decision_outcome}"
+                pop.setdefault("_hold_breakdown", {})
+                pop["_hold_breakdown"][breakdown_key] = (
+                    pop["_hold_breakdown"].get(breakdown_key, 0) + 1
+                )
+                # First-level reason bucketing (for owner-facing summary)
+                reason_bucket = _bucket_hold_reason(primary_reason, tf_mode, decision_outcome)
+                pop.setdefault("_hold_reason_buckets", {})
+                pop["_hold_reason_buckets"][reason_bucket] = (
+                    pop["_hold_reason_buckets"].get(reason_bucket, 0) + 1
+                )
+                # Execution checks blocker extraction
                 checks = snap.get("execution_checks", [])
                 if isinstance(checks, list):
                     attempted = any(c.get("attempted") for c in checks if isinstance(c, dict))
@@ -4126,11 +4210,22 @@ def api_buy_funnel_joint_pass_flow(range_name: str = Query("24h", alias="range")
                         )
             except Exception:
                 pass
+        # Render the breakdowns in owner-friendly form
+        if "_hold_breakdown" in pop:
+            pop["hold_breakdown"] = {
+                k: v for k, v in sorted(pop["_hold_breakdown"].items(), key=lambda kv: -kv[1])
+            }
+            del pop["_hold_breakdown"]
+        if "_hold_reason_buckets" in pop:
+            pop["hold_reason_buckets"] = {
+                k: v for k, v in sorted(pop["_hold_reason_buckets"].items(), key=lambda kv: -kv[1])
+            }
+            del pop["_hold_reason_buckets"]
         # Subsequent required gates: look at OTHER (non-required) gates
         # that the population passed/failed. If MTF logic downgrades,
         # it appears here. We collect all gate names EXCEPT the BUY-required
         # set and report their pass/fail within the joint-pass population.
-        required_names = list(_BUY_FUNNEL_REQUIRED_GATES)
+        required_names = list(_buy_funnel_required_gates_runtime())
         placeholders_q = ",".join("?" for _ in required_names)
         if rows:
             ids = [r["id"] for r in rows]
@@ -4190,16 +4285,18 @@ def api_buy_funnel_joint_pass_flow(range_name: str = Query("24h", alias="range")
 
 @app.get("/api/buy-funnel/near-miss")
 def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limit: int = 25):
-    """Near-miss BUY candidates (corrected v0.1 BUY-semantic definition).
+    """Near-miss BUY candidates (v0.2 BUY-semantic definition — required-completeness).
 
-    Operational definition of a near-miss:
+    Operational definition of a near-miss (strict, v0.2):
       A (cycle_id, symbol) row in decision_history (v1 path) such that:
         1. exactly ONE of the BUY-funnel-required strategy gates
            (`rsi_oversold`, `sma_uptrend`) has `applied=1, passed=0`
-           recorded in decision_gate_evaluations; AND
-        2. EVERY OTHER required gate has a `passed=1` row recorded
-           (or no row, in which case we conservatively exclude the
-           candidate -- no decision is admitted on missing evidence); AND
+           recorded in decision_gate_evaluations (failed_n = 1); AND
+        2. EVERY OTHER required strategy gate has a `passed=1` row
+           recorded (passed_required_n >= 1). Absent rows do NOT
+           count as passed — if a required gate was not evaluated
+           we conservatively exclude the candidate rather than admit
+           it as a near miss on missing evidence; AND
         3. the row's actual emitted signal is NOT `SELL` (a SELL signal
            is a separate pipeline; this endpoint is BUY-only); AND
         4. the outcome is NOT `SKIPPED_INVALID_DATA` (those are data
@@ -4207,12 +4304,22 @@ def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limi
 
     The single failed gate is surfaced with its observed_value and
     threshold_value so the owner can see the exact gap. `total_score`
-    is shown as context only; it is NOT a hidden gate.
+    is shown as context only; it is NOT a hidden gate (SCORE-002).
 
-    Dedup: per (cycle_id, symbol), the latest (cycle_start, decision_history.id)
-    is the dedup key. Within the window this prevents the same symbol
-    from appearing dozens of times because SmartBot re-analyzes symbols
-    every cycle.
+    Implementation: CTE-based query that counts failed/required-pass/
+    any-required rows per decision_history_id. The check
+    `any_required_n = failed_n + passed_required_n` ensures that
+    every evaluated required-gate row is accounted for in the
+    passed-or-failed buckets (no orphan rows). Combined with
+    `passed_required_n >= 1`, this enforces that ABSENT required
+    gates do not count as passes (e.g., a row with only RSI evaluated
+    and RSI FAIL is NOT a near miss).
+
+    Dedup: per SYMBOL (v0.2 corrected). The latest (cycle_start,
+    decision_history.id) per symbol is kept. Within the window this
+    prevents the same symbol from appearing dozens of times because
+    SmartBot re-analyzes symbols every cycle. Owner requirement:
+    "latest relevant state per symbol for the selected range".
 
     Read-only. v1 path only.
 
@@ -4233,7 +4340,7 @@ def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limi
         cohort_sql, range_sql, params = _phase_c_window_predicates(
             range_name, "post_obs002", "dh.cycle_start"
         )
-        required = list(_BUY_FUNNEL_REQUIRED_GATES)
+        required = list(_buy_funnel_required_gates_runtime())
         if not required:
             return {
                 "range": range_name,
@@ -4247,39 +4354,63 @@ def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limi
         # Slice params: cohort_params first, range_params last.
         n_range_placeholders = range_sql.count("?")
         range_only_params = params[len(params) - n_range_placeholders:]
+        cohort_only_params = params[:max(0, len(params) - len(range_only_params))]
         g_range_sql = range_sql.replace("dh.cycle_start", "g.cycle_start").replace(
             "cf.cycle_start", "g.cycle_start"
         )
+        # We need a second copy of the cohort predicate bound to a
+        # `dh2` alias for the latest-per-symbol correlated subquery.
+        dh2_cohort_sql = (
+            cohort_sql
+            .replace("dh.cycle_start", "dh2.cycle_start")
+            .replace("(dh.", "(dh2.")
+        )
         placeholders = ",".join("?" for _ in required)
 
-        # ---- Step 1: find candidate decision_history rows in the window
-        # where the parent decision has BUY-shaped semantics.
+        # ---- Step 1: find the LATEST decision_history row per symbol
+        # within the selected window.
         #
-        # BUY-shaped semantics (defensive): the row is on the BUY-eligibility
-        # axis. We exclude:
-        #   - signal='SELL'      (this is a different pipeline)
-        #   - outcome LIKE '%SKIPPED_INVALID_DATA%'
-        # The remaining rows are HOLD or BUY-shaped; either way the single
-        # required-gate-fail pattern is meaningful (it captures candidates
-        # that COULD have been BUY with a different threshold).
+        # Owner requirement: "latest relevant state per symbol for the
+        # selected range". We select the most recent (cycle_start, id)
+        # row per symbol via a NOT EXISTS correlated subquery against
+        # `decision_history dh2` filtered by the SAME cohort predicate.
+        # Then we evaluate the near-miss contract against THAT row.
         #
-        # We do this with a single query that:
-        #   (a) filters parent decision_history via the LIKE predicates,
-        #   (b) JOINs the per-gate aggregate via a subquery.
-        # We compute the per-parent summary inside the SQL: counts of
-        # applied=1+passed=0 in required gates; counts of applied=1+passed=1
-        # in non-failed required gates.
+        # This is correct even when a symbol's NEWER row in the window
+        # does NOT satisfy the near-miss contract (failed_n != 1): the
+        # newer row IS the "latest relevant state" and either qualifies
+        # as a near miss (it appears) or it doesn't (the symbol does
+        # not appear). An older qualifying near miss is NOT surfaced if
+        # the symbol's newer state exists in the window.
+        #
+        # The correlated `dh2.cycle_start > dh.cycle_start OR
+        # (dh2.cycle_start = dh.cycle_start AND dh2.id > dh.id)`
+        # uses the same cycle_start column as the outer table; the
+        # cohort predicate `>= OBS_002_DEPLOYMENT_BOUNDARY_UTC` (or
+        # the `1=1` no-op for cohort='all') is re-bound with the same
+        # bound value via duplicated parameter binding below.
 
-        # Build a "left join" subquery that gives each parent a count of
-        # failed-required-gate rows and a count of passed-required-gate rows.
-        # We require exactly one failed AND at least one passed.
-        #
-        # Implementation: use the per-gate rows directly. Subquery gives
-        # for each decision_history_id the counts split.
+        # ---- Step 2: per-parent gate summary
+        # Same gating rules: failed_n counts applied=1+passed=0 rows
+        # among required gates; passed_required_n counts applied=1+passed=1
+        # rows among required gates; applied_required_n is the union
+        # (for the orphan-row check).
+
+        # ---- Step 3: combine latest-per-symbol with the gate summary
+        # and apply the near-miss contract (v0.2 strict):
+        #   - ALL currently-required BUY gates must have an applied=1
+        #     row recorded (any absent required gate EXCLUDES the
+        #     candidate — owner requirement: "absent != pass").
+        #   - Exactly ONE required gate may have passed=0 (failed_n = 1).
+        #   - Every other required gate must have passed=1
+        #     (failed_n + passed_required_n = applied_required_n =
+        #     number of currently-required gates; no orphans).
+        #   - Emitted signal != SELL and outcome != SKIPPED_INVALID_DATA.
 
         # Buy-side filter uses structured persisted truth via json_extract.
         # signal + outcome live inside decision_snapshot JSON; json_extract
         # reads the actual values (avoids brittle LIKE matching on JSON text).
+        required_count = len(required)
         sql_candidates = (
             "WITH per_parent AS ( "
             "  SELECT g.decision_history_id AS dhid, "
@@ -4288,35 +4419,54 @@ def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limi
             "         SUM(CASE WHEN g.applied=1 AND g.passed=1 AND g.gate_name IN ("
             f"{placeholders}) THEN 1 ELSE 0 END) AS passed_required_n, "
             "         SUM(CASE WHEN g.applied=1 AND g.gate_name IN ("
-            f"{placeholders}) THEN 1 ELSE 0 END) AS any_required_n "
+            f"{placeholders}) THEN 1 ELSE 0 END) AS applied_required_n "
             f"FROM decision_gate_evaluations g INDEXED BY idx_dge_cycle_start "
             f"WHERE {g_range_sql} "
             "  GROUP BY g.decision_history_id "
+            "), "
+            "latest_per_symbol AS ( "
+            "  SELECT dh.id, dh.cycle_id, dh.symbol, dh.cycle_start, "
+            "         dh.session_id, dh.decision_snapshot "
+            "  FROM decision_history dh INDEXED BY idx_decision_history_cycle_start "
+            f"  WHERE {cohort_sql} "
+            "    AND NOT EXISTS ( "
+            "      SELECT 1 FROM decision_history dh2 "
+            "      WHERE dh2.symbol = dh.symbol "
+            f"        AND {dh2_cohort_sql} "
+            "        AND (dh2.cycle_start > dh.cycle_start "
+            "             OR (dh2.cycle_start = dh.cycle_start "
+            "                 AND dh2.id > dh.id)) "
+            "    ) "
             ") "
-            "SELECT dh.id, dh.cycle_id, dh.symbol, dh.cycle_start, dh.session_id, "
-            "       dh.decision_snapshot "
-            "FROM per_parent pp "
-            "  JOIN decision_history dh ON dh.id = pp.dhid "
-            f"WHERE {cohort_sql} "
-            "  AND pp.failed_n = 1 "
-            "  AND pp.passed_required_n >= 1 "
-            "  AND pp.any_required_n = pp.failed_n + pp.passed_required_n "
-            "  AND COALESCE(json_extract(dh.decision_snapshot, "
+            "SELECT lp.id, lp.cycle_id, lp.symbol, lp.cycle_start, lp.session_id, "
+            "       lp.decision_snapshot "
+            "FROM latest_per_symbol lp "
+            "  JOIN per_parent pp ON pp.dhid = lp.id "
+            "WHERE pp.failed_n = 1 "
+            "  AND pp.applied_required_n = ? "  # ALL required gates must be applied
+            "  AND pp.failed_n + pp.passed_required_n = pp.applied_required_n "
+            "  AND COALESCE(json_extract(lp.decision_snapshot, "
             "        '$.strategy_eligibility.signal'), 'HOLD') != 'SELL' "
-            "  AND COALESCE(json_extract(dh.decision_snapshot, "
+            "  AND COALESCE(json_extract(lp.decision_snapshot, "
             "        '$.strategy_eligibility.outcome'), '') != 'SKIPPED_INVALID_DATA' "
-            "ORDER BY dh.cycle_start DESC, dh.id DESC "
+            "ORDER BY lp.cycle_start DESC, lp.id DESC "
             f"LIMIT {int(limit)}"
         )
         # Bind order matches placeholder order:
-        #   - 6 placeholders for the 3 SUM(...) IN clauses (required * 3)
+        #   - 6 placeholders for the 3 SUM(...) IN clauses
+        #     (required * 3 IN clauses; each IN gets the same `required` list)
         #   - 1 placeholder for the range predicate on g.cycle_start
-        #   - 1 placeholder for the cohort predicate on dh.cycle_start
-        cohort_only_params = params[:max(0, len(params) - len(range_only_params))]
+        #   - 1 placeholder for the outer cohort predicate on dh.cycle_start
+        #     (in latest_per_symbol)
+        #   - 1 placeholder for the inner cohort predicate on dh2.cycle_start
+        #     (NOT EXISTS bound to the SAME bound value as the outer)
+        #   - 1 placeholder for required_count (applied_required_n = ?)
         all_params = (
             tuple(required) * 3
             + tuple(range_only_params)
             + tuple(cohort_only_params)
+            + tuple(cohort_only_params)
+            + (required_count,)
         )
         candidate_rows = cur.execute(sql_candidates, all_params).fetchall()
 
@@ -4335,14 +4485,19 @@ def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limi
                     "outcome. Score is shown separately from eligibility (SCORE-002)."
                 ),
                 "source": (
-                    "decision_history (v1) + decision_gate_evaluations (v1) via CTE "
-                    "per-parent summary; in-Python dedup to the latest per "
-                    "(cycle_id, symbol)"
+                    "decision_history (v1) + decision_gate_evaluations (v1) via CTE; "
+                    "latest-per-symbol dedup done in SQL via NOT EXISTS correlated "
+                    "subquery against the same cohort window; total_score carried "
+                    "as context only (SCORE-002)"
                 ),
             }
 
-        # Coerce rows to plain dicts (defensive vs sqlite3.Row).
-        candidates = [
+        # v0.2 final correctness: dedup is now performed INSIDE the SQL via
+        # the latest_per_symbol CTE (NOT EXISTS correlated subquery).
+        # Each returned row is the latest per-symbol decision_history row
+        # that survives the near-miss contract filter. There is no need
+        # for a second in-Python dedup pass.
+        deduped = [
             {
                 "id": r["id"],
                 "cycle_id": r["cycle_id"],
@@ -4353,17 +4508,6 @@ def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limi
             }
             for r in candidate_rows
         ]
-        # Dedup to latest per (cycle_id, symbol). cycle_start DESC already.
-        seen = set()
-        deduped = []
-        for c in candidates:
-            key = (c["cycle_id"], c["symbol"])
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(c)
-            if len(deduped) >= int(limit):
-                break
 
         # ---- Step 2: fetch the detail (failed_gate + observed + threshold
         # + reason) for each deduped parent.
@@ -4426,9 +4570,9 @@ def api_buy_funnel_near_miss(range_name: str = Query("24h", alias="range"), limi
             ),
             "source": (
                 "decision_history (v1) + decision_gate_evaluations (v1) via "
-                "CTE per-parent summary; in-Python dedup to the latest per "
-                "(cycle_id, symbol); total_score carried as context only "
-                "(SCORE-002)."
+                "CTE; latest-per-symbol dedup done in SQL via NOT EXISTS "
+                "correlated subquery against the same cohort window; "
+                "total_score carried as context only (SCORE-002)."
             ),
         }
     except Exception as e:
@@ -4479,9 +4623,11 @@ def api_buy_funnel_config_overlay(range_name: str = Query("24h", alias="range"))
         gate_to_setting_key = {
             "rsi_oversold": "rsi_oversold_threshold",
             "sma_uptrend": None,  # SMA uptrend is structural (fast > slow) not a scalar
+            "macd_positive": None,  # MACD positive is structural (histogram > 0) not a scalar
+            "volume_confirmation": "enable_volume_confirmation",  # boolean toggle
         }
         overlay = []
-        for gate_name in sorted(_BUY_FUNNEL_REQUIRED_GATES):
+        for gate_name in sorted(_buy_funnel_required_gates_runtime()):
             setting_key = gate_to_setting_key.get(gate_name)
             current_value = None
             current_source = None

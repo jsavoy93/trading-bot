@@ -644,3 +644,330 @@ def test_near_miss_uses_structured_json_extract_not_like(client):
     # The structured approach is verified by the fact that production
     # rows now appear without the previous LIKE-matching bug.
     assert "error" not in d
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# v0.2 FINAL CORRECTNESS PASS — required gate completeness
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _build_synthetic_db_v02(path: Path, scenario: str):
+    """Synthetic DB for v0.2 near-miss required-completeness + dedup tests.
+
+    The v0.2 final-correctness pass tightens the required BUY gates from
+    `{rsi_oversold, sma_uptrend}` to the FULL set required by signal
+    emission: `{rsi_oversold, sma_uptrend, macd_positive, volume_confirmation}`
+    (volume_confirmation is removed if config disables it).
+
+    ABSENCE RULE (owner requirement): for a row to qualify as a near miss,
+    every currently-required BUY gate must have an APPLIED row recorded.
+    Absent rows do NOT count as passes \u2014 they EXCLUDE the candidate.
+
+    Scenario codes:
+      VALID_NEAR_MISS:           RSI PASS + SMA FAIL + MACD PASS + VOL PASS
+                                 (exactly one required gate fails; all
+                                 others applied + passed) \u2192 valid
+      ALL_PASS:                  All four required gates applied + passed
+                                 \u2192 NOT a near miss (full eligibility)
+      FAIL_BOTH_RSI_SMA:         RSI FAIL + SMA FAIL + MACD PASS + VOL PASS
+                                 \u2192 NOT a near miss (failed_n = 2)
+      FAIL_RSI_ABSENT_SMA:       RSI FAIL + SMA absent + MACD PASS + VOL PASS
+                                 \u2192 NOT a near miss (SMA required and
+                                 absent \u2014 absence excludes)
+      FAIL_ABSENT_MACD:          RSI PASS + SMA PASS + MACD absent + VOL PASS
+                                 \u2192 NOT a near miss (macd_positive is
+                                 required and absent)
+      FAIL_ABSENT_VOLUME:        RSI PASS + SMA PASS + MACD PASS + VOL absent
+                                 \u2192 NOT a near miss (volume_confirmation
+                                 is required when enable_volume_confirmation
+                                 is True; absence excludes)
+      MACD_FAIL_NEAR_MISS:       RSI PASS + SMA PASS + MACD FAIL + VOL PASS
+                                 \u2192 valid near miss (macd is sole fail)
+      SELL_PARENT_NOT_NEAR_MISS: RSI PASS + SMA FAIL + MACD PASS + VOL PASS
+                                 but signal=SELL \u2192 excluded by SELL filter
+      INVALID_DATA_NOT_NM:       same gate pattern as VALID_NEAR_MISS but
+                                 outcome=SKIPPED_INVALID_DATA \u2192 excluded
+
+    Plus dedup scenarios (Task C):
+      LATEST_NEAR_MISS_NEWER_NOT_NEAR_MISS: same symbol X, T1 near miss,
+        T2 (newer, with MACD absent) non-near miss \u2192 X must NOT appear.
+      LATEST_NEAR_MISS_REPLACES_OLDER: same symbol X, T1 RSI/SMA FAIL,
+        T2 (newer, different gate FAIL) also near miss \u2192 appears once
+        with the newer failed_gate.
+    """
+    conn = sqlite3.connect(str(path))
+    cur = conn.cursor()
+    cur.executescript("""
+        CREATE TABLE decision_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            analytics_persistence_version INTEGER DEFAULT 1,
+            decision_snapshot TEXT,
+            session_id INTEGER,
+            created_at TEXT
+        );
+        CREATE INDEX idx_decision_history_cycle_start ON decision_history(cycle_start);
+        CREATE TABLE decision_gate_evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_history_id INTEGER NOT NULL,
+            cycle_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            cycle_start TEXT NOT NULL,
+            ordinality INTEGER NOT NULL,
+            gate_name TEXT NOT NULL,
+            gate_category TEXT NOT NULL,
+            applied INTEGER NOT NULL,
+            passed INTEGER NOT NULL,
+            observed_value REAL,
+            threshold_value REAL,
+            reason TEXT
+        );
+        CREATE INDEX idx_dge_cycle_start ON decision_gate_evaluations(cycle_start);
+    """)
+    if scenario == "VALID_NEAR_MISS":
+        # symbol AAA: RSI PASS, SMA FAIL, MACD PASS, VOL PASS \u2192 valid (sole fail = sma)
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "ALL_PASS":
+        # symbol EEE: every required gate applied and passed \u2192 not a near miss
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "FAIL_BOTH_RSI_SMA":
+        # symbol DDD: two required gates fail \u2192 not a near miss
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 9.0, 11.0, 'sma fail'), (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "FAIL_RSI_ABSENT_SMA":
+        # symbol CCC: RSI FAIL + SMA required-but-absent \u2192 not a near miss
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 2, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 3, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "FAIL_ABSENT_MACD":
+        # symbol FFF: macd_positive required-and-absent \u2192 not a near miss
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 3, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "FAIL_ABSENT_VOLUME":
+        # symbol VVV: volume_confirmation required-and-absent \u2192 not a near miss
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok')")
+    elif scenario == "MACD_FAIL_NEAR_MISS":
+        # symbol MMM: macd is the sole fail \u2192 valid near miss
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 0, -0.3, 0.0, 'macd fail'), (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "VOLUME_FAIL_NEAR_MISS":
+        # symbol GGG: volume is the sole fail \u2192 valid near miss
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 0, 0.5, 1.0, 'vol fail')")
+    elif scenario == "SELL_PARENT_NOT_NEAR_MISS":
+        # symbol SSS: SELL signal \u2192 near-miss must exclude (different pipeline)
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 1, '{\"strategy_eligibility\": {\"signal\": \"SELL\", \"outcome\": \"BUY_INELIGIBLE\"}}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "INVALID_DATA_NOT_NM":
+        # symbol III: SKIPPED_INVALID_DATA outcome \u2192 excluded by outcome filter
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 1, '{\"strategy_eligibility\": {\"signal\": \"HOLD\", \"outcome\": \"SKIPPED_INVALID_DATA\"}}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    elif scenario == "LATEST_NEAR_MISS_NEWER_NOT_NEAR_MISS":
+        # symbol QQQ: T1 valid near miss, T2 (newer) invalid_data outcome
+        # (excluded by signal/outcome filter), so QQQ should NOT appear.
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (21, 'c_dedup_q2', 'QQQ', '2026-09-27T20:00:00+00:00', 1, '{\"strategy_eligibility\": {\"signal\": \"HOLD\", \"outcome\": \"SKIPPED_INVALID_DATA\"}}')")
+    elif scenario == "LATEST_NEAR_MISS_REPLACES_OLDER":
+        # symbol RRR: T1 has sma fail, T2 (newer) has rsi fail. Both near miss.
+        # Expected: appears once, with failed_gate='rsi_oversold' (newer wins).
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 1, '{}')")
+        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+    conn.commit()
+    conn.close()
+
+
+def _near_miss_for_synthetic(scenario: str, monkeypatch):
+    """Build a synthetic DB in tmp_path, monkey-patch dashboard._phase_c_open_db
+    to return a connection to it, and call /near-miss."""
+    import os
+    from fastapi.testclient import TestClient
+    import dashboard as _d
+    import sqlite3 as _sql
+    tmp = Path("/tmp/_synth_nm_v02")
+    if tmp.exists():
+        import shutil; shutil.rmtree(tmp)
+    tmp.mkdir()
+    synth = tmp / "synthetic.db"
+    _build_synthetic_db_v02(synth, scenario)
+    # Open connection and monkey-patch
+    conn = _sql.connect(str(synth), check_same_thread=False)
+    conn.row_factory = _sql.Row
+    monkeypatch.setattr(_d, "_phase_c_open_db", lambda: conn)
+    try:
+        c = TestClient(_d.app)
+        r = c.get("/api/buy-funnel/near-miss", params={"range": "7d", "limit": 50})
+        return r.json()
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def test_near_miss_rsi_fail_sma_absent_is_NOT_near_miss(monkeypatch):
+    """Owner requirement: RSI FAIL + SMA absent is NOT a valid near miss.
+    Absent is not the same as passing."""
+    d = _near_miss_for_synthetic("FAIL_RSI_ABSENT_SMA", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "CCC" not in syms, \
+        f"RSI FAIL + SMA absent (CCC) must NOT be a near miss; got {syms}"
+
+
+def test_near_miss_rsi_pass_sma_fail_IS_near_miss(monkeypatch):
+    """RSI PASS + SMA FAIL is a valid near miss (exactly one required fails,
+    all other required evaluated and passed)."""
+    d = _near_miss_for_synthetic("VALID_NEAR_MISS", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "AAA" in syms, \
+        f"RSI PASS + SMA FAIL (AAA) MUST be a near miss; got {syms}"
+
+
+def test_near_miss_all_pass_is_NOT_near_miss(monkeypatch):
+    """All four required gates pass \u2192 row is fully eligible, not a near miss."""
+    d = _near_miss_for_synthetic("ALL_PASS", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "EEE" not in syms, \
+        f"All required pass (EEE) is not a near miss; got {syms}"
+
+
+def test_near_miss_both_fail_is_NOT_near_miss(monkeypatch):
+    """Two required gates both failed \u2192 not a near miss (failed_n != 1)."""
+    d = _near_miss_for_synthetic("FAIL_BOTH_RSI_SMA", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "DDD" not in syms, \
+        f"Both required fail (DDD) must NOT be a near miss; got {syms}"
+
+
+def test_near_miss_absent_macd_excludes(monkeypatch):
+    """macd_positive is currently-required. RSI FAIL + SMA PASS with macd
+    absent must NOT be a valid near miss."""
+    d = _near_miss_for_synthetic("FAIL_ABSENT_MACD", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "FFF" not in syms, \
+        f"macd_positive absent (FFF) must NOT be a near miss; got {syms}"
+
+
+def test_near_miss_absent_volume_excludes(monkeypatch):
+    """volume_confirmation is required when enable_volume_confirmation is True
+    (production default). volume absent must NOT be a valid near miss."""
+    d = _near_miss_for_synthetic("FAIL_ABSENT_VOLUME", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "VVV" not in syms, \
+        f"volume_confirmation absent (VVV) must NOT be a near miss; got {syms}"
+
+
+def test_near_miss_macd_sole_fail_IS_near_miss(monkeypatch):
+    """RSI PASS + SMA PASS + MACD FAIL + VOL PASS \u2192 valid near miss
+    (macd_positive is the sole failing required gate)."""
+    d = _near_miss_for_synthetic("MACD_FAIL_NEAR_MISS", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [(it["symbol"], it.get("failed_gate")) for it in d.get("near_miss", [])]
+    assert any(s == ("MMM", "macd_positive") for s in syms), \
+        f"macd sole fail (MMM) MUST be a near miss with failed_gate=macd_positive; got {syms}"
+
+
+def test_near_miss_volume_sole_fail_IS_near_miss(monkeypatch):
+    """RSI PASS + SMA PASS + MACD PASS + VOL FAIL \u2192 valid near miss
+    (volume_confirmation is the sole failing required gate)."""
+    d = _near_miss_for_synthetic("VOLUME_FAIL_NEAR_MISS", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [(it["symbol"], it.get("failed_gate")) for it in d.get("near_miss", [])]
+    assert any(s == ("GGG", "volume_confirmation") for s in syms), \
+        f"volume sole fail (GGG) MUST be a near miss with failed_gate=volume_confirmation; got {syms}"
+
+
+def test_near_miss_sell_parent_excluded(monkeypatch):
+    """A parent row with signal=SELL must NOT be a near miss even if
+    its required-gate pattern matches."""
+    d = _near_miss_for_synthetic("SELL_PARENT_NOT_NEAR_MISS", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "SSS" not in syms, \
+        f"SELL signal (SSS) must NOT be a near miss; got {syms}"
+
+
+def test_near_miss_invalid_data_outcome_excluded(monkeypatch):
+    """A parent row with outcome=SKIPPED_INVALID_DATA must NOT be a
+    near miss even if its required-gate pattern matches."""
+    d = _near_miss_for_synthetic("INVALID_DATA_NOT_NM", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "III" not in syms, \
+        f"SKIPPED_INVALID_DATA outcome (III) must NOT be a near miss; got {syms}"
+
+
+def test_near_miss_dedup_latest_state_blocks_older(monkeypatch):
+    """Owner requirement: 'latest relevant state per symbol'.
+    If a symbol's T1 is a near miss and T2 (newer, in-window) is not,
+    the symbol must NOT appear using the older state."""
+    d = _near_miss_for_synthetic("LATEST_NEAR_MISS_NEWER_NOT_NEAR_MISS", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    syms = [it["symbol"] for it in d.get("near_miss", [])]
+    assert "QQQ" not in syms, \
+        f"Older near miss + newer non-near-miss (QQQ) must NOT appear; got {syms}"
+
+
+def test_near_miss_dedup_newer_replaces_older(monkeypatch):
+    """If a symbol's T1 and T2 are both near misses with different failed
+    gates, the symbol must appear ONCE with the newer state."""
+    d = _near_miss_for_synthetic("LATEST_NEAR_MISS_REPLACES_OLDER", monkeypatch)
+    assert "error" not in d, f"endpoint error: {d}"
+    items = [it for it in d.get("near_miss", []) if it["symbol"] == "RRR"]
+    assert len(items) == 1, \
+        f"RRR must appear exactly once; got {items}"
+    assert items[0]["failed_gate"] == "rsi_oversold", \
+        f"newer state (rsi fail) must win; got failed_gate={items[0]['failed_gate']!r}"
+
+
+def test_near_miss_required_gates_include_macd_and_volume():
+    """v0.2 contract: the runtime required-gate set MUST include
+    macd_positive always, and volume_confirmation when
+    enable_volume_confirmation is True (production default)."""
+    import dashboard
+    assert hasattr(dashboard, "_buy_funnel_required_gates_runtime"), (
+        "dashboard must expose _buy_funnel_required_gates_runtime()"
+    )
+    rg = dashboard._buy_funnel_required_gates_runtime()
+    required = set(rg) if not isinstance(rg, frozenset) else rg
+    # Always-required
+    assert "rsi_oversold" in required, f"rsi_oversold missing from {rg}"
+    assert "sma_uptrend" in required, f"sma_uptrend missing from {rg}"
+    assert "macd_positive" in required, (
+        f"macd_positive MUST be in required set (v0.2 contract from "
+        f"src/core/smart_bot.py); got {rg}"
+    )
+    # Conditional: production default = True
+    assert "volume_confirmation" in required, (
+        f"volume_confirmation must be required when enable_volume_confirmation=True "
+        f"(production default); got {rg}"
+    )
+    # Old module-level frozenset should not exist (replaced by runtime helper)
+    assert not hasattr(dashboard, "_BUY_FUNNEL_REQUIRED_GATES") or \
+        dashboard._BUY_FUNNEL_REQUIRED_GATES is None, (
+        "v0.2: stale module-level _BUY_FUNNEL_REQUIRED_GATES constant must be replaced by "
+        "the runtime helper"
+    )
+
+
+def test_near_miss_does_not_count_advisory_or_scoring_components():
+    """SCORE-002: scoring components (rsi_score, sma_score, etc.) MUST NOT
+    be in the runtime required-gate set. Only required gates count."""
+    import dashboard
+    rg = dashboard._buy_funnel_required_gates_runtime()
+    forbidden = {"rsi_score", "sma_score", "macd_score", "bb_score",
+                 "catalyst_score", "regime_score"}
+    leaked = forbidden.intersection(set(rg))
+    assert not leaked, (
+        f"scoring/advisory components leaked into the required set: {leaked}"
+    )
