@@ -4367,3 +4367,99 @@ HOLD (with data)" with "daily BUY + no hourly data".
 - Owner reviews the corrected branch.
 - Authorizes or rejects merge.
 - After merge + deploy: production sample collection per REPORT.md queries.
+
+---
+
+# MTF BUY OBSERVABILITY — Merge + Deploy + Prospective Sample (2026-09-29 22:30 UTC)
+
+## Task
+Bounded merge + deploy + prospective evidence collection per owner authorization.
+
+## Merge
+- PR #105 (HEAD `7800e20` at merge time)
+- Merge SHA: `d0e62d21b980b61bf8fdf9f03e9a5ed8bba60784` (no-ff)
+- Local + origin/main both at `d0e62d2`
+- 5 files, +1681 / -0, strictly additive
+
+## Deployment
+- OLD PID 1234810 → NEW PID 1239963
+- Deployment timestamp: `2026-09-29 22:15:50 UTC` (ExecMainStartTimestamp)
+- First post-deploy cycle_start: `2026-09-29T22:15:54 UTC` (this is the effective deployment boundary for analytics)
+- NRestarts: 0
+- PPID: 1113 (user systemd), UID 0
+- ActiveState: active, SubState: running
+- PAPER env verified on new PID: ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2, TRADING_BOT_PAPER_ONLY=1
+- 1 SmartBot process (no orphan)
+- 0 import errors, 0 tracebacks, 0 snapshot serialization errors, 0 SQLite errors
+- MKT-CACHE operational
+
+## Sample
+- 1140 fresh decisions (id >= 2266016, post-deploy window 22:16:06 → 22:28:38 UTC, 12m 32s)
+- 1066 with multi_timeframe block (2-TF path)
+- 15 single-timeframe rows (multi_timeframe = null; SKIPPED_INVALID_DATA)
+- 0 actual BUY
+- 1 actual SELL candidate (ANV, DAILY_ONLY_SELL, blocked at position-existence check)
+
+## Headline Findings (Evidence Only — No Strategy Change)
+- 99.0% NO_ACTION (1055/1066 2-TF rows)
+- 71.4% daily_hold_hourly_hold_no_action
+- 27.6% daily_hold_no_hourly_data_no_action
+- 0 CONFLICTED in 12m (matches historical ~0.4% rate)
+- 0 daily=BUY+hourly=BUY (AGREE_BUY never fired)
+- 0 daily=BUY+hourly=HOLD (corrected mapping fired 0 times)
+- 27.8% hourly data unavailable (operational finding)
+
+## MTF Persistence Verified Live
+Snapshot path: `decision_snapshot.multi_timeframe.{daily_signal, hourly_signal, hourly_data_available, mtf_outcome, mtf_reason}`
+
+Sample (id=2266384 sym=TRC):
+```json
+{
+  "daily_signal": null,
+  "hourly_signal": "BUY",
+  "hourly_data_available": true,
+  "mtf_outcome": "HOURLY_ONLY_BUY",
+  "mtf_reason": "daily_hold_hourly_buy_no_action"
+}
+```
+
+Sample (id=2267047 sym=ANV — only non-HOLD outcome):
+```json
+{
+  "daily_signal": "SELL",
+  "hourly_signal": "HOLD",
+  "hourly_data_available": false,
+  "mtf_outcome": "DAILY_ONLY_SELL",
+  "mtf_reason": "daily_sell_no_hourly_data_daily_only"
+}
+```
+Plus the strategy_eligibility layer correctly recorded DAILY_ONLY strength.
+Plus the decision layer recorded SELL_BLOCKED_DYNAMIC with primary_reason
+"Position check raised: 40410000 position does not exist".
+
+## Null/Unavailable Semantics Verified
+- multi_timeframe = null → single-timeframe or invalid-data path
+- hourly_data_available = false → hourly indicators not computed
+- hourly_data_available = true, hourly_signal = null → hourly evaluated but neutral
+- No fake normal-strategy reasons fabricated on invalid-data paths
+
+## Safety
+- Strategy changed: NO
+- DB schema unchanged
+- Historical rows untouched (no backfill)
+- No live trading
+- No broker credentials touched
+- Unrelated services unchanged: trading-dashboard 1212213, dashboard 1067605, openclaw-gateway 965975, cloudflared 656088
+
+## Reports
+- REPORT.md (gitignored rolling)
+- reports/2026-09-29_223500_mtf-buy-observability-merge-deploy-sample.md (archive, committed)
+
+## Decision
+**MTF BUY OBSERVABILITY MERGED AND DEPLOYED — PROSPECTIVE MTF EVIDENCE COLLECTED — AWAITING STRATEGY REVIEW**
+
+## Next
+- Owner reviews evidence.
+- Strategy tuning requires separate owner authorization.
+- Dashboard work separate bounded step.
+- Daily validation cycles continue.
