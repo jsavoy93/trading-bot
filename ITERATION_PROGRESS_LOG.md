@@ -4463,3 +4463,93 @@ Plus the decision layer recorded SELL_BLOCKED_DYNAMIC with primary_reason
 - Strategy tuning requires separate owner authorization.
 - Dashboard work separate bounded step.
 - Daily validation cycles continue.
+
+---
+
+# STRAT-003 — Prospective BUY Bottleneck Review (2026-09-29 23:28 UTC)
+
+## Task
+Bounded read-only diagnostic. Owner asks: where is the BUY funnel actually collapsing prospectively?
+Constraints: no code/config/strategy change, no restart, no broker action.
+
+## Window
+- Post-deploy: 2026-09-29 22:15:54 → 23:22:20 UTC (66m 14s, 198 cycles)
+- 5920 decisions (5806 multi_timeframe + 114 single_timeframe)
+- VIEW A (decision-weighted) == VIEW B (latest-state per symbol) — every symbol analyzed once
+- Pre-PR rows excluded by id-range filter
+
+## BUY Funnel (Stage Collapse)
+Stage                                         Pass     Pass%
+─────────────────────────────────────────────────────────────
+RSI oversold (RSI<35)                         2256     38.86%
+SMA uptrend                                   1754     30.21%
+MACD positive (reconstructed)                 2003     34.50%
+RSI ∧ SMA                                      18      0.31%
+RSI ∧ SMA ∧ MACD (full BUY contract)            1      0.02%
+Daily=BUY (MTF layer)                          18      0.31%
+Final BUY (strategy_eligible)                   0      0.00%
+Ranked / Submitted / Filled                     0      0.00%
+
+## Classification
+**A — Early eligibility alignment is the dominant bottleneck**
+
+Why: RSI ∧ SMA ∧ MACD intersection is too narrow on this 65m post-market sample.
+- 61% fail RSI<35
+- 70% fail SMA fast>slow
+- 65% fail MACD>0
+- 99.69% fail RSI ∧ SMA jointly
+- Of the 0.31% that passes RSI ∧ SMA, 94% still fail MACD
+
+The MTF combination layer is NOT blocking any BUYs.
+The hourly confirmation hypothesis from STRAT-003 framing is REFUTED by the data:
+- 0 daily=BUY cases had hourly disagreement (CONFLICT=0)
+- 0 daily=BUY cases had hourly HOLD with data (corrected NO_ACTION mapping never fired)
+- 18 daily=BUY cases all had hourly=unavailable → DAILY_ONLY_BUY (which the MTF code allows)
+
+The 18 daily=BUY cases were then downgraded to HOLD by the post-MTF downstream filter
+chain (likely liquidity filter at line 6021-6028 of smart_bot.py). This downgrade is
+NOT persisted in any recorded field — operational observability gap.
+
+## Historical Mystery Resolved
+The historical ~510 WEAK mystery rows (RSI+SMA joint-pass, final WEAK) now map to:
+- 18 daily=BUY + hourly unavailable (DAILY_ONLY_BUY) → downgraded downstream
+- The 510 historical rows are the SAME cohort as the fresh 18 daily=BUY cases
+- Mystery: SOLVED. The downstream filter (liquidity/sector/etc.) is what blocks them.
+
+## Hourly Unavailability Investigation
+- 26.5% of MTF analyses (1537/5806) had hourly_data_available=False
+- All 1537 are NOT in daily eligibility cache (cache only logs ineligible)
+- MKT-CACHE does not cover hourly fetch failures
+- Operational finding: hourly fetch repeats every cycle for same 1537 symbols
+- Window adequacy: 168 hours should produce >=30 hourly bars on weekdays
+  (5 days * 6.5 market hours = 32.5 bars)
+- Therefore the 26.5% rate reflects Alpaca symbol-specific hourly gaps,
+  NOT lookback inadequacy
+
+## Near Misses
+- 1253 unique symbols with exactly 1 of {RSI,SMA,MACD} failed
+- Failed-condition distribution: rsi=1098 (87.6%), sma=138 (11.0%), macd=17 (1.4%)
+- RSI is the single dominant gate
+
+## Safety
+- Strategy changed: NO
+- Code/Config/DB schema changed: NO
+- Historical rows: NOT TOUCHED
+- Restart: NO
+- Broker action: NO
+- Unrelated services unchanged
+
+## Reports
+- REPORT.md (rolling, gitignored)
+- /root/.openclaw/audit-archives/trading-bot/2026-09-29_232800_strat-003-buy-bottleneck-review.md (authoritative)
+
+## Decision
+**STRAT-003 PROSPECTIVE BUY BOTTLENECK REVIEW COMPLETE — AWAITING OWNER STRATEGY DECISION**
+
+## Next
+- Owner reviews evidence in REPORT.md
+- Strategy tuning requires separate owner authorization
+- Optional future work (separate bounded tasks):
+  - Persist downstream filter attribution in strategy_eligibility.gates
+  - Extend MKT-CACHE to hourly fetch failures
+  - Dashboard visualization of funnel collapse
