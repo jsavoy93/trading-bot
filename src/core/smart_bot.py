@@ -1748,6 +1748,50 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 "Phase A does NOT use this as a trading gate.",
             )
 
+        # MTF BUY OBSERVABILITY: persist the daily/hourly signal
+        # components and the normalized MTF outcome/reason only when
+        # the analysis actually reached the MTF combination step (the
+        # multi_timeframe path). Single-timeframe analyses get None;
+        # invalid-data early-exits also get None because the scratch
+        # fields are cleared at the start of analyze_multi_timeframe and
+        # the MTF block only contributes when analysis.get("multi_timeframe")
+        # is truthy. This guarantees we never fabricate hourly_signal /
+        # MTF outcome for non-MTF paths.
+        mtf_block = None
+        if analysis.get("multi_timeframe"):
+            # Prefer the freshly-stamped values on the analysis_result
+            # (decision-time truth). Fall back to scratch fields only if
+            # a caller constructed an analysis dict without them — these
+            # fallbacks exist for compatibility and always reflect what
+            # was actually executed, never current-indicator recomputation.
+            mtf_daily = analysis.get(
+                "daily_signal",
+                getattr(self, "_last_mtf_daily_signal", None),
+            )
+            mtf_hourly = analysis.get(
+                "hourly_signal",
+                getattr(self, "_last_mtf_hourly_signal", None),
+            )
+            mtf_outcome = analysis.get(
+                "mtf_outcome",
+                getattr(self, "_last_mtf_outcome", None),
+            )
+            mtf_reason = analysis.get(
+                "mtf_reason",
+                getattr(self, "_last_mtf_reason", None),
+            )
+            mtf_avail = analysis.get(
+                "mtf_hourly_data_available",
+                getattr(self, "_last_mtf_hourly_data_available", False),
+            )
+            mtf_block = {
+                "daily_signal": mtf_daily,
+                "hourly_signal": mtf_hourly,
+                "hourly_data_available": bool(mtf_avail),
+                "mtf_outcome": mtf_outcome,
+                "mtf_reason": mtf_reason,
+            }
+
         snapshot = {
             "schema_version": OBS_001_SCHEMA_VERSION,
             "schema_version_notes":
@@ -1764,6 +1808,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             "cycle_id": cycle_id,
             "strategy_eligibility": strategy_eligibility_block,
             "scoring": scoring_block,
+            "multi_timeframe": mtf_block,
             "ranking": ranking_block,
             "selection": selection_block,
             "execution_checks": execution_block,
@@ -2354,6 +2399,20 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # start of each call so a stale value from a prior analysis
         # cannot leak into the SKIPPED_INVALID_DATA persistence path.
         self._last_score_error_reason = None
+        # MTF BUY OBSERVABILITY: scratch fields for the MTF outcome/reason.
+        # Cleared at every call entry so a stale value cannot leak between
+        # symbols or cycles. Always populated when the analyzer reaches the
+        # MTF combination step. The build_decision_snapshot() helper
+        # consumes ``self._last_mtf_outcome`` / ``self._last_mtf_reason``
+        # / ``self._last_mtf_daily_signal`` /
+        # ``self._last_mtf_hourly_signal`` /
+        # ``self._last_mtf_hourly_data_available`` when
+        # ``multi_timeframe`` is True on the analysis result.
+        self._last_mtf_outcome = None
+        self._last_mtf_reason = None
+        self._last_mtf_daily_signal = None
+        self._last_mtf_hourly_signal = None
+        self._last_mtf_hourly_data_available = False
         try:
             # Get daily data
             df_daily = self.get_market_data(symbol)
@@ -2403,6 +2462,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # Require BOTH daily AND hourly to agree (weighted: daily 70%, hourly 30%)
             signal = None
             signal_strength = "WEAK"
+
+            # MTF BUY OBSERVABILITY: classify the (daily, hourly, hourly_avail)
+            # triple into a stable mtf_outcome / mtf_reason pair via the pure
+            # helper. The scratch fields on self are the bridge to the snapshot
+            # builder; the same values are also stamped on the analysis_result
+            # dict below so callers can read them without crossing scratch state.
+            from core.mtf_outcome import compute_mtf_outcome
+            mtf_classification = compute_mtf_outcome(
+                daily_signal=daily_signal,
+                hourly_signal=hourly_signal,
+                hourly_data_available=(hourly_indicators is not None),
+            )
+            self._last_mtf_outcome = mtf_classification["mtf_outcome"]
+            self._last_mtf_reason = mtf_classification["mtf_reason"]
+            self._last_mtf_daily_signal = mtf_classification["daily_signal_normalized"]
+            self._last_mtf_hourly_signal = mtf_classification["hourly_signal_normalized"]
+            self._last_mtf_hourly_data_available = mtf_classification["hourly_data_available"]
 
             if daily_signal and hourly_signal:
                 # Both timeframes must agree
@@ -2665,6 +2741,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if hourly_indicators is not None:
                 analysis_result['hourly_rsi'] = hourly_indicators['RSI']
                 analysis_result['hourly_signal'] = hourly_signal
+
+            # MTF BUY OBSERVABILITY: stamp the daily signal and the
+            # normalized MTF outcome/reason onto the analysis_result so the
+            # downstream _build_decision_snapshot() helper can persist them
+            # without re-deriving anything from current indicators/config.
+            # These values are decision-time facts and are NEVER recomputed.
+            analysis_result['daily_signal'] = daily_signal  # None|"BUY"|"SELL"
+            analysis_result['mtf_outcome'] = self._last_mtf_outcome
+            analysis_result['mtf_reason'] = self._last_mtf_reason
+            analysis_result['mtf_hourly_data_available'] = (
+                self._last_mtf_hourly_data_available
+            )
 
             if ai_insight and self.use_ai_for_ticker_analysis:
                 analysis_result['ai_insight'] = ai_insight
@@ -3180,6 +3268,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # start of each call so a stale value from a prior analysis
         # cannot leak into the SKIPPED_INVALID_DATA persistence path.
         self._last_score_error_reason = None
+        # MTF BUY OBSERVABILITY: clear the MTF scratch fields too. The
+        # single-timeframe path never populates them and never emits the
+        # ``multi_timeframe`` snapshot block, but explicit clearing
+        # prevents any future cross-symbol leakage if a refactor ever
+        # touches the scratch-state contract.
+        self._last_mtf_outcome = None
+        self._last_mtf_reason = None
+        self._last_mtf_daily_signal = None
+        self._last_mtf_hourly_signal = None
+        self._last_mtf_hourly_data_available = False
         try:
             df = self.get_market_data(symbol)
             if df is None or len(df) < self.sma_slow:
