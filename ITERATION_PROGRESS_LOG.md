@@ -4222,3 +4222,71 @@ Do not commit or merge until Josh approves.
 - After merge + deploy, live re-probe of joint-pass-flow + near-miss endpoints to enumerate the corrected 24h picture (deferred until perf + WAL contention are manageable).
 - SmartBot / smartbot-runner.service ownership remains a separate BLOCKER for next restart.
 - PERF / 7d optimization remains in PARKING LOT (C14B-2E).
+
+---
+
+# MTF BUY OBSERVABILITY — Implementation (2026-09-29 17:39 UTC)
+
+## Task
+Persist daily/hourly signals + normalized MTF outcome/reason into `decision_snapshot` so the dashboard can answer "why was this WEAK?" without recomputation.
+
+Historical context:
+- 512 HOLD_INELIGIBLE rows in valid RSI+SMA joint-pass cohort
+- 2 rows CONFLICTED, ~510 rows WEAK/no-action
+- Daily/hourly signal components were NOT persisted
+
+## Implementation (observability-only, no strategy changes)
+
+**Files**:
+- NEW `src/core/mtf_outcome.py` (+287) — pure helper, 8 outcomes, 12 reasons
+- MODIFIED `src/core/smart_bot.py` (+98 / -0, additive)
+- NEW `tests/test_mtf_buy_observability.py` (+539) — 41 focused tests
+
+**Helper**: `compute_mtf_outcome(daily_signal, hourly_signal, hourly_data_available)` returns dict with `mtf_outcome`, `mtf_reason`, normalized daily/hourly signals, and the data-available flag. Pure function, no I/O.
+
+**Stable tokens**:
+- 8 outcomes: AGREE_BUY, AGREE_SELL, CONFLICT, DAILY_ONLY_BUY, DAILY_ONLY_SELL, HOURLY_ONLY_BUY, HOURLY_ONLY_SELL, NO_ACTION
+- 12 reasons: daily_{buy|sell}_hourly_{buy|sell}_{agreement|disagreement}, daily_{buy|sell}_hourly_hold_daily_only, daily_{buy|sell}_no_hourly_data_daily_only, daily_hold_hourly_{buy|sell}_no_action, daily_hold_hourly_hold_no_action, daily_hold_no_hourly_data_no_action
+
+**Snapshot JSON shape**:
+```
+decision_snapshot.multi_timeframe = {
+  "daily_signal": "BUY"|"SELL"|"HOLD"|null,
+  "hourly_signal": "BUY"|"SELL"|"HOLD"|null,
+  "hourly_data_available": bool,
+  "mtf_outcome": "<stable token>",
+  "mtf_reason": "<stable token>"
+}
+```
+- Multi-timeframe path: populated with decision-time values
+- Single-timeframe path: `multi_timeframe: null` (no fabrication)
+- Invalid-data early-exits: scratch cleared at entry; block requires `multi_timeframe=True`
+
+**Tests**:
+- 41 new MTF tests PASS
+- 39 MKT-CACHE regression tests PASS
+- 103 other smart_bot regression tests PASS
+- 183 total focused tests PASS, 0 regressions
+- `git diff --check` clean
+
+**Safety**:
+- STRATEGY/TRADING LOGIC CHANGED = NO
+- DB schema unchanged (JSON snapshot only)
+- Historical rows untouched
+- No production restart, no broker action
+- Schema version stays 1
+
+**Branch / PR**:
+- Branch: `mtf-buy-observability` (off `main @ 3406a8e`)
+- Commit: `3a3b3e7c23212417661893d19a634bcf19861bc2`
+- PR: #105 OPEN — https://github.com/jsavoy93/trading-bot/pull/105
+- mergeable: MERGEABLE
+
+**Report**: `REPORT.md` + `reports/2026-09-29_173907_mtf-buy-observability-implementation.md`
+
+**Decision**: DO NOT MERGE / DO NOT DEPLOY — owner review pending.
+
+**Next**:
+- Owner reviews PR #105 and authorizes or rejects.
+- After approval: standard merge + systemd deploy sequence.
+- After deploy: production sample collection per REPORT.md "Future Validation" section.
