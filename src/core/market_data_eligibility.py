@@ -31,7 +31,9 @@ The cache stores four reason classes:
   MARKET_DATA_INSUFFICIENT_BARS  0 < bars_returned < required
   MARKET_DATA_SPARSE_HISTORY     older symbol with sparse / discontinuous
                                  history (defensive)
-  MARKET_DATA_API_EXCEPTION      NO CACHE ROW written (transient)
+  MARKET_DATA_API_EXCEPTION      NO CACHE ROW written (transient; never
+                                 suppresses the symbol on subsequent
+                                 cycles)
 
 TTL policy:
 
@@ -48,10 +50,20 @@ Trading-session vs calendar-day conversion:
 
   ``missing_sessions`` is the number of additional TRADING SESSIONS
   required to reach ``required_bars``. Converting sessions to calendar
-  days uses a conservative weekday approximation
-  (``calendar_days = sessions * 7/5``) that ERRORS TOWARD EARLY RECHECK
-  (so a 1-bar-per-day symbol becomes eligible one weekend early rather
-  than one day late).
+  days uses a week-aware approximation
+  (``calendar_days = missing + 2 * (missing // 5)``) which is
+  mathematically equivalent to ``int(missing * 7/5)`` for full weeks
+  but NEVER recheck LATE for mid-week starts.
+
+  Why not the simpler ``int(missing * 7/5)``? Because it can recheck 1
+  calendar day LATE when ``missing`` is not a multiple of 5 (e.g.
+  ``missing=3 from Monday``: 4.2 → int=4 → recheck Fri instead of Thu;
+  Thu is when 3 more sessions are available). The piecewise formula
+  counts ``missing`` weekdays PLUS 2 calendar days per full trading
+  week spanned, so it equals or under-estimates the actual calendar
+  time needed (NEVER LATE) while still erring on the early side for
+  partial-weekend spans (Friday + 1 missing → recheck Sat → next
+  plausible session Mon = ~1 calendar day early, which is safe).
 
 This module intentionally has no internal state. All persistence is
 delegated to ``SQLiteDB`` (see ``src/database/sqlite_db.py``).
@@ -192,6 +204,20 @@ def compute_next_recheck_for_insufficient_bars(
 
     For sparse_history, callers should NOT use this function; use
     ``compute_next_recheck_for_sparse_history`` instead.
+
+    Conversion: ``calendar_days = missing + 2 * (missing // 5)``.
+    This counts ``missing`` weekdays PLUS 2 weekend days per full
+    trading week spanned. Examples:
+
+      missing=1 from Fri  -> 1 cal day  -> recheck Sat (next session Mon, EARLY by ~2)
+      missing=3 from Mon  -> 3 cal days -> recheck Thu (3 sessions, EXACT)
+      missing=5 from Mon  -> 7 cal days -> recheck next Mon (5 sessions, EXACT)
+      missing=9 from Mon  -> 11 cal days -> recheck Fri (9 sessions, EXACT)
+      missing=10 from Mon -> 14 cal days -> recheck +14 cal (10 sessions, EXACT)
+
+    The formula is mathematically equivalent to ``int(missing * 7/5)``
+    for full weeks (multiples of 5) but is provably NEVER LATE for
+    any other span.
     """
     now = now or datetime.now(timezone.utc)
     missing = max(0, int(required_bars) - int(bars_returned))
@@ -200,9 +226,9 @@ def compute_next_recheck_for_insufficient_bars(
         # eligible, but provide an immediate recheck to allow a
         # delete-on-success cycle.
         return now.isoformat()
-    # sessions * 7/5 calendar days. Use int() truncation so we land on
-    # or slightly before the expected date.
-    cal_days = int(missing * 7 / 5)
+    # Week-aware approximation: full weeks * 7 + remaining weekdays.
+    # Always EXACT or EARLY (never LATE) recheck.
+    cal_days = missing + 2 * (missing // 5)
     return (now + timedelta(days=cal_days)).isoformat()
 
 
@@ -271,28 +297,13 @@ def cache_outcome(
 
     # Classify the failure.
     if bars_returned is None:
-        # Either an API exception or symbol absent from the response.
-        # We treat both as MARKET_DATA_NOT_IN_FEED with a 7-day TTL
-        # because both manifest identically to the bot and both are
-        # candidates for a slow recheck. API exceptions still emit
-        # SCORE_REASON_API_EXCEPTION for per-cycle observability, but
-        # the cache row uses NOT_IN_FEED so the slow-recheck semantic
-        # also applies to transient errors (the per-cycle exception
-        # token ensures dashboards still see the transient nature).
-        try:
-            db.upsert_market_data_eligibility(
-                symbol=symbol,
-                reason=REASON_NOT_IN_FEED,
-                bars_returned=0,
-                required_bars=int(required_bars),
-                next_recheck_iso=compute_next_recheck_for_not_in_feed(now=now),
-                first_bar_timestamp=None,
-                latest_bar_timestamp=None,
-            )
-        except Exception as e:
-            logging.debug(
-                f"market_data_eligibility upsert failed for {symbol}: {e}"
-            )
+        # API exception (provider/timeout/rate-limit/connection/etc.).
+        # Per owner review: API exceptions are TRANSIENT and must NOT
+        # create a long-lived cache row. Subsequent cycles must be free
+        # to retry the symbol without being suppressed. We still emit
+        # SCORE_REASON_API_EXCEPTION so the per-cycle observability
+        # layer records the transient failure (dashboards can
+        # distinguish API exception from NOT_IN_FEED by this token).
         return SCORE_REASON_API_EXCEPTION
 
     if not barset_key_present or int(bars_returned) == 0:

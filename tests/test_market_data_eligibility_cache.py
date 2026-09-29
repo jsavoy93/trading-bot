@@ -353,14 +353,14 @@ class TestSparseHistoryDefensivePolicy:
 
 
 class TestApiExceptionPolicy:
-    def test_api_exception_emits_distinct_token(self, db):
+    def test_api_exception_emits_distinct_token_and_no_cache_row(self, db):
         """An exception with bars_returned=None emits API_EXCEPTION token.
 
-        For observability we DO write a NOT_IN_FEED row with a 7-day
-        TTL so a chronically-failing symbol (e.g. network blip every
-        cycle) doesn't keep polling Alpaca. But the per-cycle token
-        correctly reflects the transient nature of the failure so
-        dashboards don't conflate 'no data' with 'transient error'.
+        Per owner review (MKT-CACHE-001 final review): API exceptions
+        are TRANSIENT and must NOT create a long-lived cache row. The
+        next cycle must be free to retry the symbol without being
+        suppressed. The per-cycle token correctly reflects the
+        transient nature of the failure for dashboards.
         """
         from src.core.market_data_eligibility import (
             cache_outcome,
@@ -377,11 +377,30 @@ class TestApiExceptionPolicy:
             barset_key_present=None,
         )
         assert token == SCORE_REASON_API_EXCEPTION
-        # The 7-day row is still written so the symbol is not re-queried
-        # every cycle when the network is down.
+        # NO cache row written for API exceptions.
         row = db.get_market_data_eligibility("NETERR")
-        assert row is not None
-        assert row["reason"] == "MARKET_DATA_NOT_IN_FEED"
+        assert row is None
+
+    def test_api_exception_does_not_block_subsequent_cycles(self, db):
+        """After an API exception, the next cycle's cache consult must
+        report should_skip=False so the bot retries the fresh API call."""
+        from src.core.market_data_eligibility import (
+            cache_outcome,
+            consult_cache_for_symbol,
+        )
+
+        cache_outcome(
+            db=db,
+            symbol="NETERR",
+            bars_returned=None,
+            required_bars=30,
+            first_bar_timestamp=None,
+            latest_bar_timestamp=None,
+            barset_key_present=None,
+        )
+        decision = consult_cache_for_symbol(db, "NETERR")
+        assert decision.should_skip is False
+        assert decision.score_error_reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -681,3 +700,310 @@ class TestStrategyRegression:
         d2 = consult_cache_for_symbol(db, "AAPL")
         assert d1.should_skip is True
         assert d2.should_skip is False
+
+
+# ---------------------------------------------------------------------------
+# Tier J: queue ordering preservation (owner review)
+# ---------------------------------------------------------------------------
+
+
+class TestQueueOrderingPreservation:
+    """The cache pre-filter must SKIP ineligible symbols WITHOUT
+    re-ranking the remaining eligible symbols.
+
+    Owner contract:
+      Original queue: A B C D E F
+      B and D cached-ineligible
+      Expected analyzable order: A C E F (preserves queue order)
+
+    The pre-filter must not:
+      - sort by score, name, or any other criterion
+      - pull from beyond target_count
+      - re-rank or re-order the eligible subset
+    """
+
+    def _make_bot(self, db, queue_symbols):
+        from src.core.smart_bot import SmartTradingBot
+
+        bot = SmartTradingBot.__new__(SmartTradingBot)
+        bot.db = db
+        bot._analysis_queue = list(queue_symbols)
+        bot._current_analysis_index = 0
+        return bot
+
+    def _cache(self, db, symbol):
+        db.upsert_market_data_eligibility(
+            symbol=symbol,
+            reason="MARKET_DATA_NOT_IN_FEED",
+            bars_returned=0,
+            required_bars=30,
+            next_recheck_iso=(
+                datetime.now(timezone.utc) + timedelta(days=7)
+            ).isoformat(),
+        )
+
+    def test_order_preserved_when_cached_symbols_in_middle(self, db):
+        """Owner example: A B C D E F; B and D cached -> A C E F."""
+        bot = self._make_bot(
+            db, ["A", "B", "C", "D", "E", "F"],
+        )
+        self._cache(db, "B")
+        self._cache(db, "D")
+        batch = bot._get_rolling_ticker_list(target_count=4)
+        assert batch == ["A", "C", "E", "F"], (
+            f"queue order not preserved: got {batch}"
+        )
+
+    def test_order_preserved_when_cached_at_front(self, db):
+        """A B C D E F; A and B cached -> C D E F."""
+        bot = self._make_bot(
+            db, ["A", "B", "C", "D", "E", "F"],
+        )
+        self._cache(db, "A")
+        self._cache(db, "B")
+        batch = bot._get_rolling_ticker_list(target_count=4)
+        assert batch == ["C", "D", "E", "F"]
+
+    def test_order_preserved_when_cached_at_end(self, db):
+        """A B C D E F; E and F cached -> A B C D."""
+        bot = self._make_bot(
+            db, ["A", "B", "C", "D", "E", "F"],
+        )
+        self._cache(db, "E")
+        self._cache(db, "F")
+        batch = bot._get_rolling_ticker_list(target_count=4)
+        assert batch == ["A", "B", "C", "D"]
+
+    def test_target_count_not_exceeded(self, db):
+        """A B C D E F G; B and D cached; target_count=3 -> exactly 3."""
+        bot = self._make_bot(
+            db, ["A", "B", "C", "D", "E", "F", "G"],
+        )
+        self._cache(db, "B")
+        self._cache(db, "D")
+        batch = bot._get_rolling_ticker_list(target_count=3)
+        assert batch == ["A", "C", "E"]
+        assert len(batch) == 3
+
+    def test_alternating_cached_pattern(self, db):
+        """A B C D E F G H; B D F H cached -> A C E G."""
+        bot = self._make_bot(
+            db, ["A", "B", "C", "D", "E", "F", "G", "H"],
+        )
+        for s in ["B", "D", "F", "H"]:
+            self._cache(db, s)
+        batch = bot._get_rolling_ticker_list(target_count=4)
+        assert batch == ["A", "C", "E", "G"]
+
+
+# ---------------------------------------------------------------------------
+# Tier K: expired cache re-entry / recovery (owner review)
+# ---------------------------------------------------------------------------
+
+
+class TestExpiredCacheReEntry:
+    """Owner contract: when now >= next_recheck_iso the cache must
+    cease suppressing the symbol BEFORE the fresh market-data call.
+    Then:
+      fresh data >=30 bars -> normal analysis proceeds (cache row cleared)
+      fresh zero bars      -> new NOT_IN_FEED TTL
+      fresh 1-29 bars      -> new INSUFFICIENT_BARS TTL
+    """
+
+    def test_expired_row_does_not_suppress_fresh_attempt(self, db):
+        """A row with next_recheck_iso in the past must NOT block the
+        next fresh attempt."""
+        from src.core.market_data_eligibility import (
+            consult_cache_for_symbol,
+            is_eligible_now,
+        )
+
+        past = datetime.now(timezone.utc) - timedelta(minutes=1)
+        cache_row = {
+            "symbol": "WFAFY",
+            "reason": "MARKET_DATA_NOT_IN_FEED",
+            "bars_returned": 0,
+            "required_bars": 30,
+            "next_recheck_iso": past.isoformat(),
+        }
+        decision = is_eligible_now(cache_row)
+        assert decision.should_skip is False
+        assert decision.score_error_reason is None
+
+        # And consult_cache_for_symbol against a real DB row.
+        db.upsert_market_data_eligibility(
+            symbol="WFAFY",
+            reason="MARKET_DATA_NOT_IN_FEED",
+            bars_returned=0,
+            required_bars=30,
+            next_recheck_iso=past.isoformat(),
+        )
+        decision = consult_cache_for_symbol(db, "WFAFY")
+        assert decision.should_skip is False
+
+    def test_successful_recovery_removes_stale_restriction(self, db):
+        """If a symbol was cached as INSUFFICIENT and the fresh attempt
+        now returns sufficient bars, the cache row must be deleted."""
+        from src.core.market_data_eligibility import cache_outcome
+
+        # Seed a stale INSUFFICIENT row.
+        cache_outcome(
+            db=db,
+            symbol="CATL",
+            bars_returned=15,
+            required_bars=30,
+            first_bar_timestamp="2026-09-01T00:00:00+00:00",
+            latest_bar_timestamp="2026-09-28T00:00:00+00:00",
+            barset_key_present=True,
+        )
+        assert db.get_market_data_eligibility("CATL") is not None
+        # Fresh attempt: sufficient bars.
+        token = cache_outcome(
+            db=db,
+            symbol="CATL",
+            bars_returned=50,
+            required_bars=30,
+            first_bar_timestamp="2026-05-01T00:00:00+00:00",
+            latest_bar_timestamp="2026-09-28T00:00:00+00:00",
+            barset_key_present=True,
+        )
+        assert token is None  # No skip-token emitted
+        # Cache row must be cleared.
+        assert db.get_market_data_eligibility("CATL") is None
+
+    def test_recovery_from_not_in_feed_to_eligible(self, db):
+        """If a symbol was cached as NOT_IN_FEED and the fresh attempt
+        now returns bars, the cache row must be deleted."""
+        from src.core.market_data_eligibility import cache_outcome
+
+        cache_outcome(
+            db=db,
+            symbol="WFAFY",
+            bars_returned=0,
+            required_bars=30,
+            first_bar_timestamp=None,
+            latest_bar_timestamp=None,
+            barset_key_present=False,
+        )
+        assert db.get_market_data_eligibility("WFAFY") is not None
+        # Fresh attempt: symbol now returns bars.
+        token = cache_outcome(
+            db=db,
+            symbol="WFAFY",
+            bars_returned=35,
+            required_bars=30,
+            first_bar_timestamp="2026-09-01T00:00:00+00:00",
+            latest_bar_timestamp="2026-09-28T00:00:00+00:00",
+            barset_key_present=True,
+        )
+        assert token is None
+        assert db.get_market_data_eligibility("WFAFY") is None
+
+
+# ---------------------------------------------------------------------------
+# Tier L: TTL math (owner review) — never materially LATE
+# ---------------------------------------------------------------------------
+
+
+class TestTtlNeverLate:
+    """Owner contract: the TTL arithmetic must NEVER recheck LATER
+    than when the symbol would actually have enough bars.
+
+    The formula is ``calendar_days = missing + 2 * (missing // 5)``
+    which is provably equal to or less than the actual calendar time
+    needed for any starting day-of-week (Mon..Fri).
+    """
+
+    def test_friday_one_missing_rechecks_by_saturday(self):
+        """Friday + missing=1 -> recheck Sat (Sat < Mon, the next
+        plausible trading session). Earliest plausible recheck."""
+        from src.core.market_data_eligibility import (
+            compute_next_recheck_for_insufficient_bars,
+        )
+
+        now = datetime(2026, 9, 25, 14, 0, 0, tzinfo=timezone.utc)  # Friday
+        ttl = compute_next_recheck_for_insufficient_bars(
+            bars_returned=29, required_bars=30, now=now,
+        )
+        # 1 missing -> 1 + 2*0 = 1 calendar day from Friday = Saturday
+        assert ttl == (now + timedelta(days=1)).isoformat()
+
+    def test_monday_three_missing_rechecks_thursday(self):
+        """Monday + missing=3 -> recheck Thu (3 calendar days from
+        Mon, EXACT; symbol has 3 more bars on Thu). NOT Friday
+        (would be 1 day LATE)."""
+        from src.core.market_data_eligibility import (
+            compute_next_recheck_for_insufficient_bars,
+        )
+
+        now = datetime(2026, 9, 28, 14, 0, 0, tzinfo=timezone.utc)  # Monday
+        ttl = compute_next_recheck_for_insufficient_bars(
+            bars_returned=27, required_bars=30, now=now,
+        )
+        # 3 missing -> 3 + 2*0 = 3 calendar days from Monday = Thursday
+        assert ttl == (now + timedelta(days=3)).isoformat()
+
+    def test_monday_five_missing_rechecks_next_monday(self):
+        """Monday + missing=5 -> recheck next Monday (7 calendar days,
+        EXACT)."""
+        from src.core.market_data_eligibility import (
+            compute_next_recheck_for_insufficient_bars,
+        )
+
+        now = datetime(2026, 9, 28, 14, 0, 0, tzinfo=timezone.utc)
+        ttl = compute_next_recheck_for_insufficient_bars(
+            bars_returned=25, required_bars=30, now=now,
+        )
+        # 5 missing -> 5 + 2*1 = 7 calendar days
+        assert ttl == (now + timedelta(days=7)).isoformat()
+
+    def test_monday_nine_missing_rechecks_friday(self):
+        """Monday + missing=9 -> recheck Fri (11 calendar days,
+        EXACT; symbol has 9 more bars on Fri). NOT Saturday (would
+        be 1 day LATE)."""
+        from src.core.market_data_eligibility import (
+            compute_next_recheck_for_insufficient_bars,
+        )
+
+        now = datetime(2026, 9, 28, 14, 0, 0, tzinfo=timezone.utc)
+        ttl = compute_next_recheck_for_insufficient_bars(
+            bars_returned=21, required_bars=30, now=now,
+        )
+        # 9 missing -> 9 + 2*1 = 11 calendar days
+        assert ttl == (now + timedelta(days=11)).isoformat()
+
+    def test_monday_ten_missing_rechecks_two_mondays_out(self):
+        """Monday + missing=10 -> recheck 14 calendar days later
+        (next-next Monday; EXACT)."""
+        from src.core.market_data_eligibility import (
+            compute_next_recheck_for_insufficient_bars,
+        )
+
+        now = datetime(2026, 9, 28, 14, 0, 0, tzinfo=timezone.utc)
+        ttl = compute_next_recheck_for_insufficient_bars(
+            bars_returned=20, required_bars=30, now=now,
+        )
+        # 10 missing -> 10 + 2*2 = 14 calendar days
+        assert ttl == (now + timedelta(days=14)).isoformat()
+
+    def test_ttl_never_late_against_old_int_formula(self):
+        """The new formula must NEVER exceed int(missing * 7/5) for
+        any non-negative missing count up to 30 (the configured
+        sma_slow)."""
+        from src.core.market_data_eligibility import (
+            compute_next_recheck_for_insufficient_bars,
+        )
+
+        now = datetime(2026, 9, 29, 0, 0, 0, tzinfo=timezone.utc)
+        for missing in range(0, 31):
+            bars_returned = max(0, 30 - missing)
+            new_ttl = compute_next_recheck_for_insufficient_bars(
+                bars_returned=bars_returned, required_bars=30, now=now,
+            )
+            new_dt = datetime.fromisoformat(new_ttl)
+            new_days = (new_dt - now).days
+            old_days = int(missing * 7 / 5) if missing > 0 else 0
+            assert new_days <= old_days, (
+                f"new formula LATE for missing={missing}: "
+                f"new={new_days} days > old={old_days} days"
+            )
