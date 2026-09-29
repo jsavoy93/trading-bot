@@ -4290,3 +4290,80 @@ decision_snapshot.multi_timeframe = {
 - Owner reviews PR #105 and authorizes or rejects.
 - After approval: standard merge + systemd deploy sequence.
 - After deploy: production sample collection per REPORT.md "Future Validation" section.
+
+---
+
+# MTF BUY OBSERVABILITY — Semantic Review (2026-09-29 21:35 UTC)
+
+## Task
+Bounded semantic review of PR #105 per owner request (16 sections). Find any mapping defect where the new helper mis-describes the existing SmartBot MTF combination.
+
+## Defect Found
+**File:** `src/core/mtf_outcome.py`
+**Defect type:** Faithful-mapping defect for 2 reachable branches.
+
+PRE-review (BUG):
+- daily=BUY, hourly_signal=HOLD, hourly_data_available=True
+  → mtf_outcome = DAILY_ONLY_BUY
+  → mtf_reason  = daily_buy_hourly_hold_daily_only
+
+Actual SmartBot behavior:
+- The `elif daily_signal and not hourly_indicators:` branch requires
+  `hourly_indicators is None`, NOT just `hourly_signal is None`.
+- When hourly_indicators is present but hourly_signal evaluates to HOLD
+  (because neither BUY nor SELL condition triggered), control reaches
+  `else: signal = "HOLD"` — NOT the elif branch.
+- Final signal/strength: HOLD / WEAK.
+
+Impact (if shipped): Observability would have mislabeled HOLD/WEAK
+outcomes from rows 5-6 as DAILY_ONLY_*, conflating "daily BUY + hourly
+HOLD (with data)" with "daily BUY + no hourly data".
+
+## Correction Applied
+- Helper requires `not avail` for DAILY_ONLY_* (mirrors the elif condition).
+- New NO_ACTION branch for daily=X+hourly=HOLD+avail=True.
+- 12 reason tokens preserved (renamed 2: removed `_hold_daily_only`,
+  added `_hold_no_action`).
+- 8 OUTCOME tokens unchanged.
+
+**HEAD**: `7d3e901` (supersedes `01ecd68`)
+
+## Verified Test Results
+- 45 MTF tests PASS (was 41; +4 for corrected mapping)
+- 39 MKT-CACHE regression tests PASS
+- 103 other smart_bot regression tests PASS
+- 187 total focused tests PASS, 0 regressions
+- `git diff --check` clean
+
+## Other Sections Reviewed
+- 3. Raw signal source: PASS (daily/hourly set directly from RSI/SMA, not recomputed)
+- 4. No observability feedback: PASS (helper called AFTER signal/strength; never consumed downstream)
+- 5. Hourly-unavailable semantics: PASS (after correction)
+- 6. Invalid-data paths: PASS (helper not called; no fake normal reasons)
+- 7. Single-timeframe: PASS (`multi_timeframe: null` block, no fabrication)
+- 8. Scratch leakage: PASS (5 fields cleared at every entry)
+- 9. Early-return coverage: PASS (helper not called in any early-return)
+- 10. Strategy invariance: PASS (helper post-hoc; never modifies signal/strength)
+- 11. Reason quality: PASS (MECE across 12 reachable branches)
+- 12. JSON path: PASS (additive, schema_version=1, no migration)
+- 13. Dashboard consumability: PASS (queries via json_extract; no recomputation)
+- 14. Test matrix: PASS (all 12 reachable branches tested)
+- 15. PR hygiene: PASS (5 files; no MKT-CACHE/strategy/dashboard/DB changes)
+- 16. Final verdict: **B** — PR #105 CORRECTED — READY FOR OWNER RE-REVIEW
+
+## Safety
+- STRATEGY/TRADING LOGIC CHANGED = NO
+- DB schema unchanged
+- Historical rows untouched
+- No production restart
+- No broker action
+- PR #105 remains OPEN, awaiting owner re-review
+
+**Report**: `REPORT.md` + `reports/2026-09-29_213500_mtf-buy-observability-semantic-review.md`
+**PR**: #105 OPEN (https://github.com/jsavoy93/trading-bot/pull/105) — HEAD `7d3e901`
+**Decision**: B — PR #105 CORRECTED — READY FOR OWNER RE-REVIEW
+
+**Next**:
+- Owner reviews the corrected branch.
+- Authorizes or rejects merge.
+- After merge + deploy: production sample collection per REPORT.md queries.
