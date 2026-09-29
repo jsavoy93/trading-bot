@@ -6,9 +6,9 @@ import sqlite3
 import logging
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Iterable
 
 DB_PATH = Path(__file__).parent.parent.parent / "trading_bot.db"
 
@@ -551,6 +551,65 @@ class SQLiteDB:
                 conn.execute(
                     "UPDATE trades SET status = 'UNKNOWN' "
                     "WHERE status IS NULL;"
+                )
+
+                # ── MKT-CACHE-001: market_data_eligibility_cache table ──────────
+                # Additive migration to introduce a per-symbol market-data
+                # eligibility cache. The cache answers one question only:
+                #
+                #   "Should SmartBot retry market-data analysis for this
+                #    symbol right now, or should it skip until recheck?"
+                #
+                # It does NOT determine trading eligibility once sufficient
+                # data exists. It does NOT cache strategy / scoring results.
+                # It is purely an efficiency / observability layer over the
+                # Alpaca get_market_data response.
+                #
+                # Reason values (stable enum):
+                #   MARKET_DATA_NOT_IN_FEED         - Alpaca responded but
+                #                                     symbol absent or 0 bars
+                #   MARKET_DATA_INSUFFICIENT_BARS   - 0 < bars < required
+                #   MARKET_DATA_API_EXCEPTION       - transient; no long cache
+                #   MARKET_DATA_SPARSE_HISTORY      - defensive; older symbol
+                #                                     with <50% bar density
+                #
+                # TTL semantics:
+                #   NOT_IN_FEED          : 7 days fixed
+                #   INSUFFICIENT_BARS    : estimated-eligibility-date (recent
+                #                          continuous) OR 14 days (defensive
+                #                          sparse)
+                #   API_EXCEPTION        : no cache row written
+                #
+                # Lifecycle:
+                #   - On cache hit, get_market_data is bypassed.
+                #   - On TTL expiry, the row is ignored and the symbol is
+                #     retried normally.
+                #   - On a successful (sufficient) retry, the row is removed
+                #     so the symbol returns to normal analysis.
+                #   - Restart-safe: persists across SmartBot restarts.
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS market_data_eligibility_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        symbol TEXT NOT NULL UNIQUE,
+                        reason TEXT NOT NULL,
+                        bars_returned INTEGER,
+                        required_bars INTEGER NOT NULL,
+                        first_bar_timestamp TEXT,
+                        latest_bar_timestamp TEXT,
+                        last_checked_iso TEXT NOT NULL,
+                        next_recheck_iso TEXT NOT NULL
+                    );
+                    """
+                )
+                # Index on next_recheck_iso supports the per-cycle cache
+                # sweep. The UNIQUE constraint on symbol provides the
+                # primary lookup path for the queue pre-filter.
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_market_data_eligibility_next_recheck
+                        ON market_data_eligibility_cache(next_recheck_iso);
+                    """
                 )
 
             self.available = True
@@ -1707,6 +1766,180 @@ class SQLiteDB:
         except Exception as e:
             logging.debug(f"Error getting failing symbols: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # Market-data eligibility cache (MKT-CACHE-001)
+    # ------------------------------------------------------------------
+    # Persistent cache that answers one question only: should SmartBot
+    # retry market-data analysis for a symbol right now, or skip until
+    # recheck? This is an efficiency / observability layer over the
+    # Alpaca get_market_data response. It does NOT cache trading,
+    # scoring, indicator, ranking, or execution state. It is restarted
+    # safely via _init_schema's CREATE TABLE IF NOT EXISTS.
+
+    def upsert_market_data_eligibility(
+        self,
+        symbol: str,
+        reason: str,
+        bars_returned: Optional[int],
+        required_bars: int,
+        next_recheck_iso: str,
+        first_bar_timestamp: Optional[str] = None,
+        latest_bar_timestamp: Optional[str] = None,
+    ) -> bool:
+        """Insert or replace one row in the market_data_eligibility_cache.
+
+        Idempotent on (symbol): the UNIQUE constraint guarantees one
+        active cache row per symbol. A subsequent fresh market-data
+        attempt (e.g. after a queue pre-filter bypass) can update or
+        remove this row via update_market_data_eligibility_metadata or
+        delete_market_data_eligibility.
+
+        Returns True on success, False on DB error.
+        """
+        if not self.available:
+            return False
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            with _get_conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO market_data_eligibility_cache
+                        (symbol, reason, bars_returned, required_bars,
+                         first_bar_timestamp, latest_bar_timestamp,
+                         last_checked_iso, next_recheck_iso)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        reason = excluded.reason,
+                        bars_returned = excluded.bars_returned,
+                        required_bars = excluded.required_bars,
+                        first_bar_timestamp = excluded.first_bar_timestamp,
+                        latest_bar_timestamp = excluded.latest_bar_timestamp,
+                        last_checked_iso = excluded.last_checked_iso,
+                        next_recheck_iso = excluded.next_recheck_iso
+                    """,
+                    (
+                        symbol,
+                        reason,
+                        bars_returned,
+                        required_bars,
+                        first_bar_timestamp,
+                        latest_bar_timestamp,
+                        now_iso,
+                        next_recheck_iso,
+                    ),
+                )
+            return True
+        except Exception as e:
+            logging.debug(
+                f"market_data_eligibility_cache upsert failed for {symbol}: {e}"
+            )
+            return False
+
+    def get_market_data_eligibility(self, symbol: str) -> Optional[Dict]:
+        """Return one cache row for ``symbol`` or None if absent.
+
+        The caller is responsible for checking next_recheck_iso against
+        the current time. The cache does NOT auto-expire on read; a
+        separate sweep or per-call comparison is required.
+        """
+        if not self.available:
+            return None
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    """
+                    SELECT symbol, reason, bars_returned, required_bars,
+                           first_bar_timestamp, latest_bar_timestamp,
+                           last_checked_iso, next_recheck_iso
+                    FROM market_data_eligibility_cache
+                    WHERE symbol = ?
+                    """,
+                    (symbol,),
+                ).fetchone()
+            return _row_to_dict(row) if row else None
+        except Exception as e:
+            logging.debug(
+                f"market_data_eligibility_cache read failed for {symbol}: {e}"
+            )
+            return None
+
+    def get_market_data_eligible_symbols(self, symbols: Iterable[str]) -> set:
+        """Filter the input iterable to symbols with no active cache hit.
+
+        A cache hit is defined as: a row exists for the symbol AND
+        ``next_recheck_iso > now``. Symbols with no row, OR with an
+        expired row (next_recheck_iso <= now), are considered eligible
+        for a fresh market-data attempt.
+
+        Returns the set of eligible symbols. The original input order
+        is intentionally NOT preserved (this is a set), since callers
+        use it to compute the eligible-subset and then re-rank.
+        """
+        if not self.available:
+            return set(symbols)
+        try:
+            syms = list(symbols)
+            if not syms:
+                return set()
+            placeholders = ",".join("?" for _ in syms)
+            with _get_conn() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT symbol, next_recheck_iso
+                    FROM market_data_eligibility_cache
+                    WHERE symbol IN ({placeholders})
+                    """,
+                    tuple(syms),
+                ).fetchall()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            active = {r[0] for r in rows if r[1] > now_iso}
+            return {s for s in syms if s not in active}
+        except Exception as e:
+            logging.debug(
+                f"market_data_eligibility_cache filter failed: {e}"
+            )
+            # Fail-open: assume all eligible rather than blocking all symbols.
+            return set(symbols)
+
+    def delete_market_data_eligibility(self, symbol: str) -> bool:
+        """Remove the cache row for ``symbol``. Used when a fresh attempt
+        yields sufficient data and the symbol returns to normal flow."""
+        if not self.available:
+            return False
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    "DELETE FROM market_data_eligibility_cache WHERE symbol = ?",
+                    (symbol,),
+                )
+            return True
+        except Exception as e:
+            logging.debug(
+                f"market_data_eligibility_cache delete failed for {symbol}: {e}"
+            )
+            return False
+
+    def cleanup_expired_market_data_eligibility(self) -> int:
+        """Remove all rows whose next_recheck_iso <= now. Returns the
+        number of rows deleted. Intended to be called occasionally (e.g.
+        on SmartBot startup) to keep the table compact."""
+        if not self.available:
+            return 0
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            with _get_conn() as conn:
+                cur = conn.execute(
+                    "DELETE FROM market_data_eligibility_cache "
+                    "WHERE next_recheck_iso <= ?",
+                    (now_iso,),
+                )
+                return cur.rowcount
+        except Exception as e:
+            logging.debug(
+                f"market_data_eligibility_cache cleanup failed: {e}"
+            )
+            return 0
 
     def reset_analysis_failures(self, symbol: str) -> bool:
         """Reset failure count for a symbol (call when it succeeds)"""

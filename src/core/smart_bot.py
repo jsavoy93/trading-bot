@@ -495,6 +495,20 @@ class SmartTradingBot:
         self._analyzed_today = {}  # Track analyzed symbols with timestamps {symbol: datetime}
         self._current_analysis_index = 0  # Current position in the full symbol list
 
+        # MKT-CACHE-001: scratch fields for market-data eligibility cache.
+        # Set by get_market_data on every call (cache-hit OR fresh fetch).
+        # Cleared at entry of each cycle's main loop so stale state from
+        # a previous cycle cannot leak into the next persistence path.
+        # Use a per-call sentinel default for tests that don't go through
+        # the main loop.
+        self._last_market_data_cache_decision = None  # CacheDecision | None
+        self._last_market_data_outcome = None  # dict | None
+        # Latest score_error_reason produced by get_market_data's classifier
+        # (either a per-cycle fresh token or a cache-hit skip token). The
+        # main loop reads this to populate the SCORE-002 field on the
+        # SKIPPED_INVALID_DATA row.
+        self._last_market_data_score_error_reason = None
+
         # SPY Relative Strength Filter (enabled by default)
         self.enable_sp_filter = True  # Only buy stocks outperforming SPY
 
@@ -1436,18 +1450,47 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             self._current_analysis_index = 0
             logging.info(f"🔄 Starting new analysis cycle: {len(self._analysis_queue)} symbols in queue")
 
-        # Get next batch from queue
-        remaining = len(self._analysis_queue) - self._current_analysis_index
-        if remaining <= 0:
-            # Restart cycle
-            self._current_analysis_index = 0
-            remaining = len(self._analysis_queue)
-
-        batch_size = min(target_count, remaining)
-        batch = self._analysis_queue[self._current_analysis_index:self._current_analysis_index + batch_size]
-        self._current_analysis_index += batch_size
-
-        logging.info(f"📊 Analysis queue: {self._current_analysis_index}/{len(self._analysis_queue)} complete, returning {len(batch)} symbols")
+        # MKT-CACHE-001: skip cached-ineligible symbols without consuming
+        # target_count slots. Iterate through the queue, advancing
+        # _current_analysis_index past any symbol with an unexpired cache
+        # row, until we have collected up to target_count analyzable
+        # symbols OR the queue is exhausted. Bounded iterations guard
+        # against pathological cache / queue states.
+        batch: List[str] = []
+        skipped_cached = 0
+        max_iterations = max(target_count * 4, 120)
+        iterations = 0
+        while len(batch) < target_count and iterations < max_iterations:
+            if self._current_analysis_index >= len(self._analysis_queue):
+                # Walked off the end; restart cycle.
+                self._current_analysis_index = 0
+                if not self._analysis_queue:
+                    break
+            sym = self._analysis_queue[self._current_analysis_index]
+            self._current_analysis_index += 1
+            iterations += 1
+            try:
+                eligible_set = self.db.get_market_data_eligible_symbols([sym])
+                if sym not in eligible_set:
+                    skipped_cached += 1
+                    continue
+            except Exception as _e:
+                # Fail-open: if the cache consult errors, treat the
+                # symbol as eligible and proceed (no worse than before).
+                logging.debug(
+                    f"MKT-CACHE-001 queue pre-filter failed for {sym}: {_e}"
+                )
+            batch.append(sym)
+        if skipped_cached:
+            logging.info(
+                f"MKT-CACHE-001 queue pre-filter skipped {skipped_cached} "
+                f"cached-ineligible symbols; returning {len(batch)} analyzable"
+            )
+        else:
+            logging.info(
+                f"📊 Analysis queue: {self._current_analysis_index}/{len(self._analysis_queue)} "
+                f"complete, returning {len(batch)} symbols"
+            )
 
         return batch
 
@@ -1939,7 +1982,40 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return _default
 
     def get_market_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Get market data for analysis with request deduplication"""
+        """Get market data for analysis with request deduplication.
+
+        MKT-CACHE-001: consult the persistent market_data_eligibility_cache
+        before issuing an Alpaca request. If the symbol has an unexpired
+        cache row, return None without making the network call. The
+        caller is expected to consult ``_last_market_data_cache_decision``
+        to decide which score_error_reason token to emit on the
+        SKIPPED_INVALID_DATA persistence path (the SCORE-002 observability
+        contract distinguishes ``market_data_cached_*`` from a fresh
+        failure).
+        """
+        # MKT-CACHE-001: consult eligibility cache before fetching.
+        try:
+            from core.market_data_eligibility import consult_cache_for_symbol
+            decision = consult_cache_for_symbol(self.db, symbol)
+            self._last_market_data_cache_decision = decision
+            if decision.should_skip:
+                # Also prime the in-memory _market_data_cache so callers
+                # that consult it directly see the same result. Returning
+                # None here is consistent with the historical contract.
+                self._market_data_cache[symbol] = (
+                    datetime.now(timezone.utc), None,
+                )
+                logging.debug(
+                    f"MKT-CACHE-001 cache-hit skip {symbol} "
+                    f"reason={decision.reason}"
+                )
+                return None
+        except Exception as _cache_err:
+            logging.debug(
+                f"MKT-CACHE-001 consult failed for {symbol}: {_cache_err}"
+            )
+            self._last_market_data_cache_decision = None
+
         # Check if we have a valid cached result
         now = datetime.now(timezone.utc)
 
@@ -1976,11 +2052,25 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             if not barset or symbol not in barset.data:
                 self._market_data_cache[symbol] = (now, None)
+                self._last_market_data_outcome = {
+                    "kind": "not_in_feed",
+                    "bars_returned": 0,
+                    "barset_key_present": False,
+                    "first_bar_timestamp": None,
+                    "latest_bar_timestamp": None,
+                }
                 return None
 
             bars = barset.data[symbol]
             if not bars:
                 self._market_data_cache[symbol] = (now, None)
+                self._last_market_data_outcome = {
+                    "kind": "not_in_feed",
+                    "bars_returned": 0,
+                    "barset_key_present": True,
+                    "first_bar_timestamp": None,
+                    "latest_bar_timestamp": None,
+                }
                 return None
 
             df = pd.DataFrame([{
@@ -1992,6 +2082,22 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'volume': bar.volume
             } for bar in bars])
 
+            # MKT-CACHE-001: capture the outcome so the main loop can
+            # classify it and write/update the cache row. We deliberately
+            # record this on EVERY successful fresh call (including
+            # sufficient bars) so the loop can delete the cache row.
+            self._last_market_data_outcome = {
+                "kind": "ok",
+                "bars_returned": len(bars),
+                "barset_key_present": True,
+                "first_bar_timestamp": (
+                    bars[0].timestamp.isoformat() if bars else None
+                ),
+                "latest_bar_timestamp": (
+                    bars[-1].timestamp.isoformat() if bars else None
+                ),
+            }
+
             # Cache the result
             self._market_data_cache[symbol] = (now, df)
 
@@ -2000,6 +2106,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         except Exception as e:
             logging.debug(f"Data fetch failed for {symbol}: {e}")
             self._market_data_cache[symbol] = (now, None)
+            self._last_market_data_outcome = {
+                "kind": "api_exception",
+                "bars_returned": None,
+                "barset_key_present": None,
+                "first_bar_timestamp": None,
+                "latest_bar_timestamp": None,
+                "error": str(e)[:200],
+            }
             return None
 
     def check_liquidity(self, symbol: str, min_volume: int = 1000000, max_spread_pct: float = 0.3) -> tuple:
@@ -5832,6 +5946,64 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     if df is None or len(df) < self.sma_slow:
                         logging.debug(f"   ⏭️  {symbol}: ❌ No market data (needs {self.sma_slow} bars)")
                         no_trade_reasons['no_data'] += 1
+
+                        # MKT-CACHE-001: classify this no-data outcome and
+                        # write/update the persistent cache. The new token
+                        # scheme distinguishes:
+                        #   - market_data_cached_* when the eligibility cache
+                        #     already had an unexpired row (skip, no API call)
+                        #   - market_data_not_in_feed (Alpaca responded but
+                        #     symbol absent / 0 bars)
+                        #   - market_data_insufficient_bars (some bars but <30)
+                        #   - market_data_api_exception (transient; not cached)
+                        score_error_reason = "no_market_data"  # fallback
+                        try:
+                            from core.market_data_eligibility import cache_outcome
+                            cache_decision = getattr(
+                                self, "_last_market_data_cache_decision", None
+                            )
+                            cache_outcome_state = getattr(
+                                self, "_last_market_data_outcome", None
+                            )
+
+                            if cache_decision is not None and cache_decision.should_skip:
+                                # Cache hit: emit the cached-skip token and
+                                # do NOT re-write the cache (the existing row
+                                # is still active).
+                                score_error_reason = (
+                                    cache_decision.score_error_reason
+                                    or "no_market_data"
+                                )
+                            else:
+                                # Fresh failure: classify and write.
+                                outcome = cache_outcome_state or {}
+                                token = cache_outcome(
+                                    db=self.db,
+                                    symbol=symbol,
+                                    bars_returned=outcome.get("bars_returned"),
+                                    required_bars=self.sma_slow,
+                                    first_bar_timestamp=outcome.get(
+                                        "first_bar_timestamp"
+                                    ),
+                                    latest_bar_timestamp=outcome.get(
+                                        "latest_bar_timestamp"
+                                    ),
+                                    barset_key_present=bool(
+                                        outcome.get("barset_key_present")
+                                    ),
+                                )
+                                if token is not None:
+                                    score_error_reason = token
+                                # Sufficient data clears the cache row;
+                                # but the bot just verified df is None or
+                                # len(df) < sma_slow, so this branch
+                                # normally records a non-OK outcome.
+                        except Exception as _cache_err:
+                            logging.debug(
+                                f"MKT-CACHE-001 main-loop classify failed "
+                                f"for {symbol}: {_cache_err}"
+                            )
+
                         # OBS-002: persist a SKIPPED_INVALID_DATA row so
                         # decision_history coverage equals analyzed_count.
                         try:
@@ -5844,11 +6016,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                     f"no market data (needs {self.sma_slow} bars)"
                                 ),
                                 baseline_diagnostics=obs_001_baseline_diagnostics,
-                                # SCORE-002: distinguish "no market data"
-                                # upstream from "indicator validation
-                                # failed" downstream so dashboards can
+                                # SCORE-002 + MKT-CACHE-001: distinguish
+                                # upstream no-data causes (cache hit /
+                                # not-in-feed / insufficient-bars /
+                                # api-exception) from downstream indicator
+                                # validation failures so dashboards can
                                 # group by root cause without log-mining.
-                                score_error_reason="no_market_data",
+                                score_error_reason=score_error_reason,
                             )
                         except Exception as e:
                             logging.debug(
