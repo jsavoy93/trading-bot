@@ -53,11 +53,13 @@ OUTCOME tokens (small stable set):
   AGREE_BUY            daily BUY,  hourly BUY   → final signal BUY
   AGREE_SELL           daily SELL, hourly SELL  → final signal SELL
   CONFLICT             daily X,    hourly !X    → final signal HOLD/CONFLICTED
-  DAILY_ONLY_BUY       daily BUY,  hourly HOLD  → final signal BUY (DAILY_ONLY)
-  DAILY_ONLY_SELL      daily SELL, hourly HOLD  → final signal SELL (DAILY_ONLY)
+  DAILY_ONLY_BUY       daily BUY,  no hourly   → final signal BUY (DAILY_ONLY)
+  DAILY_ONLY_SELL      daily SELL, no hourly   → final signal SELL (DAILY_ONLY)
   HOURLY_ONLY_BUY      daily HOLD, hourly BUY   → final signal HOLD (single-side)
   HOURLY_ONLY_SELL     daily HOLD, hourly SELL  → final signal HOLD (single-side)
   NO_ACTION            daily HOLD, hourly HOLD or no hourly data
+                                              → final signal HOLD (WEAK)
+                        OR daily BUY/SELL with hourly HOLD (data available)
                                               → final signal HOLD (WEAK)
 
 REASON tokens (specific to the executed branch):
@@ -66,14 +68,36 @@ REASON tokens (specific to the executed branch):
   daily_sell_hourly_sell_agreement
   daily_buy_hourly_sell_disagreement
   daily_sell_hourly_buy_disagreement
-  daily_buy_hourly_hold_daily_only
-  daily_sell_hourly_hold_daily_only
   daily_buy_no_hourly_data_daily_only
   daily_sell_no_hourly_data_daily_only
+  daily_buy_hourly_hold_no_action
+  daily_sell_hourly_hold_no_action
   daily_hold_hourly_buy_no_action
   daily_hold_hourly_sell_no_action
   daily_hold_hourly_hold_no_action
   daily_hold_no_hourly_data_no_action
+
+Why 12 reasons:
+  The actual MTF combination in SmartBot treats FOUR distinct HOLD outcomes:
+    (a) daily=BUY,    hourly=HOLD with data  → HOLD (else branch)
+    (b) daily=SELL,   hourly=HOLD with data  → HOLD (else branch)
+    (c) daily=HOLD,   hourly=BUY             → HOLD (else branch)
+    (d) daily=HOLD,   hourly=SELL            → HOLD (else branch)
+    (e) daily=HOLD,   hourly=HOLD            → HOLD (else branch)
+    (f) daily=HOLD,   no hourly data         → HOLD (else branch)
+  Plus the two DAILY_ONLY outcomes (hourly unavailable):
+    (g) daily=BUY,    no hourly data         → BUY/DAILY_ONLY (elif branch)
+    (h) daily=SELL,   no hourly data         → SELL/DAILY_ONLY (elif branch)
+  And the two directional-conflict outcomes:
+    (i) daily=BUY,    hourly=SELL            → HOLD/CONFLICTED (if-diff branch)
+    (j) daily=SELL,   hourly=BUY             → HOLD/CONFLICTED (if-diff branch)
+  And the two agreement outcomes:
+    (k) daily=BUY,    hourly=BUY             → BUY/STRONG|MEDIUM
+    (l) daily=SELL,   hourly=SELL            → SELL/STRONG|MEDIUM
+
+  All 12 actual branches get a distinct reason token so the dashboard can
+  attribute every HOLD/WEAK outcome to the specific condition that produced
+  it. CONFLICTED outcomes are NOT collapsed into NO_ACTION.
 
 Design notes:
 
@@ -118,10 +142,10 @@ MTF_REASON_DAILY_BUY_HOURLY_BUY_AGREEMENT = "daily_buy_hourly_buy_agreement"
 MTF_REASON_DAILY_SELL_HOURLY_SELL_AGREEMENT = "daily_sell_hourly_sell_agreement"
 MTF_REASON_DAILY_BUY_HOURLY_SELL_DISAGREEMENT = "daily_buy_hourly_sell_disagreement"
 MTF_REASON_DAILY_SELL_HOURLY_BUY_DISAGREEMENT = "daily_sell_hourly_buy_disagreement"
-MTF_REASON_DAILY_BUY_HOURLY_HOLD_DAILY_ONLY = "daily_buy_hourly_hold_daily_only"
-MTF_REASON_DAILY_SELL_HOURLY_HOLD_DAILY_ONLY = "daily_sell_hourly_hold_daily_only"
 MTF_REASON_DAILY_BUY_NO_HOURLY_DATA_DAILY_ONLY = "daily_buy_no_hourly_data_daily_only"
 MTF_REASON_DAILY_SELL_NO_HOURLY_DATA_DAILY_ONLY = "daily_sell_no_hourly_data_daily_only"
+MTF_REASON_DAILY_BUY_HOURLY_HOLD_NO_ACTION = "daily_buy_hourly_hold_no_action"
+MTF_REASON_DAILY_SELL_HOURLY_HOLD_NO_ACTION = "daily_sell_hourly_hold_no_action"
 MTF_REASON_DAILY_HOLD_HOURLY_BUY_NO_ACTION = "daily_hold_hourly_buy_no_action"
 MTF_REASON_DAILY_HOLD_HOURLY_SELL_NO_ACTION = "daily_hold_hourly_sell_no_action"
 MTF_REASON_DAILY_HOLD_HOURLY_HOLD_NO_ACTION = "daily_hold_hourly_hold_no_action"
@@ -215,29 +239,47 @@ def compute_mtf_outcome(
             "hourly_data_available": avail,
         }
 
-    # DAILY_ONLY_*  →  daily directional, hourly neutral or unavailable
-    if d == "BUY" and (not avail or h == "HOLD"):
-        reason = (
-            MTF_REASON_DAILY_BUY_HOURLY_HOLD_DAILY_ONLY
-            if avail
-            else MTF_REASON_DAILY_BUY_NO_HOURLY_DATA_DAILY_ONLY
-        )
+    # DAILY_ONLY_*  →  daily directional AND hourly indicators were never
+    # available. Mirrors the ``elif daily_signal and not hourly_indicators:``
+    # branch in SmartBot.analyze_multi_timeframe which is the ONLY branch
+    # that emits a BUY/SELL with the DAILY_ONLY strength label. If hourly
+    # indicators were present but the hourly signal evaluated to HOLD,
+    # the actual code falls through to ``else: signal = "HOLD"`` — NOT
+    # DAILY_ONLY — and that case is handled further below as a NO_ACTION.
+    if d == "BUY" and not avail:
         return {
             "mtf_outcome": MTF_OUTCOME_DAILY_ONLY_BUY,
-            "mtf_reason": reason,
+            "mtf_reason": MTF_REASON_DAILY_BUY_NO_HOURLY_DATA_DAILY_ONLY,
             "daily_signal_normalized": d,
             "hourly_signal_normalized": h,
             "hourly_data_available": avail,
         }
-    if d == "SELL" and (not avail or h == "HOLD"):
-        reason = (
-            MTF_REASON_DAILY_SELL_HOURLY_HOLD_DAILY_ONLY
-            if avail
-            else MTF_REASON_DAILY_SELL_NO_HOURLY_DATA_DAILY_ONLY
-        )
+    if d == "SELL" and not avail:
         return {
             "mtf_outcome": MTF_OUTCOME_DAILY_ONLY_SELL,
-            "mtf_reason": reason,
+            "mtf_reason": MTF_REASON_DAILY_SELL_NO_HOURLY_DATA_DAILY_ONLY,
+            "daily_signal_normalized": d,
+            "hourly_signal_normalized": h,
+            "hourly_data_available": avail,
+        }
+
+    # NO_ACTION — daily directional but hourly HOLD (with data) →
+    # the actual MTF combiner falls through to ``else: signal = "HOLD"``
+    # because the daily-elif branch requires ``not hourly_indicators``.
+    # This branch is REACHABLE in production (hourly indicators present
+    # but neither BUY nor SELL condition triggered on hourly).
+    if d == "BUY" and h == "HOLD":
+        return {
+            "mtf_outcome": MTF_OUTCOME_NO_ACTION,
+            "mtf_reason": MTF_REASON_DAILY_BUY_HOURLY_HOLD_NO_ACTION,
+            "daily_signal_normalized": d,
+            "hourly_signal_normalized": h,
+            "hourly_data_available": avail,
+        }
+    if d == "SELL" and h == "HOLD":
+        return {
+            "mtf_outcome": MTF_OUTCOME_NO_ACTION,
+            "mtf_reason": MTF_REASON_DAILY_SELL_HOURLY_HOLD_NO_ACTION,
             "daily_signal_normalized": d,
             "hourly_signal_normalized": h,
             "hourly_data_available": avail,

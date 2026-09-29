@@ -37,14 +37,14 @@ from src.core.mtf_outcome import (
     MTF_OUTCOME_HOURLY_ONLY_SELL,
     MTF_OUTCOME_NO_ACTION,
     MTF_REASON_DAILY_BUY_HOURLY_BUY_AGREEMENT,
-    MTF_REASON_DAILY_BUY_HOURLY_HOLD_DAILY_ONLY,
+    MTF_REASON_DAILY_BUY_HOURLY_HOLD_NO_ACTION,
     MTF_REASON_DAILY_BUY_HOURLY_SELL_DISAGREEMENT,
     MTF_REASON_DAILY_BUY_NO_HOURLY_DATA_DAILY_ONLY,
     MTF_REASON_DAILY_HOLD_HOURLY_BUY_NO_ACTION,
     MTF_REASON_DAILY_HOLD_HOURLY_HOLD_NO_ACTION,
     MTF_REASON_DAILY_HOLD_HOURLY_SELL_NO_ACTION,
     MTF_REASON_DAILY_HOLD_NO_HOURLY_DATA_NO_ACTION,
-    MTF_REASON_DAILY_SELL_HOURLY_HOLD_DAILY_ONLY,
+    MTF_REASON_DAILY_SELL_HOURLY_HOLD_NO_ACTION,
     MTF_REASON_DAILY_SELL_HOURLY_SELL_AGREEMENT,
     MTF_REASON_DAILY_SELL_HOURLY_BUY_DISAGREEMENT,
     MTF_REASON_DAILY_SELL_NO_HOURLY_DATA_DAILY_ONLY,
@@ -112,21 +112,18 @@ class TestMtfOutcomeConflict:
 
 
 class TestMtfOutcomeDailyOnly:
-    """DAILY_ONLY_* (daily directional, hourly neutral / unavailable)."""
+    """DAILY_ONLY_* only fires when hourly data is unavailable.
 
-    @pytest.mark.parametrize("signal", ["BUY", "SELL"])
-    def test_daily_directional_hourly_hold(self, signal):
-        r = compute_mtf_outcome(signal, "HOLD", hourly_data_available=True)
-        expected_outcome = (
-            MTF_OUTCOME_DAILY_ONLY_BUY if signal == "BUY" else MTF_OUTCOME_DAILY_ONLY_SELL
-        )
-        expected_reason = (
-            MTF_REASON_DAILY_BUY_HOURLY_HOLD_DAILY_ONLY
-            if signal == "BUY"
-            else MTF_REASON_DAILY_SELL_HOURLY_HOLD_DAILY_ONLY
-        )
-        assert r["mtf_outcome"] == expected_outcome
-        assert r["mtf_reason"] == expected_reason
+    This mirrors the ``elif daily_signal and not hourly_indicators:``
+    branch in SmartBot.analyze_multi_timeframe — the ONLY branch that
+    emits a BUY/SELL with the DAILY_ONLY strength label.
+
+    If hourly indicators are present but the hourly signal evaluated to
+    HOLD (because neither BUY nor SELL condition triggered), the actual
+    code falls through to ``else: signal = "HOLD"`` — NOT DAILY_ONLY.
+    Those cases are covered by ``TestMtfOutcomeNoActionDailyDirectional``
+    below.
+    """
 
     @pytest.mark.parametrize("signal", ["BUY", "SELL"])
     def test_daily_directional_no_hourly_data(self, signal):
@@ -141,6 +138,42 @@ class TestMtfOutcomeDailyOnly:
         )
         assert r["mtf_outcome"] == expected_outcome
         assert r["mtf_reason"] == expected_reason
+
+    def test_daily_directional_with_hourly_data_is_not_daily_only(self):
+        # Explicit guard: hourly data present → NEVER DAILY_ONLY,
+        # regardless of hourly_signal value.
+        for signal in ("BUY", "SELL"):
+            r = compute_mtf_outcome(signal, "HOLD", hourly_data_available=True)
+            assert r["mtf_outcome"] != MTF_OUTCOME_DAILY_ONLY_BUY
+            assert r["mtf_outcome"] != MTF_OUTCOME_DAILY_ONLY_SELL
+
+
+class TestMtfOutcomeNoActionDailyDirectional:
+    """Daily directional + hourly HOLD (with data) → NO_ACTION (HOLD/WEAK).
+
+    In SmartBot.analyze_multi_timeframe, when daily has a BUY/SELL signal
+    but the hourly signal evaluated to HOLD (hourly indicators present,
+    but neither BUY nor SELL condition triggered), control reaches the
+    ``else: signal = "HOLD"`` branch — NOT the ``elif daily_signal and
+    not hourly_indicators:`` branch. The final signal is HOLD/WEAK and
+    the helper classifies this as NO_ACTION with a distinct reason
+    so the dashboard can tell ``daily BUY / hourly HOLD (with data)``
+    apart from ``daily BUY / no hourly data at all``.
+    """
+
+    @pytest.mark.parametrize("signal", ["BUY", "SELL"])
+    def test_daily_directional_hourly_hold_with_data(self, signal):
+        r = compute_mtf_outcome(signal, "HOLD", hourly_data_available=True)
+        assert r["mtf_outcome"] == MTF_OUTCOME_NO_ACTION
+        expected_reason = (
+            MTF_REASON_DAILY_BUY_HOURLY_HOLD_NO_ACTION
+            if signal == "BUY"
+            else MTF_REASON_DAILY_SELL_HOURLY_HOLD_NO_ACTION
+        )
+        assert r["mtf_reason"] == expected_reason
+        assert r["daily_signal_normalized"] == signal
+        assert r["hourly_signal_normalized"] == "HOLD"
+        assert r["hourly_data_available"] is True
 
 
 class TestMtfOutcomeHourlyOnly:
@@ -192,9 +225,25 @@ class TestMtfOutcomeInputNormalization:
 
     @pytest.mark.parametrize("value", [None, "", "garbage"])
     def test_hourly_signal_invalid_normalizes_to_hold(self, value):
+        # hourly_data_available=True and daily=BUY, so this is the
+        # ``daily BUY + hourly HOLD (with data)`` branch → NO_ACTION.
+        # Invalid hourly values normalize to HOLD, and the combination
+        # mirrors the actual SmartBot ``else: signal = "HOLD"`` branch.
         r = compute_mtf_outcome("BUY", value, hourly_data_available=True)
         assert r["hourly_signal_normalized"] == "HOLD"
+        assert r["mtf_outcome"] == MTF_OUTCOME_NO_ACTION
+        assert r["mtf_reason"] == MTF_REASON_DAILY_BUY_HOURLY_HOLD_NO_ACTION
+
+    @pytest.mark.parametrize("value", [None, "", "garbage"])
+    def test_hourly_signal_invalid_no_hourly_data_normalizes_to_daily_only(self, value):
+        # hourly_data_available=False and daily=BUY → DAILY_ONLY_BUY.
+        # Invalid hourly values normalize to HOLD; with no hourly data
+        # the actual SmartBot branch is ``elif daily_signal and not
+        # hourly_indicators:`` → BUY/DAILY_ONLY.
+        r = compute_mtf_outcome("BUY", value, hourly_data_available=False)
+        assert r["hourly_signal_normalized"] == "HOLD"
         assert r["mtf_outcome"] == MTF_OUTCOME_DAILY_ONLY_BUY
+        assert r["mtf_reason"] == MTF_REASON_DAILY_BUY_NO_HOURLY_DATA_DAILY_ONLY
 
 
 class TestMtfOutcomeHourlyDataFlag:
