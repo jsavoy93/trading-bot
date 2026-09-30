@@ -4553,3 +4553,154 @@ The historical ~510 WEAK mystery rows (RSI+SMA joint-pass, final WEAK) now map t
   - Persist downstream filter attribution in strategy_eligibility.gates
   - Extend MKT-CACHE to hourly fetch failures
   - Dashboard visualization of funnel collapse
+
+---
+
+# P0 — BUY → HOLD ROOT CAUSE INVESTIGATION (2026-09-30 01:53 UTC)
+
+## Task
+P0 OWNER DIRECTIVE — BUY → HOLD ROOT CAUSE IS NOW THE ONLY PRIORITY.
+Roadmap frozen. Determine deterministically why analyzer-level BUY signals become final HOLD decisions.
+
+## Window
+- STRAT-003 prospective window: 2026-09-29 22:15:54 → 2026-09-29 23:22:20 UTC (66m 14s, 198 cycles)
+- 5920 decisions (5806 multi_timeframe + 114 single_timeframe)
+- 18 daily=BUY cases identified for forensic accounting
+
+## Branch
+main @ `8afc4e2` (no code/config/strategy changes; read-only forensic)
+
+## Status
+P0 BUY→HOLD ROOT CAUSE REMAINS OPEN — DO NOT PROCEED TO STRATEGY TUNING
+Phase 1-6 forensics complete (read-only).
+Phase 7 additive observability is REQUIRED before P0 can close.
+Phase 8-13 are deferred pending owner authorization of Phase 7.
+
+## Files Changed
+- `reports/2026-09-30_015300_p0-buy-hold-root-cause-investigation.md` (NEW, 38KB)
+- `REPORT.md` (rolling, gitignored, rewritten)
+- `ITERATION_PROGRESS_LOG.md` (this entry)
+- (no other repo files modified)
+
+## Phase 2 — BUY → HOLD Mutation Site Map (exhaustive)
+
+**Only ONE mutation site in current code path between `analyze_multi_timeframe` return and final `analyzed_stocks` write:**
+
+| File:line | Function | Mutation | Condition |
+|---|---|---|---|
+| src/core/smart_bot.py:6024 | `run_analysis` liquidity filter | `analysis['signal']='HOLD'` | `enable_liquidity_filter=true AND check_liquidity() returns False` |
+| src/core/smart_bot.py:6037 | `run_analysis` sector filter | `analysis['signal']='HOLD'` | `enable_sector_filter=true AND sector_score < -2` (DEAD CODE — sector_filter=False per persisted settings) |
+
+Inside-analyzer filters (lines 2589-2600) cannot mutate for the 18 cases:
+- `enable_mtf_conflict_filter` block: only fires when `daily_signal != hourly_signal`. For 18 cases: daily=BUY, hourly=HOLD/unavailable → mtf_conflict_blocked=False.
+- `enable_vol_downgrade_filter` block: only fires when `enable_volume_confirmation=True` (False per persisted settings).
+- `enable_ai_conflict_filter` block: disabled (False per persisted settings).
+
+By elimination, **liquidity filter at line 6024 is the proven BUY→HOLD mutation site for the 18 cases**.
+
+## Phase 1 — Forensic Table (18 cases, all 18 rows)
+
+See `reports/2026-09-30_015300_p0-buy-hold-root-cause-investigation.md` for full table.
+
+Summary: All 18 cases share identical final persisted state:
+- mtf_outcome=DAILY_ONLY_BUY
+- signal=HOLD, signal_strength=WEAK
+- strategy_reason="Strategy ineligible (no actionable signal)"
+- decision.outcome=HOLD_INELIGIBLE
+- analyzed_stocks.filter_results: 3 entries all passed (mtf_conflict, volume_downgrade, ai_conflict)
+- analyzed_stocks.blocked_by=NULL, blocked_count=0
+- cycle_funnel.strategy_eligible_count=0 for all 18 cycles
+
+17 of 18 had MACD<0 in buy_criteria (TLNCU was the only case with MACD>0).
+
+## Phase 3 — Liquidity Filter Deep Dive (function specification)
+
+- Function: `check_liquidity(self, symbol, min_volume=1_000_000, max_spread_pct=0.3)` at line 2164-2207
+- Data source: `self.get_market_data(symbol)` (Alpaca daily bars via REST)
+- Calculation:
+  - `avg_volume = df['volume'].tail(20).mean()` (20-day rolling avg daily volume)
+  - `high_low_spread = ((latest['high'] - latest['low']) / price) * 100` (proxy for bid-ask spread)
+  - Returns (False, ...) if `avg_volume < 1M` OR `high_low_spread > 0.9%` (note: threshold is `max_spread_pct * 3 = 0.9%`)
+- Effective config: `enable_liquidity_filter=true`, `min_daily_volume=1M` (schema default), `enable_sector_filter=false` (sector disabled)
+- Return: tuple (passes: bool, avg_volume: float, high_low_spread: float, reason: str)
+- Missing data: **fails open** (returns True, "Insufficient data - skipping liquidity check")
+- API errors: **fails open** (returns True, "Check failed - allowing")
+- **Persistence**: NONE. The (passes, avg_volume, spread, reason) tuple is NEVER written to any DB column or snapshot field. The mutation at line 6024 sets `analysis['liquidity_warning']=reason` in-memory only.
+
+## Phase 4 — Classification of 18 Cases
+- 18 of 18: **DOWNSTREAM_BUY_TO_HOLD_MUTATION_PROVEN_BUT_REASON_UNKNOWN**
+- 0 of 18: LIQUIDITY_BLOCK_PROVEN (would require persisted volume/spread measurement — not persisted)
+- 0 of 18: OTHER_FILTER_BLOCK_PROVEN (sector disabled; no other post-MTF filters)
+- 0 of 18: NO_DOWNSTREAM_MUTATION (all 18 proven by cycle_funnel.strategy_eligible_count=0)
+- 0 of 18: UNKNOWN in the strict sense (the code stage IS proven by elimination)
+
+## Phase 5 — Persistence Layer Timing
+Resolved the ordering of all persistence layers:
+
+1. `analyzed_stocks` 1st write (line 6018 in run_analysis): UPSERT with PRE-LIQUIDITY signal=BUY (transient — OVERWRITTEN later)
+2. `analysis` dict mutation (line 6024): POST-LIQUIDITY signal=HOLD (in-memory)
+3. `analyzed_stocks` 2nd write (line 7160 inside _persist_obs_001_decision_snapshot): UPSERT with POST-LIQUIDITY signal=HOLD (overwrites 1st write — this is the FINAL persisted truth)
+4. `decision_history` (line 7167): INSERT with decision_snapshot containing POST-LIQUIDITY signal
+5. `cycle_funnel` (cycle end): INSERT with strategy_eligible_count=0 for all 18 cycles
+
+The 1st analyzed_stocks write captures PRE-LIQUIDITY state but is unrecoverable from DB.
+
+## Phase 6 — Is Current Evidence Enough?
+**NO.** The liquidity measurement (avg_volume, high_low_spread, thresholds) is the missing observability.
+Per owner directive: "If attribution is incomplete, implement the smallest additive observability contract."
+
+## Phase 7 Design (NOT YET IMPLEMENTED — requires owner authorization)
+- New `signal_pipeline` block in decision_snapshot (5 stages: analyzer → post-inside-analyzer → post-liquidity → post-sector → final)
+- `downgrade_stage`: enum {null, multi_timeframe_conflict, volume_downgrade, ai_conflict, liquidity_filter, sector_filter}
+- `downgrade_reason`: human-readable string from the failing filter
+- Extended `filter_results` with `liquidity_filter` and `sector_filter` entries
+- State taxonomy: FILTER_PASSED | FILTER_FAILED | COULD_NOT_BE_EVALUATED | DISABLED | NOT_APPLICABLE
+- `measured` sub-dict per filter (avg_volume_20d, required_volume, high_low_spread_pct, max_spread_pct_threshold for liquidity)
+- macd_positive gate fallback (use macd_score sign when macd_histogram is None)
+- Schema version bump 1 → 2 (additive only)
+- New test file `tests/test_p0_buy_hold_pipeline_observability.py` with 8 tests
+
+## Phase 8 — Legitimacy (provisional)
+Provisional classification: E. INSUFFICIENT EVIDENCE for the 18 cases (cannot prove actual measurement).
+Code design: A. LEGITIMATE FILTER REJECTION (filter as designed, but threshold value requires owner judgment).
+
+## Phase 12 — Denominators
+- Analyzer BUYs: 18
+- Final BUYs: 0
+- Downgraded: 18/18 (100%)
+- Reasons (currently known):
+  - Liquidity (code path): 18/18 (proven by elimination; measurement NOT persisted)
+  - Multi-timeframe conflict: 0/18
+  - Volume downgrade: 0/18
+  - AI conflict: 0/18
+  - Unknown (post-Phase 7): 18/18 (currently)
+
+## Phase 14 — Historical Claims
+- Historical ~510 WEAK rows from frozen RSI+SMA cohort CANNOT be retroactively attributed (pre-PR #105, pre-OBS-001, pre-Phase 7).
+- New prospective observability (Phase 7) solves the problem GOING FORWARD, not retroactively.
+
+## Safety
+- Strategy changed: NO
+- Code changed: NO (Phase 7 design only)
+- Config changed: NO
+- DB schema changed: NO
+- Historical rows: NOT TOUCHED
+- Restart: NO
+- Broker action: NO
+- Unrelated services unchanged: trading-dashboard 1212213, dashboard 1067605, openclaw-gateway 965975, cloudflared 656088
+
+## Reports
+- `REPORT.md` (rolling, gitignored)
+- `reports/2026-09-30_015300_p0-buy-hold-root-cause-investigation.md` (committed, 38KB)
+- `/root/.openclaw/audit-archives/trading-bot/2026-09-30_015300_p0-buy-hold-root-cause-investigation.md` (authoritative)
+
+## Decision
+P0 BUY→HOLD ROOT CAUSE REMAINS OPEN — DO NOT PROCEED TO STRATEGY TUNING
+
+## Next Action (requires owner authorization)
+1. Owner review of Phase 7 design in `reports/2026-09-30_015300_p0-buy-hold-root-cause-investigation.md`
+2. Open bounded PR on `p0-buy-hold-pipeline-observability` — additive observability only
+3. Tests (8 deterministic, observability-only)
+4. Merge → deploy via systemd → collect fresh prospective BUY cases
+5. Validate: UNKNOWN BUY → HOLD CASES = 0 in fresh sample
+6. Dashboard Phase 10-13 (BUY Blocker View)
