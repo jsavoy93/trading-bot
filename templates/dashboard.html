@@ -1519,6 +1519,100 @@
             </div>
         </div>
 
+        <!-- P0 BUY→HOLD Attribution (Phase 11 dashboard) -->
+        <!-- Observability only: no recompute, no live threshold, no live range -->
+        <!-- Source: /api/buy-blockers + /api/buy-blockers/summary -->
+        <div id="buy-blockers-card" class="card" style="margin: 0;">
+            <div class="card-header">
+                <span class="card-title">🎯 BUY→HOLD Attribution</span>
+                <span id="buy-blockers-boundary" style="font-size:11px;color:#8b949e;"></span>
+            </div>
+            <div class="card-body">
+                <div style="font-size:12px;color:#8b949e;margin-bottom:8px;">
+                    Why analyzer-stage BUYs did not become final BUYs.
+                    Reads <code>decision_history.decision_snapshot.signal_pipeline</code>
+                    (additive block introduced by PR #106).
+                    Pre-PR #106 rows are surfaced as
+                    <em>attribution unavailable</em> and never counted as unknown downgrades.
+                </div>
+
+                <!-- 1. Summary tiles -->
+                <div id="buy-blockers-tiles"
+                     style="display:grid;grid-template-columns:repeat(4, 1fr);gap:8px;margin-bottom:12px;">
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 8px;text-align:center;">
+                        <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Analyzer BUYs</div>
+                        <div id="buy-blockers-tile-analyzer" style="font-size:24px;font-weight:600;color:#c9d1d9;margin-top:4px;">—</div>
+                    </div>
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 8px;text-align:center;">
+                        <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Final BUYs</div>
+                        <div id="buy-blockers-tile-final" style="font-size:24px;font-weight:600;color:#3fb950;margin-top:4px;">—</div>
+                    </div>
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 8px;text-align:center;">
+                        <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Downgraded</div>
+                        <div id="buy-blockers-tile-downgraded" style="font-size:24px;font-weight:600;color:#f0883e;margin-top:4px;">—</div>
+                        <div id="buy-blockers-tile-downgraded-pct" style="font-size:11px;color:#8b949e;margin-top:2px;">—</div>
+                    </div>
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 8px;text-align:center;">
+                        <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;">Unknown</div>
+                        <div id="buy-blockers-tile-unknown" style="font-size:24px;font-weight:600;color:#f85149;margin-top:4px;">—</div>
+                        <div id="buy-blockers-tile-unavailable" style="font-size:11px;color:#8b949e;margin-top:2px;">—</div>
+                    </div>
+                </div>
+
+                <!-- 2. Reason counts table -->
+                <div style="font-size:12px;font-weight:600;color:#3fb950;text-transform:uppercase;margin-bottom:6px;">
+                    Reason Counts
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px;">
+                    <thead>
+                        <tr style="text-align:left;border-bottom:1px solid #30363d;">
+                            <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Bucket</th>
+                            <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;text-align:right;">Count</th>
+                            <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;text-align:right;">% of Analyzer BUYs</th>
+                            <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;text-align:right;">Observed (min/median/max)</th>
+                            <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;text-align:right;">Threshold</th>
+                        </tr>
+                    </thead>
+                    <tbody id="buy-blockers-reasons-body">
+                        <tr><td colspan="5" style="padding:8px;color:#8b949e;">Loading…</td></tr>
+                    </tbody>
+                </table>
+
+                <!-- 3. Detail table with pagination -->
+                <div style="font-size:12px;font-weight:600;color:#3fb950;text-transform:uppercase;margin:12px 0 6px 0;">
+                    Detail (most recent first)
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+                    <button id="buy-blockers-prev-btn" onclick="_bb_paginate('prev')" class="btn btn-secondary" style="padding:4px 10px;font-size:12px;">◀ Prev</button>
+                    <button id="buy-blockers-next-btn" onclick="_bb_paginate('next')" class="btn btn-secondary" style="padding:4px 10px;font-size:12px;">Next ▶</button>
+                    <span id="buy-blockers-pagination-info" style="font-size:11px;color:#8b949e;"></span>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table id="buy-blockers-detail-table" style="width:100%;border-collapse:collapse;font-size:11px;">
+                        <thead>
+                            <tr style="text-align:left;border-bottom:1px solid #30363d;">
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Symbol</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Timestamp (UTC)</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Analyzer Sig</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Final Sig</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Blocker Stage</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Reason</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;text-align:right;">Avg Volume (thr)</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;text-align:right;">High-Low Range % (thr)</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">MTF Outcome</th>
+                                <th style="padding:6px 8px;color:#8b949e;text-transform:uppercase;font-weight:600;">Strategy / Rank / Submit</th>
+                            </tr>
+                        </thead>
+                        <tbody id="buy-blockers-detail-body">
+                            <tr><td colspan="10" style="padding:8px;color:#8b949e;">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="buy-blockers-detail-loading" style="color:#8b949e;padding:8px;display:none;">Loading…</div>
+                <div id="buy-blockers-detail-error" style="color:#f85149;padding:8px;display:none;"></div>
+            </div>
+        </div>
+
     </div><!-- /top-tab-buyfunnel -->
 
     <div id="top-tab-settings" class="top-tab-panel" style="display:none;">
@@ -1627,7 +1721,67 @@
             const panel = document.getElementById('top-tab-' + tabName);
             if (panel) panel.style.display = 'block';
             if (btn) btn.classList.add('active');
+            // P0 BUY→HOLD DASHBOARD: persist the active tab in the URL
+            // hash so a manual browser refresh (F5) lands the user
+            // back on the same tab instead of resetting to "Dashboard".
+            if (typeof updateHash === 'function') {
+                updateHash();
+            }
         }
+
+        // P0 BUY→HOLD DASHBOARD: hash-based URL state for the active
+        // top-level tab + analytics range. The hash survives manual
+        // browser refresh (F5) and back/forward navigation. Automatic
+        // data refresh (refreshData) MUST NOT touch the hash — the
+        // URL stays put while numbers update.
+        function getCurrentTopTab() {
+            const active = document.querySelector('.top-tab.active');
+            if (!active) return 'dashboard';
+            const t = active.textContent.trim();
+            // Map button text → panel id suffix.
+            if (/dashboard/i.test(t)) return 'dashboard';
+            if (/analytics/i.test(t)) return 'analytics';
+            if (/buy\s+eligibility|buyfunnel/i.test(t)) return 'buyfunnel';
+            if (/settings/i.test(t)) return 'settings';
+            if (/history/i.test(t)) return 'history';
+            return 'dashboard';
+        }
+
+        function setTopTabFromHash() {
+            const hash = window.location.hash.replace(/^#/, '');
+            if (!hash) return;
+            const params = new URLSearchParams(hash);
+            const tab = params.get('tab');
+            const range = params.get('range');
+            if (tab) {
+                document.querySelectorAll('.top-tab-panel').forEach(p => p.style.display = 'none');
+                document.querySelectorAll('.top-tab').forEach(t => t.classList.remove('active'));
+                const panel = document.getElementById('top-tab-' + tab);
+                if (panel) panel.style.display = 'block';
+                const tabBtn = Array.from(document.querySelectorAll('.top-tab'))
+                    .find(b => b.textContent.trim().toLowerCase().startsWith(tab.toLowerCase()));
+                if (tabBtn) tabBtn.classList.add('active');
+            }
+            if (range) {
+                const rangeEl = document.getElementById('buy-funnel-range');
+                if (rangeEl) rangeEl.value = range;
+            }
+        }
+
+        function updateHash() {
+            const tab = getCurrentTopTab();
+            const rangeEl = document.getElementById('buy-funnel-range');
+            const range = rangeEl ? rangeEl.value : '';
+            // replaceState — NOT pushState — so back-button history is
+            // not polluted by every tab switch or auto-refresh cycle.
+            window.history.replaceState(
+                null, '',
+                '#tab=' + tab + (range ? '&range=' + range : '')
+            );
+        }
+        // Expose to window for older inline `onchange="..."` handlers.
+        window.setTopTabFromHash = setTopTabFromHash;
+        window.updateHash = updateHash;
 
         function showAnalyticsTab(tabName, btn) {
             document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
@@ -1684,7 +1838,251 @@
             _bf_renderJointPassFlow(jpRes);
             _bf_renderNearMiss(nmRes);
             _bf_renderConfigOverlay(cfgRes);
+            // P0 BUY→HOLD DASHBOARD: re-fetch the BUY→HOLD Attribution
+            // card using the SAME range selector so the user always
+            // sees the BUY funnel and the BUY→HOLD truth side-by-side.
+            if (typeof loadBuyBlockers === 'function') {
+                bb_offset = 0;
+                loadBuyBlockers();
+            }
+            // P0 BUY→HOLD DASHBOARD: keep the URL hash in sync with
+            // the new range selection so manual browser refresh
+            // (F5) restores the same window.
+            if (typeof updateHash === 'function') {
+                updateHash();
+            }
         }
+
+        // ─────────────────────────────────────────────────────────────────
+        // P0 BUY→HOLD ATTRIBUTION (Phase 11 dashboard)
+        //
+        // Six fetcher states: `bb_offset` / `bb_limit` track pagination.
+        // All XSS-safe via _lc_escapeHtml. The endpoint reads what the
+        // bot already persisted in decision_history.decision_snapshot
+        // -> $.signal_pipeline (PR #106 additive block). No recompute,
+        // no live threshold, no live range recompute.
+        // ─────────────────────────────────────────────────────────────────
+        let bb_offset = 0;
+        const BB_LIMIT = 50;
+
+        async function loadBuyBlockers(opts) {
+            if (!opts || typeof opts !== 'object') opts = {};
+            const reset = !!opts.reset;
+            const range = document.getElementById('buy-funnel-range').value;
+            if (reset) bb_offset = 0;
+            const limit = BB_LIMIT;
+            const offset = bb_offset;
+            const loading = document.getElementById('buy-blockers-detail-loading');
+            const errBox = document.getElementById('buy-blockers-detail-error');
+            const tbody = document.getElementById('buy-blockers-detail-body');
+            if (loading) loading.style.display = 'block';
+            if (errBox) { errBox.style.display = 'none'; errBox.textContent = ''; }
+            // Summary tiles + reason counts are always loaded fresh on reset.
+            const summaryPromise = _bf_fetchJson(
+                '/api/buy-blockers/summary?range=' + encodeURIComponent(range)
+            );
+            const detailPromise = _bf_fetchJson(
+                '/api/buy-blockers?range=' + encodeURIComponent(range)
+                + '&limit=' + limit + '&offset=' + offset
+            );
+            try {
+                const [summary, detail] = await Promise.all([summaryPromise, detailPromise]);
+                if (loading) loading.style.display = 'none';
+                _bb_renderSummary(summary);
+                _bb_renderReasons(summary);
+                _bb_renderDetail(detail);
+                _bb_renderPagination(detail, range);
+            } catch (e) {
+                if (loading) loading.style.display = 'none';
+                if (errBox) {
+                    errBox.textContent = 'Failed to load BUY→HOLD attribution: ' + (e && e.message || e);
+                    errBox.style.display = 'block';
+                }
+                if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="padding:8px;color:#f85149;">Error</td></tr>';
+            }
+        }
+
+        function _bb_renderSummary(r) {
+            const boundary = document.getElementById('buy-blockers-boundary');
+            if (boundary) {
+                if (r && r.prospective_boundary_iso) {
+                    boundary.textContent = 'cohort boundary (post-PR #106): ' + r.prospective_boundary_iso;
+                } else if (r && r.error) {
+                    boundary.textContent = 'Error: ' + r.error;
+                } else {
+                    boundary.textContent = '';
+                }
+            }
+            const tileA = document.getElementById('buy-blockers-tile-analyzer');
+            const tileF = document.getElementById('buy-blockers-tile-final');
+            const tileD = document.getElementById('buy-blockers-tile-downgraded');
+            const tileDpct = document.getElementById('buy-blockers-tile-downgraded-pct');
+            const tileU = document.getElementById('buy-blockers-tile-unknown');
+            const tileUna = document.getElementById('buy-blockers-tile-unavailable');
+            if (!r || r.error) {
+                if (tileA) tileA.textContent = '—';
+                if (tileF) tileF.textContent = '—';
+                if (tileD) tileD.textContent = '—';
+                if (tileDpct) tileDpct.textContent = '—';
+                if (tileU) tileU.textContent = '—';
+                if (tileUna) tileUna.textContent = '—';
+                return;
+            }
+            const s = r.summary || {};
+            if (tileA) tileA.textContent = Number(s.analyzer_buy_count || 0).toLocaleString();
+            if (tileF) tileF.textContent = Number(s.final_buy_count || 0).toLocaleString();
+            if (tileD) tileD.textContent = Number(s.downgraded_count || 0).toLocaleString();
+            if (tileDpct) tileDpct.textContent = (s.downgrade_rate_pct || 0) + '% of analyzer BUYs';
+            if (tileU) {
+                tileU.textContent = Number(s.unknown_count || 0).toLocaleString();
+                if ((s.unknown_count || 0) > 0) tileU.style.color = '#f85149';
+                else tileU.style.color = '#3fb950';
+            }
+            if (tileUna) {
+                const a = s.attribution_unavailable_count || 0;
+                tileUna.textContent = a > 0
+                    ? (a.toLocaleString() + ' attribution unavailable (pre-PR #106)')
+                    : '0 attribution unavailable';
+            }
+        }
+
+        function _bb_renderReasons(r) {
+            const tbody = document.getElementById('buy-blockers-reasons-body');
+            if (!tbody) return;
+            if (!r || r.error || !r.reasons) {
+                tbody.innerHTML = '<tr><td colspan="5" style="padding:8px;color:#f85149;">Error loading reasons.</td></tr>';
+                return;
+            }
+            const ranges = r.ranges || {};
+            let html = '';
+            for (const reason of r.reasons) {
+                const count = Number(reason.count || 0);
+                const pct = Number(reason.pct || 0);
+                const rowStyle = count > 0
+                    ? 'background:rgba(248,81,73,0.06);'
+                    : '';
+                let obs = '—';
+                let thr = '—';
+                if (reason.key === 'low_average_volume' && ranges.low_average_volume) {
+                    const lv = ranges.low_average_volume;
+                    if (lv.min !== null && lv.min !== undefined) {
+                        obs = Math.round(lv.min).toLocaleString()
+                            + ' / ' + Math.round(lv.median || 0).toLocaleString()
+                            + ' / ' + Math.round(lv.max || 0).toLocaleString();
+                    }
+                    thr = lv.applied_threshold !== null && lv.applied_threshold !== undefined
+                        ? Math.round(lv.applied_threshold).toLocaleString() : '—';
+                } else if (reason.key === 'high_high_low_range' && ranges.high_high_low_range) {
+                    const hl = ranges.high_high_low_range;
+                    if (hl.min !== null && hl.min !== undefined) {
+                        obs = (hl.min).toFixed(2) + ' / '
+                            + (hl.median || 0).toFixed(2) + ' / '
+                            + (hl.max || 0).toFixed(2);
+                    }
+                    thr = hl.applied_threshold !== null && hl.applied_threshold !== undefined
+                        ? hl.applied_threshold.toFixed(2) : '—';
+                }
+                html += '<tr style="' + rowStyle + 'border-bottom:1px solid #21262d;">'
+                    + '<td style="padding:6px 8px;">' + _lc_escapeHtml(reason.label || reason.key) + '</td>'
+                    + '<td style="padding:6px 8px;text-align:right;font-weight:600;color:' + (count > 0 ? '#f0883e' : '#8b949e') + ';">' + count.toLocaleString() + '</td>'
+                    + '<td style="padding:6px 8px;text-align:right;color:#8b949e;">' + pct.toFixed(2) + '%</td>'
+                    + '<td style="padding:6px 8px;text-align:right;color:#8b949e;">' + _lc_escapeHtml(obs) + '</td>'
+                    + '<td style="padding:6px 8px;text-align:right;color:#8b949e;">' + _lc_escapeHtml(thr) + '</td>'
+                    + '</tr>';
+            }
+            tbody.innerHTML = html;
+        }
+
+        function _bb_renderDetail(r) {
+            const tbody = document.getElementById('buy-blockers-detail-body');
+            if (!tbody) return;
+            if (!r || r.error) {
+                tbody.innerHTML = '<tr><td colspan="10" style="padding:8px;color:#f85149;">'
+                    + _lc_escapeHtml((r && r.error) || 'Unknown error') + '</td></tr>';
+                return;
+            }
+            const rows = r.rows || [];
+            if (rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" style="padding:8px;color:#8b949e;">No analyzer-stage BUYs in this window.</td></tr>';
+                return;
+            }
+            let html = '';
+            for (const row of rows) {
+                const liq = row.liquidity_evaluation || {};
+                const mtf = row.mtf || {};
+                const mtfOutcome = mtf.mtf_outcome || '—';
+                const mtfReason = mtf.mtf_reason || '';
+                const mtfCell = mtfReason
+                    ? (_lc_escapeHtml(mtfOutcome) + ' <span style="color:#8b949e;">(' + _lc_escapeHtml(mtfReason) + ')</span>')
+                    : _lc_escapeHtml(mtfOutcome);
+                const strategyBits = [
+                    row.strategy_eligible === true ? '✓ strat' : (row.strategy_eligible === false ? '✗ strat' : '— strat'),
+                    row.ranked_candidate === true ? '✓ rank' : (row.ranked_candidate === false ? '✗ rank' : '— rank'),
+                    row.order_submitted === true ? '✓ submit' : (row.order_submitted === false ? '✗ submit' : '— submit'),
+                ].join(' · ');
+                const avgVol = liq.avg_volume;
+                const minVol = liq.min_daily_volume;
+                const effMax = liq.effective_max_high_low_pct;
+                const hlPct = liq.high_low_pct;
+                const avgVolCell = (avgVol !== null && avgVol !== undefined)
+                    ? Math.round(avgVol).toLocaleString()
+                      + ' <span style="color:#8b949e;">('
+                      + (minVol !== null && minVol !== undefined ? Math.round(minVol).toLocaleString() : '—')
+                      + ')</span>'
+                    : '—';
+                const hlPctCell = (hlPct !== null && hlPct !== undefined)
+                    ? Number(hlPct).toFixed(2) + '%'
+                      + ' <span style="color:#8b949e;">('
+                      + (effMax !== null && effMax !== undefined ? Number(effMax).toFixed(2) : '—')
+                      + ')</span>'
+                    : '—';
+                const downgradeBadge = row.downgraded
+                    ? '<span style="color:#f0883e;font-weight:600;">⬇ downgraded</span>'
+                    : '<span style="color:#3fb950;">—</span>';
+                html += '<tr style="border-bottom:1px solid #21262d;">'
+                    + '<td style="padding:6px 8px;"><code>' + _lc_escapeHtml(row.symbol || '') + '</code></td>'
+                    + '<td style="padding:6px 8px;color:#8b949e;">' + _lc_escapeHtml((row.cycle_start || '').slice(0, 19)) + '</td>'
+                    + '<td style="padding:6px 8px;">' + _lc_escapeHtml(row.analyzer_signal || '—') + ' / ' + _lc_escapeHtml(row.analyzer_signal_strength || '—') + '</td>'
+                    + '<td style="padding:6px 8px;">' + _lc_escapeHtml(row.final_signal || '—') + ' / ' + _lc_escapeHtml(row.final_signal_strength || '—') + '</td>'
+                    + '<td style="padding:6px 8px;">' + _lc_escapeHtml(row.downgrade_stage || '—') + ' ' + downgradeBadge + '</td>'
+                    + '<td style="padding:6px 8px;font-size:11px;">' + _lc_escapeHtml(row.downgrade_reason || '—') + '</td>'
+                    + '<td style="padding:6px 8px;text-align:right;font-size:11px;">' + avgVolCell + '</td>'
+                    + '<td style="padding:6px 8px;text-align:right;font-size:11px;">' + hlPctCell + '</td>'
+                    + '<td style="padding:6px 8px;font-size:11px;">' + mtfCell + '</td>'
+                    + '<td style="padding:6px 8px;font-size:10px;color:#8b949e;">' + _lc_escapeHtml(strategyBits) + '</td>'
+                    + '</tr>';
+            }
+            tbody.innerHTML = html;
+        }
+
+        function _bb_renderPagination(r, range) {
+            const info = document.getElementById('buy-blockers-pagination-info');
+            const prevBtn = document.getElementById('buy-blockers-prev-btn');
+            const nextBtn = document.getElementById('buy-blockers-next-btn');
+            if (!r || r.error) {
+                if (info) info.textContent = '';
+                if (prevBtn) prevBtn.disabled = true;
+                if (nextBtn) nextBtn.disabled = true;
+                return;
+            }
+            const returned = r.rows_returned || 0;
+            const total = (r.summary && r.summary.analyzer_buy_count) || 0;
+            const start = total === 0 ? 0 : bb_offset + 1;
+            const end = bb_offset + returned;
+            if (info) {
+                info.textContent = 'rows ' + start.toLocaleString() + '–' + end.toLocaleString()
+                    + ' of ' + total.toLocaleString() + ' · range=' + range;
+            }
+            if (prevBtn) prevBtn.disabled = bb_offset <= 0;
+            if (nextBtn) nextBtn.disabled = returned < BB_LIMIT || end >= total;
+        }
+
+        async function _bb_paginate(direction) {
+            if (direction === 'next') bb_offset += BB_LIMIT;
+            else if (direction === 'prev') bb_offset = Math.max(0, bb_offset - BB_LIMIT);
+            await loadBuyBlockers();
+        }
+        window._bb_paginate = _bb_paginate;
 
         function _bf_renderSummary(r) {
             const body = document.getElementById('buy-funnel-summary-body');
@@ -2121,7 +2519,32 @@
 
 
         function refresh() {
+            // P0 BUY→HOLD DASHBOARD: `refresh()` is now reserved for the
+            // MANUAL Refresh button only. It still does a full page
+            // reload because that's the explicit, user-clicked action.
+            // Automatic data refresh uses `refreshData()` instead, which
+            // re-fetches only the visible data without resetting in-
+            // memory state (active tab, scroll position, expanded
+            // sections, etc).
             window.location.reload();
+        }
+
+        // P0 BUY→HOLD DASHBOARD: data-only auto-refresh. Re-fetches the
+        // current visible data without changing the URL or the DOM
+        // around it. Called by setInterval(refreshData, 30000).
+        //
+        // We use Promise.allSettled so a single failed endpoint does
+        // not abort the others. Each loader is feature-detected via
+        // typeof so the function is safe to call on pages where one
+        // or more loaders are not yet defined.
+        async function refreshData() {
+            await Promise.allSettled([
+                typeof loadLatestCycle === 'function' ? loadLatestCycle() : null,
+                typeof loadTopCandidates === 'function' ? loadTopCandidates() : null,
+                typeof loadBuyFunnel === 'function' ? loadBuyFunnel() : null,
+                typeof loadPhaseCAll === 'function' ? loadPhaseCAll() : null,
+                typeof loadBuyBlockers === 'function' ? loadBuyBlockers() : null,
+            ].filter(Boolean));
         }
 
         // BOT-001: botAction('start'|'stop') posts to /api/start-session or
@@ -3470,8 +3893,19 @@
             }
         }
         
-        // Auto-refresh every 30 seconds
-        setInterval(refresh, 30000);
+        // P0 BUY→HOLD DASHBOARD: auto-refresh every 30 seconds.
+        //
+        // PREVIOUS (BUG): `setInterval(refresh, 30000)` where
+//   refresh() === window.location.reload(). This reset the user's
+//   active tab back to the dashboard on every cycle (including the
+//   BUY Eligibility tab after SmartBot completes a cycle).
+//
+// FIX: call `refreshData()` instead. `refreshData()` re-fetches
+// data only — it does NOT reload the page, does NOT touch the URL
+// hash, and does NOT reset the active tab / scroll position. The
+// user stays on the BUY→HOLD Attribution card (or any other card)
+// while numbers update underneath them.
+setInterval(refreshData, 30000);
 
         // ── Database Status ──────────────────────────────────────────────
         function toggleDbStatus() {
@@ -4275,6 +4709,71 @@
                 observer.observe(el, { attributes: true, attributeFilter: ['style'] });
             }
         })();
+
+        // ─────────────────────────────────────────────────────────────────
+        // P0 BUY→HOLD DASHBOARD: auto-load the BUY→HOLD Attribution card
+        // when the BUY Eligibility tab becomes active (same observer
+        // pattern as Phase C). Reloads on each fresh visit; relies on
+        // the live range in the existing <select id="buy-funnel-range">.
+        // ─────────────────────────────────────────────────────────────────
+        (function _bb_setupAutoLoad() {
+            const tabId = 'top-tab-buyfunnel';
+            const observer = new MutationObserver(() => {
+                const el = document.getElementById(tabId);
+                if (el && el.style.display !== 'none') {
+                    if (typeof loadBuyBlockers === 'function') {
+                        // Reset pagination so each fresh visit starts at row 0.
+                        bb_offset = 0;
+                        loadBuyBlockers();
+                    }
+                }
+            });
+            const el = document.getElementById(tabId);
+            if (el) {
+                observer.observe(el, { attributes: true, attributeFilter: ['style'] });
+            }
+        })();
+
+        // ─────────────────────────────────────────────────────────────────
+        // P0 BUY→HOLD DASHBOARD: hash-based URL state restore + sync.
+        //
+        // On DOMContentLoaded: parse #tab=...&range=... and restore the
+        // active top-level tab + analytics range selector. This is what
+        // makes a manual browser refresh (F5) land the user back on the
+        // same view — the previous auto-reload bug would dump them back
+        // on the Main Dashboard.
+        //
+        // On hashchange: re-apply the tab/range when the user navigates
+        // via browser back/forward.
+        // ─────────────────────────────────────────────────────────────────
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof setTopTabFromHash === 'function') {
+                setTopTabFromHash();
+            }
+            // If we landed on the BUY Eligibility tab via hash, trigger
+            // a fresh load so the BUY→HOLD Attribution card populates.
+            const buyfunnel = document.getElementById('top-tab-buyfunnel');
+            if (buyfunnel && buyfunnel.style.display !== 'none'
+                && typeof loadBuyBlockers === 'function') {
+                bb_offset = 0;
+                loadBuyBlockers();
+            }
+            const buyfunnelRange = document.getElementById('buy-funnel-range');
+            if (buyfunnel && buyfunnel.style.display !== 'none'
+                && buyfunnelRange && typeof loadBuyFunnel === 'function') {
+                loadBuyFunnel();
+            }
+        });
+
+        window.addEventListener('hashchange', function() {
+            if (typeof setTopTabFromHash === 'function') {
+                setTopTabFromHash();
+            }
+        });
+
+        // Expose loadBuyBlockers + pagination to inline onclick=
+        // attributes on the BUY→HOLD Attribution card.
+        window.loadBuyBlockers = loadBuyBlockers;
 
 </script>
 
