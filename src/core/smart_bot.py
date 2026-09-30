@@ -515,6 +515,13 @@ class SmartTradingBot:
         # Liquidity Filter (enabled by default) - filter out illiquid stocks
         self.enable_liquidity_filter = True  # Skip stocks with low volume or wide spreads
         self.min_daily_volume = 1000000  # Minimum 1M shares avg daily volume
+        # P0 BUY->HOLD observability: persist the actual effective high-low
+        # threshold used by check_liquidity(). Mirrors `min_daily_volume` and
+        # is purely scaffolding — check_liquidity's default of 0.3 still
+        # applies because run_analysis does not pass max_spread_pct. The
+        # effective threshold is `self.max_spread_pct * 3 = 0.9` with
+        # defaults. Persisted on the snapshot for observability only.
+        self.max_spread_pct = 0.3  # Mirror of check_liquidity default
 
         # Sector Rotation Filter (enabled by default)
         self.enable_sector_filter = True  # Prefer stocks in strong sectors
@@ -1526,6 +1533,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         from datetime import datetime as _dt, timezone as _tz
         now_iso = _dt.now(_tz.utc).isoformat()
 
+        # P0 BUY->HOLD observability: pop the scratch keys stashed by
+        # _apply_outer_liquidity_filter BEFORE any other consumer
+        # serializes the analysis dict (e.g. save_analysis_to_db at line
+        # ~7160). pop() with defaults ensures the snapshot builder is
+        # safe to call on analysis dicts that never went through the
+        # liquidity filter path (single-timeframe, HOLD/SELL pre-filter,
+        # etc.). The signal_pipeline block below is an OPTIONAL additive
+        # block; schema_version stays at 1 because the contract is purely
+        # additive and consumers that ignore unknown keys are unaffected.
+        p0_eval = analysis.pop("_p0_liquidity_eval", None)
+        pre_signal = analysis.pop("_p0_pre_signal", None)
+        pre_strength = analysis.pop("_p0_pre_signal_strength", None)
+
         signal = analysis.get("signal", "HOLD")
         signal_strength = analysis.get("signal_strength", "WEAK")
         strategy_eligible = signal in ("BUY", "SELL")
@@ -1816,6 +1836,34 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             "decision": decision_block,
             "baseline_diagnostics": bd_block,
         }
+
+        # P0 BUY->HOLD observability: emit the optional signal_pipeline
+        # block only when the analyzer-stage signal was BUY (i.e. the
+        # outer liquidity filter helper was invoked). For non-BUY
+        # pre-filter signals (HOLD/SELL coming out of the analyzer) the
+        # scratch keys are never set, pre_signal is None, and we omit
+        # the block. Schema version stays at 1 — see comment at the top
+        # of this method.
+        final_signal = analysis.get("signal", "HOLD")
+        final_strength = analysis.get("signal_strength", "WEAK")
+        if pre_signal is not None or p0_eval is not None:
+            downgraded = (pre_signal == "BUY" and final_signal != "BUY")
+            downgrade_stage = None
+            downgrade_reason = None
+            if downgraded and p0_eval:
+                downgrade_stage = "liquidity_filter"
+                if p0_eval.get("result") == "FAILED":
+                    downgrade_reason = p0_eval.get("reason_raw")
+            snapshot["signal_pipeline"] = {
+                "analyzer_signal": pre_signal,
+                "analyzer_signal_strength": pre_strength,
+                "final_signal": final_signal,
+                "final_signal_strength": final_strength,
+                "downgraded": downgraded,
+                "downgrade_stage": downgrade_stage,
+                "downgrade_reason": downgrade_reason,
+                "liquidity_filter_evaluation": p0_eval,
+            }
         return snapshot
 
     def _capture_baseline_observed_state(self) -> Dict:
@@ -2160,6 +2208,107 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 "error": str(e)[:200],
             }
             return None
+
+    # ── P0 BUY->HOLD observability helper ──────────────────────────────────
+    # Extracted from the inline conditional in run_analysis so tests can
+    # exercise the BUY -> liquidity-HOLD path deterministically without
+    # invoking run_analysis. Trading behavior is unchanged: the existing
+    # mutation (signal HOLD / signal_strength WEAK / liquidity_warning) is
+    # applied identically to the pre-extraction code path. The helper also
+    # stashes a `_p0_liquidity_eval` dict + pre-mutation signal values on
+    # the analysis dict (with `_p0_` prefix) so _build_decision_snapshot
+    # can consume them and pop them back off before persistence.
+    def _apply_outer_liquidity_filter(self, symbol: str, analysis: Dict) -> None:
+        """Apply the post-MTF outer liquidity filter and record its
+        measurement + threshold + result on the analysis dict for the
+        decision snapshot builder.
+
+        Behavior contract (UNCHANGED from pre-extraction):
+          - Only acts when the analyzer-stage signal was BUY.
+          - When enable_liquidity_filter is False: emits a NOT_APPLICABLE
+            eval block and returns without mutation.
+          - When check_liquidity returns (False, ...): mutates the
+            analysis dict in place to signal=HOLD, signal_strength=WEAK,
+            and sets liquidity_warning to the fail reason. Emits a
+            FAILED eval block.
+          - When check_liquidity returns (True, ...) with a normal reason:
+            no mutation. Emits a PASSED eval block.
+          - When check_liquidity returns (True, ...) with a fail-open
+            reason ("Insufficient data" or "Check failed"): no mutation.
+            Emits a COULD_NOT_BE_EVALUATED eval block (fail-open preserved).
+        """
+        # Pre-mutation capture (LOCAL only; never written into analysis
+        # before the helper returns). These reflect the analyzer-stage
+        # signal that just survived save_analysis_to_db.
+        pre_signal = analysis.get("signal")
+        pre_signal_strength = analysis.get("signal_strength")
+
+        if not self.enable_liquidity_filter:
+            # Disabled: persist a NOT_APPLICABLE eval so downstream
+            # consumers can distinguish "filter not enabled" from "filter
+            # passed" without consulting bot config. No mutation.
+            p0_eval: Dict = {
+                "enabled": False,
+                "applicable": False,
+                "evaluated": False,
+                "result": "NOT_APPLICABLE",
+                "avg_volume": None,
+                "min_daily_volume": float(self.min_daily_volume),
+                "high_low_pct": None,
+                "effective_max_high_low_pct": float(self.max_spread_pct * 3),
+                "reason_raw": "liquidity filter disabled",
+                "signal_before": pre_signal,
+                "signal_after": analysis.get("signal"),
+            }
+            analysis["_p0_liquidity_eval"] = p0_eval
+            analysis["_p0_pre_signal"] = pre_signal
+            analysis["_p0_pre_signal_strength"] = pre_signal_strength
+            return
+
+        passes_liquidity, avg_vol, spread, reason = self.check_liquidity(
+            symbol, self.min_daily_volume,
+        )
+
+        # Determine the result token. Fail-open reasons still record the
+        # measurements and threshold (they were observed; the bot chose
+        # not to fail) but they do NOT mutate analysis.
+        result_token: str
+        if not passes_liquidity:
+            result_token = "FAILED"
+        elif isinstance(reason, str) and (
+            reason.startswith("Insufficient data")
+            or reason.startswith("Check failed")
+        ):
+            result_token = "COULD_NOT_BE_EVALUATED"
+        else:
+            result_token = "PASSED"
+
+        # Apply the existing mutation ONLY when the filter failed.
+        if not passes_liquidity:
+            analysis["signal"] = "HOLD"
+            analysis["signal_strength"] = "WEAK"
+            analysis["liquidity_warning"] = reason
+            logging.debug(
+                f"⏭️ {symbol}: Failed liquidity filter - {reason}"
+            )
+
+        p0_eval = {
+            "enabled": True,
+            "applicable": True,
+            "evaluated": True,
+            "result": result_token,
+            "avg_volume": float(avg_vol) if avg_vol is not None else None,
+            "min_daily_volume": float(self.min_daily_volume),
+            "high_low_pct": float(spread) if spread is not None else None,
+            "effective_max_high_low_pct": float(self.max_spread_pct * 3),
+            "reason_raw": reason,
+            "signal_before": pre_signal,
+            "signal_after": analysis.get("signal"),
+        }
+        analysis["_p0_liquidity_eval"] = p0_eval
+        analysis["_p0_pre_signal"] = pre_signal
+        analysis["_p0_pre_signal_strength"] = pre_signal_strength
+        return
 
     def check_liquidity(self, symbol: str, min_volume: int = 1000000, max_spread_pct: float = 0.3) -> tuple:
         """
@@ -6018,13 +6167,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     self.save_analysis_to_db(symbol, analysis)
 
                 # Apply liquidity filter - skip illiquid stocks for BUY signals
-                if analysis and analysis.get('signal') == 'BUY' and self.enable_liquidity_filter:
-                    passes_liquidity, avg_vol, spread, reason = self.check_liquidity(symbol, self.min_daily_volume)
-                    if not passes_liquidity:
-                        analysis['signal'] = 'HOLD'
-                        analysis['signal_strength'] = 'WEAK'
-                        analysis['liquidity_warning'] = reason
-                        logging.debug(f"⏭️ {symbol}: Failed liquidity filter - {reason}")
+                if analysis and analysis.get('signal') == 'BUY':
+                    self._apply_outer_liquidity_filter(symbol, analysis)
 
                 # Apply sector rotation filter - prefer stocks in strong sectors
                 if analysis and analysis.get('signal') == 'BUY' and self.enable_sector_filter:
