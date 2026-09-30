@@ -538,6 +538,113 @@ What Phase A does NOT do (deferred to later phases):
 - Per-card silent refresh / SPA-state preservation.
 - Symbol drill-down from Recent Sessions / Positions / Orders.
 
+## P0 BUY→HOLD Liquidity Observability (Phase 7 additive)
+
+The post-MTF liquidity filter at `src/core/smart_bot.py` (line ~6021
+historically) is the **only** active BUY→HOLD mutation site in the
+current code path. Prior to this change it persisted NOTHING about its
+measurement or decision (the tuple `(passes, avg_vol, spread, reason)`
+was discarded after the inline `if not passes` mutation). That gap is
+what made the 18 forensic BUY→HOLD cases classify as
+`DOWNSTREAM_BUY_TO_HOLD_MUTATION_PROVEN_BUT_REASON_UNKNOWN`.
+
+### Where the pre-mutation signal is captured
+
+A new private helper `_apply_outer_liquidity_filter(symbol, analysis)`
+was extracted from the inline conditional in `run_analysis` so tests
+can exercise the BUY → liquidity-HOLD path deterministically without
+invoking `run_analysis`. The helper:
+
+1. Reads `analysis['signal']` and `analysis['signal_strength']` into
+   local variables BEFORE calling `check_liquidity` (this is the
+   analyzer-stage signal that just survived `save_analysis_to_db`).
+2. Calls `check_liquidity(symbol, self.min_daily_volume)` exactly as
+   the pre-extraction code did.
+3. Applies the existing mutation (signal HOLD / signal_strength WEAK /
+   liquidity_warning=reason) **only** when `check_liquidity` returned
+   False. The mutation contract is BIT-IDENTICAL to the inline code.
+4. Stashes a `_p0_liquidity_eval` dict + pre-mutation signal values on
+   the analysis dict with `_p0_` prefix so the snapshot builder can
+   consume them.
+
+### What `signal_pipeline` contains (NEW additive block)
+
+`_build_decision_snapshot` pops the `_p0_*` keys at the very top (so
+they cannot leak into `save_analysis_result`) and emits an optional
+`snapshot["signal_pipeline"]` block with these fields:
+
+- `analyzer_signal` — the signal BEFORE the liquidity filter ran (always
+  `"BUY"` when the block is present, since the helper is gated on it)
+- `analyzer_signal_strength` — the strength BEFORE the filter
+- `final_signal`, `final_signal_strength` — the post-mutation values
+- `downgraded` — `True` iff `analyzer_signal == "BUY"` and `final_signal != "BUY"`
+- `downgrade_stage` — currently always `"liquidity_filter"` (the only
+  active mutation stage). Future stages (sector, MTF-conflict) plug in
+  the same enum.
+- `downgrade_reason` — the raw `reason` string from `check_liquidity`
+  when `result == "FAILED"`, else `None`
+- `liquidity_filter_evaluation` — the full eval dict (see below)
+
+### The 5 result tokens
+
+The `liquidity_filter_evaluation.result` field uses these stable tokens:
+
+| Token | Meaning | Mutation? |
+|---|---|---|
+| `PASSED` | check_liquidity returned True with a normal reason | NO |
+| `FAILED` | check_liquidity returned False | YES (signal→HOLD) |
+| `COULD_NOT_BE_EVALUATED` | check_liquidity returned True but with `"Insufficient data"` or `"Check failed"` (fail-open) | NO |
+| `NOT_APPLICABLE` | `enable_liquidity_filter=False` (filter never invoked) | NO |
+| (no `DISABLED`) | collapsed into `NOT_APPLICABLE`; `enabled=false` disambiguates | — |
+
+### Eval dict fields
+
+```json
+{
+  "enabled": true,
+  "applicable": true,
+  "evaluated": true,
+  "result": "FAILED",
+  "avg_volume": 500000.0,
+  "min_daily_volume": 1000000.0,
+  "high_low_pct": 0.5,
+  "effective_max_high_low_pct": 0.9,
+  "reason_raw": "Volume 0.5M < 1M minimum",
+  "signal_before": "BUY",
+  "signal_after": "HOLD"
+}
+```
+
+`high_low_pct` is the truthful name — the value returned by
+`check_liquidity` is `((high - low) / close) * 100`, NOT a bid/ask
+spread. It is persisted under the truthful name so dashboards and
+downstream consumers cannot mistake it for a quote spread.
+
+`effective_max_high_low_pct = max_spread_pct * 3`. The `* 3` is in
+`check_liquidity` (high-low is typically larger than bid-ask), so the
+*effective* threshold with defaults is 0.9%, not 0.3%. This is why
+`min_daily_volume` and `max_spread_pct` are mirrored on the bot
+constructor (added in P0; not a settings_service change) — so the
+snapshot can persist the actual effective threshold for audit.
+
+### Why `OBS_001_SCHEMA_VERSION` stays at 1
+
+`signal_pipeline` is an OPTIONAL additive JSON block. Consumers that
+ignore unknown keys (every consumer today) are unaffected. The schema
+Version contract is "1 = deployed format that OBS-001 introduces". Adding
+an optional block without removing or renaming existing fields is a
+strict subset and does not warrant a Version bump. A Version bump is
+reserved for breaking changes (renames, removals, semantic shifts).
+
+### Trading behavior is UNCHANGED
+
+The mutation contract — `(not passes) → signal HOLD, signal_strength
+WEAK, liquidity_warning = reason` — is BIT-IDENTICAL to the
+pre-extraction inline conditional. Test 7 in
+`tests/test_p0_buy_hold_liquidity_attribution.py` proves this by
+running the helper and the pre-extraction inline code side-by-side on
+identical inputs and asserting the post-mutation state matches.
+
 ## Original (pre-corrigendum) text below
 
 These gaps are documented honestly. They are NOT patched inside

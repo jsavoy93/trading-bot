@@ -4704,3 +4704,122 @@ P0 BUY→HOLD ROOT CAUSE REMAINS OPEN — DO NOT PROCEED TO STRATEGY TUNING
 4. Merge → deploy via systemd → collect fresh prospective BUY cases
 5. Validate: UNKNOWN BUY → HOLD CASES = 0 in fresh sample
 6. Dashboard Phase 10-13 (BUY Blocker View)
+
+---
+
+# P0 BUY→HOLD Liquidity Attribution Observability (2026-09-30 11:56 UTC)
+
+## Task
+P0 OWNER DIRECTIVE follow-up. Implement Phase 7 additive observability so the
+bot persists, on every analyzer-BUY candidate, the actual measurement (avg
+volume, high-low spread) and the effective threshold used by the post-MTF
+liquidity filter at `src/core/smart_bot.py` line 6021-6027. Closes the
+attribution gap (DOWNSTREAM_BUY_TO_HOLD_MUTATION_PROVEN_BUT_REASON_UNKNOWN)
+without changing any trading behavior.
+
+## Branch
+`p0-buy-hold-pipeline-observability` (forked from `main @ 5983385`)
+
+## Status
+IMPLEMENTATION COMPLETE — awaiting owner semantic review before merge.
+
+## Files Changed
+- `src/core/smart_bot.py` (modified)
+  - Added `self.max_spread_pct = 0.3` constructor attribute (line ~519).
+    Pure scaffolding — does NOT change `check_liquidity`'s default of 0.3.
+  - New `_apply_outer_liquidity_filter(symbol, analysis)` helper method
+    extracted from the inline conditional at old line 6021-6027.
+  - `_build_decision_snapshot` now pops `_p0_*` scratch keys at the top
+    and emits an optional `signal_pipeline` block before `return snapshot`.
+- `tests/test_p0_buy_hold_liquidity_attribution.py` (NEW — 11 tests,
+  8 required scenarios with sub-tests)
+
+## What is persisted (NEW — on every BUY-eligible symbol)
+
+`_apply_outer_liquidity_filter` stashes a `_p0_liquidity_eval` dict on the
+analysis dict. The snapshot builder consumes it and emits
+`snapshot["signal_pipeline"]`:
+
+```json
+{
+  "analyzer_signal": "BUY",
+  "analyzer_signal_strength": "STRONG",
+  "final_signal": "HOLD",
+  "final_signal_strength": "WEAK",
+  "downgraded": true,
+  "downgrade_stage": "liquidity_filter",
+  "downgrade_reason": "Volume 0.5M < 1M minimum",
+  "liquidity_filter_evaluation": {
+    "enabled": true,
+    "applicable": true,
+    "evaluated": true,
+    "result": "FAILED",
+    "avg_volume": 500000.0,
+    "min_daily_volume": 1000000.0,
+    "high_low_pct": 0.5,
+    "effective_max_high_low_pct": 0.9,
+    "reason_raw": "Volume 0.5M < 1M minimum",
+    "signal_before": "BUY",
+    "signal_after": "HOLD"
+  }
+}
+```
+
+## Result tokens (5)
+- `PASSED` — check_liquidity returned True with a normal reason.
+- `FAILED` — check_liquidity returned False; analysis mutated to HOLD/WEAK.
+- `COULD_NOT_BE_EVALUATED` — fail-open: "Insufficient data" or "Check failed".
+- `NOT_APPLICABLE` — `enable_liquidity_filter=False`; no mutation, no API call.
+- (DISABLED was collapsed into NOT_APPLICABLE; enabled=false disambiguates.)
+
+## Tests Run
+- `tests/test_p0_buy_hold_liquidity_attribution.py`: 11 PASSED (8 scenarios
+  covering all 5 result tokens + signal_pipeline invariance + cross-symbol
+  state safety)
+- `tests/test_score_002_error_reason.py + test_obs_001_phase_a_decision_snapshot.py
+   + test_obs_002_terminal_decision_coverage.py`: 116 PASSED, 0 FAILED
+- Pre-existing failures NOT introduced by this change:
+  - `tests/test_settings_service.py` (3 failures about `api_update_settings`)
+  - `tests/test_bot001_dashboard_status.py::test_template_renders_red_dot_when_alpaca_unreachable`
+  Both confirmed present on `main @ 5983385` before this branch's changes.
+
+## Decisions
+- Schema version stays at 1 (`OBS_001_SCHEMA_VERSION = 1`). The new block
+  is purely additive — consumers that ignore unknown keys are unaffected.
+- Added `self.max_spread_pct = 0.3` as a constructor attribute (NOT a
+  settings_service schema change). Mirrors `min_daily_volume` exactly;
+  this lets the snapshot persist the actual effective threshold
+  (`max_spread_pct * 3 = 0.9` with defaults).
+- The helper is called even when `enable_liquidity_filter=False`, so
+  observability captures the "filter not enabled" case as
+  `NOT_APPLICABLE`. No API call (no `check_liquidity` invocation) in that
+  path — preserves efficiency.
+- `_p0_*` keys are popped at the very TOP of `_build_decision_snapshot`
+  so they cannot leak into `save_analysis_result` (which reads only
+  `decision_snapshot` and `decision_schema_version` from the dict).
+
+## Safety
+- Strategy changed: NO
+- Code changed: YES (observability only — mutation contract identical)
+- Config changed: NO (no settings_service schema change)
+- DB schema changed: NO
+- Historical rows: NOT TOUCHED (live deployment will populate new rows)
+- Restart: NO (no service touched; PR is not merged)
+- Broker action: NO
+- Unrelated services unchanged: trading-dashboard, dashboard, openclaw-gateway, cloudflared
+
+## Reports
+- `REPORT.md` (rolling, gitignored, overwritten)
+- `reports/2026-09-30_115600_p0-buy-hold-liquidity-attribution.md` (timestamped archive)
+
+## Decision
+Implementation complete; PR open and awaiting owner semantic review.
+
+## Next Action (requires owner authorization)
+1. Owner reviews PR diff and REPORT.md
+2. Owner merges PR
+3. Operator deploys via systemd restart
+4. Operator collects ≥1 fresh prospective BUY→HOLD cycle
+5. Validate: UNKNOWN BUY → HOLD CASES = 0 in fresh sample (every
+   analyzer-stage BUY now has either `signal_pipeline.downgraded=False`
+   OR `downgrade_stage="liquidity_filter"` + `downgrade_reason`).
