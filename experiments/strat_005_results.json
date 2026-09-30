@@ -1,0 +1,1336 @@
+{
+  "experiment": "STRAT-005",
+  "description": "Liquidity-aware universe shadow experiment",
+  "window_start": "2026-09-30T14:10:34Z",
+  "window_end": "2026-10-01T00:00:00Z",
+  "cycles": 100,
+  "target_count": 30,
+  "scenarios": [
+    {
+      "name": "CONTROL",
+      "floor": null,
+      "cycles": 100,
+      "target_count": 30,
+      "queue_size": 12966,
+      "analyzed_slots_total": 3000,
+      "unique_analyzed_symbols": 3000,
+      "signal_counts": {
+        "BUY": 43,
+        "HOLD": 2957
+      },
+      "unique_buy_symbols": 43,
+      "unique_sell_symbols": 0,
+      "unique_hold_symbols": 2957,
+      "unique_invalid_symbols": 0,
+      "floor_skipped_total": 0,
+      "mktcache_skipped_total": 0,
+      "replacement_fills_total": 0,
+      "analyzer_buy_decisions_total": 43,
+      "tradeable_shadow_buys": 0,
+      "tradeable_shadow_buy_unique_symbols": 0,
+      "avg_volume_percentiles": {
+        "n": 43,
+        "min": 11.6,
+        "p10": 60.1,
+        "p25": 424.4,
+        "p50": 2838.35,
+        "p75": 15994.9,
+        "p90": 31446.65,
+        "max": 211788.35,
+        "mean": 14704.122093023256
+      },
+      "ratio_pct_percentiles": {
+        "n": 43,
+        "min": 0.013051781747670554,
+        "p10": 0.03708890798113231,
+        "p25": 0.0945282588473271,
+        "p50": 0.5076619128020609,
+        "p75": 10.98995298498113,
+        "p90": 49.08457271879448,
+        "max": 96.40691430389387,
+        "mean": 11.797169802605268
+      },
+      "first_cycle_state": {
+        "floor_skips": 0,
+        "mktcache_skips": 0,
+        "batch_size": 30,
+        "batch_head": [
+          "ALPXR",
+          "CBRX",
+          "CBRG",
+          "MGRT",
+          "UAC.U"
+        ]
+      }
+    },
+    {
+      "name": "F_10000",
+      "floor": 10000,
+      "cycles": 100,
+      "target_count": 30,
+      "queue_size": 12966,
+      "analyzed_slots_total": 3000,
+      "unique_analyzed_symbols": 3000,
+      "signal_counts": {
+        "HOLD": 2984,
+        "BUY": 16
+      },
+      "unique_buy_symbols": 16,
+      "unique_sell_symbols": 0,
+      "unique_hold_symbols": 2984,
+      "unique_invalid_symbols": 0,
+      "floor_skipped_total": 27,
+      "mktcache_skipped_total": 0,
+      "replacement_fills_total": 27,
+      "analyzer_buy_decisions_total": 16,
+      "tradeable_shadow_buys": 0,
+      "tradeable_shadow_buy_unique_symbols": 0,
+      "avg_volume_percentiles": {
+        "n": 16,
+        "min": 10978.2,
+        "p10": 13542.6,
+        "p25": 15687.5,
+        "p50": 20540.05,
+        "p75": 31446.65,
+        "p90": 80490.85,
+        "max": 211788.35,
+        "mean": 36732.637500000004
+      },
+      "ratio_pct_percentiles": {
+        "n": 16,
+        "min": 0.013051781747670554,
+        "p10": 0.02473535470156478,
+        "p25": 0.04192915997980424,
+        "p50": 0.07310774563990523,
+        "p75": 0.3004782100496681,
+        "p90": 11.304219885253953,
+        "max": 32.077147335662524,
+        "mean": 2.9974167044865894
+      },
+      "first_cycle_state": {
+        "floor_skips": 4,
+        "mktcache_skips": 0,
+        "batch_size": 30,
+        "batch_head": [
+          "CBRX",
+          "CBRG",
+          "UAC.U",
+          "VECA.U",
+          "BIOT"
+        ]
+      }
+    },
+    {
+      "name": "F_25000",
+      "floor": 25000,
+      "cycles": 100,
+      "target_count": 30,
+      "queue_size": 12966,
+      "analyzed_slots_total": 3000,
+      "unique_analyzed_symbols": 3000,
+      "signal_counts": {
+        "HOLD": 2994,
+        "BUY": 6
+      },
+      "unique_buy_symbols": 6,
+      "unique_sell_symbols": 0,
+      "unique_hold_symbols": 2994,
+      "unique_invalid_symbols": 0,
+      "floor_skipped_total": 37,
+      "mktcache_skipped_total": 0,
+      "replacement_fills_total": 37,
+      "analyzer_buy_decisions_total": 6,
+      "tradeable_shadow_buys": 0,
+      "tradeable_shadow_buy_unique_symbols": 0,
+      "avg_volume_percentiles": {
+        "n": 6,
+        "min": 27745.8,
+        "p10": 27745.8,
+        "p25": 31446.65,
+        "p50": 34766.4,
+        "p75": 80490.85,
+        "p90": 80490.85,
+        "max": 211788.35,
+        "mean": 70866.05
+      },
+      "ratio_pct_percentiles": {
+        "n": 6,
+        "min": 0.013051781747670554,
+        "p10": 0.013051781747670554,
+        "p25": 0.020120859510750412,
+        "p50": 0.04192915997980424,
+        "p75": 0.05401362418483098,
+        "p90": 0.05401362418483098,
+        "max": 0.3004782100496681,
+        "mean": 0.07949364869291753
+      },
+      "first_cycle_state": {
+        "floor_skips": 5,
+        "mktcache_skips": 0,
+        "batch_size": 30,
+        "batch_head": [
+          "CBRX",
+          "CBRG",
+          "UAC.U",
+          "VECA.U",
+          "BIOT"
+        ]
+      }
+    },
+    {
+      "name": "F_50000",
+      "floor": 50000,
+      "cycles": 100,
+      "target_count": 30,
+      "queue_size": 12966,
+      "analyzed_slots_total": 3000,
+      "unique_analyzed_symbols": 3000,
+      "signal_counts": {
+        "HOLD": 2998,
+        "BUY": 2
+      },
+      "unique_buy_symbols": 2,
+      "unique_sell_symbols": 0,
+      "unique_hold_symbols": 2998,
+      "unique_invalid_symbols": 0,
+      "floor_skipped_total": 41,
+      "mktcache_skipped_total": 0,
+      "replacement_fills_total": 41,
+      "analyzer_buy_decisions_total": 2,
+      "tradeable_shadow_buys": 0,
+      "tradeable_shadow_buy_unique_symbols": 0,
+      "avg_volume_percentiles": {
+        "n": 2,
+        "min": 80490.85,
+        "p10": 80490.85,
+        "p25": 80490.85,
+        "p50": 80490.85,
+        "p75": 211788.35,
+        "p90": 211788.35,
+        "max": 211788.35,
+        "mean": 146139.6
+      },
+      "ratio_pct_percentiles": {
+        "n": 2,
+        "min": 0.020120859510750412,
+        "p10": 0.020120859510750412,
+        "p25": 0.020120859510750412,
+        "p50": 0.020120859510750412,
+        "p75": 0.3004782100496681,
+        "p90": 0.3004782100496681,
+        "max": 0.3004782100496681,
+        "mean": 0.16029953478020928
+      },
+      "first_cycle_state": {
+        "floor_skips": 5,
+        "mktcache_skips": 0,
+        "batch_size": 30,
+        "batch_head": [
+          "CBRX",
+          "CBRG",
+          "UAC.U",
+          "VECA.U",
+          "BIOT"
+        ]
+      }
+    },
+    {
+      "name": "F_100000",
+      "floor": 100000,
+      "cycles": 100,
+      "target_count": 30,
+      "queue_size": 12966,
+      "analyzed_slots_total": 3000,
+      "unique_analyzed_symbols": 3000,
+      "signal_counts": {
+        "HOLD": 2999,
+        "BUY": 1
+      },
+      "unique_buy_symbols": 1,
+      "unique_sell_symbols": 0,
+      "unique_hold_symbols": 2999,
+      "unique_invalid_symbols": 0,
+      "floor_skipped_total": 42,
+      "mktcache_skipped_total": 0,
+      "replacement_fills_total": 42,
+      "analyzer_buy_decisions_total": 1,
+      "tradeable_shadow_buys": 0,
+      "tradeable_shadow_buy_unique_symbols": 0,
+      "avg_volume_percentiles": {
+        "n": 1,
+        "min": 211788.35,
+        "p10": 211788.35,
+        "p25": 211788.35,
+        "p50": 211788.35,
+        "p75": 211788.35,
+        "p90": 211788.35,
+        "max": 211788.35,
+        "mean": 211788.35
+      },
+      "ratio_pct_percentiles": {
+        "n": 1,
+        "min": 0.020120859510750412,
+        "p10": 0.020120859510750412,
+        "p25": 0.020120859510750412,
+        "p50": 0.020120859510750412,
+        "p75": 0.020120859510750412,
+        "p90": 0.020120859510750412,
+        "max": 0.020120859510750412,
+        "mean": 0.020120859510750412
+      },
+      "first_cycle_state": {
+        "floor_skips": 5,
+        "mktcache_skips": 0,
+        "batch_size": 30,
+        "batch_head": [
+          "CBRX",
+          "CBRG",
+          "UAC.U",
+          "VECA.U",
+          "BIOT"
+        ]
+      }
+    },
+    {
+      "name": "F_250000",
+      "floor": 250000,
+      "cycles": 100,
+      "target_count": 30,
+      "queue_size": 12966,
+      "analyzed_slots_total": 3000,
+      "unique_analyzed_symbols": 3000,
+      "signal_counts": {
+        "HOLD": 3000
+      },
+      "unique_buy_symbols": 0,
+      "unique_sell_symbols": 0,
+      "unique_hold_symbols": 3000,
+      "unique_invalid_symbols": 0,
+      "floor_skipped_total": 43,
+      "mktcache_skipped_total": 0,
+      "replacement_fills_total": 43,
+      "analyzer_buy_decisions_total": 0,
+      "tradeable_shadow_buys": 0,
+      "tradeable_shadow_buy_unique_symbols": 0,
+      "avg_volume_percentiles": {},
+      "ratio_pct_percentiles": {},
+      "first_cycle_state": {
+        "floor_skips": 5,
+        "mktcache_skips": 0,
+        "batch_size": 30,
+        "batch_head": [
+          "CBRX",
+          "CBRG",
+          "UAC.U",
+          "VECA.U",
+          "BIOT"
+        ]
+      }
+    }
+  ],
+  "all_buy_details": [
+    {
+      "name": "CONTROL",
+      "floor": null,
+      "analyzer_buy_details": [
+        {
+          "symbol": "ALPXR",
+          "cycle": 0,
+          "avg_volume": 979.8,
+          "high_low_pct": 0.0,
+          "total_score": 100,
+          "price": 0.16,
+          "passes_downstream": false,
+          "ratio_pct": 95.6827924066136
+        },
+        {
+          "symbol": "MGRT",
+          "cycle": 0,
+          "avg_volume": 7374.7,
+          "high_low_pct": 19.988001199880006,
+          "total_score": 99.5922048046671,
+          "price": 100.01,
+          "passes_downstream": false,
+          "ratio_pct": 0.020337776655301235
+        },
+        {
+          "symbol": "TLNCU",
+          "cycle": 0,
+          "avg_volume": 351.65,
+          "high_low_pct": 0.0,
+          "total_score": 94.86840694297342,
+          "price": 10.46,
+          "passes_downstream": false,
+          "ratio_pct": 4.078016257147743
+        },
+        {
+          "symbol": "IDACW",
+          "cycle": 0,
+          "avg_volume": 4743.75,
+          "high_low_pct": 7.692307692307689,
+          "total_score": 94.0390220909997,
+          "price": 0.26,
+          "passes_downstream": false,
+          "ratio_pct": 12.161751292186073
+        },
+        {
+          "symbol": "OCAC.WS",
+          "cycle": 0,
+          "avg_volume": 13247.1,
+          "high_low_pct": 0.5665722379603366,
+          "total_score": 91.10235877796157,
+          "price": 0.0353,
+          "passes_downstream": false,
+          "ratio_pct": 32.077147335662524
+        },
+        {
+          "symbol": "DBCAU",
+          "cycle": 1,
+          "avg_volume": 60.1,
+          "high_low_pct": 0.0,
+          "total_score": 88.64458754692356,
+          "price": 10.38,
+          "passes_downstream": false,
+          "ratio_pct": 24.04470391351601
+        },
+        {
+          "symbol": "DSACW",
+          "cycle": 2,
+          "avg_volume": 80490.85,
+          "high_low_pct": 0.0,
+          "total_score": 84.90888981310803,
+          "price": 0.6202,
+          "passes_downstream": false,
+          "ratio_pct": 0.3004782100496681
+        },
+        {
+          "symbol": "QRED.U",
+          "cycle": 2,
+          "avg_volume": 25.15,
+          "high_low_pct": 0.0,
+          "total_score": 84.7307532010393,
+          "price": 10.27,
+          "passes_downstream": false,
+          "ratio_pct": 58.07414519697783
+        },
+        {
+          "symbol": "ONCHU",
+          "cycle": 3,
+          "avg_volume": 2838.35,
+          "high_low_pct": 0.0,
+          "total_score": 82.70346846917731,
+          "price": 10.41,
+          "passes_downstream": false,
+          "ratio_pct": 0.5076619128020609
+        },
+        {
+          "symbol": "KOYNW",
+          "cycle": 4,
+          "avg_volume": 1697.75,
+          "high_low_pct": 0.0,
+          "total_score": 81.9417857946136,
+          "price": 0.18,
+          "passes_downstream": false,
+          "ratio_pct": 49.08457271879448
+        },
+        {
+          "symbol": "OCTH",
+          "cycle": 4,
+          "avg_volume": 3516.8,
+          "high_low_pct": 0.419639110365092,
+          "total_score": 81.88403303074492,
+          "price": 23.83,
+          "passes_downstream": false,
+          "ratio_pct": 0.17898619925717385
+        },
+        {
+          "symbol": "BIAFW",
+          "cycle": 4,
+          "avg_volume": 15687.5,
+          "high_low_pct": 0.0,
+          "total_score": 81.84494929037407,
+          "price": 0.32,
+          "passes_downstream": false,
+          "ratio_pct": 2.9880478087649402
+        },
+        {
+          "symbol": "GIBO",
+          "cycle": 4,
+          "avg_volume": 38958.25,
+          "high_low_pct": 17.389830508474574,
+          "total_score": 81.6448569228007,
+          "price": 29.5,
+          "passes_downstream": false,
+          "ratio_pct": 0.013051781747670554
+        },
+        {
+          "symbol": "MFUT",
+          "cycle": 5,
+          "avg_volume": 20540.05,
+          "high_low_pct": 1.2188928390045628,
+          "total_score": 81.39015687102042,
+          "price": 19.69,
+          "passes_downstream": false,
+          "ratio_pct": 0.03708890798113231
+        },
+        {
+          "symbol": "OCTJ",
+          "cycle": 5,
+          "avg_volume": 5867.3,
+          "high_low_pct": 0.25083542013887034,
+          "total_score": 81.11780190793655,
+          "price": 23.8802,
+          "passes_downstream": false,
+          "ratio_pct": 0.10705698409008159
+        },
+        {
+          "symbol": "OXBR",
+          "cycle": 6,
+          "avg_volume": 21117.8,
+          "high_low_pct": 30.25641025641026,
+          "total_score": 80.33694059386937,
+          "price": 0.975,
+          "passes_downstream": false,
+          "ratio_pct": 0.7285141153252415
+        },
+        {
+          "symbol": "YQ",
+          "cycle": 7,
+          "avg_volume": 211788.35,
+          "high_low_pct": 5.113636363636368,
+          "total_score": 79.94620627535315,
+          "price": 3.52,
+          "passes_downstream": false,
+          "ratio_pct": 0.020120859510750412
+        },
+        {
+          "symbol": "EHLD",
+          "cycle": 8,
+          "avg_volume": 13542.6,
+          "high_low_pct": 7.060500285902036,
+          "total_score": 79.65093834595083,
+          "price": 11.7173,
+          "passes_downstream": false,
+          "ratio_pct": 0.0945282588473271
+        },
+        {
+          "symbol": "JANJ",
+          "cycle": 8,
+          "avg_volume": 1798.5,
+          "high_low_pct": 0.0,
+          "total_score": 79.29059522135752,
+          "price": 24.735,
+          "passes_downstream": false,
+          "ratio_pct": 0.33718550918299445
+        },
+        {
+          "symbol": "QETA",
+          "cycle": 10,
+          "avg_volume": 424.4,
+          "high_low_pct": 0.2540220152413305,
+          "total_score": 78.33370118735802,
+          "price": 11.81,
+          "passes_downstream": false,
+          "ratio_pct": 2.9927193124566553
+        },
+        {
+          "symbol": "CLOO",
+          "cycle": 14,
+          "avg_volume": 547.0,
+          "high_low_pct": 0.0,
+          "total_score": 76.74609671165027,
+          "price": 25.085,
+          "passes_downstream": false,
+          "ratio_pct": 1.0931753427742386
+        },
+        {
+          "symbol": "CLST",
+          "cycle": 15,
+          "avg_volume": 2718.15,
+          "high_low_pct": 2.099886492622006,
+          "total_score": 76.41631547926929,
+          "price": 17.62,
+          "passes_downstream": false,
+          "ratio_pct": 0.3131929197604124
+        },
+        {
+          "symbol": "JANH",
+          "cycle": 15,
+          "avg_volume": 1006.2,
+          "high_low_pct": 0.0,
+          "total_score": 76.32480300686294,
+          "price": 24.7699,
+          "passes_downstream": false,
+          "ratio_pct": 0.6018422782129895
+        },
+        {
+          "symbol": "NEWTO",
+          "cycle": 17,
+          "avg_volume": 11.6,
+          "high_low_pct": 0.0,
+          "total_score": 75.87587174939364,
+          "price": 25.25,
+          "passes_downstream": false,
+          "ratio_pct": 51.21201775349948
+        },
+        {
+          "symbol": "JULJ",
+          "cycle": 18,
+          "avg_volume": 2369.4,
+          "high_low_pct": 0.16035584493025573,
+          "total_score": 75.65977714678571,
+          "price": 24.8198,
+          "passes_downstream": false,
+          "ratio_pct": 0.2550671897889315
+        },
+        {
+          "symbol": "UBR",
+          "cycle": 23,
+          "avg_volume": 1354.45,
+          "high_low_pct": 2.0466270653673377,
+          "total_score": 74.37661107309218,
+          "price": 31.7498,
+          "passes_downstream": false,
+          "ratio_pct": 0.34880868316038866
+        },
+        {
+          "symbol": "JULH",
+          "cycle": 25,
+          "avg_volume": 1484.55,
+          "high_low_pct": 0.16043509999117264,
+          "total_score": 73.87015588608133,
+          "price": 24.9322,
+          "passes_downstream": false,
+          "ratio_pct": 0.4052619480427808
+        },
+        {
+          "symbol": "GMOM",
+          "cycle": 32,
+          "avg_volume": 15994.9,
+          "high_low_pct": 0.518815297006591,
+          "total_score": 72.62638888147202,
+          "price": 37.9133,
+          "passes_downstream": false,
+          "ratio_pct": 0.02473535470156478
+        },
+        {
+          "symbol": "RREVU",
+          "cycle": 40,
+          "avg_volume": 227.9,
+          "high_low_pct": 0.0,
+          "total_score": 71.18509389375674,
+          "price": 10.065,
+          "passes_downstream": false,
+          "ratio_pct": 6.539328502513392
+        },
+        {
+          "symbol": "RAC",
+          "cycle": 45,
+          "avg_volume": 14104.1,
+          "high_low_pct": 0.17359628902359187,
+          "total_score": 70.6077419286856,
+          "price": 10.5417,
+          "passes_downstream": false,
+          "ratio_pct": 0.10088700461799913
+        },
+        {
+          "symbol": "STSM",
+          "cycle": 49,
+          "avg_volume": 3954.95,
+          "high_low_pct": 0.7083528588795412,
+          "total_score": 70.0366012935192,
+          "price": 29.4486,
+          "passes_downstream": false,
+          "ratio_pct": 0.12879102768362394
+        },
+        {
+          "symbol": "HCMA",
+          "cycle": 53,
+          "avg_volume": 34766.4,
+          "high_low_pct": 0.0009718172983629086,
+          "total_score": 69.5584058713348,
+          "price": 10.29,
+          "passes_downstream": false,
+          "ratio_pct": 0.04192915997980424
+        },
+        {
+          "symbol": "TACOU",
+          "cycle": 57,
+          "avg_volume": 152.25,
+          "high_low_pct": 0.00837139216251364,
+          "total_score": 69.11797550952588,
+          "price": 10.7509,
+          "passes_downstream": false,
+          "ratio_pct": 9.164085563783937
+        },
+        {
+          "symbol": "MOBXW",
+          "cycle": 57,
+          "avg_volume": 16775.45,
+          "high_low_pct": 13.400758533501895,
+          "total_score": 68.99993105545782,
+          "price": 0.0791,
+          "passes_downstream": false,
+          "ratio_pct": 11.304219885253953
+        },
+        {
+          "symbol": "CAIIU",
+          "cycle": 65,
+          "avg_volume": 211.9,
+          "high_low_pct": 0.0009950149749730543,
+          "total_score": 68.14606897670848,
+          "price": 10.0501,
+          "passes_downstream": false,
+          "ratio_pct": 7.043522711010193
+        },
+        {
+          "symbol": "KRAQ",
+          "cycle": 70,
+          "avg_volume": 27745.8,
+          "high_low_pct": 0.07992806474174138,
+          "total_score": 67.64598945715375,
+          "price": 10.009,
+          "passes_downstream": false,
+          "ratio_pct": 0.05401362418483098
+        },
+        {
+          "symbol": "SCIIU",
+          "cycle": 75,
+          "avg_volume": 15.15,
+          "high_low_pct": 0.0,
+          "total_score": 67.09063491089019,
+          "price": 10.27,
+          "passes_downstream": false,
+          "ratio_pct": 96.40691430389387
+        },
+        {
+          "symbol": "XCOM",
+          "cycle": 76,
+          "avg_volume": 639.05,
+          "high_low_pct": 0.0,
+          "total_score": 67.0289741660477,
+          "price": 26.9561,
+          "passes_downstream": false,
+          "ratio_pct": 0.8707617851727806
+        },
+        {
+          "symbol": "FLN",
+          "cycle": 76,
+          "avg_volume": 10978.2,
+          "high_low_pct": 1.192659474213137,
+          "total_score": 66.98131789436516,
+          "price": 25.5731,
+          "passes_downstream": false,
+          "ratio_pct": 0.05342896283333817
+        },
+        {
+          "symbol": "DYNCU",
+          "cycle": 90,
+          "avg_volume": 51.35,
+          "high_low_pct": 0.0,
+          "total_score": 65.58813199871548,
+          "price": 10.95,
+          "passes_downstream": false,
+          "ratio_pct": 26.676981766282964
+        },
+        {
+          "symbol": "IDAC",
+          "cycle": 90,
+          "avg_volume": 20538.2,
+          "high_low_pct": 0.0,
+          "total_score": 65.55725442117867,
+          "price": 9.99,
+          "passes_downstream": false,
+          "ratio_pct": 0.07310774563990523
+        },
+        {
+          "symbol": "APXTU",
+          "cycle": 95,
+          "avg_volume": 132.9,
+          "high_low_pct": 0.0,
+          "total_score": 65.05136421261697,
+          "price": 10.27,
+          "passes_downstream": false,
+          "ratio_pct": 10.98995298498113
+        },
+        {
+          "symbol": "PAAC",
+          "cycle": 97,
+          "avg_volume": 31446.65,
+          "high_low_pct": 0.24826216484608096,
+          "total_score": 64.96783149361593,
+          "price": 10.07,
+          "passes_downstream": false,
+          "ratio_pct": 0.047368256684780875
+        }
+      ]
+    },
+    {
+      "name": "F_10000",
+      "floor": 10000,
+      "analyzer_buy_details": [
+        {
+          "symbol": "OCAC.WS",
+          "cycle": 0,
+          "avg_volume": 13247.1,
+          "high_low_pct": 0.5665722379603366,
+          "total_score": 91.10235877796157,
+          "price": 0.0353,
+          "passes_downstream": false,
+          "ratio_pct": 32.077147335662524
+        },
+        {
+          "symbol": "DSACW",
+          "cycle": 2,
+          "avg_volume": 80490.85,
+          "high_low_pct": 0.0,
+          "total_score": 84.90888981310803,
+          "price": 0.6202,
+          "passes_downstream": false,
+          "ratio_pct": 0.3004782100496681
+        },
+        {
+          "symbol": "BIAFW",
+          "cycle": 4,
+          "avg_volume": 15687.5,
+          "high_low_pct": 0.0,
+          "total_score": 81.84494929037407,
+          "price": 0.32,
+          "passes_downstream": false,
+          "ratio_pct": 2.9880478087649402
+        },
+        {
+          "symbol": "GIBO",
+          "cycle": 4,
+          "avg_volume": 38958.25,
+          "high_low_pct": 17.389830508474574,
+          "total_score": 81.6448569228007,
+          "price": 29.5,
+          "passes_downstream": false,
+          "ratio_pct": 0.013051781747670554
+        },
+        {
+          "symbol": "MFUT",
+          "cycle": 5,
+          "avg_volume": 20540.05,
+          "high_low_pct": 1.2188928390045628,
+          "total_score": 81.39015687102042,
+          "price": 19.69,
+          "passes_downstream": false,
+          "ratio_pct": 0.03708890798113231
+        },
+        {
+          "symbol": "OXBR",
+          "cycle": 6,
+          "avg_volume": 21117.8,
+          "high_low_pct": 30.25641025641026,
+          "total_score": 80.33694059386937,
+          "price": 0.975,
+          "passes_downstream": false,
+          "ratio_pct": 0.7285141153252415
+        },
+        {
+          "symbol": "YQ",
+          "cycle": 7,
+          "avg_volume": 211788.35,
+          "high_low_pct": 5.113636363636368,
+          "total_score": 79.94620627535315,
+          "price": 3.52,
+          "passes_downstream": false,
+          "ratio_pct": 0.020120859510750412
+        },
+        {
+          "symbol": "EHLD",
+          "cycle": 7,
+          "avg_volume": 13542.6,
+          "high_low_pct": 7.060500285902036,
+          "total_score": 79.65093834595083,
+          "price": 11.7173,
+          "passes_downstream": false,
+          "ratio_pct": 0.0945282588473271
+        },
+        {
+          "symbol": "GMOM",
+          "cycle": 31,
+          "avg_volume": 15994.9,
+          "high_low_pct": 0.518815297006591,
+          "total_score": 72.62638888147202,
+          "price": 37.9133,
+          "passes_downstream": false,
+          "ratio_pct": 0.02473535470156478
+        },
+        {
+          "symbol": "RAC",
+          "cycle": 44,
+          "avg_volume": 14104.1,
+          "high_low_pct": 0.17359628902359187,
+          "total_score": 70.6077419286856,
+          "price": 10.5417,
+          "passes_downstream": false,
+          "ratio_pct": 0.10088700461799913
+        },
+        {
+          "symbol": "HCMA",
+          "cycle": 52,
+          "avg_volume": 34766.4,
+          "high_low_pct": 0.0009718172983629086,
+          "total_score": 69.5584058713348,
+          "price": 10.29,
+          "passes_downstream": false,
+          "ratio_pct": 0.04192915997980424
+        },
+        {
+          "symbol": "MOBXW",
+          "cycle": 57,
+          "avg_volume": 16775.45,
+          "high_low_pct": 13.400758533501895,
+          "total_score": 68.99993105545782,
+          "price": 0.0791,
+          "passes_downstream": false,
+          "ratio_pct": 11.304219885253953
+        },
+        {
+          "symbol": "KRAQ",
+          "cycle": 69,
+          "avg_volume": 27745.8,
+          "high_low_pct": 0.07992806474174138,
+          "total_score": 67.64598945715375,
+          "price": 10.009,
+          "passes_downstream": false,
+          "ratio_pct": 0.05401362418483098
+        },
+        {
+          "symbol": "FLN",
+          "cycle": 75,
+          "avg_volume": 10978.2,
+          "high_low_pct": 1.192659474213137,
+          "total_score": 66.98131789436516,
+          "price": 25.5731,
+          "passes_downstream": false,
+          "ratio_pct": 0.05342896283333817
+        },
+        {
+          "symbol": "IDAC",
+          "cycle": 89,
+          "avg_volume": 20538.2,
+          "high_low_pct": 0.0,
+          "total_score": 65.55725442117867,
+          "price": 9.99,
+          "passes_downstream": false,
+          "ratio_pct": 0.07310774563990523
+        },
+        {
+          "symbol": "PAAC",
+          "cycle": 96,
+          "avg_volume": 31446.65,
+          "high_low_pct": 0.24826216484608096,
+          "total_score": 64.96783149361593,
+          "price": 10.07,
+          "passes_downstream": false,
+          "ratio_pct": 0.047368256684780875
+        }
+      ]
+    },
+    {
+      "name": "F_25000",
+      "floor": 25000,
+      "analyzer_buy_details": [
+        {
+          "symbol": "DSACW",
+          "cycle": 2,
+          "avg_volume": 80490.85,
+          "high_low_pct": 0.0,
+          "total_score": 84.90888981310803,
+          "price": 0.6202,
+          "passes_downstream": false,
+          "ratio_pct": 0.3004782100496681
+        },
+        {
+          "symbol": "GIBO",
+          "cycle": 4,
+          "avg_volume": 38958.25,
+          "high_low_pct": 17.389830508474574,
+          "total_score": 81.6448569228007,
+          "price": 29.5,
+          "passes_downstream": false,
+          "ratio_pct": 0.013051781747670554
+        },
+        {
+          "symbol": "YQ",
+          "cycle": 6,
+          "avg_volume": 211788.35,
+          "high_low_pct": 5.113636363636368,
+          "total_score": 79.94620627535315,
+          "price": 3.52,
+          "passes_downstream": false,
+          "ratio_pct": 0.020120859510750412
+        },
+        {
+          "symbol": "HCMA",
+          "cycle": 52,
+          "avg_volume": 34766.4,
+          "high_low_pct": 0.0009718172983629086,
+          "total_score": 69.5584058713348,
+          "price": 10.29,
+          "passes_downstream": false,
+          "ratio_pct": 0.04192915997980424
+        },
+        {
+          "symbol": "KRAQ",
+          "cycle": 69,
+          "avg_volume": 27745.8,
+          "high_low_pct": 0.07992806474174138,
+          "total_score": 67.64598945715375,
+          "price": 10.009,
+          "passes_downstream": false,
+          "ratio_pct": 0.05401362418483098
+        },
+        {
+          "symbol": "PAAC",
+          "cycle": 95,
+          "avg_volume": 31446.65,
+          "high_low_pct": 0.24826216484608096,
+          "total_score": 64.96783149361593,
+          "price": 10.07,
+          "passes_downstream": false,
+          "ratio_pct": 0.047368256684780875
+        }
+      ]
+    },
+    {
+      "name": "F_50000",
+      "floor": 50000,
+      "analyzer_buy_details": [
+        {
+          "symbol": "DSACW",
+          "cycle": 2,
+          "avg_volume": 80490.85,
+          "high_low_pct": 0.0,
+          "total_score": 84.90888981310803,
+          "price": 0.6202,
+          "passes_downstream": false,
+          "ratio_pct": 0.3004782100496681
+        },
+        {
+          "symbol": "YQ",
+          "cycle": 6,
+          "avg_volume": 211788.35,
+          "high_low_pct": 5.113636363636368,
+          "total_score": 79.94620627535315,
+          "price": 3.52,
+          "passes_downstream": false,
+          "ratio_pct": 0.020120859510750412
+        }
+      ]
+    },
+    {
+      "name": "F_100000",
+      "floor": 100000,
+      "analyzer_buy_details": [
+        {
+          "symbol": "YQ",
+          "cycle": 6,
+          "avg_volume": 211788.35,
+          "high_low_pct": 5.113636363636368,
+          "total_score": 79.94620627535315,
+          "price": 3.52,
+          "passes_downstream": false,
+          "ratio_pct": 0.020120859510750412
+        }
+      ]
+    },
+    {
+      "name": "F_250000",
+      "floor": 250000,
+      "analyzer_buy_details": []
+    }
+  ],
+  "top_buy_symbols": [
+    "YQ",
+    "DSACW",
+    "GIBO",
+    "HCMA",
+    "KRAQ",
+    "PAAC",
+    "OCAC.WS",
+    "BIAFW",
+    "MFUT",
+    "OXBR",
+    "EHLD",
+    "GMOM",
+    "RAC",
+    "MOBXW",
+    "FLN",
+    "IDAC",
+    "ALPXR",
+    "MGRT",
+    "TLNCU",
+    "IDACW",
+    "DBCAU",
+    "QRED.U",
+    "ONCHU",
+    "KOYNW",
+    "OCTH"
+  ],
+  "asset_metadata_top_buy": {
+    "YQ": {
+      "name": "17 Education & Technology Group Inc. American Depositary Shares",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "DSACW": {
+      "name": "Daedalus Special Acquisition Corp. Warrant",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "GIBO": {
+      "name": "GIBO Holdings Limited Class A Ordinary Shares",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "HCMA": {
+      "name": "HCM III Acquisition Corp. Class A Ordinary Share",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "KRAQ": {
+      "name": "KRAKacquisition Corp Class A Ordinary Shares",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": true,
+      "shortable": false,
+      "marginable": true
+    },
+    "PAAC": {
+      "name": "Proem Acquisition Corp I Ordinary Shares",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "OCAC.WS": {
+      "name": "Ocean Capital Acquisition Corporation Warrants, each exercisable for one ordinary share",
+      "exchange": "NYSE",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "BIAFW": {
+      "name": "bioAffinity Technologies, Inc. Warrant",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "MFUT": {
+      "name": "Cambria Chesapeake Pure Trend ETF",
+      "exchange": "BATS",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": true,
+      "shortable": false,
+      "marginable": true
+    },
+    "OXBR": {
+      "name": "Oxbridge Re Holdings Limited Ordinary Shares",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "EHLD": {
+      "name": "Euroholdings Ltd. Common Stock",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "GMOM": {
+      "name": "Cambria Global Momentum ETF",
+      "exchange": "BATS",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": true,
+      "shortable": true,
+      "marginable": true
+    },
+    "RAC": {
+      "name": "Rithm Acquisition Corp.",
+      "exchange": "NYSE",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "MOBXW": {
+      "name": "Mobix Labs, Inc Warrants",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "FLN": {
+      "name": "First Trust Latin America AlphaDEX Fund",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "IDAC": {
+      "name": "Iron Dome Acquisition I Corp. Class A Ordinary Shares",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "ALPXR": {
+      "name": "Alpex Acquisition Corporation Rights",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "MGRT": {
+      "name": "Mega Fortune Company Limited Ordinary Shares",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "TLNCU": {
+      "name": "Talon Capital Corp. Units",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "IDACW": {
+      "name": "Iron Dome Acquisition I Corp. Warrant",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "DBCAU": {
+      "name": "D. Boral Acquisition I Corp. Unit",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "QRED.U": {
+      "name": "QuasarEdge Acquisition Corporation Units, each consisting of one Ordinary Share and one right entitling the holder to receive one-fourth (1/4) of one Ordinary Share",
+      "exchange": "NYSE",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "ONCHU": {
+      "name": "1RT Acquisition Corp. Units",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "KOYNW": {
+      "name": "CSLM Digital Asset Acquisition Corp III Warrants",
+      "exchange": "NASDAQ",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    },
+    "OCTH": {
+      "name": "Innovator Premium Income 20 Barrier ETF - October",
+      "exchange": "BATS",
+      "class": "us_equity",
+      "status": "active",
+      "tradable": true,
+      "fractionable": false,
+      "shortable": false,
+      "marginable": true
+    }
+  },
+  "design_notes": {
+    "method": "replay-based shadow",
+    "rationale": "Frozen bars do not exist in trading_bot.db; directive forbids new Alpaca bars calls",
+    "rs_rank_proxy": "total_score DESC (production RS rank requires SPY+252d window)",
+    "missing_avg_volume_handling": "pass-through (production fails open)",
+    "mkt_cache_001_ineligible_count": "0 (all universe symbols have decision_snapshot by construction)"
+  },
+  "smartbot_running_at_start": true,
+  "elapsed_seconds": 3.28
+}
