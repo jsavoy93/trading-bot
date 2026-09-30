@@ -4823,3 +4823,127 @@ Implementation complete; PR open and awaiting owner semantic review.
 5. Validate: UNKNOWN BUY → HOLD CASES = 0 in fresh sample (every
    analyzer-stage BUY now has either `signal_pipeline.downgraded=False`
    OR `downgrade_stage="liquidity_filter"` + `downgrade_reason`).
+
+---
+
+# 2026-09-30 16:07 UTC — P0 BUY→HOLD DASHBOARD ATTRIBUTION (Phase 11)
+
+## Task
+P0 BUY→HOLD Dashboard Attribution (Phase 11):
+- P0-A: New `/api/buy-blockers*` endpoints + new BUY→HOLD Attribution
+  card on the BUY Eligibility tab — surface the verified P0 root
+  cause on the dashboard.
+- P0-B: Active-view preservation across data refresh — replace the
+  owner-reported `setInterval(refresh, 30000)` full-page reload
+  with a data-only `refreshData()` + hash-based URL state for tab +
+  range so manual browser refresh lands the user back on the same
+  view.
+
+## Status
+Branch: `p0-buy-hold-dashboard-attribution` (off `main @ 4335688`)
+PR: open (NOT merged); SmartBot unchanged
+
+## Approach (READ-ONLY observability, no logic change)
+1. Backend: two new FastAPI endpoints in `dashboard.py`
+   (`api_buy_blockers`, `api_buy_blockers_summary`). Read
+   `decision_history.decision_snapshot.signal_pipeline` via the
+   additive JSON block PR #106 introduced. Reuse the existing
+   `_phase_c_range_clause` helper for range filtering; cohort
+   filter is the prospective boundary.
+2. Frontend: new BUY→HOLD Attribution card under `#top-tab-buyfunnel`
+   with 4 summary tiles + reason-counts table + paginated detail
+   table. Uses the existing `buy-funnel-range` selector (no new
+   range UI). All XSS-safe via `_lc_escapeHtml`.
+3. Refresh bug: `setInterval(refresh, 30000)` →
+   `setInterval(refreshData, 30000)`. `refreshData()` re-fetches
+   the current visible data only (no URL/DOM mutation). `refresh()`
+   is kept for the manual Refresh button and STILL calls
+   `window.location.reload()`.
+4. URL state: hash-based `#tab=...&range=...` via
+   `history.replaceState`. Restore on `DOMContentLoaded` and
+   `hashchange`. `refreshData` MUST NOT call `updateHash`.
+
+## Verified live sample (7d, post_p0_attribution)
+```
+analyzer_buy_count = 51
+final_buy_count    =  0
+downgraded_count   = 51
+unknown_count      =  0
+attribution_unavailable_count = 12650  (pre-PR #106, NOT counted)
+low_average_volume count = 51
+```
+DOWNGRADE_RATE = 100%, REASON distribution: 100% low_average_volume.
+
+`tests/test_dashboard_p0_buy_blockers.py::TestLiveVerification`
+asserts `>= 19` (the prospective-validation sample size) plus
+the hard truth (final_buy_count == 0, unknown_count == 0,
+downgraded_count == analyzer_buy_count) against the actual
+`trading_bot.db`. This is the divergence guard.
+
+## Tests
+- `tests/test_dashboard_p0_buy_blockers.py`: 7 PASSED
+  (low-volume math, mixed buckets, high-low classification,
+   24h filtering, pre-PR #106 unavailable, pagination, live)
+- `tests/test_dashboard_refresh_state.py`: 22 PASSED
+  (refreshData exists + safe, URL state helpers, hashchange
+   listener, DOMContentLoaded restore, XSS-safe interpolation)
+- Regression: `test_obs_001_phase_a_decision_snapshot.py` +
+  `test_settings_service.py` + `test_dashboard_phase_c_obs_analytics.py`
+  baselines unchanged. 3 pre-existing failures in
+  `test_settings_service.py` (`api_update_settings`) + 6
+  pre-existing failures in
+  `test_dashboard_phase_c_obs_analytics.py::TestGateAggregationAppliedFilter`
+  confirmed on `main @ 4335688` BEFORE this branch's changes —
+  NOT introduced by this PR.
+
+## Decisions
+- New helpers `dashboard._p0_validate`, `dashboard._p0_open_db`,
+  `dashboard._p0_classify_reason` keep the new endpoints scoped
+  to their own DB opener (parity with `_phase_c_open_db`). This
+  lets a future reroute of P0-only reads away from the cycle
+  funnel DB without touching Phase C readers.
+- `prospective_boundary_iso` is the deployed
+  `ExecMainStartTimestamp` from PR #106 (`2026-09-30T14:10:34+00:00`).
+  Hard-coded as a module-level constant
+  (`dashboard.P0_PROSPECTIVE_BOUNDARY_UTC`).
+- Hash state uses `replaceState`, NEVER `pushState` — back-button
+  history is preserved across auto-refresh cycles.
+- `setInterval` cadence unchanged (30000ms). Only the target
+  function changed from `refresh` to `refreshData`.
+- Manual Refresh button behavior is preserved (full reload) —
+  that is the explicit user action.
+- The BUY Eligibility tab's `buy-funnel-range` selector drives
+  BOTH the existing BUY Funnel cards AND the new BUY→HOLD
+  Attribution card — they share the same window.
+
+## Safety
+- Strategy changed: NO
+- Code changed: YES (observability only — mutation contract identical)
+- Config changed: NO (no settings_service schema change)
+- DB schema changed: NO (signal_pipeline is OPTIONAL/ADDITIVE)
+- Historical rows: NOT TOUCHED
+- Restart: NO (no service touched; PR is not merged)
+- Broker action: NO
+- Unrelated services unchanged: trading-dashboard, dashboard,
+  openclaw-gateway, cloudflared, smartbot-runner
+- `setInterval` cadence unchanged: 30000ms
+
+## Reports
+- `REPORT.md` (rolling, gitignored, overwritten)
+- `reports/2026-09-30_160730_p0-buy-hold-dashboard-attribution.md`
+  (timestamped archive, written after tests pass + commit)
+
+## Decision
+Implementation complete; PR open and awaiting owner review.
+
+## Next Action (requires owner authorization)
+1. Owner reviews PR diff and REPORT.md
+2. Owner merges PR (operator-controlled; no auto-merge)
+3. Owner triggers dashboard hot-reload (no SmartBot restart needed)
+4. Validate on dashboard:
+   - Open BUY Eligibility tab → BUY→HOLD Attribution card shows
+     4 tiles (Analyzer / Final / Downgraded / Unknown)
+   - Change range selector → URL hash updates
+   - Wait 30s (or trigger SmartBot cycle) → tiles refresh but tab
+     stays BUY Eligibility and URL stays the same
+   - Press F5 → same tab + range restored from hash

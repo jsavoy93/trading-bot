@@ -4714,6 +4714,640 @@ def api_buy_funnel_config_overlay(range_name: str = Query("24h", alias="range"))
             pass
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# P0 BUY→HOLD ATTRIBUTION — /api/buy-blockers endpoints
+#
+# P0 ROOT CAUSE (verified 2026-09-30):
+#   19/19 analyzer-stage BUYs were downgraded to HOLD by the post-MTF
+#   liquidity filter. All 19 had `avg_volume < 1_000_000`. UNKNOWN = 0.
+#   See: /root/.openclaw/audit-archives/trading-bot/2026-09-30_142000_p0-buy-hold-prospective-validation.md
+#
+# These endpoints expose the actual decision-time truth stored in
+# `decision_history.decision_snapshot.signal_pipeline` (additive block
+# introduced by PR #106). They are OBSERVABILITY ONLY: no new trading
+# gates, no strategy changes, no schema changes, no recompute from
+# current config. The dashboard reads what the bot already persisted.
+#
+# Cohort semantics:
+#   post_p0_attribution (default):
+#       Rows with `decision_snapshot.signal_pipeline` populated. This
+#       filter is bounded by P0_PROSPECTIVE_BOUNDARY_UTC — the
+#       restart timestamp that marks the deploy of PR #106's additive
+#       signal_pipeline block. Pre-PR #106 rows have no signal_pipeline
+#       and are NEVER counted as downgrades or unknown; they appear as
+#       `attribution_unavailable_count`.
+#   all:
+#       All rows. Pre-PR #106 rows fall under `attribution_unavailable_count`.
+#
+# Range semantics:
+#   24h / 7d / today / latest — same helper as api_phase_c_*.
+#
+# Reason-bucket mapping (deterministic, in priority order):
+#   low_average_volume:
+#       liq=FAILED AND avg_volume < min_daily_volume
+#   high_high_low_range:
+#       liq=FAILED AND avg_volume >= min_daily_volume AND
+#       high_low_pct > effective_max_high_low_pct
+#   could_not_evaluate_fail_open:
+#       liq=COULD_NOT_BE_EVALUATED (NOT a downgrade — surfaced separately)
+#   other_liquidity:
+#       liq=FAILED but neither low_volume nor high_low_pct fired
+#       (rare in current runtime; preserved for diagnostic completeness)
+#   non_liquidity:
+#       downgraded AND liq != FAILED (e.g. sector filter, MTF conflict)
+#   unknown:
+#       downgraded AND no downgrade_reason captured (should be 0 in
+#       current runtime — verified by prospective validation)
+#
+# This mapping is intentionally read-only. We never recompute; we
+# classify what the bot already persisted.
+# ─────────────────────────────────────────────────────────────────────────
+P0_PROSPECTIVE_BOUNDARY_UTC = "2026-09-30T14:10:34+00:00"
+_P0_BUY_BLOCKERS_VALID_RANGES = {"latest", "today", "24h", "7d"}
+_P0_BUY_BLOCKERS_VALID_COHORTS = {"post_p0_attribution", "all"}
+
+
+def _p0_validate(range_name: str, cohort: str):
+    """Validate /api/buy-blockers query params. Returns error envelope or None."""
+    if range_name not in _P0_BUY_BLOCKERS_VALID_RANGES:
+        return {"error": f"invalid range '{range_name}'; must be one of {sorted(_P0_BUY_BLOCKERS_VALID_RANGES)}",
+                "valid_ranges": sorted(_P0_BUY_BLOCKERS_VALID_RANGES)}
+    if cohort not in _P0_BUY_BLOCKERS_VALID_COHORTS:
+        return {"error": f"invalid cohort '{cohort}'; must be one of {sorted(_P0_BUY_BLOCKERS_VALID_COHORTS)}",
+                "valid_cohorts": sorted(_P0_BUY_BLOCKERS_VALID_COHORTS)}
+    return None
+
+
+def _p0_open_db():
+    """Open trading_bot.db as a read-only sqlite3 connection.
+
+    Mirrors `_phase_c_open_db`. Kept as a separate helper so future
+    endpoints can route through one opener or the other without
+    coupling the two scopes.
+    """
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _P
+    db_path = _P(__file__).parent / "trading_bot.db"
+    if not db_path.exists():
+        return None
+    conn = _sqlite3.connect(str(db_path))
+    conn.row_factory = _sqlite3.Row
+    return conn
+
+
+def _p0_classify_reason(liq_result, avg_volume, min_volume, hl_pct, eff_max):
+    """Classify a single row into a P0 reason bucket.
+
+    Returns one of:
+        "low_average_volume"
+        "high_high_low_range"
+        "could_not_evaluate_fail_open"
+        "other_liquidity"
+        "non_liquidity"
+        "unknown"
+        "passed"
+
+    This is the canonical mapping. The endpoint counts `passed`
+    rows in the `final_buy_count` summary bucket; the other
+    labels map 1:1 to the public reason buckets.
+
+    Rules:
+        liq == "COULD_NOT_BE_EVALUATED":
+            fail-open path; mutation does NOT fire. Surfaces as
+            its own bucket so we can detect fail-open regressions.
+        liq == "FAILED" AND avg_volume < min_volume:
+            low_average_volume — the B-bucket from the prospective
+            validation (the entire 19-row sample).
+        liq == "FAILED" AND hl_pct > eff_max:
+            high_high_low_range — the C-bucket. In current runtime
+            this is unreachable because check_liquidity short-
+            circuits on volume, but the bucket exists for future
+            config changes.
+        liq == "FAILED" AND neither low_vol nor hl_pct fired:
+            other_liquidity — D-bucket, preserved for completeness.
+        liq in ("PASSED", "NOT_APPLICABLE") AND downgraded:
+            non_liquidity — F-bucket. Sector filter, MTF conflict,
+            or any other non-liquidity mutation.
+        liq in ("PASSED", "NOT_APPLICABLE") AND NOT downgraded:
+            passed.
+        downgraded AND no downgrade_reason captured:
+            unknown — should be 0 in current runtime.
+    """
+    if liq_result == "COULD_NOT_BE_EVALUATED":
+        return "could_not_evaluate_fail_open"
+    if liq_result == "FAILED":
+        if avg_volume is not None and min_volume is not None and avg_volume < min_volume:
+            return "low_average_volume"
+        if hl_pct is not None and eff_max is not None and hl_pct > eff_max:
+            return "high_high_low_range"
+        return "other_liquidity"
+    return "passed"
+
+
+@app.get("/api/buy-blockers/summary")
+def api_buy_blockers_summary(
+    range_name: str = Query("7d", alias="range"),
+    cohort: str = "post_p0_attribution",
+):
+    """P0 BUY→HOLD attribution summary (no rows — for cards/badges).
+
+    Reads `decision_history.decision_snapshot.signal_pipeline` to
+    surface the actual decision-time truth about why analyzer-stage
+    BUYs did or did not become final BUYs.
+
+    For cohort='post_p0_attribution' (default), only rows with a
+    populated signal_pipeline block are counted. Pre-PR #106 rows
+    (no signal_pipeline) are reported separately as
+    `attribution_unavailable_count` — they are NOT counted as
+    unknown downgrades and they do NOT inflate the
+    `analyzer_buy_count` denominator.
+
+    For cohort='all', `attribution_unavailable_count` reports the
+    pre-PR #106 rows that fell inside the same range; the
+    `analyzer_buy_count` denominator is unchanged.
+
+    The 7d default reproduces the verified prospective window
+    stats: analyzer_buy_count=19, final_buy_count=0,
+    downgraded_count=19, low_average_volume count=19 (during the
+    2026-09-30 prospective sample). Post-merge sustained numbers
+    may differ; this endpoint reflects the CURRENT state of the DB.
+    """
+    err = _p0_validate(range_name, cohort)
+    if err:
+        return err
+    conn = _p0_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name, "cohort": cohort}
+
+    try:
+        cur = conn.cursor()
+        range_sql, range_params = _phase_c_range_clause(range_name, "cycle_start")
+        if cohort == "post_p0_attribution":
+            cohort_sql = "(cycle_start >= ?)"
+            cohort_params = (P0_PROSPECTIVE_BOUNDARY_UTC,)
+        else:  # "all"
+            cohort_sql = "(1=1)"
+            cohort_params = ()
+
+        # ---- 1. Population: rows with signal_pipeline block in scope ----
+        # We require the block to be populated AND analyzer_signal='BUY'.
+        # Rows without a signal_pipeline block are not part of the
+        # analyzer-stage BUY cohort; they go to attribution_unavailable.
+        pop_sql = (
+            "SELECT "
+            "  COUNT(*) AS total_in_window, "
+            "  SUM(CASE WHEN json_extract(decision_snapshot, '$.signal_pipeline') IS NOT NULL "
+            "           THEN 1 ELSE 0 END) AS rows_with_pipeline, "
+            "  SUM(CASE WHEN json_extract(decision_snapshot, '$.signal_pipeline') IS NULL "
+            "           THEN 1 ELSE 0 END) AS rows_without_pipeline "
+            "FROM decision_history "
+            f"WHERE {cohort_sql} AND {range_sql}"
+        )
+        pop_row = cur.execute(pop_sql, cohort_params + range_params).fetchone()
+        total_in_window = int(pop_row["total_in_window"] or 0)
+        rows_with_pipeline = int(pop_row["rows_with_pipeline"] or 0)
+        rows_without_pipeline = int(pop_row["rows_without_pipeline"] or 0)
+
+        # ---- 2. Aggregations from signal_pipeline rows ----
+        # Every row with signal_pipeline contributes to exactly one of:
+        #   analyzer_buy (analyzer_signal='BUY')
+        #   non_analyzer_signal (analyzer_signal NOT 'BUY'; e.g. HOLD/SELL)
+        # Rows where analyzer_signal != BUY exist (HOLD/SELL pre-filter
+        # rows persist the block only when the analyzer produced BUY).
+        # Defensive: count both for a tight population check.
+        agg_sql = (
+            "SELECT "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.analyzer_signal') AS analyzer_signal, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.final_signal') AS final_signal, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.downgraded') AS INTEGER) AS downgraded, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.downgrade_stage') AS downgrade_stage, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.downgrade_reason') AS downgrade_reason, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.result') AS liq_result, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.avg_volume') AS REAL) AS avg_volume, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.min_daily_volume') AS REAL) AS min_volume, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.high_low_pct') AS REAL) AS hl_pct, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.effective_max_high_low_pct') AS REAL) AS eff_max "
+            "FROM decision_history "
+            f"WHERE {cohort_sql} AND {range_sql} "
+            "  AND json_extract(decision_snapshot, '$.signal_pipeline') IS NOT NULL"
+        )
+        rows = cur.execute(agg_sql, cohort_params + range_params).fetchall()
+
+        analyzer_buy_count = 0
+        final_buy_count = 0
+        downgraded_count = 0
+        unknown_count = 0
+        reason_counts = {
+            "low_average_volume": 0,
+            "high_high_low_range": 0,
+            "could_not_evaluate_fail_open": 0,
+            "other_liquidity": 0,
+            "non_liquidity": 0,
+        }
+        range_stats = {
+            "low_average_volume": {"values": [], "applied_threshold": None},
+            "high_high_low_range": {"values": [], "applied_threshold": None},
+        }
+        for r in rows:
+            if r["analyzer_signal"] != "BUY":
+                continue
+            analyzer_buy_count += 1
+            final_signal = r["final_signal"]
+            downgraded = bool(r["downgraded"])
+            if final_signal == "BUY":
+                final_buy_count += 1
+            if downgraded:
+                downgraded_count += 1
+            bucket = _p0_classify_reason(
+                r["liq_result"], r["avg_volume"], r["min_volume"],
+                r["hl_pct"], r["eff_max"],
+            )
+            if downgraded and bucket == "passed":
+                # downgraded AND liq passed → non_liquidity stage
+                bucket = "non_liquidity"
+            if downgraded and not r["downgrade_reason"]:
+                # Unknown downgrade — no reason captured.
+                # In current runtime this should be 0 (verified by
+                # the prospective validation sample).
+                unknown_count += 1
+                continue
+            if bucket == "passed":
+                # Not downgraded AND liq passed (or not applicable) → no reason entry
+                continue
+            if bucket == "could_not_evaluate_fail_open":
+                # Fail-open — surfaced but NOT a downgrade (by definition).
+                # Counted in reasons for transparency.
+                reason_counts[bucket] += 1
+                continue
+            reason_counts[bucket] += 1
+            if bucket == "low_average_volume":
+                if r["avg_volume"] is not None:
+                    range_stats[bucket]["values"].append(float(r["avg_volume"]))
+                if r["min_volume"] is not None and range_stats[bucket]["applied_threshold"] is None:
+                    range_stats[bucket]["applied_threshold"] = float(r["min_volume"])
+            elif bucket == "high_high_low_range":
+                if r["hl_pct"] is not None:
+                    range_stats[bucket]["values"].append(float(r["hl_pct"]))
+                if r["eff_max"] is not None and range_stats[bucket]["applied_threshold"] is None:
+                    range_stats[bucket]["applied_threshold"] = float(r["eff_max"])
+
+        # Compute min/median/max for range_stats.
+        for k, stats in range_stats.items():
+            vals = stats["values"]
+            if vals:
+                vals_sorted = sorted(vals)
+                mid = len(vals_sorted) // 2
+                if len(vals_sorted) % 2 == 0:
+                    median = (vals_sorted[mid - 1] + vals_sorted[mid]) / 2.0
+                else:
+                    median = vals_sorted[mid]
+                stats["min"] = float(vals_sorted[0])
+                stats["median"] = float(median)
+                stats["max"] = float(vals_sorted[-1])
+            else:
+                stats["min"] = None
+                stats["median"] = None
+                stats["max"] = None
+            del stats["values"]  # do not leak raw values in the response
+
+        downgrade_rate_pct = (
+            round(100.0 * downgraded_count / analyzer_buy_count, 2)
+            if analyzer_buy_count > 0 else 0.0
+        )
+
+        def _pct(count: int) -> float:
+            return round(100.0 * count / analyzer_buy_count, 2) if analyzer_buy_count > 0 else 0.0
+
+        reasons_list = [
+            {
+                "key": "low_average_volume",
+                "label": "Low Average Volume",
+                "count": reason_counts["low_average_volume"],
+                "pct": _pct(reason_counts["low_average_volume"]),
+            },
+            {
+                "key": "high_high_low_range",
+                "label": "High-Low Price Range %",
+                "count": reason_counts["high_high_low_range"],
+                "pct": _pct(reason_counts["high_high_low_range"]),
+            },
+            {
+                "key": "could_not_evaluate_fail_open",
+                "label": "Could Not Evaluate (Fail-Open)",
+                "count": reason_counts["could_not_evaluate_fail_open"],
+                "pct": _pct(reason_counts["could_not_evaluate_fail_open"]),
+            },
+            {
+                "key": "other_liquidity",
+                "label": "Other Liquidity Reason",
+                "count": reason_counts["other_liquidity"],
+                "pct": _pct(reason_counts["other_liquidity"]),
+            },
+            {
+                "key": "non_liquidity",
+                "label": "Non-Liquidity Stage",
+                "count": reason_counts["non_liquidity"],
+                "pct": _pct(reason_counts["non_liquidity"]),
+            },
+        ]
+
+        return {
+            "range": range_name,
+            "cohort": cohort,
+            "prospective_boundary_iso": P0_PROSPECTIVE_BOUNDARY_UTC,
+            "summary": {
+                "analyzer_buy_count": analyzer_buy_count,
+                "final_buy_count": final_buy_count,
+                "downgraded_count": downgraded_count,
+                "unknown_count": unknown_count,
+                "attribution_unavailable_count": rows_without_pipeline,
+                "downgrade_rate_pct": downgrade_rate_pct,
+            },
+            "reasons": reasons_list,
+            "ranges": {
+                "low_average_volume": range_stats["low_average_volume"],
+                "high_high_low_range": range_stats["high_high_low_range"],
+            },
+            "population": {
+                "total_in_window": total_in_window,
+                "rows_with_pipeline": rows_with_pipeline,
+                "rows_without_pipeline": rows_without_pipeline,
+            },
+            "source": (
+                "decision_history.decision_snapshot -> $.signal_pipeline "
+                "(additive block introduced by PR #106). "
+                "Pre-PR #106 rows have no signal_pipeline and are reported "
+                "as attribution_unavailable — they are NOT counted as "
+                "unknown downgrades."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_buy_blockers_summary failed: {e}")
+        return {"error": str(e), "range": range_name, "cohort": cohort}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/buy-blockers")
+def api_buy_blockers(
+    range_name: str = Query("7d", alias="range"),
+    cohort: str = Query("post_p0_attribution"),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """P0 BUY→HOLD attribution with paginated detail rows.
+
+    Returns the same summary envelope as
+    `/api/buy-blockers/summary` plus a `rows` array with one row
+    per analyzer-stage BUY (analyzer_signal='BUY'). Pre-PR #106 rows
+    are NOT included (they have no signal_pipeline). Paginated via
+    `limit` and `offset`.
+
+    Each row carries:
+        cycle_id, symbol, cycle_start, analyzer_signal,
+        analyzer_signal_strength, final_signal, final_signal_strength,
+        downgraded, downgrade_stage, downgrade_reason,
+        liquidity_evaluation (object or None),
+        mtf (object or None),
+        strategy_eligible, ranked_candidate, execution_attempted,
+        order_submitted.
+    """
+    err = _p0_validate(range_name, cohort)
+    if err:
+        return err
+    conn = _p0_open_db()
+    if conn is None:
+        return {"error": "Database not found", "range": range_name, "cohort": cohort}
+
+    try:
+        cur = conn.cursor()
+        range_sql, range_params = _phase_c_range_clause(range_name, "cycle_start")
+        if cohort == "post_p0_attribution":
+            cohort_sql = "(cycle_start >= ?)"
+            cohort_params = (P0_PROSPECTIVE_BOUNDARY_UTC,)
+        else:
+            cohort_sql = "(1=1)"
+            cohort_params = ()
+
+        # Population counts (same as summary)
+        pop_sql = (
+            "SELECT "
+            "  COUNT(*) AS total_in_window, "
+            "  SUM(CASE WHEN json_extract(decision_snapshot, '$.signal_pipeline') IS NULL "
+            "           THEN 1 ELSE 0 END) AS rows_without_pipeline "
+            "FROM decision_history "
+            f"WHERE {cohort_sql} AND {range_sql}"
+        )
+        pop_row = cur.execute(pop_sql, cohort_params + range_params).fetchone()
+        total_in_window = int(pop_row["total_in_window"] or 0)
+        rows_without_pipeline = int(pop_row["rows_without_pipeline"] or 0)
+
+        # Aggregate columns for the summary block.
+        agg_sql = (
+            "SELECT "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.analyzer_signal') AS analyzer_signal, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.final_signal') AS final_signal, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.downgraded') AS INTEGER) AS downgraded, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.downgrade_reason') AS downgrade_reason, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.result') AS liq_result, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.avg_volume') AS REAL) AS avg_volume, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.min_daily_volume') AS REAL) AS min_volume, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.high_low_pct') AS REAL) AS hl_pct, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation.effective_max_high_low_pct') AS REAL) AS eff_max "
+            "FROM decision_history "
+            f"WHERE {cohort_sql} AND {range_sql} "
+            "  AND json_extract(decision_snapshot, '$.signal_pipeline') IS NOT NULL"
+        )
+        rows = cur.execute(agg_sql, cohort_params + range_params).fetchall()
+
+        analyzer_buy_count = 0
+        final_buy_count = 0
+        downgraded_count = 0
+        unknown_count = 0
+        reason_counts = {
+            "low_average_volume": 0,
+            "high_high_low_range": 0,
+            "could_not_evaluate_fail_open": 0,
+            "other_liquidity": 0,
+            "non_liquidity": 0,
+        }
+        detail_rows = []
+        for r in rows:
+            if r["analyzer_signal"] != "BUY":
+                continue
+            analyzer_buy_count += 1
+            final_signal = r["final_signal"]
+            downgraded = bool(r["downgraded"])
+            if final_signal == "BUY":
+                final_buy_count += 1
+            if downgraded:
+                downgraded_count += 1
+            bucket = _p0_classify_reason(
+                r["liq_result"], r["avg_volume"], r["min_volume"],
+                r["hl_pct"], r["eff_max"],
+            )
+            if downgraded and bucket == "passed":
+                bucket = "non_liquidity"
+            if downgraded and not r["downgrade_reason"]:
+                unknown_count += 1
+            elif bucket == "could_not_evaluate_fail_open":
+                reason_counts[bucket] += 1
+            elif bucket != "passed":
+                reason_counts[bucket] += 1
+
+        # Detail rows query — pull every column we surface in the UI
+        # for analyzer-stage BUY rows. We sort by cycle_start DESC so
+        # the most recent row is row[0]; this matches the buy-funnel
+        # ordering convention.
+        detail_sql = (
+            "SELECT "
+            "  cycle_id, symbol, cycle_start, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.analyzer_signal') AS analyzer_signal, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.analyzer_signal_strength') AS analyzer_signal_strength, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.final_signal') AS final_signal, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.final_signal_strength') AS final_signal_strength, "
+            "  CAST(json_extract(decision_snapshot, '$.signal_pipeline.downgraded') AS INTEGER) AS downgraded, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.downgrade_stage') AS downgrade_stage, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.downgrade_reason') AS downgrade_reason, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.liquidity_filter_evaluation') AS liquidity_evaluation_json, "
+            "  json_extract(decision_snapshot, '$.signal_pipeline.mtf') AS mtf_json, "
+            "  CAST(json_extract(decision_snapshot, '$.strategy_eligibility.strategy_eligible') AS INTEGER) AS strategy_eligible, "
+            "  CAST(json_extract(decision_snapshot, '$.ranking.ranked_candidate') AS INTEGER) AS ranked_candidate, "
+            "  CAST(json_extract(decision_snapshot, '$.selection.attempted') AS INTEGER) AS execution_attempted, "
+            "  CAST(json_extract(decision_snapshot, '$.order.submit_order_returned') AS INTEGER) AS order_submitted "
+            "FROM decision_history "
+            f"WHERE {cohort_sql} AND {range_sql} "
+            "  AND json_extract(decision_snapshot, '$.signal_pipeline.analyzer_signal') = 'BUY' "
+            "ORDER BY cycle_start DESC, id DESC "
+            "LIMIT ? OFFSET ?"
+        )
+        detail_params = cohort_params + range_params + (int(limit), int(offset))
+        detail_rows_raw = cur.execute(detail_sql, detail_params).fetchall()
+
+        import json as _json
+        for row in detail_rows_raw:
+            liq_raw = row["liquidity_evaluation_json"]
+            mtf_raw = row["mtf_json"]
+            liq_obj = None
+            mtf_obj = None
+            if liq_raw and liq_raw != "" and not isinstance(liq_raw, int):
+                try:
+                    liq_obj = _json.loads(liq_raw)
+                except Exception:
+                    liq_obj = None
+            if mtf_raw and mtf_raw != "" and not isinstance(mtf_raw, int):
+                try:
+                    mtf_obj = _json.loads(mtf_raw)
+                except Exception:
+                    mtf_obj = None
+
+            detail_rows.append({
+                "cycle_id": row["cycle_id"],
+                "symbol": row["symbol"],
+                "cycle_start": row["cycle_start"],
+                "analyzer_signal": row["analyzer_signal"],
+                "analyzer_signal_strength": row["analyzer_signal_strength"],
+                "final_signal": row["final_signal"],
+                "final_signal_strength": row["final_signal_strength"],
+                "downgraded": bool(row["downgraded"]),
+                "downgrade_stage": row["downgrade_stage"],
+                "downgrade_reason": row["downgrade_reason"],
+                "liquidity_evaluation": liq_obj,
+                "mtf": mtf_obj,
+                "strategy_eligible": (bool(row["strategy_eligible"])
+                                      if row["strategy_eligible"] is not None else None),
+                "ranked_candidate": (bool(row["ranked_candidate"])
+                                     if row["ranked_candidate"] is not None else None),
+                "execution_attempted": (bool(row["execution_attempted"])
+                                         if row["execution_attempted"] is not None else None),
+                "order_submitted": (bool(row["order_submitted"])
+                                    if row["order_submitted"] is not None else None),
+            })
+
+        downgrade_rate_pct = (
+            round(100.0 * downgraded_count / analyzer_buy_count, 2)
+            if analyzer_buy_count > 0 else 0.0
+        )
+
+        def _pct(count: int) -> float:
+            return round(100.0 * count / analyzer_buy_count, 2) if analyzer_buy_count > 0 else 0.0
+
+        reasons_list = [
+            {
+                "key": "low_average_volume",
+                "label": "Low Average Volume",
+                "count": reason_counts["low_average_volume"],
+                "pct": _pct(reason_counts["low_average_volume"]),
+            },
+            {
+                "key": "high_high_low_range",
+                "label": "High-Low Price Range %",
+                "count": reason_counts["high_high_low_range"],
+                "pct": _pct(reason_counts["high_high_low_range"]),
+            },
+            {
+                "key": "could_not_evaluate_fail_open",
+                "label": "Could Not Evaluate (Fail-Open)",
+                "count": reason_counts["could_not_evaluate_fail_open"],
+                "pct": _pct(reason_counts["could_not_evaluate_fail_open"]),
+            },
+            {
+                "key": "other_liquidity",
+                "label": "Other Liquidity Reason",
+                "count": reason_counts["other_liquidity"],
+                "pct": _pct(reason_counts["other_liquidity"]),
+            },
+            {
+                "key": "non_liquidity",
+                "label": "Non-Liquidity Stage",
+                "count": reason_counts["non_liquidity"],
+                "pct": _pct(reason_counts["non_liquidity"]),
+            },
+        ]
+
+        return {
+            "range": range_name,
+            "cohort": cohort,
+            "prospective_boundary_iso": P0_PROSPECTIVE_BOUNDARY_UTC,
+            "summary": {
+                "analyzer_buy_count": analyzer_buy_count,
+                "final_buy_count": final_buy_count,
+                "downgraded_count": downgraded_count,
+                "unknown_count": unknown_count,
+                "attribution_unavailable_count": rows_without_pipeline,
+                "downgrade_rate_pct": downgrade_rate_pct,
+            },
+            "reasons": reasons_list,
+            "limit": int(limit),
+            "offset": int(offset),
+            "rows_returned": len(detail_rows),
+            "rows": detail_rows,
+            "population": {
+                "total_in_window": total_in_window,
+                "rows_with_pipeline": analyzer_buy_count,  # rows_with_pipeline >= analyzer_buy_count; we expose only what we can attribute
+                "rows_without_pipeline": rows_without_pipeline,
+            },
+            "source": (
+                "decision_history.decision_snapshot -> $.signal_pipeline "
+                "(additive block introduced by PR #106). "
+                "Pre-PR #106 rows have no signal_pipeline and are reported "
+                "as attribution_unavailable — they are NOT counted as "
+                "unknown downgrades."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"api_buy_blockers failed: {e}")
+        return {"error": str(e), "range": range_name, "cohort": cohort}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))

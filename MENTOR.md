@@ -3403,3 +3403,171 @@ in `tests/observational/test_phase_c_live_observational.py`):
 - No `dashboard.py` changes. No `templates/dashboard.html`
   changes. No `src/` changes. No `trading_bot.db` schema changes.
   No SmartBot runtime changes. No OpenClaw config changes.
+
+## P0 BUY→HOLD Dashboard Attribution (Phase 11 — READ-ONLY observability)
+
+After PR #106 made every analyzer-stage BUY's path to HOLD traceable,
+the dashboard itself was still missing the surface that shows
+*why*. Phase 11 adds a single BUY→HOLD Attribution card on the
+existing BUY Eligibility tab plus fixes an owner-reported refresh
+bug. No trading logic changes, no schema changes, no config changes.
+
+### Two new read-only endpoints
+
+`/api/buy-blockers/summary?range=<latest|today|24h|7d>&cohort=<post_p0_attribution|all>`
+
+- `summary` block: `analyzer_buy_count`, `final_buy_count`,
+  `downgraded_count`, `unknown_count`, `attribution_unavailable_count`,
+  `downgrade_rate_pct`.
+- `reasons` block: count + pct per deterministic bucket.
+- `ranges` block: min/median/max of observed value + the persisted
+  `applied_threshold` (read from the snapshot, NEVER recomputed).
+- `population` block: total_in_window / rows_with_pipeline /
+  rows_without_pipeline for honest-universe tracking.
+- `prospective_boundary_iso`: the P0 cohort boundary (`2026-09-30T14:10:34+00:00`)
+  so the UI can label the cohort.
+
+`/api/buy-blockers?range=...&cohort=...&limit=<1-500>&offset=<0+>`
+
+- Same envelope plus `rows[]` with one entry per analyzer BUY
+  (analyzer_signal='BUY'), newest-first.
+- Each row carries `cycle_id`, `symbol`, `cycle_start`,
+  `analyzer_signal` + strength, `final_signal` + strength,
+  `downgraded`, `downgrade_stage`, `downgrade_reason`,
+  `liquidity_evaluation` (parsed object), `mtf` (parsed object),
+  `strategy_eligible`, `ranked_candidate`, `execution_attempted`,
+  `order_submitted`.
+
+### Reason buckets (deterministic, read-only)
+
+| Key | Trigger |
+|---|---|
+| `low_average_volume` | liq=FAILED AND `avg_volume < min_daily_volume` |
+| `high_high_low_range` | liq=FAILED AND `avg_volume >= min_daily_volume` AND `high_low_pct > effective_max_high_low_pct` |
+| `could_not_evaluate_fail_open` | liq=`COULD_NOT_BE_EVALUATED` (NOT a downgrade; surfaced separately) |
+| `other_liquidity` | liq=FAILED AND neither low_vol nor high_low_pct fired |
+| `non_liquidity` | downgraded AND liq != FAILED |
+| `unknown` | downgraded AND no `downgrade_reason` captured (should be 0) |
+| `passed` | liq PASSED AND NOT downgraded (final BUY) |
+
+The classifier (`_p0_classify_reason`) is a single pure function
+with documented rules; tests cover every bucket.
+
+### Cohort semantics (CRITICAL — never break this)
+
+- `cohort='post_p0_attribution'` (default): rows with
+  `decision_snapshot.signal_pipeline` populated AND
+  `cycle_start >= 2026-09-30T14:10:34+00:00` (the PR #106 deploy
+  boundary).
+- `cohort='all'`: all rows in the range; pre-PR #106 rows with no
+  signal_pipeline are reported as `attribution_unavailable_count`
+  and NEVER counted as unknown downgrades. This is the verified P0
+  contract: UNKNOWN BUY→HOLD = 0 means the signal_pipeline block is
+  authoritative, not that every pre-deploy row is unknown.
+
+The prospective boundary constant is `dashboard.P0_PROSPECTIVE_BOUNDARY_UTC = "2026-09-30T14:10:34+00:00"`.
+This MUST stay aligned with the systemd `ExecMainStartTimestamp`
+from PR #106's deploy (verified 2026-09-30 14:10:34 UTC).
+
+### Refresh-bug fix (owner-reported, root cause in 3474 + 2124)
+
+**PREVIOUS (BUG)**: `templates/dashboard.html` line 3474 was
+`setInterval(refresh, 30000)` where `refresh()` (line 2124) was
+`window.location.reload()`. Every 30 seconds the browser did a
+full page reload, dumping the user's active tab back to the Main
+Dashboard. SmartBot completing a cycle (which triggers a successful
+fetch from `/api/analysis` etc.) coincided with this 30s reload
+and was the user-visible symptom.
+
+**FIX**:
+1. `setInterval(refresh, 30000)` → `setInterval(refreshData, 30000)`.
+2. `refreshData()` calls `Promise.allSettled([loadLatestCycle,
+   loadTopCandidates, loadBuyFunnel, loadPhaseCAll, loadBuyBlockers])`
+   with `typeof` feature detection. Data-only, no URL/DOM mutation.
+3. `refresh()` (kept for the explicit Refresh button) STILL calls
+   `window.location.reload()` because that's the user-clicked action.
+
+### Hash-based URL state
+
+Manual browser refresh (F5) must land the user back on the same
+tab + range. Three small helpers + `DOMContentLoaded` wiring:
+
+- `getCurrentTopTab()` reads `.top-tab.active` and maps button text
+  to a panel id suffix. Falls back to `'dashboard'`.
+- `setTopTabFromHash()` parses `window.location.hash` via
+  `URLSearchParams`, reads `tab` + `range` keys, restores the
+  panel and range select.
+- `updateHash()` writes `#tab=...&range=...` via
+  `history.replaceState` (NOT `pushState` — back-button history
+  must NOT be polluted by tab switches or auto-refresh cycles).
+
+Wired into `showTopTab`, `loadBuyFunnel` (after range change),
+`DOMContentLoaded` (initial restore), and `hashchange` (back/forward).
+
+`refreshData()` MUST NOT call `updateHash()`. Auto-refresh does not
+touch the URL.
+
+### What this PR does NOT change
+
+- SmartBot: UNCHANGED. Trading logic untouched. No strategy change.
+- Settings: UNCHANGED. `settings_service.py` schema untouched.
+- DB Schema: UNCHANGED. `signal_pipeline` is OPTIONAL/ADDITIVE
+  (Phase 7). New endpoints read existing rows; no migration.
+- Config thresholds: UNCHANGED. The dashboard reads persisted
+  thresholds from the snapshot — never recomputes from current
+  settings.
+- Strategy, MACD, sector filter, MTF logic: all UNCHANGED.
+
+### Live verified sample (2026-09-30 14:10:34+ boundary, 7d window)
+
+```
+analyzer_buy_count = 51
+final_buy_count    =  0
+downgraded_count   = 51
+unknown_count      =  0
+low_average_volume count = 51
+```
+
+`tests/test_dashboard_p0_buy_blockers.py::TestLiveVerification`
+asserts `analyzer_buy_count >= 19`, `final_buy_count == 0`,
+`downgraded_count == analyzer_buy_count`, `unknown_count == 0`,
+and `low_average_volume count >= 19` against the actual
+`trading_bot.db`. This is the divergence guard — it would catch
+any regression that breaks the link between the bot's persisted
+`signal_pipeline.downgrade_reason` and what the dashboard surfaces.
+
+### Test coverage (new files)
+
+- `tests/test_dashboard_p0_buy_blockers.py` — 7 tests:
+  - low-volume summary math (the verified P0 shape, 19 rows)
+  - mixed-bucket classification (10 LV + 5 HL + 1 CNBE + 4 final BUY + 2 pre-PR #106)
+  - high_low_pct classification (the C-bucket, even though current runtime can never reach it)
+  - 24h range filtering vs 7d
+  - pre-PR #106 rows reported as `attribution_unavailable_count` (NEVER `unknown_count`)
+  - pagination (limit / offset)
+  - **live verification against `trading_bot.db`** — the divergence guard
+- `tests/test_dashboard_refresh_state.py` — 22 tests:
+  - `setInterval(refreshData, 30000)` is present; buggy `setInterval(refresh, 30000)` is gone
+  - `refreshData` does NOT call `location.reload` or `location.href`
+  - `refresh()` STILL calls `window.location.reload()` (manual button)
+  - URL state helpers exist and behave correctly
+  - `updateHash` uses `replaceState` (not `pushState`)
+  - `showTopTab` calls `updateHash`; `loadBuyFunnel` calls `updateHash`; `refreshData` does NOT call `updateHash`
+  - `hashchange` listener registered; `DOMContentLoaded` restores from hash
+  - BUY→HOLD Attribution card present in the BUY Eligibility tab
+  - All XSS-sensitive fields escaped via `_lc_escapeHtml`
+
+### Reporting guidance (REPORT.md)
+
+The implementation report (see REPORT.md) carries the full
+acceptance evidence. The terminal summary lists the verified
+sample (51/0/51/0/0/51 at the time of writing; numbers grow as
+the bot runs longer because new analyzer BUYs arrive every few
+minutes — the SHAPE remains stable).
+
+### Backlog & parked items
+
+- Strategy threshold review — NOT in this PR. Parked for STRAT-002+.
+- MACD 17/18 — NOT in this PR.
+- Hourly data availability — NOT in this PR.
+- Unrelated dashboard performance — NOT in this PR.
