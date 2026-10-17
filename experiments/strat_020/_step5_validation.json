@@ -1,0 +1,57 @@
+{
+  "validation_run_at": "2026-10-17T21:09:12.319630+00:00",
+  "validation_version": "STRAT-020 REMEDIATION 2026-10-15 (4-tier check_5)",
+  "n_recovery_rows": 19277,
+  "identity_recovery_total": 15087,
+  "formation_price_valid_total": 14877,
+  "newly_recovered_total": 1102,
+  "newly_recovered_formation_price_valid": 1043,
+  "newly_recovered_without_formation_price": 59,
+  "checks": {
+    "1. No duplicate (formation_year, cik) mappings": {
+      "status": "PASS",
+      "detail": "n_rows=19277, unique_keys=19277, dup_keys=0"
+    },
+    "2. No share-class collapsing": {
+      "status": "PASS",
+      "detail": "multi_share_class_ciks=126, violations=0"
+    },
+    "3. No ticker-reuse silently accepted": {
+      "status": "PASS",
+      "detail": "reused_rows=134, high_or_low_confidence=0"
+    },
+    "4. No ambiguous mappings silently accepted": {
+      "status": "PASS",
+      "detail": "ambiguous_rows=21, bad_confidence_or_unique=0"
+    },
+    "5a. TIER 1: identity validity (HIGH rows have valid identity fields)": {
+      "status": "PASS",
+      "detail": "high_rows=15087, original_ticker_invalid=0, unique_cik_alias_invalid=0 (no_matched=0, empty_pit=0), total_invalid=0 (Note: ORIGINAL_TICKER with empty PIT is allowed; identity is data-001 membership)"
+    },
+    "5b. TIER 2: bar availability (HIGH rows have bar_exists=True)": {
+      "status": "PASS",
+      "detail": "high_rows=15087, with_bars=15087, no_bars=0"
+    },
+    "5c. TIER 3: formation-price availability (STRICT; superset of 182)": {
+      "status": "FAIL",
+      "detail": "high_rows=15087, without_formation_date_price=210 (STRICT; documented limitation: post-formation IPOs/spin-offs/delayed renames; superset of original 182-violation count)"
+    },
+    "5d. TIER 4: eligibility consistency (no AMBIGUOUS in eligible_for_backtest)": {
+      "status": "PASS",
+      "detail": "total_eligible=14877, high_total=15087, high_no_formation_price=210, ambiguous_rows=21, ambiguous_eligible=0 (must be 0)"
+    },
+    "6. Frozen membership unchanged": {
+      "status": "PASS",
+      "detail": "all years match"
+    },
+    "7. Source hashes unchanged": {
+      "status": "PASS",
+      "detail": "all sources unchanged"
+    },
+    "8. Recovered matches link to existing bars": {
+      "status": "PASS",
+      "detail": "high_confidence_rows=15087, with_zero_bars=0"
+    }
+  },
+  "all_passed": false
+}

@@ -1,0 +1,62 @@
+{
+  "2016": {
+    "n_cohort": 1921,
+    "in_d001_original_ticker": 1127,
+    "in_d001_via_alias": 139,
+    "not_in_d001": 655
+  },
+  "2017": {
+    "n_cohort": 1868,
+    "in_d001_original_ticker": 1158,
+    "in_d001_via_alias": 140,
+    "not_in_d001": 570
+  },
+  "2018": {
+    "n_cohort": 1921,
+    "in_d001_original_ticker": 1239,
+    "in_d001_via_alias": 151,
+    "not_in_d001": 531
+  },
+  "2019": {
+    "n_cohort": 1895,
+    "in_d001_original_ticker": 1270,
+    "in_d001_via_alias": 127,
+    "not_in_d001": 498
+  },
+  "2020": {
+    "n_cohort": 1856,
+    "in_d001_original_ticker": 1317,
+    "in_d001_via_alias": 114,
+    "not_in_d001": 425
+  },
+  "2021": {
+    "n_cohort": 1883,
+    "in_d001_original_ticker": 1386,
+    "in_d001_via_alias": 116,
+    "not_in_d001": 381
+  },
+  "2022": {
+    "n_cohort": 2055,
+    "in_d001_original_ticker": 1535,
+    "in_d001_via_alias": 112,
+    "not_in_d001": 408
+  },
+  "2023": {
+    "n_cohort": 2032,
+    "in_d001_original_ticker": 1610,
+    "in_d001_via_alias": 96,
+    "not_in_d001": 326
+  },
+  "2024": {
+    "n_cohort": 1948,
+    "in_d001_original_ticker": 1628,
+    "in_d001_via_alias": 78,
+    "not_in_d001": 242
+  },
+  "2025": {
+    "n_cohort": 1898,
+    "in_d001_original_ticker": 1715,
+    "in_d001_via_alias": 50,
+    "not_in_d001": 133
+  }
+}
