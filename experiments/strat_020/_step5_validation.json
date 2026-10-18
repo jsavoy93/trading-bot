@@ -1,57 +1,90 @@
 {
-  "validation_run_at": "2026-10-17T21:09:12.319630+00:00",
-  "validation_version": "STRAT-020 REMEDIATION 2026-10-15 (4-tier check_5)",
+  "validation_run_at": "2026-10-18T00:17:19.468648+00:00",
+  "validation_version": "STRAT-020 REMEDIATION v2 (2026-10-18; 6-blocker correction)",
   "n_recovery_rows": 19277,
-  "identity_recovery_total": 15087,
-  "formation_price_valid_total": 14877,
+  "identity_recovery_total": 12909,
+  "formation_price_valid_total": 12830,
+  "high_without_formation_price": 79,
   "newly_recovered_total": 1102,
-  "newly_recovered_formation_price_valid": 1043,
-  "newly_recovered_without_formation_price": 59,
+  "newly_recovered_formation_price_valid": 15,
+  "newly_recovered_without_formation_price": 1087,
+  "unverified_total": 1608,
+  "rejected_total": 704,
+  "ambiguous_total": 21,
+  "not_in_data001_total": 4035,
   "checks": {
     "1. No duplicate (formation_year, cik) mappings": {
       "status": "PASS",
+      "severity": "CRITICAL",
       "detail": "n_rows=19277, unique_keys=19277, dup_keys=0"
     },
-    "2. No share-class collapsing": {
+    "2. No share-class cross-match": {
       "status": "PASS",
-      "detail": "multi_share_class_ciks=126, violations=0"
+      "severity": "CRITICAL",
+      "detail": "high_rows=12909, share_class_cross_match_violations=0"
     },
     "3. No ticker-reuse silently accepted": {
       "status": "PASS",
-      "detail": "reused_rows=134, high_or_low_confidence=0"
+      "severity": "CRITICAL",
+      "detail": "reused_rows=704, high_or_low_confidence=0"
     },
     "4. No ambiguous mappings silently accepted": {
       "status": "PASS",
+      "severity": "CRITICAL",
       "detail": "ambiguous_rows=21, bad_confidence_or_unique=0"
     },
     "5a. TIER 1: identity validity (HIGH rows have valid identity fields)": {
       "status": "PASS",
-      "detail": "high_rows=15087, original_ticker_invalid=0, unique_cik_alias_invalid=0 (no_matched=0, empty_pit=0), total_invalid=0 (Note: ORIGINAL_TICKER with empty PIT is allowed; identity is data-001 membership)"
+      "severity": "CRITICAL",
+      "detail": "high_rows=12909, original_ticker_invalid=0, unique_cik_alias_invalid=0 (no_matched=0, empty_pit=0), total_invalid=0"
     },
     "5b. TIER 2: bar availability (HIGH rows have bar_exists=True)": {
       "status": "PASS",
-      "detail": "high_rows=15087, with_bars=15087, no_bars=0"
+      "severity": "CRITICAL",
+      "detail": "high_rows=12909, with_bars=12909, no_bars=0"
     },
-    "5c. TIER 3: formation-price availability (STRICT; superset of 182)": {
+    "5c. TIER 3: formation-date price availability (STRICT; 7-day window)": {
       "status": "FAIL",
-      "detail": "high_rows=15087, without_formation_date_price=210 (STRICT; documented limitation: post-formation IPOs/spin-offs/delayed renames; superset of original 182-violation count)"
+      "severity": "LIMITATION",
+      "detail": "high_rows=12909, without_formation_date_price=79 (LIMITATION: post-formation IPOs/spin-offs/delisted-within-window; these rows are EXCLUDED from formation_price_eligible)"
     },
-    "5d. TIER 4: eligibility consistency (no AMBIGUOUS in eligible_for_backtest)": {
+    "5d. TIER 4: eligibility consistency (no AMBIGUOUS in formation_price_eligible)": {
       "status": "PASS",
-      "detail": "total_eligible=14877, high_total=15087, high_no_formation_price=210, ambiguous_rows=21, ambiguous_eligible=0 (must be 0)"
+      "severity": "CRITICAL",
+      "detail": "total_formation_price_eligible=12830, high_total=12909, high_no_formation_price=79, ambiguous_eligible=0 (must be 0)"
+    },
+    "5e. TIER 5: alias PIT-validity at formation (UNIQUE_CIK_ALIAS HIGH)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "unique_cik_alias_high=20, alias_pit_invalid=0"
+    },
+    "5f. TIER 6: ORIGINAL_TICKER PIT-validity at formation (HIGH)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "original_ticker_high=12889, pit_invalid=0"
+    },
+    "5g. TIER 7: share-class match validity (HIGH rows)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "high_rows=12909, share_class_match_invalid=0"
     },
     "6. Frozen membership unchanged": {
       "status": "PASS",
+      "severity": "CRITICAL",
       "detail": "all years match"
     },
     "7. Source hashes unchanged": {
       "status": "PASS",
+      "severity": "CRITICAL",
       "detail": "all sources unchanged"
     },
     "8. Recovered matches link to existing bars": {
       "status": "PASS",
-      "detail": "high_confidence_rows=15087, with_zero_bars=0"
+      "severity": "CRITICAL",
+      "detail": "high_confidence_rows=12909, with_zero_bars=0"
     }
   },
+  "critical_passed": true,
+  "limitations_present": true,
   "all_passed": false
 }
