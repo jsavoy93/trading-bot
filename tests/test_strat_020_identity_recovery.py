@@ -154,8 +154,9 @@ def test_source_hashes_recorded():
 def test_per_year_coverage_csv():
     assert COVERAGE.exists()
     df = pd.read_csv(COVERAGE)
-    # v2: per-year CSV has distinct columns (Blocker 5)
-    required_columns = {
+    # v3: per-year CSV has distinct columns (Blocker 5 detailed split).
+    # v2 columns (original):
+    required_columns_v2 = {
         "formation_year", "n_cohort",
         "in_data001_original", "recovered_unique_alias",
         "ambiguous_low_confidence", "rejected_ticker_reuse", "not_in_data001",
@@ -166,12 +167,35 @@ def test_per_year_coverage_csv():
         "rejected_or_ambiguous_with_formation_price",
         "low_confidence_with_formation_price",
     }
+    # v3 NEW columns (per owner re-review msg #8731):
+    required_columns_v3 = {
+        "high_confidence_original_ticker",
+        "new_identity_candidates",
+        "verified_recovered_identities",
+        "new_exact_formation_session_price_matches",
+        "distinct_recovered_ciks",
+        "distinct_verified_securities",
+        "prior_session_only_availability",
+    }
+    required_columns = required_columns_v2 | required_columns_v3
     assert required_columns.issubset(set(df.columns)), (
         f"missing columns: {required_columns - set(df.columns)}"
     )
     # Per-year high_with_formation_price must sum to the headline (formation_price_valid)
     sum_high = int(df["high_with_formation_price"].sum())
     assert sum_high == 12830, f"per-year sum {sum_high} != headline 12830"
+    # v3 reconciliation: new_exact_formation_session_price_matches sum should equal 15
+    sum_new_exact = int(df["new_exact_formation_session_price_matches"].sum())
+    assert sum_new_exact == 15, f"per-year new_exact_formation_session_price_matches sum {sum_new_exact} != expected 15"
+    # v3 reconciliation: verified_recovered_identities sum should equal 20
+    sum_verified = int(df["verified_recovered_identities"].sum())
+    assert sum_verified == 20, f"per-year verified_recovered_identities sum {sum_verified} != expected 20"
+    # v3 reconciliation: prior_session_only_availability sum should equal 79
+    sum_prior = int(df["prior_session_only_availability"].sum())
+    assert sum_prior == 79, f"per-year prior_session_only_availability sum {sum_prior} != expected 79"
+    # v3 reconciliation: high_confidence_original_ticker sum should equal 12889
+    sum_orig_high = int(df["high_confidence_original_ticker"].sum())
+    assert sum_orig_high == 12889, f"per-year high_confidence_original_ticker sum {sum_orig_high} != expected 12889"
 
 
 def test_unresolvable_listing_csv():

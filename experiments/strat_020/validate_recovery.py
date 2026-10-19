@@ -294,17 +294,26 @@ def check_8_bars_actually_exist(rdf: pd.DataFrame) -> tuple[bool, str]:
 def per_year_coverage(rdf: pd.DataFrame) -> pd.DataFrame:
     """Per-year coverage with DISTINCT columns for each concept.
 
-    Columns:
+    STRAT-020 REMEDIATION v3 (2026-10-19): added 7 new distinct columns
+    per owner re-review (Blocker 5 detailed split):
+      - high_confidence_original_ticker: ORIGINAL_TICKER AND HIGH
+      - new_identity_candidates: UNIQUE_CIK_ALIAS total
+      - verified_recovered_identities: UNIQUE_CIK_ALIAS AND HIGH
+      - new_exact_formation_session_price_matches: UNIQUE_CIK_ALIAS AND formation_price_eligible
+      - distinct_recovered_ciks: distinct CIKs in UNIQUE_CIK_ALIAS
+      - distinct_verified_securities: distinct matched_tickers in HIGH
+      - prior_session_only_availability: HIGH AND NOT formation_price_available
+        (the 79 documented LIMITATION rows; post-formation IPOs)
+
+    Original columns (v2):
       formation_year, n_cohort,
       in_data001_original, recovered_unique_alias,
       ambiguous_low_confidence, rejected_ticker_reuse, not_in_data001,
-      unverified_total,  (NEW: confidence == UNVERIFIED)
-      high_confidence_total,
-      raw_bar_available,                          (bar_exists == True)
-      valid_formation_date_price,                 (formation_price_available == True)
-      high_with_formation_price,                  (HIGH AND formation_price_available == True; HEADLINE)
-      rejected_or_ambiguous_with_formation_price, (REJECTED/AMBIGUOUS/UNVERIFIED/NO_MATCH with formation_price_available)
-      low_confidence_with_formation_price,        (LOW with formation_price_available)
+      unverified_total, high_confidence_total,
+      raw_bar_available, valid_formation_date_price,
+      high_with_formation_price (HEADLINE),
+      rejected_or_ambiguous_with_formation_price,
+      low_confidence_with_formation_price.
     """
     rows = []
     for year in YEARS:
@@ -324,6 +333,35 @@ def per_year_coverage(rdf: pd.DataFrame) -> pd.DataFrame:
         high = sub[sub["mapping_confidence"] == "HIGH"]
         high_with_formation_price = (high["formation_price_available"] == True).sum()  # noqa: E712
 
+        # v3 NEW: ORIGINAL_TICKER AND HIGH
+        high_confidence_original_ticker = (
+            (sub["match_type"] == "ORIGINAL_TICKER") & (sub["mapping_confidence"] == "HIGH")
+        ).sum()
+
+        # v3 NEW: UNIQUE_CIK_ALIAS total (new identity candidates)
+        new_identity_candidates = int(recovered_unique_alias)
+        # v3 NEW: UNIQUE_CIK_ALIAS AND HIGH (verified recovered identities)
+        verified_recovered_identities = (
+            (sub["match_type"] == "UNIQUE_CIK_ALIAS") & (sub["mapping_confidence"] == "HIGH")
+        ).sum()
+        # v3 NEW: UNIQUE_CIK_ALIAS AND formation_price_eligible (exact formation-session price matches)
+        if "formation_price_eligible" in sub.columns:
+            new_exact_formation_session_price_matches = (
+                (sub["match_type"] == "UNIQUE_CIK_ALIAS") & (sub["formation_price_eligible"] == True)  # noqa: E712
+            ).sum()
+        else:
+            new_exact_formation_session_price_matches = (
+                (sub["match_type"] == "UNIQUE_CIK_ALIAS") & (sub["formation_price_available"] == True)  # noqa: E712
+            ).sum()
+        # v3 NEW: distinct CIKs in UNIQUE_CIK_ALIAS
+        alias_sub = sub[sub["match_type"] == "UNIQUE_CIK_ALIAS"]
+        distinct_recovered_ciks = int(alias_sub["cik"].astype(str).nunique())
+        # v3 NEW: distinct matched_tickers in HIGH
+        high_sub = sub[sub["mapping_confidence"] == "HIGH"]
+        distinct_verified_securities = int(high_sub["matched_ticker"].dropna().astype(str).nunique())
+        # v3 NEW: HIGH AND NOT formation_price_available (the 79 LIMITATION)
+        prior_session_only_availability = (~high["formation_price_available"]).sum()
+
         non_high = sub[sub["mapping_confidence"] != "HIGH"]
         non_high_with_fp = (non_high["formation_price_available"] == True).sum()  # noqa: E712
 
@@ -340,6 +378,13 @@ def per_year_coverage(rdf: pd.DataFrame) -> pd.DataFrame:
             "not_in_data001": int(not_in_data001),
             "unverified_total": int(unverified_total),
             "high_confidence_total": int(high_confidence_total),
+            "high_confidence_original_ticker": int(high_confidence_original_ticker),
+            "new_identity_candidates": int(new_identity_candidates),
+            "verified_recovered_identities": int(verified_recovered_identities),
+            "new_exact_formation_session_price_matches": int(new_exact_formation_session_price_matches),
+            "distinct_recovered_ciks": distinct_recovered_ciks,
+            "distinct_verified_securities": distinct_verified_securities,
+            "prior_session_only_availability": int(prior_session_only_availability),
             "raw_bar_available": int(raw_bar_available),
             "valid_formation_date_price": int(valid_formation_date_price),
             "high_with_formation_price": int(high_with_formation_price),
