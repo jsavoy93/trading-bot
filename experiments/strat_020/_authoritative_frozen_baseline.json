@@ -1,0 +1,32 @@
+{
+  "data_001_parts": [
+    "16aaa3fb3c377b5b256da9afb0383253b69936cae548f0da63b6b19a135931ea",
+    "9d3cdc547c833a8c4b94761c42327a22c492602f889ddae5a86d10ac04aeca4c",
+    "913bd60d733d438c4c410484cdcd5fa6288c99b8f83020d18eee159374d9ea4d",
+    "01d152b9bc3bcca68168d212d2db4662d03313b4e8c40c59f2f1ba82de531844",
+    "d72584cc1325a21c615cf1960463ee6a6ae36a23ff1dd3842d2d84f17547b363"
+  ],
+  "massive_pit": "e4d3f9ee29ab16b3266701b540fb1fd2d698faeea803ea34abc3e01d4cf53b81",
+  "cohorts": {
+    "2016": "3d1ba3d301cb9a725997c369470cce480d36bf3d1a8573aaa090a13b38fce897",
+    "2017": "1d5f81b5237cf85853a34ebb0d06af642283bc234e491a05cc281aae863bd6c1",
+    "2018": "4b0a9da6774a877de2194968853124edd399d06a564f3baaf7ce73535ec7a27c",
+    "2019": "7177d0af126462dfc43474dbc31462df7d7a74084978d85b371c9d74a0441cf2",
+    "2020": "485186ef10b16de749098d8a6b5420df5ae955e84202f8220bba58ba2935e1e4",
+    "2021": "f8a993075cf456a2506700e188021988f82796ae5fe82de0179f1c61273e6916",
+    "2022": "1a89018a21c8511c1d1c5964390096952f8630cf0b75d911404f7bf064e3079e",
+    "2023": "f74f5c596d0efdd821ba716104e73370743ee3a8094f48f892966d1cd097a0f7",
+    "2024": "4a590832b80642d04e7a1635ce0b7419817f460421f56ec8ef13f23886a65c4d",
+    "2025": "5229761f7d02d648894dbd53b8e3a33556ab408149fe2272ad994bd31844d209"
+  },
+  "output_parquet": "90bf2b15c987825a9e380cf7cb8a6658c58f2d968bee0c39fdcce9b4e5705821",
+  "output_json": "3b064a564baf255d187b15a6efd0487741b094f14f68a1cbec3781e577c3b1d5",
+  "generated_at": "2026-10-16T01:09:47.082205+00:00",
+  "_metadata": {
+    "description": "Authoritative frozen-source SHA-256 baseline. Independent of the build script. Used for source-integrity verification per Blocker 3 of owner directive msg #8732 (2026-10-19).",
+    "source_commit": "b4700b5 (STRAT-020: Recover historical security identities with validated formation-price coverage)",
+    "source_commit_date": "2026-10-17",
+    "extracted_at": "2026-10-19",
+    "comparison_method": "MATCH if current_sha256 == baseline_sha256; MISMATCH if different; BASELINE UNAVAILABLE if this file is missing or unreadable"
+  }
+}
