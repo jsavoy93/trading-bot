@@ -103,6 +103,15 @@ def _good_row(**overrides) -> dict:
         "original_ticker_pit_valid_at_formation": True,
         "share_class_match_valid": True,
         "unverified_reason": None,
+        # v4 NEW fields
+        "exact_formation_session_available": True,
+        "actual_formation_bar_timestamp": "2024-06-28 05:00:00+00:00",
+        "stale_prior_session_available": False,
+        "latest_prior_session_bar_date": None,
+        "days_from_latest_prior_to_formation": None,
+        "security_continuity": "VERIFIED_SAME_SECURITY",
+        "orig_share_class_figi": "BBG001S5S0V0",
+        "alias_share_class_figi": "BBG001S5S0V0",
     }
     base.update(overrides)
     return base
@@ -144,7 +153,7 @@ def test_adversarial_2_share_class_cross_match():
     """Two share_class_figi values for the same CIK; matched_ticker is in the wrong share class.
 
     The validator (check_2 + check_5g) must FAIL when a HIGH row has
-    share_class_match_valid == False.
+    security_continuity == VERIFIED_CONFLICTING_SECURITY.
     """
     # A HIGH row whose matched ticker belongs to a different share class than the CIK's primary
     bad = _good_row(
@@ -153,16 +162,19 @@ def test_adversarial_2_share_class_cross_match():
         matched_ticker="NEW",
         alias_pit_valid_at_formation=True,
         share_class_match_valid=False,  # WRONG: different share class
+        security_continuity="VERIFIED_CONFLICTING_SECURITY",  # v4
+        orig_share_class_figi="BBG000BLH3P8",
+        alias_share_class_figi="BBG001S5S0V0",
     )
     good = _good_row()
     rdf = pd.DataFrame([bad, good])
-    # check_2
+    # check_2 (v4 uses security_continuity)
     passed_2, detail_2 = _vr.check_2_no_share_class_cross_match(rdf, None)
     assert not passed_2, f"check_2 should FAIL on share-class cross-match; got: {detail_2}"
-    assert "share_class_cross_match_violations=1" in detail_2, f"unexpected detail: {detail_2}"
-    # check_5g
+    assert "security_conflict_violations=1" in detail_2, f"unexpected detail: {detail_2}"
+    # check_5g (v4 uses security_continuity)
     passed_5g, detail_5g = _vr.check_5g_share_class_match(rdf)
-    assert not passed_5g, f"check_5g should FAIL on share_class_match_valid=False; got: {detail_5g}"
+    assert not passed_5g, f"check_5g should FAIL on security_continuity!=VERIFIED_SAME_SECURITY; got: {detail_5g}"
 
 
 # ============================================================
@@ -170,20 +182,25 @@ def test_adversarial_2_share_class_cross_match():
 # ============================================================
 
 def test_adversarial_3_4_5_formation_price_unavailable_on_high():
-    """HIGH-confidence row with formation_price_available=False. TIER 3 must FAIL."""
+    """HIGH-confidence row with formation_price_available=False. TIER 3 must FAIL (v4: now LIMITATION)."""
     bad = _good_row(
         match_type="UNIQUE_CIK_ALIAS",
         original_ticker="OLDT",
         matched_ticker="NEWT",
         formation_price_available=False,
+        exact_formation_session_available=False,  # v4 NEW
+        actual_formation_bar_timestamp=None,
         d001_first_bar="2026-01-02 05:00:00+00:00",
         latest_bar_date_on_or_before_formation=None,
         days_from_latest_bar_to_formation=None,
     )
     rdf = pd.DataFrame([bad, _good_row()])
-    passed, detail = _vr.check_5c_formation_price_availability(rdf)
-    assert not passed, f"check_5c STRICT must FAIL when any HIGH row lacks formation-date price; got: {detail}"
-    assert "without_formation_date_price=1" in detail, f"unexpected detail: {detail}"
+    passed, detail = _vr.check_5c_stale_prior_session(rdf)
+    # v4: 5c is now LIMITATION (always returns True; just reports the count)
+    assert passed, f"check_5c (LIMITATION) should always PASS; got: {detail}"
+    # The exact-session check 5h catches it as LIMITATION
+    passed_h, detail_h = _vr.check_5h_exact_formation_session(rdf)
+    assert not passed_h, f"check_5h should FAIL (LIMITATION) when HIGH row lacks exact formation bar; got: {detail_h}"
 
 
 # ============================================================
@@ -221,6 +238,7 @@ def test_adversarial_7_duplicate_year_cik_mappings():
 # ============================================================
 
 def test_adversarial_8_inconsistent_source_hashes(tmp_path, monkeypatch):
+    """v4: check_7 uses the authoritative baseline (not the build script's manifest)."""
     cohort_hashes = {}
     for y in [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]:
         cohort_path = tmp_path / f"_cohort_{y}.csv.gz"
@@ -239,6 +257,7 @@ def test_adversarial_8_inconsistent_source_hashes(tmp_path, monkeypatch):
     massive_pit = tmp_path / "massive_pit.csv.gz"
     pd.DataFrame({"cik_10digit": []}).to_csv(massive_pit, index=False)
 
+    # Create authoritative baseline with WRONG hash for cohort 2016
     wrong_manifest = dict(cohort_hashes)
     wrong_manifest["2016"] = "0" * 64
     fake_manifest = {
@@ -246,18 +265,19 @@ def test_adversarial_8_inconsistent_source_hashes(tmp_path, monkeypatch):
         "massive_pit": hashlib.sha256(massive_pit.read_bytes()).hexdigest(),
         "cohorts": wrong_manifest,
     }
-    manifest_path = tmp_path / "_step3_sources.json"
-    with open(manifest_path, "w") as f:
+    baseline_path = tmp_path / "_authoritative_frozen_baseline.json"
+    with open(baseline_path, "w") as f:
         json.dump(fake_manifest, f)
 
-    monkeypatch.setattr(_vr, "SOURCES", manifest_path)
+    monkeypatch.setattr(_vr, "AUTHORITATIVE_BASELINE", baseline_path)
     monkeypatch.setattr(_vr, "PARTS", parts)
     monkeypatch.setattr(_vr, "MASSIVE_PIT", massive_pit)
     monkeypatch.setattr(_vr, "COHORT_DIR", tmp_path)
+    monkeypatch.setattr(_vr, "YEARS", list(range(2016, 2026)))
 
-    passed, detail = _vr.check_7_source_hashes()
+    passed, detail = _vr.check_7_authoritative_source_hashes()
     assert not passed, f"check_7 should FAIL on inconsistent hashes; got: {detail}"
-    assert "cohort 2016" in detail, f"expected cohort 2016 in mismatch detail; got: {detail}"
+    assert "Cohort 2016" in detail, f"expected Cohort 2016 in mismatch detail; got: {detail}"
 
 
 # ============================================================
@@ -416,24 +436,252 @@ def test_negative_3b_formation_date_price_outside_7_days():
 
 
 # ============================================================
+# STRAT-020 REMEDIATION v4 — Additional tests for new logic
+# ============================================================
+
+def test_v4_actual_formation_session_exact_match():
+    """v4: actual bar lookup returns True when there's a bar on the exact formation date."""
+    # Calendar with a bar on the exact formation date
+    cal = {
+        "dates": [__import__("datetime").date(2024, 6, 27),
+                  __import__("datetime").date(2024, 6, 28),
+                  __import__("datetime").date(2024, 7, 1)],
+        "ts": {
+            __import__("datetime").date(2024, 6, 27): pd.Timestamp("2024-06-27 05:00:00+00:00"),
+            __import__("datetime").date(2024, 6, 28): pd.Timestamp("2024-06-28 05:00:00+00:00"),
+            __import__("datetime").date(2024, 7, 1): pd.Timestamp("2024-07-01 05:00:00+00:00"),
+        }
+    }
+    flookups = {"2024-06-28": {"AAPL": pd.Timestamp("2024-06-28 05:00:00+00:00")}}
+    exact, ts, prior, gap = _br.compute_actual_formation_session("AAPL", "2024-06-28", flookups, {"AAPL": [__import__("datetime").date(2024, 6, 27), __import__("datetime").date(2024, 6, 28), __import__("datetime").date(2024, 7, 1)]})
+    assert exact == True, f"expected exact=True, got {exact}"
+    assert ts is not None
+    assert str(ts).startswith("2024-06-28"), f"expected ts on 2024-06-28, got {ts}"
+
+
+def test_v4_actual_formation_session_interior_gap():
+    """v4 AC3: when first and last bars bracket formation but the actual
+    formation-session bar is absent (e.g., market closure), reject
+    exact formation-session availability."""
+    # Calendar: bar on 2024-06-27 (Thu) and 2024-07-01 (Mon), but NO bar on 2024-06-28 (Fri, formation)
+    flookups = {"2024-06-28": {}}  # No AAPL bar on formation date
+    sym_dates = {
+        "AAPL": [__import__("datetime").date(2024, 6, 27), __import__("datetime").date(2024, 7, 1)],
+    }
+    exact, ts, prior, gap = _br.compute_actual_formation_session("AAPL", "2024-06-28", flookups, sym_dates)
+    # AC3: when first/last bars bracket formation but exact bar is absent, reject
+    assert exact == False, f"AC3: expected exact=False for interior gap, got {exact}"
+    # The prior bar is 2024-06-27 (1 day before); 7-day window catches it
+    assert prior is not None
+    assert str(prior) == "2024-06-27"
+    assert gap == 1
+
+
+def test_v4_actual_formation_session_post_formation():
+    """v4 AC2: first bar after formation within the same year → no exact formation bar."""
+    # Calendar: first bar is 2024-09-15 (after formation 2024-06-28)
+    flookups = {"2024-06-28": {}}  # No AAPL bar on formation date
+    sym_dates = {
+        "AAPL": [__import__("datetime").date(2024, 9, 15), __import__("datetime").date(2024, 12, 31)],
+    }
+    exact, ts, prior, gap = _br.compute_actual_formation_session("AAPL", "2024-06-28", flookups, sym_dates)
+    assert exact == False
+    assert prior is None  # No prior-session bar
+    assert gap is None
+
+
+def test_v4_actual_formation_session_prior_only():
+    """v4 AC1: last bar before formation (security stopped trading) → no exact bar."""
+    # Calendar: last bar is 2024-03-15 (3 months before formation 2024-06-28)
+    flookups = {"2024-06-28": {}}
+    sym_dates = {
+        "AAPL": [__import__("datetime").date(2024, 1, 15), __import__("datetime").date(2024, 3, 15)],
+    }
+    exact, ts, prior, gap = _br.compute_actual_formation_session("AAPL", "2024-06-28", flookups, sym_dates)
+    assert exact == False
+    assert prior == __import__("datetime").date(2024, 3, 15)
+    # Gap is 105 days > 7, so stale_prior is False
+    assert gap == 105
+    # The 7-day window would not consider this stale_prior (gap > 7)
+
+
+def test_v4_check_5h_exact_formation_session_limitation():
+    """v4: check_5h catches HIGH rows with no exact formation-session bar (LIMITATION, not CRITICAL)."""
+    bad = _good_row(
+        exact_formation_session_available=False,  # post-formation IPO
+        actual_formation_bar_timestamp=None,
+    )
+    rdf = pd.DataFrame([bad])
+    passed, detail = _vr.check_5h_exact_formation_session(rdf)
+    # LIMITATION: returns False (FAIL) when there are HIGH rows with no exact bar
+    assert not passed, f"check_5h should FAIL (LIMITATION) when HIGH row has no exact bar; got: {detail}"
+    assert "no_exact_formation_session=1" in detail
+
+
+def test_v4_check_5g_security_continuity():
+    """v4: check_5g verifies security_continuity == VERIFIED_SAME_SECURITY for HIGH rows."""
+    bad = _good_row(
+        security_continuity="VERIFIED_CONFLICTING_SECURITY",  # cross-class
+    )
+    rdf = pd.DataFrame([bad])
+    passed, detail = _vr.check_5g_share_class_match(rdf)
+    assert not passed, f"check_5g should FAIL on cross-class match; got: {detail}"
+    assert "not_verified_same_security=1" in detail
+
+
+def test_v4_classify_security_continuity_same():
+    """v4: VERIFIED_SAME_SECURITY when matched ticker has same share_class_figi as CIK."""
+    cik = "1000001"
+    orig = "OLD"
+    matched = "NEW"
+    cik_share_class_figi = {cik: ["BBG000BLH3P8"]}  # CIK has 1 share class
+    cik_ticker_share_class = {
+        (cik, orig): "BBG000BLH3P8",
+        (cik, matched): "BBG000BLH3P8",  # Same as orig
+    }
+    continuity, orig_sc, alias_sc = _br.classify_security_continuity(
+        cik, orig, matched, cik_share_class_figi, cik_ticker_share_class
+    )
+    assert continuity == "VERIFIED_SAME_SECURITY"
+    assert orig_sc == "BBG000BLH3P8"
+    assert alias_sc == "BBG000BLH3P8"
+
+
+def test_v4_classify_security_continuity_conflicting():
+    """v4: VERIFIED_CONFLICTING_SECURITY when matched ticker has different share_class_figi."""
+    cik = "1000001"
+    orig = "OLD"
+    matched = "NEW"
+    cik_share_class_figi = {cik: ["BBG000BLH3P8", "BBG001S5S0V0"]}  # CIK has 2 share classes
+    cik_ticker_share_class = {
+        (cik, orig): "BBG000BLH3P8",
+        (cik, matched): "BBG001S5S0V0",  # DIFFERENT share class
+    }
+    continuity, orig_sc, alias_sc = _br.classify_security_continuity(
+        cik, orig, matched, cik_share_class_figi, cik_ticker_share_class
+    )
+    assert continuity == "VERIFIED_CONFLICTING_SECURITY"
+    assert orig_sc == "BBG000BLH3P8"
+    assert alias_sc == "BBG001S5S0V0"
+
+
+def test_v4_classify_security_continuity_missing_metadata():
+    """v4: UNVERIFIED_CONTINUITY when CIK has no share_class_figi metadata."""
+    cik = "1000001"
+    orig = "OLD"
+    matched = "NEW"
+    cik_share_class_figi = {}  # CIK has NO share class metadata
+    cik_ticker_share_class = {}
+    continuity, orig_sc, alias_sc = _br.classify_security_continuity(
+        cik, orig, matched, cik_share_class_figi, cik_ticker_share_class
+    )
+    assert continuity == "UNVERIFIED_CONTINUITY"
+
+
+def test_v4_authoritative_baseline_comparison(tmp_path, monkeypatch):
+    """v4: check_7 verifies the authoritative baseline (BLOCKER 3)."""
+    # Create a fake baseline file
+    import hashlib
+    fake_baseline = {
+        "data_001_parts": [
+            hashlib.sha256(b"part1").hexdigest(),
+            hashlib.sha256(b"part2").hexdigest(),
+            hashlib.sha256(b"part3").hexdigest(),
+            hashlib.sha256(b"part4").hexdigest(),
+            hashlib.sha256(b"part5").hexdigest(),
+        ],
+        "massive_pit": hashlib.sha256(b"pit").hexdigest(),
+        "cohorts": {str(y): hashlib.sha256(f"cohort_{y}".encode()).hexdigest() for y in [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]},
+    }
+    baseline_path = tmp_path / "_authoritative_frozen_baseline.json"
+    with open(baseline_path, "w") as f:
+        json.dump(fake_baseline, f)
+    # Create fake data files with matching hashes
+    parts = []
+    for i in range(1, 6):
+        p = tmp_path / f"daily_bars_part_{i:03d}.parquet"
+        with open(p, "wb") as f:
+            f.write(f"part{i}".encode())
+        parts.append(p)
+    pit = tmp_path / "massive_pit.csv.gz"
+    with open(pit, "wb") as f:
+        f.write(b"pit")
+    cohort_dir = tmp_path
+    for y in range(2016, 2026):
+        cp = cohort_dir / f"_cohort_{y}.csv.gz"
+        with open(cp, "wb") as f:
+            f.write(f"cohort_{y}".encode())
+    # Monkey-patch the constants
+    monkeypatch.setattr(_vr, "AUTHORITATIVE_BASELINE", baseline_path)
+    monkeypatch.setattr(_vr, "PARTS", parts)
+    monkeypatch.setattr(_vr, "MASSIVE_PIT", pit)
+    monkeypatch.setattr(_vr, "COHORT_DIR", cohort_dir)
+    monkeypatch.setattr(_vr, "YEARS", list(range(2016, 2026)))
+    passed, detail = _vr.check_7_authoritative_source_hashes()
+    assert passed, f"check_7 should PASS when all sources match baseline; got: {detail}"
+    assert "all sources MATCH" in detail
+
+
+def test_v4_authoritative_baseline_mismatch(tmp_path, monkeypatch):
+    """v4: check_7 detects MISMATCH when source hash differs from baseline."""
+    import hashlib
+    fake_baseline = {
+        "data_001_parts": [
+            "0" * 64,  # Wrong hash for part 1
+            hashlib.sha256(b"part2").hexdigest(),
+            hashlib.sha256(b"part3").hexdigest(),
+            hashlib.sha256(b"part4").hexdigest(),
+            hashlib.sha256(b"part5").hexdigest(),
+        ],
+        "massive_pit": hashlib.sha256(b"pit").hexdigest(),
+        "cohorts": {str(y): hashlib.sha256(f"cohort_{y}".encode()).hexdigest() for y in range(2016, 2026)},
+    }
+    baseline_path = tmp_path / "_authoritative_frozen_baseline.json"
+    with open(baseline_path, "w") as f:
+        json.dump(fake_baseline, f)
+    parts = []
+    for i in range(1, 6):
+        p = tmp_path / f"daily_bars_part_{i:03d}.parquet"
+        with open(p, "wb") as f:
+            f.write(f"part{i}".encode())
+        parts.append(p)
+    pit = tmp_path / "massive_pit.csv.gz"
+    with open(pit, "wb") as f:
+        f.write(b"pit")
+    for y in range(2016, 2026):
+        cp = tmp_path / f"_cohort_{y}.csv.gz"
+        with open(cp, "wb") as f:
+            f.write(f"cohort_{y}".encode())
+    monkeypatch.setattr(_vr, "AUTHORITATIVE_BASELINE", baseline_path)
+    monkeypatch.setattr(_vr, "PARTS", parts)
+    monkeypatch.setattr(_vr, "MASSIVE_PIT", pit)
+    monkeypatch.setattr(_vr, "COHORT_DIR", tmp_path)
+    monkeypatch.setattr(_vr, "YEARS", list(range(2016, 2026)))
+    passed, detail = _vr.check_7_authoritative_source_hashes()
+    assert not passed, f"check_7 should FAIL on MISMATCH; got: {detail}"
+    assert "MISMATCH" in detail
+
+
+# ============================================================
 # End-to-end: full validator summary with injected defect
 # ============================================================
 
 def test_adversarial_end_to_end_full_summary_with_injected_defect():
     """Construct a synthetic recovery mapping with a deliberate defect
-    (HIGH row with share_class_match_valid=False), verify the validator's
+    (HIGH row with security_continuity != VERIFIED_SAME_SECURITY), verify the validator's
     check_5g catches it."""
     bad = _good_row(
         match_type="UNIQUE_CIK_ALIAS",
         original_ticker="OLDT",
         matched_ticker="NEWT",
         share_class_match_valid=False,  # defect
+        security_continuity="VERIFIED_CONFLICTING_SECURITY",  # v4
     )
     good = _good_row()
     rdf = pd.DataFrame([bad, good])
     passed, detail = _vr.check_5g_share_class_match(rdf)
     assert not passed
-    assert "share_class_match_invalid=1" in detail
+    assert "not_verified_same_security=1" in detail
 
 
 # ============================================================
@@ -443,14 +691,14 @@ def test_adversarial_end_to_end_full_summary_with_injected_defect():
 def test_ac1_alias_of_different_share_class_is_rejected():
     """AC1: A valid historical alias that belongs to a different share class
     of the same CIK must be REJECTED (mapping_confidence=UNVERIFIED or
-    share_class_match_valid=False). The build script's share-class cross-match
-    check (Blocker 3) must catch this defect.
+    security_continuity=VERIFIED_CONFLICTING_SECURITY). The build script's
+    share-class cross-match check (Blocker 3) must catch this defect.
     """
     # Construct: a CIK with two share_class_figi values. The original ticker
     # is associated with share class A (figi_A); the matched alias is
     # associated with share class B (figi_B). The build script must set
-    # share_class_match_valid=False for this row.
-    # Test 1: a HIGH row with share_class_match_valid=False (the defect case
+    # security_continuity=VERIFIED_CONFLICTING_SECURITY for this row.
+    # Test 1: a HIGH row with VERIFIED_CONFLICTING_SECURITY (the defect case
     # where the build script correctly detected cross-class but the row is
     # still HIGH). check_2 and check_5g must both FAIL.
     bad_high = _good_row(
@@ -458,6 +706,9 @@ def test_ac1_alias_of_different_share_class_is_rejected():
         original_ticker="OLD_A",
         matched_ticker="NEW_B",  # different share class
         share_class_match_valid=False,  # cross-class detected
+        security_continuity="VERIFIED_CONFLICTING_SECURITY",  # v4
+        orig_share_class_figi="BBG000BLH3P8",
+        alias_share_class_figi="BBG001S5S0V0",
         alias_pit_valid_at_formation=True,
     )
     good = _good_row()
@@ -465,11 +716,11 @@ def test_ac1_alias_of_different_share_class_is_rejected():
     # check_2 (share-class cross-match) must FAIL on the bad HIGH row
     passed_2, detail_2 = _vr.check_2_no_share_class_cross_match(rdf, None)
     assert not passed_2, f"check_2 should FAIL on cross-class match; got: {detail_2}"
-    assert "share_class_cross_match_violations=1" in detail_2
-    # check_5g (HIGH share_class_match_valid=True) must also FAIL
+    assert "security_conflict_violations=1" in detail_2
+    # check_5g (HIGH security_continuity != VERIFIED_SAME_SECURITY) must also FAIL
     passed_5g, detail_5g = _vr.check_5g_share_class_match(rdf)
     assert not passed_5g, f"check_5g should FAIL on cross-class HIGH row; got: {detail_5g}"
-    assert "share_class_match_invalid=1" in detail_5g
+    assert "not_verified_same_security=1" in detail_5g
     # Test 2: verify the correct downclassification is UNVERIFIED
     bad_unverified = _good_row(
         match_type="UNIQUE_CIK_ALIAS",
@@ -478,20 +729,21 @@ def test_ac1_alias_of_different_share_class_is_rejected():
         share_class_match_valid=False,
         alias_pit_valid_at_formation=True,
         mapping_confidence="UNVERIFIED",  # build script downclassified
-        unverified_reason="SHARE_CLASS_CROSS_MATCH",
+        unverified_reason="ALIAS_SHARE_CLASS_CONFLICT",
     )
     assert bad_unverified["mapping_confidence"] == "UNVERIFIED"
-    assert bad_unverified["unverified_reason"] == "SHARE_CLASS_CROSS_MATCH"
+    assert bad_unverified["unverified_reason"] == "ALIAS_SHARE_CLASS_CONFLICT"
 
 
 def test_ac1_alias_of_different_share_class_with_real_figis():
     """AC1 (realistic): a CIK with two distinct share_class_figi values in the
     PIT. The original ticker is in share class A; the matched alias is in
     share class B. The build script must classify this as a cross-class
-    mismatch (share_class_match_valid=False), downgrading to UNVERIFIED.
+    mismatch (security_continuity=VERIFIED_CONFLICTING_SECURITY), downgrading
+    to UNVERIFIED.
 
     We construct two distinct FIGI strings and verify the validator's
-    share-class check correctly flags the row when share_class_match_valid=False.
+    share-class check correctly flags the row.
     """
     figi_class_A = "BBG000BLH3P8"  # original ticker class
     figi_class_B = "BBG001S5S0V0"  # matched alias class (different)
@@ -502,12 +754,15 @@ def test_ac1_alias_of_different_share_class_with_real_figis():
         matched_ticker="NEW_B",
         figi_share_class=[figi_class_A, figi_class_B],  # CIK has 2 share classes
         share_class_match_valid=False,  # build script set this correctly
+        security_continuity="VERIFIED_CONFLICTING_SECURITY",  # v4
+        orig_share_class_figi=figi_class_A,
+        alias_share_class_figi=figi_class_B,
     )
     good = _good_row()
     rdf = pd.DataFrame([bad, good])
     passed, detail = _vr.check_2_no_share_class_cross_match(rdf, None)
     assert not passed, f"check_2 must FAIL on cross-class match; got: {detail}"
-    assert "share_class_cross_match_violations=1" in detail
+    assert "security_conflict_violations=1" in detail
 
 
 def test_ac2_alias_pit_only_after_formation_is_unverified():
@@ -684,8 +939,8 @@ def test_conflicting_share_class_figis_cross_class_rejected():
     """SCLS: A CIK has multiple share_class_figi values in the PIT. The
     original ticker is associated with share class A; the matched alias
     is associated with share class B. The validator must catch this
-    cross-class match (share_class_match_valid=False) and the build script
-    must downgrade the row to UNVERIFIED.
+    cross-class match (security_continuity=VERIFIED_CONFLICTING_SECURITY)
+    and the build script must downgrade the row to UNVERIFIED.
 
     This complements test_adversarial_2_share_class_cross_match by using
     two distinct share_class_figi values (the real-world scenario).
@@ -693,7 +948,7 @@ def test_conflicting_share_class_figis_cross_class_rejected():
     # CIK with two share classes
     figi_A = "BBG000BLH3P8"  # original ticker class
     figi_B = "BBG001S5S0V0"  # alias class (different)
-    # Test the defect case: a HIGH row with share_class_match_valid=False
+    # Test the defect case: a HIGH row with VERIFIED_CONFLICTING_SECURITY
     # (cross-class match defectively marked HIGH)
     bad_high = _good_row(
         cik="9000001",
@@ -702,18 +957,21 @@ def test_conflicting_share_class_figis_cross_class_rejected():
         matched_ticker="ALIAS_B",
         figi_share_class=[figi_A, figi_B],
         share_class_match_valid=False,  # build script detected cross-class
+        security_continuity="VERIFIED_CONFLICTING_SECURITY",  # v4
+        orig_share_class_figi=figi_A,
+        alias_share_class_figi=figi_B,
         alias_pit_valid_at_formation=True,
     )
     good = _good_row()
     rdf = pd.DataFrame([bad_high, good])
-    # check_2 must FAIL on the cross-class match (HIGH row with share_class_match_valid=False)
+    # check_2 must FAIL on the cross-class match
     passed, detail = _vr.check_2_no_share_class_cross_match(rdf, None)
     assert not passed, f"check_2 must FAIL on cross-class match; got: {detail}"
-    assert "share_class_cross_match_violations=1" in detail
+    assert "security_conflict_violations=1" in detail
     # check_5g must also FAIL
     passed_5g, detail_5g = _vr.check_5g_share_class_match(rdf)
     assert not passed_5g, f"check_5g must FAIL on cross-class HIGH row; got: {detail_5g}"
-    assert "share_class_match_invalid=1" in detail_5g
+    assert "not_verified_same_security=1" in detail_5g
 
 
 def test_conflicting_share_class_figis_high_defect_caught():

@@ -19,8 +19,8 @@
     "2024": "4a590832b80642d04e7a1635ce0b7419817f460421f56ec8ef13f23886a65c4d",
     "2025": "5229761f7d02d648894dbd53b8e3a33556ab408149fe2272ad994bd31844d209"
   },
-  "output_parquet": "e3a53f4f7a2f06f25b0555625db922cf535950818cf87baea6bf1676356fa778",
-  "output_json": "0ae078c11ba2fa7364630dd8c33100d1f7dc640a2716a277fd0686c1c74d1d82",
-  "generated_at": "2026-10-18T00:17:15.832221+00:00",
-  "rem_version": "STRAT-020 REMEDIATION v2 (2026-10-18; 6-blocker correction)"
+  "output_parquet": "49c0311ce08e7b5f1ca87a54cfd2849947e706cf36fcbaf5a7b41b2ea3a1043d",
+  "output_json": "b6d87c79f7f428f78d482eb2cb86f91324767b2209732bd0133d6a0f4443fd96",
+  "generated_at": "2026-10-19T11:07:39.700529+00:00",
+  "rem_version": "STRAT-020 REMEDIATION v4 (2026-10-19; actual-bar lookup + share-class continuity + authoritative baseline)"
 }

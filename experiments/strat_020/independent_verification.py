@@ -87,18 +87,22 @@ def independent_count_verification(rdf: pd.DataFrame) -> dict:
     n_newly_recovered_with_fp = ((nr["formation_price_eligible"].values == True)).sum()  # noqa: E712
     n_newly_recovered_without_fp = n_newly_recovered_total - n_newly_recovered_with_fp
 
-    # High without formation-date price
+    # High without exact formation-session bar (v4: actual lookup, not 7-day window)
     high = rdf[rdf["mapping_confidence"].values == "HIGH"]
-    n_high_without_fp = (~high["formation_price_available"].values).sum()
-    n_high_with_fp = (high["formation_price_available"].values == True).sum()  # noqa: E712
+    n_high_without_exact = (~high["exact_formation_session_available"].values).sum()
+    n_high_with_exact = (high["exact_formation_session_available"].values == True).sum()  # noqa: E712
+    n_high_without_fp = n_high_without_exact  # backward-compat alias
+    n_high_with_fp = n_high_with_exact
 
     # 182-equivalent (strict)
     mask_182 = rdf["bar_exists"].values & (
         pd.to_datetime(rdf["d001_first_bar"]).dt.year.values > (rdf["formation_year"].values + 1)
     )
     n_182 = int(mask_182.sum())
-    # 216-equivalent (broad)
-    mask_216 = rdf["bar_exists"].values & (~rdf["formation_price_available"].values)
+    # 216-equivalent (broad) — v4: HIGH without exact formation session
+    mask_216 = (
+        rdf["mapping_confidence"].values == "HIGH"
+    ) & (~rdf["exact_formation_session_available"].values)
     n_216 = int(mask_216.sum())
     # 59-equivalent (newly-recovered without formation-date price)
     n_59 = n_newly_recovered_without_fp
@@ -132,8 +136,10 @@ def independent_count_verification(rdf: pd.DataFrame) -> dict:
         },
         "high_confidence": {
             "total": int(n_high),
-            "with_formation_price": int(n_high_with_fp),
-            "without_formation_price": int(n_high_without_fp),
+            "with_exact_formation_session": int(n_high_with_exact),
+            "without_exact_formation_session": int(n_high_without_exact),
+            "with_formation_price": int(n_high_with_fp),  # backward-compat
+            "without_formation_price": int(n_high_without_fp),  # backward-compat
         },
         "182_216_59_relationship": {
             "182_strict_first_bar_year_gt_formation_year_plus_1": n_182,
@@ -144,13 +150,13 @@ def independent_count_verification(rdf: pd.DataFrame) -> dict:
         "internal_consistency_checks": {
             "match_type_sum_equals_19277": match_type_sum == 19277,
             "confidence_sum_equals_19277": confidence_sum == 19277,
-            # v2: HIGH != ORIGINAL + UNIQUE_CIK_ALIAS because ORIGINAL_TICKER rows can be
-            # downclassified to UNVERIFIED (PIT gap) or REJECTED (ticker reuse detected
-            # in the ORIGINAL_TICKER path).
+            # v4: HIGH != ORIGINAL + UNIQUE_CIK_ALIAS because ORIGINAL_TICKER rows can be
+            # downclassified to UNVERIFIED (PIT gap, share-class metadata) or REJECTED
+            # (ticker reuse, share-class conflict).
             "high_equals_original_high_plus_unique_alias_high": True,  # structural; verified externally
-            "v2_15_newly_recovered_with_fp": n_newly_recovered_with_fp == 15,
-            "v2_1087_newly_recovered_without_fp": n_newly_recovered_without_fp == 1087,
-            "v2_79_high_without_formation_price": int(n_high_without_fp) == 79,
+            "v4_10_newly_recovered_with_fp": n_newly_recovered_with_fp == 10,
+            "v4_1092_newly_recovered_without_fp": n_newly_recovered_without_fp == 1092,
+            "v4_75_high_without_formation_session": int(n_high_without_fp) == 75,
         },
     }
 
@@ -257,7 +263,7 @@ def independent_identity_audit(rdf: pd.DataFrame, n_samples: int = 60) -> dict:
             "classification": classification,
         })
 
-    # Summary (initial; v2 reclassification pass happens in main())
+    # Summary (initial; v4 reclassification pass happens in main())
     n_verified = sum(1 for r in results if r["classification"] == "VERIFIED")
     n_mismatch = sum(1 for r in results if r["classification"] == "MISMATCH")
     n_alias_diff = sum(1 for r in results if r["classification"] == "ALIAS_SELECTION_DIFFERENT")
@@ -267,6 +273,53 @@ def independent_identity_audit(rdf: pd.DataFrame, n_samples: int = 60) -> dict:
         "n_mismatch": n_mismatch,
         "n_alias_selection_different": n_alias_diff,
         "results": results,
+    }
+
+
+def independent_count_verification_v4(rdf: pd.DataFrame) -> dict:
+    """v4: Verify counts using INDEPENDENT logic specific to the v4 schema.
+
+    Returns v4-specific counts: exact_formation_session_available,
+    security_continuity, and the new headline (12,342).
+    """
+    n_total = len(rdf)
+    n_high = (rdf["mapping_confidence"].values == "HIGH").sum()
+    n_exact_session = (rdf["exact_formation_session_available"].values == True).sum()  # noqa: E712
+    n_high_with_exact = (
+        (rdf["mapping_confidence"].values == "HIGH") &
+        (rdf["exact_formation_session_available"].values == True)  # noqa: E712
+    ).sum()
+    n_high_without_exact = (
+        (rdf["mapping_confidence"].values == "HIGH") &
+        (rdf["exact_formation_session_available"].values == False)  # noqa: E712
+    ).sum()
+    # Security continuity
+    n_verified_same = (rdf["security_continuity"].values == "VERIFIED_SAME_SECURITY").sum()
+    n_verified_conflict = (rdf["security_continuity"].values == "VERIFIED_CONFLICTING_SECURITY").sum()
+    n_unverified_continuity = (rdf["security_continuity"].values == "UNVERIFIED_CONTINUITY").sum()
+    n_ambiguous_identity = (rdf["security_continuity"].values == "AMBIGUOUS_IDENTITY").sum()
+    # Newly recovered
+    nr = rdf[rdf["match_type"].values == "UNIQUE_CIK_ALIAS"]
+    n_newly_with_exact = (
+        (nr["match_type"].values == "UNIQUE_CIK_ALIAS") &
+        (nr["exact_formation_session_available"].values == True)  # noqa: E712
+    ).sum()
+    n_newly_with_formation_price = (
+        (nr["match_type"].values == "UNIQUE_CIK_ALIAS") &
+        (nr["formation_price_eligible"].values == True)  # noqa: E712
+    ).sum()
+    return {
+        "n_total": int(n_total),
+        "n_high": int(n_high),
+        "n_exact_formation_session": int(n_exact_session),
+        "n_high_with_exact": int(n_high_with_exact),
+        "n_high_without_exact": int(n_high_without_exact),
+        "n_verified_same_security": int(n_verified_same),
+        "n_verified_conflicting_security": int(n_verified_conflict),
+        "n_unverified_continuity": int(n_unverified_continuity),
+        "n_ambiguous_identity": int(n_ambiguous_identity),
+        "n_newly_recovered_with_exact_formation_session": int(n_newly_with_exact),
+        "n_newly_recovered_with_formation_price_eligible": int(n_newly_with_formation_price),
     }
 
 
@@ -382,10 +435,13 @@ def main():
     AUDIT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
     out_path = AUDIT_DIR / f"{timestamp}_STRAT-020_INDEPENDENT_VERIFICATION.json"
+    # v4: include exact-session and security-continuity counts
+    v4_counts = independent_count_verification_v4(rdf)
     report = {
-        "audit_type": "STRAT-020 REMEDIATION INDEPENDENT VERIFICATION",
+        "audit_type": "STRAT-020 REMEDIATION v4 INDEPENDENT VERIFICATION",
         "run_at": datetime.now(timezone.utc).isoformat(),
         "counts": counts,
+        "v4_counts": v4_counts,
         "identity_audit": audit,
         "source_hashes": hashes,
         "per_year_coverage": coverage,
@@ -399,12 +455,12 @@ def main():
     print("=== VERDICT ===")
     if (counts["internal_consistency_checks"]["match_type_sum_equals_19277"]
         and counts["internal_consistency_checks"]["confidence_sum_equals_19277"]
-        and counts["internal_consistency_checks"]["v2_15_newly_recovered_with_fp"]
-        and counts["internal_consistency_checks"]["v2_1087_newly_recovered_without_fp"]
-        and counts["internal_consistency_checks"]["v2_79_high_without_formation_price"]
+        and counts["internal_consistency_checks"]["v4_10_newly_recovered_with_fp"]
+        and counts["internal_consistency_checks"]["v4_1092_newly_recovered_without_fp"]
+        and counts["internal_consistency_checks"]["v4_75_high_without_formation_session"]
         and audit["n_mismatch"] == 0
         and hashes["all_match"]):
-        print("ALL INDEPENDENT CHECKS PASS (v2)")
+        print("ALL INDEPENDENT CHECKS PASS (v4)")
     else:
         print("ONE OR MORE INDEPENDENT CHECKS FAILED — see report")
 
