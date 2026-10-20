@@ -553,6 +553,67 @@ class SQLiteDB:
                     "WHERE status IS NULL;"
                 )
 
+                # ── EXEC-003 SHOULD-FIX #1: fill-confirmation columns ─────────
+                # Additive, nullable, idempotent migration extending the
+                # EXEC-003.1 lifecycle contract with confirmed-fill data:
+                #
+                #   filled_qty      REAL — cumulative broker-confirmed filled
+                #                           quantity (monotonic; never a
+                #                           submission-time guess)
+                #   avg_fill_price  REAL — broker-reported average fill price;
+                #                           moves only when filled_qty advances
+                #                           (prevents double-counting repeated
+                #                           polls of the same partial fill)
+                #   order_updated_at TEXT — ISO timestamp of the most recent
+                #                           lifecycle update applied to the row
+                #
+                # status vocabulary grows from EXEC-003.1's
+                # {SUBMITTED, FILLED, REJECTED, CANCELED, UNKNOWN} to also
+                # include ACCEPTED, PARTIALLY_FILLED, EXPIRED, UNRESOLVED.
+                # All new tokens are additive; existing dashboard filters
+                # (status = 'FILLED') keep their exact semantics.
+                for _col_ddl in (
+                    "ALTER TABLE trades ADD COLUMN filled_qty REAL;",
+                    "ALTER TABLE trades ADD COLUMN avg_fill_price REAL;",
+                    "ALTER TABLE trades ADD COLUMN order_updated_at TEXT;",
+                ):
+                    try:
+                        conn.execute(_col_ddl)
+                    except sqlite3.OperationalError as e:
+                        if "duplicate column name" not in str(e):
+                            raise
+
+                # ── EXEC-003 SHOULD-FIX #1: order_events append-only log ─────
+                # One row per applied lifecycle transition (and per
+                # explicitly-unresolved poll result). Append-only: events
+                # are never mutated; the trades row is the current-state
+                # projection and order_events is the audit trail.
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS order_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        trade_id INTEGER NOT NULL,
+                        broker_order_id TEXT,
+                        canonical_status TEXT NOT NULL,
+                        raw_status TEXT,
+                        filled_qty REAL,
+                        avg_fill_price REAL,
+                        event_note TEXT,
+                        unresolved INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL DEFAULT
+                            (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_order_events_trade_id "
+                    "ON order_events (trade_id);"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_order_events_broker_order_id "
+                    "ON order_events (broker_order_id);"
+                )
+
                 # ── MKT-CACHE-001: market_data_eligibility_cache table ──────────
                 # Additive migration to introduce a per-symbol market-data
                 # eligibility cache. The cache answers one question only:
@@ -1031,6 +1092,144 @@ class SQLiteDB:
                 return [_row_to_dict(r) for r in rows]
         except Exception as e:
             logging.debug(f"Error getting trades: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # EXEC-003 SHOULD-FIX #1: order lifecycle / fill confirmation
+    # ------------------------------------------------------------------
+
+    #: Non-terminal statuses eligible for fill polling. Terminal rows
+    #: (FILLED / CANCELED / REJECTED / EXPIRED) are never re-polled.
+    POLLABLE_STATUSES = (
+        "SUBMITTED",
+        "ACCEPTED",
+        "PARTIALLY_FILLED",
+        "UNKNOWN",
+    )
+
+    def get_pending_fill_trades(self, limit: int = 200) -> List[Dict]:
+        """Return open (non-terminal) trades rows that have a broker id.
+
+        Only rows with a ``broker_order_id`` are returned — a row without
+        one cannot be polled and stays explicitly unresolved until a
+        human reconciles it (never fabricated).
+        """
+        try:
+            with _get_conn() as conn:
+                placeholders = ", ".join("?" * len(self.POLLABLE_STATUSES))
+                rows = conn.execute(
+                    f"SELECT * FROM trades WHERE status IN ({placeholders}) "
+                    f"AND broker_order_id IS NOT NULL "
+                    f"ORDER BY id ASC LIMIT ?",
+                    (*self.POLLABLE_STATUSES, limit),
+                ).fetchall()
+                return [_row_to_dict(r) for r in rows]
+        except Exception as e:
+            logging.warning(f"Error fetching pending fill trades: {e}")
+            return []
+
+    def update_trade_lifecycle(
+        self,
+        trade_id: int,
+        status: str,
+        filled_qty: Optional[float] = None,
+        avg_fill_price: Optional[float] = None,
+        broker_order_id: Optional[str] = None,
+        raw_status: Optional[str] = None,
+        note: Optional[str] = None,
+        unresolved: bool = False,
+    ) -> bool:
+        """Apply a reconciled lifecycle update to a trades row.
+
+        Idempotent by construction: the caller (SmartBot poller) passes
+        only *reconciled* values from ``order_lifecycle.reconcile``;
+        re-applying the same broker state produces the same row and a
+        duplicate order_events entry recording the (no-op) poll.
+
+        - ``status`` is always written (canonical vocabulary enforced
+          upstream by reconcile; defensive check below).
+        - ``filled_qty`` / ``avg_fill_price`` are only overwritten when
+          the caller supplies non-None values, so a CANCELED-after-partial
+          row keeps its cumulative fill data.
+        - An order_events audit row is appended for every call.
+        """
+        if status not in (
+            "SUBMITTED",
+            "ACCEPTED",
+            "PARTIALLY_FILLED",
+            "FILLED",
+            "CANCELED",
+            "REJECTED",
+            "EXPIRED",
+            "UNKNOWN",
+            "UNRESOLVED",
+        ):
+            logging.warning(
+                f"update_trade_lifecycle refusing non-canonical status "
+                f"{status!r}; trade_id={trade_id}"
+            )
+            return False
+        try:
+            with _get_conn() as conn:
+                sets = ["status = ?"]
+                params: list = [status]
+                if filled_qty is not None:
+                    sets.append("filled_qty = ?")
+                    params.append(filled_qty)
+                if avg_fill_price is not None:
+                    sets.append("avg_fill_price = ?")
+                    params.append(avg_fill_price)
+                sets.append("order_updated_at = ?")
+                params.append(datetime.now(timezone.utc).isoformat())
+                params.append(trade_id)
+                conn.execute(
+                    f"UPDATE trades SET {', '.join(sets)} WHERE id = ?", params
+                )
+                conn.execute(
+                    """
+                    INSERT INTO order_events
+                        (trade_id, broker_order_id, canonical_status,
+                         raw_status, filled_qty, avg_fill_price,
+                         event_note, unresolved)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trade_id,
+                        broker_order_id,
+                        status,
+                        raw_status,
+                        filled_qty,
+                        avg_fill_price,
+                        note,
+                        1 if unresolved else 0,
+                    ),
+                )
+            return True
+        except Exception as e:
+            logging.warning(
+                f"Exception updating trade lifecycle (trade_id={trade_id}): {e}"
+            )
+            if os.getenv("TRADING_BOT_TESTING_FATAL_PERSISTENCE") == "1":
+                raise
+            return False
+
+    def get_order_events(self, trade_id: Optional[int] = None) -> List[Dict]:
+        """Return the append-only lifecycle audit trail (newest first)."""
+        try:
+            with _get_conn() as conn:
+                if trade_id is None:
+                    rows = conn.execute(
+                        "SELECT * FROM order_events ORDER BY id DESC LIMIT 1000"
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM order_events WHERE trade_id = ? "
+                        "ORDER BY id DESC",
+                        (trade_id,),
+                    ).fetchall()
+                return [_row_to_dict(r) for r in rows]
+        except Exception as e:
+            logging.debug(f"Error getting order events: {e}")
             return []
 
     # ------------------------------------------------------------------
