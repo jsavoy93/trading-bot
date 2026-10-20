@@ -3571,3 +3571,29 @@ minutes — the SHAPE remains stable).
 - MACD 17/18 — NOT in this PR.
 - Hourly data availability — NOT in this PR.
 - Unrelated dashboard performance — NOT in this PR.
+
+## EXEC-003 SHOULD-FIX #1 — Paper Order Fill Confirmation (2026-10-20, PR #109)
+
+Extends the EXEC-003.1 (PR #100) trades-persistence contract with confirmed-fill
+bookkeeping. Bookkeeping only — no strategy/safety/slot-semantics changes.
+
+- `src/core/order_lifecycle.py` (pure): canonical statuses SUBMITTED / ACCEPTED /
+  PARTIALLY_FILLED / FILLED / CANCELED / REJECTED / EXPIRED / UNRESOLVED; Alpaca
+  raw→canonical map; `reconcile()` enforces: cumulative monotonic filled_qty,
+  avg_fill_price moves only on qty advance (no double-count), stale/out-of-order
+  events ignored, terminal states never regress (a confirmed fill may race past
+  CANCELED — broker authoritative), FILLED token without quantity evidence is
+  distrusted (→ ACCEPTED), and missing/unknown broker responses stay explicitly
+  UNRESOLVED — a fill is NEVER fabricated and submission is NEVER a fill.
+- DB: additive trades columns filled_qty / avg_fill_price / order_updated_at;
+  append-only `order_events` audit table (one row per applied transition and per
+  unresolved poll). `get_pending_fill_trades()` polls only non-terminal rows that
+  have a broker_order_id (pre-PR#100 rows are explicitly non-pollable).
+- `SmartTradingBot.poll_order_fills()` runs at each run_analysis start; never
+  submits/cancels/replaces, never mutates trades_executed/max_trades, never
+  raises. OBS_001_SLOT_SEMANTICS_VERSION stays 1 (slots remain submit-consumed;
+  fill confirmation is audit, not slot accounting).
+- Known footgun: the 37 dashboard/settings test failures in a fresh worktree are
+  ENVIRONMENTAL (those tests need the 9 GB production trading_bot.db); they fail
+  identically on clean main. Verify regressions by stashing changes and comparing
+  failure sets, not by absolute pass counts.
