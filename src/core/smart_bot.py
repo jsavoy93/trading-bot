@@ -216,6 +216,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from database.simple_rest import simple_rest
 from analysis.ai_agent import ai_agent
 from core import settings_service
+from core import order_lifecycle
 
 # Load environment variables
 load_dotenv()
@@ -5850,6 +5851,116 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             self.errors_count += 1
             return False
 
+    # ------------------------------------------------------------------
+    # EXEC-003 SHOULD-FIX #1: order fill confirmation (bookkeeping only)
+    # ------------------------------------------------------------------
+
+    def poll_order_fills(self) -> Dict[str, int]:
+        """Poll broker status for outstanding trades rows and persist
+        confirmed lifecycle transitions.
+
+        Contract (extends the merged EXEC-003.1 PR #100 contract):
+
+        - Reads only rows with status IN (SUBMITTED, ACCEPTED,
+          PARTIALLY_FILLED, UNKNOWN) AND a broker_order_id. Terminal
+          rows are never re-polled; rows without a broker id stay
+          explicitly unresolved (never fabricated).
+        - A row is marked FILLED only when the broker confirms it
+          (raw status 'filled' / cumulative filled_qty >= ordered qty).
+          Submission is NEVER classified as a confirmed fill.
+        - Repeated polls of the same state are idempotent: filled_qty
+          is cumulative and monotonic, avg_fill_price moves only when
+          filled_qty advances (no double counting), and stale /
+          out-of-order broker responses are ignored by
+          order_lifecycle.reconcile.
+        - This method performs ZERO trading actions: it does not
+          submit, cancel, replace, or size anything, and does not
+          touch trades_executed / slot accounting
+          (OBS_001_SLOT_SEMANTICS_VERSION remains 1).
+        - Broker fetch failures leave the row SUBMITTED and record an
+          explicitly-unresolved audit event. Missing confirmation is
+          persisted AS unresolved — never guessed.
+
+        Returns a small summary dict for tests/telemetry. Never raises.
+        """
+        summary = {
+            "polled": 0,
+            "updated": 0,
+            "unresolved": 0,
+            "errors": 0,
+        }
+        try:
+            db = getattr(self, "db", None)
+            if db is None or not db.is_available():
+                return summary
+            pending = db.get_pending_fill_trades()
+            if not pending:
+                return summary
+            fetch_order = getattr(self.trading_client, "get_order_by_id", None)
+            for row in pending:
+                broker_order_id = row.get("broker_order_id")
+                if not broker_order_id:
+                    continue  # defensive; get_pending_fill_trades filters
+                summary["polled"] += 1
+                broker_event = None
+                try:
+                    if callable(fetch_order):
+                        broker_event = order_lifecycle.extract_broker_event(
+                            fetch_order(broker_order_id)
+                        )
+                    else:
+                        # Broker client without a single-order fetch API:
+                        # explicitly unresolved, never fabricated.
+                        broker_event = None
+                except Exception as e:
+                    summary["errors"] += 1
+                    logging.warning(
+                        f"EXEC-003 fill poll: broker fetch failed for "
+                        f"order {broker_order_id} (trade_id={row.get('id')}): {e}"
+                    )
+                    broker_event = None
+                try:
+                    result = order_lifecycle.reconcile(row, broker_event)
+                except Exception as e:
+                    summary["errors"] += 1
+                    logging.warning(
+                        f"EXEC-003 fill poll: reconcile failed for "
+                        f"trade_id={row.get('id')}: {e}"
+                    )
+                    continue
+                if result["unresolved"]:
+                    summary["unresolved"] += 1
+                if not result["changed"]:
+                    continue
+                ok = db.update_trade_lifecycle(
+                    trade_id=row["id"],
+                    status=result["status"],
+                    filled_qty=result["filled_qty"],
+                    avg_fill_price=result["avg_fill_price"],
+                    broker_order_id=broker_order_id,
+                    raw_status=(broker_event or {}).get("raw_status"),
+                    note=result.get("note"),
+                    unresolved=result["unresolved"],
+                )
+                if ok:
+                    summary["updated"] += 1
+                    log_fn = logging.info
+                    if result["status"] == "FILLED":
+                        log_fn = logging.warning  # confirmed fills are rare; surface
+                    log_fn(
+                        f"EXEC-003 lifecycle: trade_id={row['id']} "
+                        f"{row.get('symbol')} {result['note']} "
+                        f"(filled_qty={result['filled_qty']}, "
+                        f"avg_fill_price={result['avg_fill_price']})"
+                    )
+                else:
+                    summary["errors"] += 1
+            return summary
+        except Exception as e:
+            # Bookkeeping must never break the analysis cycle.
+            logging.warning(f"EXEC-003 fill poll failed (non-fatal): {e}")
+            return summary
+
     def _execute_pending_entry_tranches(self):
         """
         Check pending entry tranches (tranches 2 and 3) created by execute_trade()
@@ -5936,6 +6047,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # Clear market data cache for fresh analysis cycle
         self._market_data_cache.clear()
         self._cycle_start_time = datetime.now(timezone.utc)
+
+        # ── EXEC-003 SHOULD-FIX #1: poll outstanding order fills ────────────
+        # Bookkeeping-only pass over previously SUBMITTED paper orders.
+        # NEVER submits, cancels, or modifies orders; NEVER changes slot
+        # accounting (OBS_001_SLOT_SEMANTICS_VERSION stays 1 — slots are
+        # consumed on submit_order, unchanged); never raises into the
+        # analysis cycle (worst case it logs a warning and continues).
+        self.poll_order_fills()
 
         # ── OBS-001 Phase A: cycle bookkeeping (observability only) ─────────
         # cycle_id is used by decision_history and cycle_funnel to bind

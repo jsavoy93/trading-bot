@@ -260,6 +260,34 @@ class MockBrokerageClient:
         """Always returns False for mock client."""
         return False
 
+    def set_order_state(self, order_id: str, state: Any) -> None:
+        """EXEC-003 SHOULD-FIX #1 (test support): script the response
+        that :meth:`get_order_by_id` will return for ``order_id``.
+
+        ``state`` may be an object/mapping with broker-order fields
+        (status, filled_qty, filled_avg_price) or ``None`` to make the
+        fetch "fail" with a lookup miss. Test-only affordance; the
+        production Alpaca TradingClient provides get_order_by_id
+        natively.
+        """
+        if not hasattr(self, "_order_states"):
+            self._order_states = {}
+        self._order_states[order_id] = state
+
+    def get_order_by_id(self, order_id: str) -> Any:
+        """EXEC-003 SHOULD-FIX #1 (test support): return the scripted
+        state for ``order_id``. Raises KeyError (broker-lookup failure
+        analog) when no state was scripted for the id.
+        """
+        if not hasattr(self, "_order_states"):
+            self._order_states = {}
+        if order_id not in self._order_states:
+            raise KeyError(f"mock broker: no order {order_id}")
+        state = self._order_states[order_id]
+        if state is None:
+            return None
+        return state
+
     def is_test_mode(self) -> bool:
         """Returns True if test mode is enabled."""
         return self._test_mode
