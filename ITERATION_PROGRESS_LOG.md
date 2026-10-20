@@ -4948,6 +4948,29 @@ Implementation complete; PR open and awaiting owner review.
      stays BUY Eligibility and URL stays the same
    - Press F5 → same tab + range restored from hash
 
+## 2026-10-20 02:55 UTC — EXEC-003 SHOULD-FIX #1: Paper order fill confirmation & bookkeeping
+
+- Backlog item / objective: EXEC-003 deferred SHOULD-FIX #1, authorized by owner directive 2026-10-20 02:15 UTC. TSV-001 cancelled as duplicate of PR #100. Implement confirmed-fill bookkeeping for paper orders with no strategy/safety changes and no order placement.
+- Branch: agent/exec-003-shouldfix1-fill-confirmation (clean worktree from main @ 1f2fd24; original dirty research checkout untouched)
+- Commit: d3798c5 (implementation) + reporting commit
+- Status: DONE (awaiting owner code review; PR #109 OPEN, not merged, not deployed)
+- Files changed:
+  - NEW src/core/order_lifecycle.py (canonical lifecycle vocabulary, Alpaca mapping, monotonic reconcile with stale/out-of-order + no-fabrication guarantees)
+  - src/database/sqlite_db.py (additive trades columns filled_qty/avg_fill_price/order_updated_at; append-only order_events audit table; get_pending_fill_trades / update_trade_lifecycle / get_order_events)
+  - src/core/smart_bot.py (poll_order_fills at run_analysis start — bookkeeping-only, never raises, no trading actions, OBS_001_SLOT_SEMANTICS_VERSION stays 1)
+  - src/brokerage/mock.py (additive scriptable get_order_by_id/set_order_state)
+  - NEW tests/test_exec_003_fill_confirmation.py (21 deterministic mocked-broker tests covering all 12 owner-directed scenarios)
+- Tests run: new suite 21/21 PASS; EXEC-003.1 + brokerage-safety suites 47/47 PASS (incl. TEST-001 negative subprocess tests); full suite 1948 passed / 37 failed with the 37 verified IDENTICAL on clean main with changes stashed (environmental: dashboard/settings tests require the 9 GB production DB absent from the worktree). git diff --check clean.
+- Key decisions/discoveries:
+  1. Verified FILLED/fill-polling genuinely unimplemented on main (PR #100 docstring reserves it) — no duplication of existing work.
+  2. slot_consumed_semantics_version kept at 1: fill confirmation is audit bookkeeping; slot semantics (submit-consumed) unchanged per contract review.
+  3. SHOULD-FIX #2 (tranche restart loss) is NOT a blocking dependency — polling keys on DB-persisted broker_order_id and survives restarts.
+  4. Reconcile rules: cumulative monotonic filled_qty, avg price only on advance (no double-count), terminal states never regress (confirmed fill may race past CANCELED; nothing downgrades FILLED), FILLED-without-quantity distrusted → ACCEPTED, unknown/no broker response → explicit UNRESOLVED.
+- Remaining risks: independent reviewer pass pending; live-traffic validation necessarily pending (zero current order flow); pre-PR#100 rows lack broker ids and stay explicitly non-pollable.
+- Next action: Josh reviews/merges PR #109. No deploy, no merge, no new tasks without approval.
+
+**EXEC-003 SHOULD-FIX #1 COMPLETE — AWAITING OWNER CODE REVIEW.**
+
 ---
 
 ## 2026-10-21 14:18 UTC — TXSE UNIVERSE OUTAGE MINIMAL REPAIR
