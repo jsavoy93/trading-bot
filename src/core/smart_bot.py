@@ -1322,10 +1322,135 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         logging.info(f"📊 Smart fallback selected {len(selected)} tickers, {len(cooldown_filtered_tickers)} available after filtering")
         return cooldown_filtered_tickers
 
-    def get_all_us_symbols(self) -> List[str]:
-        """Get all tradeable US stock symbols"""
+    def _build_asset_tolerant(self, raw_asset: Any) -> Any:
+        """
+        Build a strictly-validated ``alpaca.trading.models.Asset`` from one raw
+        asset record.
+
+        Policy for unknown exchange codes (UNIVERSE POLICY, documented here so
+        it persists with the code):
+
+        * ``Asset.exchange`` is typed as the ``AssetExchange`` enum. When the
+          broker introduces a new exchange code the installed alpaca-py does
+          not know (e.g. ``TXSE``, first returned 2026-10-19), strict
+          validation of the WHOLE ``list[Asset]`` response fails and the whole
+          universe collapses to zero symbols.
+        * The repair is per-record and fail-closed: this builder performs
+          FULL strict validation. A record that fails is skipped by
+          :meth:`_fetch_assets_resilient` and reported. No record is partially
+          trusted, no field is globally relaxed, and exchange validation is
+          never disabled.
+        * Consequence: until alpaca-py ships ``TXSE``, TXSE-listed symbols are
+          absent from the universe. That is a bounded, logged, and
+          intentional completeness gap rather than a total outage.
+        """
+        from alpaca.trading.models import Asset  # local import: SDK-only dependency
+
+        return Asset(**raw_asset)
+
+    def _fetch_assets_resilient(self) -> List[Any]:
+        """
+        Fetch the asset universe without letting ONE bad record empty it.
+
+        Fast path: ``trading_client.get_all_assets()`` (unchanged behavior).
+
+        If and only if that raises a pydantic ``ValidationError`` caused by
+        per-record model validation, retry against the raw response and
+        validate record-by-record, so a single unknown value (for example the
+        exchange code ``TXSE`` the installed SDK does not model) cannot disable
+        the entire universe. Records that fail per-record validation are
+        SKIPPED — never partially trusted — and the skip count plus a bounded
+        sample are logged so the universe-completeness impact stays
+        observable.
+
+        Genuine request-level failures (HTTP errors, auth errors, network
+        errors) are NOT handled here: they propagate to the caller, which logs
+        them at ERROR level. A request-level failure is never silently turned
+        into a partial or empty list.
+        """
+        from pydantic import ValidationError
+
         try:
-            assets = self.trading_client.get_all_assets()
+            return list(self.trading_client.get_all_assets())
+        except ValidationError as exc:
+            _strict_failure = exc
+            logging.warning(
+                "⚠️  Asset response failed strict alpaca-py validation (%s). "
+                "Retrying with per-record validation so a single unmodelled "
+                "field cannot empty the universe.",
+                str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__,
+            )
+
+        # Raw response: the SDK applies List[Asset] validation only inside
+        # get_all_assets(); the underlying GET returns plain dicts.
+        get_fn = getattr(self.trading_client, "get", None)
+        if get_fn is None:
+            # Client does not expose raw records (e.g. mock clients). Re-raise
+            # the original failure so the caller logs it rather than pretending
+            # the universe loaded.
+            raise _strict_failure
+
+        raw_assets = get_fn("/assets", {})
+        if isinstance(raw_assets, dict):
+            # Some SDK versions wrap the payload; unwrap defensively.
+            raw_assets = raw_assets.get("assets") or raw_assets.get("data") or []
+
+        assets: List[Any] = []
+        skipped: List[Tuple[str, str]] = []
+        for raw in raw_assets:
+            try:
+                assets.append(self._build_asset_tolerant(raw))
+            except ValidationError as record_exc:
+                try:
+                    symbol = str(dict(raw).get("symbol", ""))
+                except Exception:
+                    symbol = "<unreadable record>"
+                skipped.append((symbol, self._describe_validation_failure(record_exc, raw)))
+
+        if skipped:
+            sample = "; ".join(f"{s or '<no symbol>'}: {r}" for s, r in skipped[:3])
+            more = "" if len(skipped) <= 3 else f" (+{len(skipped) - 3} more)"
+            logging.warning(
+                "⚠️  Skipped %d of %d asset records the installed alpaca-py "
+                "cannot model (most likely a new broker exchange code). "
+                "Universe completeness impact: %d symbols unavailable. "
+                "Sample: %s%s",
+                len(skipped),
+                len(raw_assets),
+                len(skipped),
+                sample,
+                more,
+            )
+        return assets
+
+    @staticmethod
+    def _describe_validation_failure(exc: Exception, raw_asset: Any) -> str:
+        """Summarize WHY one asset record was skipped, naming the culprit field."""
+        try:
+            fields = [str(err.get("loc")) for err in exc.errors()]  # type: ignore[attr-defined]
+        except Exception:
+            fields = []
+        culprits = ", ".join(f for f in fields if f) or "unknown field"
+        exchange = None
+        try:
+            exchange = dict(raw_asset).get("exchange")
+        except Exception:
+            pass
+        return f"unmodelled field(s) {culprits}" + (f"; reported exchange={exchange!r}" if exchange is not None else "")
+
+    def get_all_us_symbols(self) -> List[str]:
+        """
+        Get all tradeable US stock symbols.
+
+        Universe-completeness policy: a single asset record the installed
+        alpaca-py cannot model (for example the new ``TXSE`` exchange code
+        returned by Alpaca since 2026-10-19) MUST NOT disable the entire
+        universe. Such records are skipped and reported with a count and a
+        bounded sample. All eligibility filters below are unchanged and still
+        apply to every asset that loads.
+        """
+        try:
+            assets = self._fetch_assets_resilient()
             # Filter for active, tradable US equity assets
             symbols = []
             for asset in assets:
@@ -1338,9 +1463,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     # If we can't check the attributes, just check tradable
                     if asset.tradable:
                         symbols.append(asset.symbol)
+            if not symbols and assets:
+                logging.warning(
+                    "⚠️  Loaded %d assets but filtered to 0 US equity symbols; "
+                    "universe may be incomplete.",
+                    len(assets),
+                )
             logging.info(f"📊 Retrieved {len(symbols)} tradeable symbols")
             return symbols
         except Exception as e:
+            # Request-level failure (HTTP/auth/network) or an unrecoverable
+            # client limitation. Logged loudly and surfaced as an empty
+            # universe; never silently swallowed.
             logging.error(f"❌ Failed to get symbols: {e}")
             return []
 

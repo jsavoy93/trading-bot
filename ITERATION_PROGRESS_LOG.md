@@ -4947,3 +4947,47 @@ Implementation complete; PR open and awaiting owner review.
    - Wait 30s (or trigger SmartBot cycle) → tiles refresh but tab
      stays BUY Eligibility and URL stays the same
    - Press F5 → same tab + range restored from hash
+
+---
+
+## 2026-10-21 14:18 UTC — TXSE UNIVERSE OUTAGE MINIMAL REPAIR
+
+- **Backlog item / objective**: TXSE outage repair (owner-authorized minimal repair of
+  the confirmed universe outage; root cause = alpaca-py 0.43.4 `AssetExchange` enum
+  lacks `TXSE`, strict `List[Asset]` validation fails, catch-all returns []).
+- **Branch**: fix/txse-universe-outage (from main @ 1f2fd24), in a SEPARATE worktree
+  `../trading-bot-txse-fix`. The dirty strat-020-identity-recovery checkout was not
+  touched.
+- **Commits**: ed50c8b (code + tests), b0710bb (report + this log entry).
+- **Status**: DONE
+- **Files changed**: src/core/smart_bot.py (get_all_us_symbols + _build_asset_tolerant,
+  _fetch_assets_resilient, _describe_validation_failure),
+  tests/test_universe_txse_resilience.py (new, 9 deterministic mocked tests),
+  REPORT.md, reports/2026-10-21_141844_txse-fix.md, ITERATION_PROGRESS_LOG.md.
+- **Tests run / results**:
+  - tests/test_universe_txse_resilience.py: 9 passed.
+  - Focused `-k "smart_bot or universe or asset"`: 108 passed.
+  - Indicator/score/mock/live-block suites: 116 passed.
+  - Full suite on fix branch: 37 failed, 1936 passed, 1 skipped.
+  - Full suite on pristine main baseline: 37 failed, 1927 passed, 1 skipped.
+  - FAILED-set diff (baseline vs fix) = EMPTY (no regression). The 37 failures are
+    PRE-EXISTING on main (dashboard Phase-C OBS analytics + settings-service), unrelated,
+    reported not fixed.
+- **Important decisions / discoveries**:
+  - alpaca-py 0.43.5 AND 0.44.0 (latest) still lack TXSE in AssetExchange — upgrading
+    would NOT fix the outage; no dependency change made.
+  - Repair is per-record fail-closed: strict fast path unchanged; only on ValidationError
+    does it re-read raw /assets and validate asset-by-asset; unmodelled records are
+    SKIPPED (never partially trusted) and reported with count + bounded sample.
+  - Filter predicates (tradable/ACTIVE/US_EQUITY) byte-identical to main (zero diff).
+  - Documented unknown-exchange policy in the code docstring: skip fail-closed + log
+    impact; until alpaca-py ships TXSE, TXSE symbols are a bounded (~single-digit)
+    logged completeness gap, not an outage. Request-level failures still ERROR-logged.
+- **Remaining risks**: TXSE symbols absent until SDK ships TXSE; fallback depends on
+  TradingClient.get("/assets") (fail-closed if it disappears); double fetch on failing
+  path; 37 pre-existing unrelated full-suite failures remain.
+- **Next action**: Owner reviews the branch/PR and decides merge (operator-controlled).
+  After merge+restart (under normal change control) verify universe returns non-zero in
+  trading_bot.log. PARKING LOT (not authorized): alpaca-py TXSE tracking, empty-queue
+  retry log rate-limiting, log rotation, OBS-001 cycle_funnel for empty-queue cycles.
+- **Josh's approval required**: YES (merge decision + any post-merge restart).
