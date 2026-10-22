@@ -91,22 +91,42 @@ def test_doc_exists_and_has_markers():
     assert _doc_markers(), "strategy doc contains no param markers"
 
 
-def test_constructor_markers_match_ast_defaults():
-    ctor = _constructor_defaults()
-    checked = 0
-    for key, (value, source) in _doc_markers().items():
+def constructor_marker_errors(
+    markers: dict[str, tuple[str, str]], ctor: dict[str, object]
+) -> list[str]:
+    """Shared drift-detection logic: documented constructor values vs AST extraction."""
+    errors: list[str] = []
+    for key, (value, source) in markers.items():
         if source not in ("constructor", "hardcoded"):
             continue
         if source == "hardcoded":
             continue  # verified structurally in test_hardcoded_markers
-        assert key in ctor, (
-            f"doc marker {key} (constructor) has no matching "
-            f"self.{key} literal assignment in SmartTradingBot.__init__"
-        )
-        assert _coerce(value) == ctor[key], (
-            f"doc marker {key}: documented {value} != code default {ctor[key]!r}"
-        )
-        checked += 1
+        if key not in ctor:
+            errors.append(
+                f"doc marker {key} (constructor) has no matching "
+                f"self.{key} literal assignment in SmartTradingBot.__init__"
+            )
+        elif _coerce(value) != ctor[key]:
+            errors.append(
+                f"doc marker {key}: documented {value} != code default {ctor[key]!r}"
+            )
+    return errors
+
+
+def missing_critical(markers: dict[str, tuple[str, str]]) -> list[str]:
+    """Pure helper: critical params absent from the document's markers."""
+    return [
+        k for k in CRITICAL_SCHEMA_KEYS + CRITICAL_CONSTRUCTOR_KEYS if k not in markers
+    ]
+
+
+def test_constructor_markers_match_ast_defaults():
+    ctor = _constructor_defaults()
+    errors = constructor_marker_errors(_doc_markers(), ctor)
+    assert not errors, "; ".join(errors)
+    checked = sum(
+        1 for _, (_, s) in _doc_markers().items() if s == "constructor"
+    )
     assert checked >= 5, "too few constructor markers verified; extraction may be broken"
 
 
@@ -174,10 +194,7 @@ CRITICAL_CONSTRUCTOR_KEYS = [
 
 
 def test_critical_params_are_marked():
-    markers = _doc_markers()
-    missing = [
-        k for k in CRITICAL_SCHEMA_KEYS + CRITICAL_CONSTRUCTOR_KEYS if k not in markers
-    ]
+    missing = missing_critical(_doc_markers())
     assert not missing, f"unmarked critical strategy parameters: {missing}"
 
 
@@ -227,6 +244,26 @@ def test_exit_tranches_never_called():
     )
 
 
+def test_atr_stop_multiplier_is_live_in_late_stop_path():
+    """§9 (corrected): atr_stop_multiplier IS used to price the >-10% stop."""
+    assert re.search(
+        r"atr_stop_multiplier\s*\*\s*atr", _src()
+    ), (
+        "atr_stop_multiplier no longer prices the late ATR stop; "
+        "update docs/SMARTBOT_STRATEGY.md §9"
+    )
+
+
+def test_bool_numeric_marker_never_false_verifies():
+    """Type guard: documented 1/0 must not verify against a boolean runtime value."""
+    from scripts.verify_strategy_doc_runtime import _values_match, coerce
+
+    assert _values_match(coerce("1"), True) is False
+    assert _values_match(coerce("0"), False) is False
+    assert _values_match(coerce("true"), True) is True
+    assert _values_match(coerce("35"), 35) is True
+
+
 def test_min_score_sell_does_not_exist():
     src = _src()
     assert "min_score_sell" not in src, (
@@ -259,6 +296,11 @@ def test_no_position_aging_exists():
 
 
 def test_doc_records_source_revision():
+    # PROVENANCE ONLY: the recorded revision states which commit the document
+    # was verified against. Its presence is NOT proof that the document tracks
+    # every future commit — CI cannot diff prose against arbitrary revisions.
+    # Runtime persisted-value verification (when run in the deployed env) uses
+    # scripts/verify_strategy_doc_runtime.py. See doc §18.
     text = DOC.read_text()
     assert "d54752c" in text, (
         "source revision not recorded; when rebasing the doc, update the header"

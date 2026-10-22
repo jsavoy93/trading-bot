@@ -6,9 +6,13 @@
 > 2026-10-22 03:04 UTC, checkout `/root/deploy/trading-bot-main`, paper-only).
 > **Maintenance contract:** machine-verifiable parameters in this document are embedded as
 > `<!-- param: key=value source=... -->` markers and enforced by
-> `tests/test_strategy_doc_consistency.py`. A parameter change that is not reflected here
-> FAILS CI. Prose sections beyond those markers are **human-reviewed explanations**, not
-> machine proofs. This document supersedes MENTOR.md's "Critical Settings" table and any
+> `tests/test_strategy_doc_consistency.py` (schema/constructor sources, run in CI) and
+> `scripts/verify_strategy_doc_runtime.py` (persisted values, run explicitly in the
+> deployed environment). A parameter change that is not reflected here FAILS CI. Prose
+> sections beyond those markers are **human-reviewed explanations**, not machine proofs.
+> The recorded source revision below is **provenance** — it states what the document was
+> verified against; it is not an automatic guarantee that the document tracks every
+> future commit. This document supersedes MENTOR.md's "Critical Settings" table and any
 > conflicting strategy prose (see §14).
 >
 > **Verification legend:** ✅ = machine-verified at this revision by code inspection pinned
@@ -138,7 +142,9 @@ gates. ✅
   `qty = int(portfolio_value × 2% / (price × ATR%/100))` — each trade risks **2% of
   portfolio at one ATR of adverse move**. `signal_strength` is IGNORED on this path.
   (Corrected misconception: the STRONG 2% / MEDIUM 1.5% / WEAK 1% map is the
-  **ATR-unavailable fallback only**, essentially never taken with defaults.)
+  **ATR-unavailable fallback only** — full fallback map: AI_ENHANCED 2.5%,
+  STRONG 2.0%, MEDIUM 1.5%, WEAK/default 1.0%, CONFLICTED 0.5% — essentially
+  never taken with defaults.)
 - Post-sizing: `qty` clamped to ≥1 and ≤ `portfolio_value × max_position_pct (5%) / price`;
   VIX-regime multiplier and adaptive per-symbol multipliers may reduce.
 - ⚠ Two conflicting per-ticker caps exist: 5% (`max_position_pct`, sizing) vs a hardcoded
@@ -172,8 +178,12 @@ hardcoded. Verified live in deployment 👁.
   **>10%** and |market value| > $100 gets a stop at `price − 2×ATR` (or ×0.92 fixed).
   Between entry and −10% there is **no broker-side protection**.
 - **`trailing_stop_pct` (5.0) is DEAD CODE** — assigned, never read.
-- **`atr_stop_multiplier` (2.0) is effectively dead** — appears only in a log label; the
-  ATR stop recomputes from `df['ATR']` without using it.
+- **`atr_stop_multiplier` (2.0) IS LIVE** in the late-stop path: the stop placed for a
+  position already down >10% is `current_price − atr_stop_multiplier × ATR`
+  (2×ATR default; fixed −8% branch if `use_atr_stop_loss=False`). ✅
+  (Corrected 2026-10-22: an earlier draft of this section wrongly called this
+  constant "effectively dead" — independent review caught the live read site at
+  `smart_bot.py:8087`. It remains true that NO stop exists between entry and −10%.)
 - `calculate_exit_tranches` / `update_trailing_stops` (position_scaling.py) are **defined
   but never called** — exit tranches and trailing stops DO NOT run in production.
 - **No position-aging, max-hold, or time-based exit exists** (verified: no code references).
@@ -221,8 +231,13 @@ audit archive `2026-10-21_125547_...-FINDINGS-APPENDIX.md` §7.1.
 ## 12. Effective configuration vs code defaults
 
 Persisted overrides win over schema defaults (CONFIG-001). Deployed effective values
-(👁 verified 2026-10-21/22 from the deployed process settings log and a read-only settings
-table dump — CI cannot see the production DB, so this column is human-maintained):
+(👁 verified 2026-10-21/22 and re-verifiable on demand — run, in the deployed
+environment:
+`python scripts/verify_strategy_doc_runtime.py --repo <deploy-checkout>` — which
+compares every `source=persisted` marker below against
+`load_effective_strategy_settings()` and exits nonzero on mismatch. Normal GitHub CI
+cannot see the production DB, so value-level verification of this column happens via
+that explicit runtime run, not in CI.):
 
 <!-- param: rsi_buy_threshold=35 source=persisted -->
 <!-- param: rsi_sell_threshold=70 source=persisted -->
@@ -329,13 +344,21 @@ No research factor affects production trading.
 
 ## 18. What the automated checks can and cannot prove 📝
 
-- **Can prove:** every `<!-- param -->` marker matches the live extraction from
-  `STRATEGY_SETTINGS_SCHEMA` and AST-parsed constructor defaults; pinned structural facts
-  (SELL threshold expression, buy-eligibility gate terms, dead-code status of trailing
-  stop / exit tranches, paper-guard presence) still hold in source.
-- **Cannot prove:** that all prose matches every execution path; that the persisted
-  production DB values shown in §12 remain current (re-verify after any settings change
-  via the dashboard `/api/settings` or the deployed process's "Effective strategy
-  settings" log line); behavioural equivalence of untested code paths. Human reviewer
+- **Can prove (CI, every run):** every `<!-- param -->` marker matches the live
+  extraction from `STRATEGY_SETTINGS_SCHEMA` and AST-parsed constructor defaults;
+  pinned structural facts (SELL threshold expression, buy-eligibility gate terms,
+  dead-code status of trailing stop / exit tranches, paper-guard presence) still hold
+  in source. Negative tests (`tests/test_strategy_doc_consistency_negative.py`) prove
+  these checks actually fire when: a constructor default drifts, a critical marker is
+  removed, a documented persisted value mismatches runtime, or the runtime source is
+  unavailable.
+- **Can prove (runtime, on demand):** documented persisted values match the deployed
+  effective settings, via `scripts/verify_strategy_doc_runtime.py` (read-only; reports
+  the deployment revision and verification timestamp; exits 1 on MISMATCH and 2 on
+  UNAVAILABLE so "no evidence" is never reported as success).
+- **Cannot prove:** that all prose matches every execution path; that the recorded
+  source revision header stays synchronized with future commits (provenance, not a
+  sync guarantee — CI cannot diff prose against arbitrary revisions). Human reviewer
   obligation: when changing `src/core/smart_bot.py` or `settings_service.py`, re-review
-  the affected prose sections of this document in the same PR.
+  the affected prose sections of this document **and** re-run the runtime verifier in
+  the same PR.
