@@ -174,16 +174,24 @@ hardcoded. Verified live in deployment 👁.
 - `stop_loss_pct` (8%) and `take_profit_pct` (15%) are constructor constants used **only**
   as confidence weights in the per-loop exit ladder (§10), producing market orders — never
   resting orders.
-- `_place_stop_loss_order` is called from **exactly one place**: a position already down
-  **>10%** and |market value| > $100 gets a stop at `price − 2×ATR` (or ×0.92 fixed).
-  Between entry and −10% there is **no broker-side protection**.
-- **`trailing_stop_pct` (5.0) is DEAD CODE** — assigned, never read.
-- **`atr_stop_multiplier` (2.0) IS LIVE** in the late-stop path: the stop placed for a
-  position already down >10% is `current_price − atr_stop_multiplier × ATR`
-  (2×ATR default; fixed −8% branch if `use_atr_stop_loss=False`). ✅
-  (Corrected 2026-10-22: an earlier draft of this section wrongly called this
-  constant "effectively dead" — independent review caught the live read site at
-  `smart_bot.py:8087`. It remains true that NO stop exists between entry and −10%.)
+- `_place_stop_loss_order` is called from **exactly one place**: `execute_portfolio_actions`
+  (portfolio-action pass, run per loop). Invocation requires ALL of:
+  `unrealized_plpc < −10%` AND `|market_value| > $100` AND no existing active stop
+  order for the symbol. ✅
+- **`atr_stop_multiplier` (2.0) IS LIVE** in that path: stop price =
+  `current_price − atr_stop_multiplier × ATR` (2×ATR default). If ATR is
+  unavailable — fewer than 14 daily bars, missing ATR column, or non-finite/zero ATR —
+  it falls back to `current_price × (1 − stop_loss_pct/100)` (−8%); the same fixed
+  branch applies when `use_atr_stop_loss=False`. ✅
+  (Corrected 2026-10-22: an earlier draft wrongly called this constant "effectively
+  dead" — independent review caught the live read site at `smart_bot.py:8087`.)
+- **No protective stop exists immediately after entry.** Until the −10% trigger fires,
+  an ATR-derived stop does NOT exist at the broker at all — the only protection is the
+  30-minute-cooldown confidence ladder (§10). An ATR-derived stop is therefore **not**
+  continuous broker-side protection; it is a conditional order placed late, once, and
+  only for positions already down >10%. ✅
+- Contrast: **`trailing_stop_pct` (5.0) is genuinely DEAD CODE** — assigned (line 440),
+  never read anywhere; `update_trailing_stops` is never called. ✅
 - `calculate_exit_tranches` / `update_trailing_stops` (position_scaling.py) are **defined
   but never called** — exit tranches and trailing stops DO NOT run in production.
 - **No position-aging, max-hold, or time-based exit exists** (verified: no code references).
