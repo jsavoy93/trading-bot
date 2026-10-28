@@ -5251,6 +5251,32 @@ Implementation complete; PR open and awaiting owner review.
      a root cause of the ledger-vs-broker gap.
   5. The SCORE-002 failures are a wall-clock artifact of the trading-window
      gate, not a code defect (documented in MENTOR.md as a known footgun).
+- **Independent review + fixes**: an independent read-only review returned
+  REQUEST_CHANGES with 4 BLOCKING findings — all verified independently against
+  the real alpaca-py enums and the deployed .env, and all real silent no-ops:
+  (B1) the duplicate open-BUY guard compared `str(order.side).lower() == "buy"`,
+  but Alpaca's OrderSide is a str-mixin enum whose str() is "OrderSide.BUY" —
+  the guard NEVER matched a real broker order; (B2) the reconciliation script
+  stringified the enums the same way, so it would have found nothing to
+  backfill (and would have written side="ORDERSIDE.BUY" if it had);
+  (B3) the script read ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY while the bot
+  uses ALPACA_API_KEY / ALPACA_API_SECRET, so it could never run;
+  (B4) the open-orders read failed OPEN while execute_trade's equivalent fails
+  CLOSED. The review also found that the plan's OWN open tranche-1 order would
+  block tranche 2 (and, because a blocked tranche is terminal, silently kill
+  the whole scaling plan) — the plan now records each tranche's broker_order_id
+  and the gate excludes those ids. Fixes: enum comparisons + enum-.value
+  normalization (with real-enum regression tests), the bot's env var names, a
+  fail-closed open-orders read, own-order exclusion, the `--allow-live` flag,
+  the module-singleton DB re-point before schema init, the confirmed
+  filled_qty only in the gap summary, the current quote as the portfolio
+  order's reference price (was 0 forever), the dead stubs in the EXEC-003 test
+  file, and an AST-based "never places an order" guard. 7 new regression tests
+  (26 total in the EXEC-004 file).
+- **Re-verification after the fixes**: EXEC-004 file 26 passed; EXEC-003 +
+  EXEC-004 suites 87 passed, 0 failed; safety suites 54 passed + 1 env failure
+  (unchanged); full suite 2032 passed / 40 failed — failure set IDENTICAL to
+  the pre-fix run.
 - **Remaining risks / follow-ups**:
   - The tranche plan is still in-memory only (SHOULD-FIX #2, open).
   - The reconciliation backfill sets `pnl = NULL` for backfilled fills (never

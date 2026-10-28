@@ -6215,7 +6215,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.warning(f"EXEC-003 fill poll failed (non-fatal): {e}")
             return summary
 
-    def _tranche_risk_gate(self, symbol: str, quantity: int, price: float):
+    def _tranche_risk_gate(self, symbol: str, quantity: int, price: float,
+                           own_order_ids=None):
         """EXEC-004: apply the SAME risk checks to entry tranches 2/3 that
         ``execute_trade`` applies to an initial BUY.
 
@@ -6235,10 +6236,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
           - The pending-order check considers only open BUY orders for the
             same symbol: held positions normally carry an open stop-loss
             SELL order, which must not block a tranche BUY.
+          - The plan's OWN earlier tranche orders (``own_order_ids``) are
+            excluded from the duplicate check: tranche 1 is often still
+            NEW/PARTIALLY_FILLED when tranche 2 fires, and treating our own
+            order as a duplicate would silently kill position scaling.
 
         Returns ``(allowed, adjusted_quantity, reason)``. NEVER raises —
         any unexpected error fails CLOSED (the tranche is blocked), because
-        a broker order is irreversible.
+        a broker order is irreversible. Two deliberate fail-OPEN reads remain,
+        each matching the equivalent execute_trade behaviour: the account-cash
+        read (execute_trade logs and continues) and the account/portfolio
+        value reads. The open-orders read, by contrast, FAILS CLOSED, because
+        execute_trade's ``has_pending_orders`` blocks when it cannot read
+        open orders.
         """
         try:
             # 1. margin — same rule as execute_trade: block all buys if cash < 0.
@@ -6249,11 +6259,30 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     return False, 0, f"margin: cash ${cash:.2f} < 0"
             except Exception as e:
                 # Same as execute_trade: log and continue on a read failure.
-                logging.debug(f"Tranche risk gate: could not read account cash: {e}")
+                logging.warning(
+                    f"Tranche risk gate: could not read account cash for "
+                    f"{symbol} ({e}) - continuing (matches execute_trade)"
+                )
 
             # 2. open BUY orders for the same symbol (duplicate-entry guard).
+            #
+            # NOTE (EXEC-004 review fix): Alpaca's OrderSide is a str-mixin
+            # enum whose str() is "OrderSide.BUY" — comparing str(side) to
+            # "buy" NEVER matches a real broker order. Compare the enum
+            # itself (or its .value), exactly like the rest of the codebase.
+            #
+            # The plan's OWN earlier tranche orders are excluded: tranche 1
+            # is often still NEW/PARTIALLY_FILLED when tranche 2 fires, and
+            # treating our own order as a duplicate would silently kill
+            # position scaling (and, because a blocked tranche is terminal,
+            # the whole plan with it).
+            own_order_ids = {
+                str(oid)
+                for oid in (own_order_ids or [])
+                if oid
+            }
             try:
-                from alpaca.trading.enums import OrderStatus
+                from alpaca.trading.enums import OrderSide, OrderStatus
                 open_statuses = {
                     OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
                     OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL,
@@ -6263,14 +6292,25 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     if (
                         str(getattr(o, "symbol", "")).upper() == symbol.upper()
                         and getattr(o, "status", None) in open_statuses
-                        and str(getattr(o, "side", "")).lower() == "buy"
+                        and getattr(o, "side", None) == OrderSide.BUY
+                        and str(getattr(o, "id", "")) not in own_order_ids
                     ):
                         return False, 0, (
                             f"pending BUY order {getattr(o, 'id', '?')} "
                             f"already open for {symbol}"
                         )
             except Exception as e:
-                logging.debug(f"Tranche risk gate: could not read open orders: {e}")
+                # FAIL CLOSED: execute_trade's equivalent (has_pending_orders)
+                # blocks when the open-orders read fails. Matching that
+                # behaviour here keeps the tranche path strictly no more
+                # permissive than the initial-entry path.
+                logging.warning(
+                    f"Tranche risk gate: could not read open orders for {symbol} "
+                    f"({e}) - blocking the tranche (fail-closed)"
+                )
+                return False, 0, (
+                    f"open-orders read failed (fail-closed): {e}"
+                )
 
             # 3. position concentration (10% cap), with quantity adjustment.
             portfolio_value = self.get_portfolio_total_value()
@@ -6367,7 +6407,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         # not retry every loop) and is recorded on the plan
                         # with its block reason.
                         allowed, gated_qty, gate_reason = (
-                            self._tranche_risk_gate(symbol, qty, current_price)
+                            self._tranche_risk_gate(
+                                symbol, qty, current_price,
+                                own_order_ids=[
+                                    str(t.get("broker_order_id"))
+                                    for t in plan.get("tranches", [])
+                                    if t.get("broker_order_id")
+                                ],
+                            )
                         )
                         if not allowed:
                             tranche['status'] = 'blocked_risk'
@@ -6412,6 +6459,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             ),
                         )
                         tranche['status'] = 'submitted'
+                        # EXEC-004 review fix: remember OUR OWN broker order
+                        # id on the plan. The duplicate-BUY guard must not
+                        # treat the plan's earlier (still open) tranche order
+                        # as a duplicate entry - that would silently kill
+                        # position scaling, and because a blocked tranche is
+                        # terminal it would kill the whole plan.
+                        if getattr(order, "id", None):
+                            tranche['broker_order_id'] = str(order.id)
                         logging.info(
                             f"Tranche {tranche['tranche_num']} submitted: "
                             f"BUY {qty} {symbol} @ ~${current_price:.2f} "
@@ -8825,6 +8880,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # (a root cause of the ledger-vs-broker quantity gap). Persist a
             # proper SUBMITTED lifecycle row instead, exactly like
             # execute_trade, so the fill poller can reconcile the fill.
+            #
+            # EXEC-004 review fix: use the current market price as the
+            # reference price instead of 0. The fill poller only updates
+            # avg_fill_price (never `price`), so a market order stored with
+            # price 0 would show 0 forever in every position/avg-price view.
+            reference_price = None
+            try:
+                quote = self.trading_client.get_market_data(symbol)
+                if quote is not None:
+                    close = quote.iloc[-1].get("close")
+                    reference_price = float(close) if close is not None else None
+            except Exception as e:
+                logging.debug(
+                    f"Portfolio ledger row: no reference price for {symbol} ({e})"
+                )
             _ledger_log_submitted(
                 getattr(self, "db", None),
                 {
@@ -8832,7 +8902,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     "symbol": symbol,
                     "side": str(getattr(order_side, "value", order_side)).upper(),
                     "qty": quantity,
-                    "price": 0,  # market order; fill price arrives via the poller
+                    "price": reference_price,  # market order: current quote
                     "pnl": None,  # NULL until the broker confirms the fill.
                     "signal": side.upper(),
                     "rsi": None,

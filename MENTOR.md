@@ -3705,8 +3705,22 @@ concentration, correlation risk, portfolio beta.
   `'blocked_risk'` on the plan with a `block_reason` — it is TERMINAL (it does
   not retry every loop) and NO order is submitted and NO ledger row is written.
 - **Fail-closed**: any unexpected exception inside the gate blocks the tranche
-  (a broker order is irreversible). Only the cash read and the open-orders read
-  swallow their exceptions, exactly like `execute_trade` does.
+  (a broker order is irreversible). Two reads are deliberately fail-OPEN
+  because the equivalent execute_trade path is fail-open there (the cash read
+  logs and continues). The OPEN-ORDERS read is fail-CLOSED, because
+  execute_trade's `has_pending_orders` BLOCKS when it cannot read open orders
+  — the tranche gate must never be more permissive than the initial entry.
+- **Enum correctness (critical)**: Alpaca's `OrderSide`/`OrderStatus` are
+  str-mixin enums whose `str()` is `"OrderSide.BUY"`, NOT `"buy"`. Comparing
+  `str(order.side).lower() == "buy"` NEVER matches a real broker order, which
+  silently disables the duplicate-entry guard. Always compare the ENUM
+  (`order.side == OrderSide.BUY`) or use `.value`. The same trap applies to
+  `OrderStatus` in any status comparison.
+- **The plan's OWN open tranche orders must not block the next tranche**:
+  after a submission the plan records `tranche['broker_order_id']`, and the
+  gate excludes those ids from the duplicate check. Tranche 1 is usually
+  still NEW when tranche 2 fires; without this, position scaling dies (and
+  because a blocked tranche is terminal, the whole plan dies with it).
 - **Deliberate deviations** (both documented in the docstring):
   - NO BUY cooldown. `mark_recent_trade` sets a 240-minute cooldown after
     tranche 1, so applying the cooldown to tranches would silently disable
@@ -3732,8 +3746,15 @@ ledger. Dry-run by default; `--apply` inserts FILLED rows for broker fills
 whose `broker_order_id` is missing from the ledger. Idempotent (a re-run
 inserts nothing). It also REPORTS per-symbol broker-vs-ledger gaps and
 ledger rows the broker does not know about (never deletes or modifies them).
-Refuses to run against a non-paper broker endpoint unless
-`RECONCILE_ALLOW_LIVE=1` is set explicitly.
+Refuses to run against a non-paper broker endpoint unless `--allow-live`
+is passed explicitly. Uses the SAME environment variables as the bot:
+`ALPACA_API_KEY` / `ALPACA_API_SECRET` (the `_ID` / `_KEY` spellings are
+accepted as a fallback), and Alpaca's enum `.value` for side/status — the
+raw `str()` of those enums is `"OrderSide.BUY"`, which would make the whole
+reconciliation a silent no-op. The DB is opened through the module
+singleton, re-pointed at `--db` BEFORE the schema is initialised, so a dry
+run does not touch the default (repo-root) database. Reconcile a COPY of the
+live ledger and stop the bot before `--apply` against the real file.
 
 ### Known footguns
 - The SCORE-002 eligibility tests fail between 20:00 and 20:59 UTC (the

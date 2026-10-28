@@ -84,18 +84,24 @@ class _FakeDF:
 
 
 def _pending_buy_order(symbol="TEST", oid="open-1"):
-    from alpaca.trading.enums import OrderStatus
+    """A REAL Alpaca order shape.
+
+    EXEC-004 review fix: OrderSide is a str-mixin enum whose str() is
+    "OrderSide.BUY" - a fake with side="buy" would NOT catch a
+    string-comparison bug in the duplicate-order guard.
+    """
+    from alpaca.trading.enums import OrderSide, OrderStatus
 
     return SimpleNamespace(
-        id=oid, symbol=symbol, side="buy", status=OrderStatus.NEW
+        id=oid, symbol=symbol, side=OrderSide.BUY, status=OrderStatus.NEW
     )
 
 
 def _open_stop_order(symbol="TEST", oid="stop-1"):
-    from alpaca.trading.enums import OrderStatus
+    from alpaca.trading.enums import OrderSide, OrderStatus
 
     return SimpleNamespace(
-        id=oid, symbol=symbol, side="sell", status=OrderStatus.NEW
+        id=oid, symbol=symbol, side=OrderSide.SELL, status=OrderStatus.NEW
     )
 
 
@@ -160,7 +166,9 @@ def _tranche_bot(db, client, **check_overrides):
     # Bind the REAL gate to the namespace so the tests exercise the
     # production gate logic against the stubbed checks above.
     ns._tranche_risk_gate = (
-        lambda symbol, qty, price: SmartTradingBot._tranche_risk_gate(ns, symbol, qty, price)
+        lambda symbol, qty, price, **kw: SmartTradingBot._tranche_risk_gate(
+            ns, symbol, qty, price, **kw
+        )
     )
     return ns
 
@@ -357,6 +365,66 @@ def test_c3_stop_loss_and_portfolio_rows_are_pollable(db):
 
 
 # --------------------------------------------------------------------------- #
+# C2. EXEC-004 independent-review regression tests (enum handling, fail-closed)
+# --------------------------------------------------------------------------- #
+
+
+def test_c4_duplicate_guard_matches_real_alpaca_order_side_enum(db):
+    """REGRESSION: Alpaca's OrderSide is a str-mixin enum whose str() is
+    "OrderSide.BUY". A guard comparing str(side) == "buy" silently NEVER
+    matches a real broker order (false safety)."""
+    client = _RecordingClient(orders=[_pending_buy_order()])
+    bot = _tranche_bot(db, client)
+    plan = bot._pending_entry_tranches["TEST"]
+    _run_tranches(bot)
+    assert client.submitted == [], "a real open BUY order must block the tranche"
+    assert plan["tranches"][1]["status"] == "blocked_risk"
+    assert "pending BUY order" in plan["tranches"][1]["block_reason"]
+
+
+def test_c5_our_own_previous_tranche_order_does_not_block(db):
+    """The plan's OWN earlier (still open) tranche BUY order must not be
+    treated as a duplicate entry - otherwise position scaling dies
+    (tranche 1 is usually still NEW when tranche 2 fires)."""
+    client = _RecordingClient(orders=[_pending_buy_order(oid="own-tranche-1")])
+    bot = _tranche_bot(db, client)
+    bot._pending_entry_tranches["TEST"]["tranches"][0]["broker_order_id"] = (
+        "own-tranche-1"
+    )
+    _run_tranches(bot)
+    assert len(client.submitted) == 1, "our own open tranche order must not block"
+
+
+def test_c6_open_orders_read_failure_blocks_fail_closed(db):
+    """execute_trade's has_pending_orders BLOCKS when the open-orders read
+    fails; the tranche gate must not be more permissive than that."""
+    class _ExplodingClient(_RecordingClient):
+        def get_orders(self):
+            raise ConnectionError("simulated broker read failure")
+
+    client = _ExplodingClient()
+    bot = _tranche_bot(db, client)
+    plan = bot._pending_entry_tranches["TEST"]
+    _run_tranches(bot)
+    assert client.submitted == []
+    assert plan["tranches"][1]["status"] == "blocked_risk"
+    assert "fail-closed" in plan["tranches"][1]["block_reason"]
+
+
+def test_c7_gate_never_raises_on_unexpected_error(db):
+    """Any unexpected error inside the gate blocks the tranche."""
+    def _boom(*_a, **_kw):
+        raise RuntimeError("boom")
+
+    client = _RecordingClient()
+    bot = _tranche_bot(db, client, check_position_limits=_boom)
+    plan = bot._pending_entry_tranches["TEST"]
+    _run_tranches(bot)
+    assert client.submitted == []
+    assert plan["tranches"][1]["status"] == "blocked_risk"
+
+
+# --------------------------------------------------------------------------- #
 # D. One-time reconciliation (scripts/reconcile_ledger_with_broker.py)
 # --------------------------------------------------------------------------- #
 
@@ -463,11 +531,81 @@ def test_d4_position_summary_is_signed_by_side():
 
 def test_d5_script_never_submits_orders():
     _require_recon()
-    """Static safety guard: no order-submission call anywhere in the script."""
+    """Static safety guard: no order-placement call anywhere in the script.
+
+    EXEC-004 review fix: a plain substring check is bypassable
+    ("submit_order(" without a dot, getattr(...)). This walks the AST and
+    rejects ANY attribute call named submit_order / cancel_order /
+    replace_order / close_order, and any import of an order-placement
+    helper.
+    """
+    import ast
+
     source = (PROJECT_ROOT / "scripts" / "reconcile_ledger_with_broker.py").read_text()
-    assert ".submit_order(" not in source
-    assert ".cancel_order(" not in source
-    assert ".replace_order(" not in source
+    tree = ast.parse(source)
+    forbidden = {"submit_order", "cancel_order", "replace_order", "close_order"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = getattr(func, "attr", None) or getattr(func, "id", None)
+            assert name not in forbidden, (
+                f"reconciliation script must never call {name}()"
+            )
+        if isinstance(node, ast.Attribute):
+            assert node.attr not in forbidden, (
+                f"reconciliation script must never touch {node.attr}"
+            )
+
+
+def test_d7_real_alpaca_enums_are_normalized_correctly():
+    """REGRESSION: OrderSide/OrderStatus are str-mixin enums whose str() is
+    "OrderSide.BUY" / "OrderStatus.FILLED". Using the raw str() made every
+    status comparison fail, which turned the whole reconciliation into a
+    SILENT NO-OP against real broker data."""
+    from alpaca.trading.enums import OrderSide, OrderStatus
+
+    order = SimpleNamespace(
+        id="b", symbol="QQQI", side=OrderSide.BUY, status=OrderStatus.FILLED,
+        qty=59, filled_qty=59, filled_avg_price=98.5,
+        created_at="2026-10-01T15:00:00Z",
+    )
+    norm = recon.normalize_broker_order(order)
+    assert norm["status"] == "filled", norm
+    assert norm["side"] == "buy", norm
+
+    # A real-enum FILLED order MUST be detected as missing.
+    missing = recon.find_unrecorded_fills([], [norm])
+    assert [o["id"] for o in missing] == ["b"], (
+        "a real Alpaca FILLED order must be planned for backfill"
+    )
+
+    # The backfill row must carry a valid side, not "ORDERSIDE.BUY".
+    row = recon.build_backfill_row(norm)
+    assert row["side"] == "BUY", row
+    assert row["status"] == "FILLED"
+
+
+def test_d8_client_uses_the_bots_environment_variable_names(monkeypatch):
+    """REGRESSION: the bot reads ALPACA_API_KEY / ALPACA_API_SECRET; the
+    script used ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY, which do not
+    exist in this deployment - the script could never run."""
+    monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
+    monkeypatch.delenv("ALPACA_API_SECRET_KEY", raising=False)
+    monkeypatch.setenv("ALPACA_API_KEY", "PKpaperkey")
+    monkeypatch.setenv("ALPACA_API_SECRET", "papersecret")
+    monkeypatch.setenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    client = recon._make_read_only_client()
+    assert client is not None
+
+
+def test_d9_live_endpoint_is_refused_without_explicit_flag(monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "AKlivething")
+    monkeypatch.setenv("ALPACA_API_SECRET", "livesecret")
+    monkeypatch.setenv("ALPACA_BASE_URL", "https://api.alpaca.markets")
+    with pytest.raises(SystemExit):
+        recon._make_read_only_client()
+    # Explicitly allowed -> no refusal.
+    assert recon._make_read_only_client(allow_live=True) is not None
 
 
 def test_d6_dry_run_writes_nothing_apply_writes(monkeypatch, tmp_path, db):
@@ -477,7 +615,9 @@ def test_d6_dry_run_writes_nothing_apply_writes(monkeypatch, tmp_path, db):
         get_orders=lambda req: [_broker_order("b", filled_qty=59, avg=98.5)],
         get_all_positions=lambda: [SimpleNamespace(symbol="QQQI", qty="98")],
     )
-    monkeypatch.setattr(recon, "_make_read_only_client", lambda: fake_client)
+    monkeypatch.setattr(
+        recon, "_make_read_only_client", lambda *a, **kw: fake_client
+    )
 
     rc = recon.main(["--db", str(db_file)])
     assert rc == 0

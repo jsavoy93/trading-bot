@@ -27,6 +27,9 @@ Safety:
     - Broker is authoritative: fills missing from the ledger are added;
       ledger rows the broker does NOT know about are only REPORTED, never
       deleted or modified.
+    - The database is opened through the SAME module-level singleton the
+      bot uses; to avoid touching the live ledger, reconcile a COPY (see
+      --db) and stop the bot before --apply against the real file.
 """
 
 from __future__ import annotations
@@ -50,12 +53,24 @@ RECONCILIATION_NOTE = "EXEC-004 ledger reconciliation (broker-authoritative back
 # ---------------------------------------------------------------------------
 
 def normalize_broker_order(order) -> Dict:
-    """Map an Alpaca order object to the small dict the planner needs."""
+    """Map an Alpaca order object to the small dict the planner needs.
+
+    EXEC-004 review fix: Alpaca's OrderSide / OrderStatus are str-mixin
+    enums whose str() is "OrderSide.BUY" / "OrderStatus.FILLED", NOT
+    "buy" / "filled". Comparing the raw str() made every status check
+    fail, which would have turned the whole reconciliation into a silent
+    no-op. Use the enum's .value (falling back to str() for plain
+    strings, e.g. in tests).
+    """
+    side = getattr(order, "side", "") or ""
+    status = getattr(order, "status", "") or ""
+    side_value = getattr(side, "value", side)
+    status_value = getattr(status, "value", status)
     return {
         "id": str(getattr(order, "id", "") or ""),
         "symbol": str(getattr(order, "symbol", "") or "").upper(),
-        "side": str(getattr(order, "side", "") or "").lower(),
-        "status": str(getattr(order, "status", "") or "").lower(),
+        "side": str(side_value).lower(),
+        "status": str(status_value).lower(),
         "qty": float(getattr(order, "qty", 0.0) or 0.0),
         "filled_qty": float(getattr(order, "filled_qty", 0.0) or 0.0),
         "filled_avg_price": float(
@@ -122,7 +137,15 @@ def summarize_positions(ledger_rows: List[Dict], broker_positions) -> List[Dict]
         if status != "FILLED":
             continue
         sym = str(r.get("symbol") or "").upper()
-        signed = float(r.get("filled_qty") or r.get("qty") or 0.0)
+        # EXEC-004 review fix: prefer the CONFIRMED filled quantity. Using
+        # `filled_qty or qty` overstated legacy rows that never recorded a
+        # fill quantity (falling back to the ordered qty) and could make the
+        # reported gap misleading. A FILLED row without a filled_qty is
+        # counted as 0 and reported as an anomaly instead of guessed.
+        filled = r.get("filled_qty")
+        if filled is None:
+            filled = 0.0
+        signed = float(filled or 0.0)
         if str(r.get("side") or "").upper() == "SELL":
             signed = -signed
         ledger_qty[sym] = ledger_qty.get(sym, 0.0) + signed
@@ -143,21 +166,31 @@ def summarize_positions(ledger_rows: List[Dict], broker_positions) -> List[Dict]
 # Broker / DB plumbing
 # ---------------------------------------------------------------------------
 
-def _make_read_only_client():
-    """Build a paper TradingClient using the same environment as the bot."""
+def _make_read_only_client(allow_live: bool = False):
+    """Build a paper TradingClient using the same environment as the bot.
+
+    EXEC-004 review fix: the bot reads ALPACA_API_KEY / ALPACA_API_SECRET
+    (see src/core/smart_bot.py and .env.example) - the _ID / _KEY names used
+    here did not exist in this deployment, so the script could never run.
+    Both spellings are accepted now.
+    """
     from alpaca.trading.client import TradingClient
 
-    key = os.getenv("ALPACA_API_KEY_ID")
-    secret = os.getenv("ALPACA_API_SECRET_KEY")
+    key = os.getenv("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY_ID")
+    secret = os.getenv("ALPACA_API_SECRET") or os.getenv("ALPACA_API_SECRET_KEY")
     base = os.getenv("ALPACA_BASE_URL", "")
     if not key or not secret:
-        raise SystemExit("Missing ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY")
-    if base and "paper" not in base and os.getenv("RECONCILE_ALLOW_LIVE") != "1":
+        raise SystemExit(
+            "Missing ALPACA_API_KEY / ALPACA_API_SECRET "
+            "(the same variables the bot uses)"
+        )
+    is_paper = (not base) or ("paper" in base)
+    if not is_paper and not allow_live:
         raise SystemExit(
             f"Refusing to run: ALPACA_BASE_URL={base!r} is not a paper "
-            f"endpoint. Set RECONCILE_ALLOW_LIVE=1 to override explicitly."
+            f"endpoint. Re-run with --allow-live if you really mean it."
         )
-    return TradingClient(key, secret, paper=not base or "paper" in base)
+    return TradingClient(key, secret, paper=is_paper)
 
 
 def _load_ledger(db) -> List[Dict]:
@@ -194,18 +227,33 @@ def main(argv=None) -> int:
         "--order-limit", type=int, default=500,
         help="Maximum closed broker orders to inspect (default 500)",
     )
+    parser.add_argument(
+        "--allow-live", action="store_true",
+        help="Allow a non-paper broker endpoint (default: refuse)",
+    )
     args = parser.parse_args(argv)
 
     load_dotenv()
 
-    from database import sqlite_db as sd
-
+    # EXEC-004 review fix: importing the module instantiates a module-level
+    # SQLiteDB singleton, whose _init_schema() touches the DEFAULT database
+    # (repo-root trading_bot.db) BEFORE we can repoint it. Repoint the
+    # module-level DB_PATH FIRST, then import, so the schema work happens
+    # against the requested database only. If the module is already
+    # imported (e.g. by the test suite), the singleton is reused - the
+    # explicit repoint below still governs every query.
     db_path = Path(args.db).resolve()
     if not db_path.exists():
         raise SystemExit(f"Database not found: {db_path}")
-    sd.DB_PATH = db_path  # point the module at the target database
 
-    client = _make_read_only_client()
+    import sys as _sys
+    _sys.modules.pop("database.sqlite_db", None)
+    from database import sqlite_db as sd
+
+    sd.DB_PATH = db_path  # point the module at the target database
+    sd.sqlite_db = sd.SQLiteDB()  # re-create the singleton against this DB
+
+    client = _make_read_only_client(allow_live=args.allow_live)
 
     from alpaca.trading.enums import QueryOrderStatus
     from alpaca.trading.requests import GetOrdersRequest
@@ -263,7 +311,7 @@ def main(argv=None) -> int:
         print("\nDRY RUN — nothing written. Re-run with --apply to backfill.")
         return 0
 
-    db = sd.SQLiteDB()
+    db = sd.sqlite_db
     inserted = apply_backfill(db, [build_backfill_row(o) for o in missing])
     print(f"\nAPPLIED: {inserted} backfill rows inserted (status FILLED).")
     if inserted != len(missing):
