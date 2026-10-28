@@ -5014,3 +5014,91 @@ Implementation complete; PR open and awaiting owner review.
   trading_bot.log. PARKING LOT (not authorized): alpaca-py TXSE tracking, empty-queue
   retry log rate-limiting, log rotation, OBS-001 cycle_funnel for empty-queue cycles.
 - **Josh's approval required**: YES (merge decision + any post-merge restart).
+
+---
+
+## 2026-10-28 14:49 UTC — EXEC-003 SHOULD-FIX #1: 2026-10-20 review fixes (a)(b)(c) on PR #109
+
+- **Backlog item / objective**: EXEC-003 deferred SHOULD-FIX #1, review-fix iteration
+  authorized by owner directive 2026-10-28 14:41 UTC ("IMPLEMENTATION AUTHORIZATION
+  (NO MERGE, NO DEPLOY)"). Fix ONLY the three defects confirmed still open by the
+  2026-10-20 targeted review of PR #109 (head ce6b92a). No strategy / threshold /
+  sizing / risk-limit changes. Paper only.
+- **Branch**: agent/exec-003-shouldfix1-fill-confirmation, clean worktree
+  /root/.openclaw/workspace/trading-bot-exec003, rebased onto origin/main f38d910
+  (PR #111 merged). Only conflict: ITERATION_PROGRESS_LOG.md — resolved by keeping
+  BOTH entries (EXEC-003 2026-10-20 then TXSE 2026-10-21, chronological order).
+  The dirty STRAT-020 checkout (/root/.openclaw/workspace/trading-bot) and the
+  deployed checkout (/root/deploy/trading-bot-main) were NOT touched.
+- **Commits**: a238ccb (rebased d3798c5, implementation), 20f5048 (rebased ce6b92a,
+  archive/log/MENTOR), plus this review-fix commit (code + tests + docs + report).
+- **Status**: IMPLEMENTED — branch pushed, PR #109 updated, NOT merged, NOT deployed,
+  smartbot-runner NOT restarted. AWAITING OWNER REVIEW.
+- **Files changed**:
+  - src/core/order_lifecycle.py — reconcile() ELEVATES on a quantity advance (a
+    sub-PARTIALLY_FILLED status becomes PARTIALLY_FILLED, or FILLED when the qty
+    is complete) so an out-of-order ACCEPTED can no longer regress a
+    PARTIALLY_FILLED row; CANCELED/EXPIRED rows now accept LATE fill evidence
+    (filled_qty + avg_fill_price advance, terminal STATUS unchanged).
+  - src/database/sqlite_db.py — NEW append-only record_order_event(trade_id,
+    broker_order_id, raw_status, note, unresolved=True): INSERTs into order_events,
+    NEVER updates the trades row; get_pending_fill_trades() now re-polls
+    CANCELED/EXPIRED rows younger than 24h (REPOLL_HORIZON_HOURS, julianday on
+    COALESCE(order_updated_at, created_at)); FILLED/REJECTED stay final; additive
+    nullable trades.notes column (tranche marker).
+  - src/core/smart_bot.py — poll_order_fills() records exactly ONE unresolved
+    order_events row (unresolved=1) for every unresolved outcome (broker
+    unreachable, unrecognized status, reconcile exception) and leaves the trades row
+    untouched; _execute_pending_entry_tranches() persists each tranche submission
+    via log_trade (status SUBMITTED, broker_order_id, pnl NULL, notes = tranche
+    number + trigger) and marks the in-memory tranche 'submitted' (never 'filled').
+    Both helpers are MODULE-LEVEL functions (record_unresolved_event /
+    persist_tranche_submission) so the contract does not depend on a concrete
+    SmartTradingBot instance.
+  - tests/test_exec_003_shouldfix1_review_fixes.py (NEW, 14 tests) — every defect
+    test fails on ce6b92a and passes after the fix.
+  - MENTOR.md (addendum), ITERATION_PROGRESS_LOG.md (this entry),
+    reports/2026-10-28_144917_exec-003-review-fixes.md, REPORT.md (rolling).
+- **Tests run / results**:
+  - tests/test_exec_003_shouldfix1_review_fixes.py → 14 passed (NEW).
+  - Baseline check: the same 14 tests against a pristine `git archive ce6b92a`
+    export → 12 failed, 2 passed (the 2 passers are "must-not-change" guards:
+    FILLED/REJECTED never re-polled, stale event on a terminal row changes
+    nothing). Every defect test therefore demonstrably fails on ce6b92a.
+  - tests/test_exec_003_fill_confirmation.py + tests/test_exec_003_1_trade_persistence.py
+    + new review-fix suite → 46 passed, 0 failed.
+  - Paper-only safety suites (test_bot002_paper_only_guard, test_brokerage_safety_enforcement,
+    test_brokerage_live_block, test_brokerage_mock) → 54 passed, 1 failed.
+    The single failure is test_main_py_installs_sigterm_handler: ENVIRONMENTAL —
+    the LIVE bot (PID 1649235) holds the lock file, so the subprocess under test
+    exits "Bot already running" instead of installing the handler. Not a regression.
+  - Full suite on the branch → 1994 passed, 37 failed, 1 skipped, 13 deselected
+    (134.76s). The 37 failures are the same pre-existing environmental set
+    (dashboard Phase-A/B/C + buy-funnel + settings-service tests that require the
+    9 GB production trading_bot.db absent from a worktree) plus the SIGTERM lock
+    test. Pristine origin/main (f38d910) baseline → 1958 passed, 38 failed; the
+    FAILED-set diff shows ZERO new failures on the branch (the single extra main
+    failure is an export artifact — a `git archive` tree has no .git directory).
+  - git diff --check → clean. No Alpaca/network calls: all broker responses mocked.
+- **Important decisions / discoveries**:
+  1. The two helpers had to become MODULE-LEVEL functions: as `self.<helper>`
+     methods they broke every test that binds SmartBot methods to a lightweight
+     stand-in object (caught by the new suite, not by inspection).
+  2. `get_pending_fill_trades()` needed the CANCELED/EXPIRED statuses INSIDE the
+    status IN-list, plus a separate horizon predicate — adding only the predicate
+    silently returned zero rows.
+  3. A quantity advance now implies at least a partial fill, so a COMPLETE advance
+    on a non-terminal row yields FILLED (sanctioned by the module contract:
+    "filled_qty >= ordered qty" is broker-reported fill evidence).
+  4. Tranche 2/3 still bypass execute_trade's safety guards (pending-order guard,
+    cooldown, concentration/sector/beta, buying power). PRE-EXISTING behaviour,
+    explicitly out of the authorized scope → follow-up, not fixed here.
+  5. Tranche 1 is still marked 'filled' in memory by execute_trade (its ledger row
+    is already a correct SUBMITTED row) → follow-up, out of the authorized scope.
+- **Remaining risks**: broker identity check (response order_id vs requested id)
+  still missing → follow-up; SHOULD-FIX #2 (in-memory tranche plan lost on
+  restart) unchanged; live-traffic validation pending by definition (zero current
+  order flow); pre-PR#100 rows still lack broker ids and stay non-pollable.
+- **Next action**: OWNER reviews PR #109 (branch pushed, test counts posted as a PR
+  comment). No merge, no deploy, no restart without explicit owner authorization.
+- **Josh's approval required**: YES (merge decision + any post-merge restart).

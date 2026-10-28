@@ -218,6 +218,126 @@ from analysis.ai_agent import ai_agent
 from core import settings_service
 from core import order_lifecycle
 
+
+# ---------------------------------------------------------------------------
+# EXEC-003 SHOULD-FIX #1 — order-lifecycle helpers
+#
+# These are MODULE-LEVEL functions on purpose: the fill poller and the
+# entry-tranche executor are frequently exercised with lightweight
+# stand-in objects in tests, and a `self.<helper>` call would couple the
+# bookkeeping contract to the concrete SmartTradingBot instance.
+# ---------------------------------------------------------------------------
+
+
+def _record_unresolved_event(
+    db,
+    row: Dict,
+    broker_order_id: Optional[str],
+    raw_status: Optional[str],
+    note: Optional[str],
+) -> bool:
+    """Append an unresolved audit event; the trades row is untouched.
+
+    Append-only companion to ``SQLiteDB.record_order_event``. Kept as
+    a small helper so the poller never has to touch the trades row for
+    an outcome it could not resolve. Never raises.
+    """
+    recorder = getattr(db, "record_order_event", None)
+    if not callable(recorder):
+        logging.warning(
+            "EXEC-003 fill poll: db has no record_order_event(); "
+            "unresolved audit event dropped"
+        )
+        return False
+    try:
+        return bool(
+            recorder(
+                trade_id=row.get("id"),
+                broker_order_id=broker_order_id,
+                raw_status=raw_status,
+                note=note,
+                unresolved=True,
+            )
+        )
+    except Exception as e:
+        logging.warning(
+            f"EXEC-003 fill poll: could not record unresolved audit "
+            f"event for trade_id={row.get('id')}: {e}"
+        )
+        return False
+
+
+def _persist_tranche_submission(
+    db,
+    session_id,
+    symbol: str,
+    qty: float,
+    price: float,
+    rsi: float,
+    tranche: Dict,
+    broker_order_id: Optional[str],
+) -> bool:
+    """Persist an entry-tranche submission as a SUBMITTED trades row.
+
+    EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix): tranche 2/3 orders
+    used to bypass the ledger entirely — the broker order id was never
+    persisted, so the fill poller could never reconcile them, and the
+    tranche was mislabelled 'filled' the moment it was submitted. This
+    writes the same SUBMITTED lifecycle row that ``execute_trade``
+    writes for tranche 1, so EVERY outstanding paper order is pollable.
+
+    SUBMITTED != FILLED: ``pnl`` stays NULL until the broker confirms
+    the fill. Never raises — a persistence failure must never mask an
+    already-submitted broker order.
+    """
+    if db is None:
+        return False
+    try:
+        if not db.is_available():
+            return False
+    except Exception:
+        return False
+    if not session_id:
+        return False
+    tranche_num = tranche.get("tranche_num")
+    trigger = tranche.get("trigger")
+    try:
+        trade_data = {
+            "session_id": session_id,
+            "symbol": symbol,
+            "side": "BUY",
+            "qty": qty,
+            "price": price,
+            "pnl": None,  # NULL until the broker confirms the fill.
+            "signal": "BUY",
+            "rsi": rsi,
+            "order_time": datetime.now(timezone.utc).isoformat(),
+            "status": "SUBMITTED",
+            "broker_order_id": broker_order_id,
+            "notes": (
+                f"EXEC-003 entry tranche {tranche_num} (trigger={trigger})"
+            ),
+        }
+        persisted = db.log_trade(session_id, trade_data)
+    except Exception as e:
+        logging.error(
+            f"PERSISTENCE FAILURE: broker accepted tranche {tranche_num} "
+            f"for {symbol} (broker_order_id={broker_order_id}) but the "
+            f"trades row was NOT persisted: {e}. The broker-side order "
+            f"remains authoritative; do NOT re-submit."
+        )
+        return False
+    if not persisted:
+        logging.error(
+            f"PERSISTENCE FAILURE: broker accepted tranche {tranche_num} "
+            f"for {symbol} (broker_order_id={broker_order_id}) but the "
+            f"trades row was NOT persisted. The broker-side order "
+            f"remains authoritative; do NOT re-submit."
+        )
+        return False
+    return True
+
+
 # Load environment variables
 load_dotenv()
 
@@ -5879,7 +5999,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
           (OBS_001_SLOT_SEMANTICS_VERSION remains 1).
         - Broker fetch failures leave the row SUBMITTED and record an
           explicitly-unresolved audit event. Missing confirmation is
-          persisted AS unresolved — never guessed.
+          persisted AS unresolved — never guessed. Every unresolved
+          poll (unreachable broker, unrecognized status, reconcile
+          exception) appends exactly ONE order_events row with
+          unresolved = 1 and leaves the trades row untouched.
 
         Returns a small summary dict for tests/telemetry. Never raises.
         """
@@ -5927,9 +6050,32 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         f"EXEC-003 fill poll: reconcile failed for "
                         f"trade_id={row.get('id')}: {e}"
                     )
+                    # EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix): a
+                    # reconcile failure is an unresolved outcome — record
+                    # a durable audit event instead of silently dropping it.
+                    _record_unresolved_event(
+                        db,
+                        row,
+                        broker_order_id,
+                        (broker_event or {}).get("raw_status"),
+                        f"reconcile failed: {e}",
+                    )
                     continue
                 if result["unresolved"]:
                     summary["unresolved"] += 1
+                    # EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix): an
+                    # unresolved poll MUST leave a durable audit trail.
+                    # The trades row is deliberately NOT modified — the
+                    # append-only order_events row is the record.
+                    _record_unresolved_event(
+                        db,
+                        row,
+                        broker_order_id,
+                        (broker_event or {}).get("raw_status"),
+                        result.get("note"),
+                    )
+                    # An unresolved outcome never changes lifecycle state.
+                    continue
                 if not result["changed"]:
                     continue
                 ok = db.update_trade_lifecycle(
@@ -6023,9 +6169,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                 time_in_force=TimeInForce.DAY,
                             )
                         )
-                        tranche['status'] = 'filled'
+                        # EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix):
+                        # a tranche order is SUBMITTED, never 'filled'.
+                        # Persist it as a SUBMITTED trades row (with the
+                        # broker order id) so the fill poller reconciles
+                        # it exactly like any other outstanding order.
+                        _persist_tranche_submission(
+                            db=getattr(self, "db", None),
+                            session_id=getattr(self, "session_id", None),
+                            symbol=symbol,
+                            qty=qty,
+                            price=current_price,
+                            rsi=current_rsi,
+                            tranche=tranche,
+                            broker_order_id=(
+                                str(order.id)
+                                if getattr(order, "id", None)
+                                else None
+                            ),
+                        )
+                        tranche['status'] = 'submitted'
                         logging.info(
-                            f"Tranche {tranche['tranche_num']} executed: "
+                            f"Tranche {tranche['tranche_num']} submitted: "
                             f"BUY {qty} {symbol} @ ~${current_price:.2f} "
                             f"({tranche['trigger']})"
                         )

@@ -6,11 +6,34 @@ import sqlite3
 import logging
 import json
 import os
+import importlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Iterable
 
 DB_PATH = Path(__file__).parent.parent.parent / "trading_bot.db"
+
+
+def _canonicalize_raw_status(raw_status: Optional[str]) -> str:
+    """Map a raw broker status token to the canonical lifecycle vocabulary.
+
+    Delegates to the pure ``order_lifecycle`` module when it is
+    importable (it has no I/O and no project dependencies). Falls back
+    to the conservative ``UNRESOLVED`` token when it is not — a status
+    is never guessed.
+    """
+    if not raw_status:
+        return "UNRESOLVED"
+    for module_path in ("core.order_lifecycle", "src.core.order_lifecycle"):
+        try:
+            module = importlib.import_module(module_path)
+        except Exception:
+            continue
+        try:
+            return module.canonicalize_raw_status(raw_status)
+        except Exception:
+            continue
+    return "UNRESOLVED"
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -566,6 +589,9 @@ class SQLiteDB:
                 #                           polls of the same partial fill)
                 #   order_updated_at TEXT — ISO timestamp of the most recent
                 #                           lifecycle update applied to the row
+                #   notes            TEXT — free-form lifecycle annotation
+                #                           (e.g. the entry-tranche number of
+                #                           a SUBMITTED tranche order)
                 #
                 # status vocabulary grows from EXEC-003.1's
                 # {SUBMITTED, FILLED, REJECTED, CANCELED, UNKNOWN} to also
@@ -576,6 +602,7 @@ class SQLiteDB:
                     "ALTER TABLE trades ADD COLUMN filled_qty REAL;",
                     "ALTER TABLE trades ADD COLUMN avg_fill_price REAL;",
                     "ALTER TABLE trades ADD COLUMN order_updated_at TEXT;",
+                    "ALTER TABLE trades ADD COLUMN notes TEXT;",
                 ):
                     try:
                         conn.execute(_col_ddl)
@@ -1099,7 +1126,7 @@ class SQLiteDB:
     # ------------------------------------------------------------------
 
     #: Non-terminal statuses eligible for fill polling. Terminal rows
-    #: (FILLED / CANCELED / REJECTED / EXPIRED) are never re-polled.
+    #: (FILLED / REJECTED) are never re-polled.
     POLLABLE_STATUSES = (
         "SUBMITTED",
         "ACCEPTED",
@@ -1107,21 +1134,51 @@ class SQLiteDB:
         "UNKNOWN",
     )
 
-    def get_pending_fill_trades(self, limit: int = 200) -> List[Dict]:
-        """Return open (non-terminal) trades rows that have a broker id.
+    #: Terminal-but-recent statuses that are still re-polled, because a
+    #: broker can report a fill AFTER a cancel/expire was recorded
+    #: (cancel-vs-fill race). The cumulative quantity may still advance;
+    #: the terminal status never changes. FILLED / REJECTED are truly
+    #: final and are never re-polled.
+    REPOLL_STATUSES = (
+        "CANCELED",
+        "EXPIRED",
+    )
 
-        Only rows with a ``broker_order_id`` are returned — a row without
-        one cannot be polled and stays explicitly unresolved until a
-        human reconciles it (never fabricated).
+    #: Horizon (hours) for re-polling CANCELED / EXPIRED rows. Older
+    #: terminal rows are considered settled and are not re-polled.
+    REPOLL_HORIZON_HOURS = 24
+
+    def get_pending_fill_trades(self, limit: int = 200) -> List[Dict]:
+        """Return trades rows eligible for fill polling.
+
+        Rows are eligible when they are non-terminal (status in
+        ``POLLABLE_STATUSES``) OR recently terminal (``REPOLL_STATUSES``
+        within ``REPOLL_HORIZON_HOURS`` of their last update) AND they
+        carry a ``broker_order_id``. A row without one cannot be polled
+        and stays explicitly unresolved until a human reconciles it
+        (never fabricated).
         """
         try:
             with _get_conn() as conn:
-                placeholders = ", ".join("?" * len(self.POLLABLE_STATUSES))
+                pollable = (*self.POLLABLE_STATUSES, *self.REPOLL_STATUSES)
+                placeholders = ", ".join("?" * len(pollable))
+                repoll_placeholders = ", ".join("?" * len(self.REPOLL_STATUSES))
                 rows = conn.execute(
                     f"SELECT * FROM trades WHERE status IN ({placeholders}) "
                     f"AND broker_order_id IS NOT NULL "
+                    f"AND ("
+                    f"status NOT IN ({repoll_placeholders}) "
+                    f"OR julianday(COALESCE(order_updated_at, created_at)) IS NULL "
+                    f"OR julianday(COALESCE(order_updated_at, created_at)) "
+                    f">= julianday('now', ?) "
+                    f") "
                     f"ORDER BY id ASC LIMIT ?",
-                    (*self.POLLABLE_STATUSES, limit),
+                    (
+                        *pollable,
+                        *self.REPOLL_STATUSES,
+                        f"-{self.REPOLL_HORIZON_HOURS} hours",
+                        limit,
+                    ),
                 ).fetchall()
                 return [_row_to_dict(r) for r in rows]
         except Exception as e:
@@ -1208,6 +1265,62 @@ class SQLiteDB:
         except Exception as e:
             logging.warning(
                 f"Exception updating trade lifecycle (trade_id={trade_id}): {e}"
+            )
+            if os.getenv("TRADING_BOT_TESTING_FATAL_PERSISTENCE") == "1":
+                raise
+            return False
+
+    def record_order_event(
+        self,
+        trade_id: int,
+        broker_order_id: Optional[str] = None,
+        raw_status: Optional[str] = None,
+        note: Optional[str] = None,
+        unresolved: bool = True,
+    ) -> bool:
+        """Append an ``order_events`` audit row WITHOUT touching the row.
+
+        Append-only audit sink for poll outcomes that must not change the
+        current-state projection: an unresolved poll (broker unreachable,
+        broker status unrecognized, reconcile exception). The ``trades``
+        row — ``status``, ``filled_qty``, ``avg_fill_price`` and
+        ``order_updated_at`` — is left byte-for-byte unchanged; this
+        method NEVER issues an UPDATE against ``trades``.
+
+        ``unresolved=True`` (the default) records the outcome with
+        ``unresolved = 1`` and the canonical status ``UNRESOLVED``, so an
+        audit trail exists for every poll that could not obtain a broker
+        answer. Nothing is ever fabricated: the row stays exactly as it
+        was until the broker actually answers.
+        """
+        canonical_status = (
+            "UNRESOLVED" if unresolved else _canonicalize_raw_status(raw_status)
+        )
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO order_events
+                        (trade_id, broker_order_id, canonical_status,
+                         raw_status, filled_qty, avg_fill_price,
+                         event_note, unresolved)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trade_id,
+                        broker_order_id,
+                        canonical_status,
+                        raw_status,
+                        None,
+                        None,
+                        note,
+                        1 if unresolved else 0,
+                    ),
+                )
+            return True
+        except Exception as e:
+            logging.warning(
+                f"Exception recording order event (trade_id={trade_id}): {e}"
             )
             if os.getenv("TRADING_BOT_TESTING_FATAL_PERSISTENCE") == "1":
                 raise

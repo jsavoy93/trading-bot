@@ -3597,3 +3597,54 @@ bookkeeping. Bookkeeping only — no strategy/safety/slot-semantics changes.
   ENVIRONMENTAL (those tests need the 9 GB production trading_bot.db); they fail
   identically on clean main. Verify regressions by stashing changes and comparing
   failure sets, not by absolute pass counts.
+
+## EXEC-003 SHOULD-FIX #1 — 2026-10-20 Review Fixes (PR #109, ce6b92a → review-fix commit)
+
+The 2026-10-20 targeted review of PR #109 (head ce6b92a) confirmed three
+defects OPEN. All three are now fixed on `agent/exec-003-shouldfix1-fill-confirmation`
+(rebased onto main @ f38d910). Read this before touching the lifecycle code again.
+
+### (a) Unresolved polls now leave a durable audit trail
+`SQLiteDB.record_order_event(trade_id, broker_order_id, raw_status, note,
+unresolved=True)` is APPEND-ONLY: it INSERTs into `order_events` and NEVER
+issues an UPDATE against `trades` (status / filled_qty / avg_fill_price /
+order_updated_at are untouched). `poll_order_fills()` calls it for every
+unresolved outcome — broker unreachable (network failure), unrecognized broker
+status, and the reconcile-exception path. Exactly ONE event row per unresolved
+poll; unresolved never mutates lifecycle state. Helper is the MODULE-LEVEL
+`_record_unresolved_event(db, row, ...)` in smart_bot.py (module-level on
+purpose: the poller is exercised with stand-in objects in tests, and
+`self.<helper>` would couple the contract to the SmartTradingBot instance).
+
+### (b) Lifecycle never regresses; late fill evidence stays reachable
+- `reconcile()` ELEVATES on a quantity advance: if filled_qty advances on a
+  NON-TERMINAL row and the event status ranks below PARTIALLY_FILLED (e.g. an
+  out-of-order ACCEPTED arriving after a partial fill), the status becomes
+  PARTIALLY_FILLED — or FILLED when the quantity is complete. Without this,
+  PARTIALLY_FILLED(4/10) + ACCEPTED(6) regressed to ACCEPTED.
+- CANCELED / EXPIRED rows accept LATE fill evidence: filled_qty and
+  avg_fill_price advance, the terminal STATUS does not change (a cancel stays a
+  cancel; only the quantity evidence is corrected).
+- `get_pending_fill_trades()` now includes CANCELED / EXPIRED rows younger than
+  24 h (`REPOLL_HORIZON_HOURS`, judged with `julianday(COALESCE(order_updated_at,
+  created_at))`). FILLED / REJECTED stay final and are never re-polled.
+
+### (c) Entry tranches 2/3 finally go through the ledger
+`_execute_pending_entry_tranches()` persists every tranche submission via
+`log_trade` (status SUBMITTED, broker_order_id, qty, price, rsi, pnl NULL,
+`notes` = "EXEC-003 entry tranche N (trigger=...)"), so the fill poller
+reconciles tranche orders exactly like any other outstanding order. The
+in-memory tranche status is now `'submitted'` — NEVER `'filled'` at submission
+time. `trades.notes` is a NEW additive nullable column (idempotent ALTER, same
+pattern as filled_qty / avg_fill_price / order_updated_at).
+Do NOT change the stop-loss or portfolio-order paths — they are follow-ups.
+
+### Follow-ups deliberately NOT fixed here (owner scope)
+- Tranche 1 is still marked `'filled'` in memory by `execute_trade` (its ledger
+  row is already a correct SUBMITTED row) — follow-up only.
+- Tranche 2/3 still bypass execute_trade's safety guards (pending-order guard,
+  cooldown, concentration/sector/beta, buying power) — pre-existing behaviour,
+  follow-up only.
+- Broker identity check (response order_id vs requested id) — cheap hardening,
+  follow-up only.
+- SHOULD-FIX #2 (in-memory tranche plan lost on restart) — unchanged.

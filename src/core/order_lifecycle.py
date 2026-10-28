@@ -23,6 +23,12 @@ Hard invariants (mirrors the EXEC-003.1 SUBMITTED != FILLED contract):
   (raw status ``filled`` or filled_qty >= ordered qty). It is NEVER
   inferred from submit_order success.
 - State transitions never regress out of a terminal state.
+- A lifecycle state never regresses on a quantity-advancing event: an
+  advance elevates any status ranked below ``PARTIALLY_FILLED`` up to
+  ``PARTIALLY_FILLED`` (or ``FILLED`` when the quantity is complete).
+- ``CANCELED`` / ``EXPIRED`` rows accept late fill evidence for the
+  cumulative quantity and average price without changing their
+  terminal status (the broker can report a fill after a cancel).
 - ``filled_qty`` is monotonic non-decreasing (cumulative per broker
   semantics); ``avg_fill_price`` only moves when ``filled_qty``
   advances (prevents double-counting repeated polls of the same
@@ -286,11 +292,58 @@ def reconcile(
         # fill quantity-wise; treat as ACCEPTED pending quantity evidence.
         effective_status = CANONICAL_ACCEPTED
 
+    # --- Elevation on quantity advance (never regress a lifecycle) -------
+    # A broker response that ADVANCES the cumulative filled quantity is
+    # direct evidence of at least a partial fill. When the event's own
+    # status ranks below PARTIALLY_FILLED (e.g. an out-of-order ACCEPTED
+    # arriving after a partial fill), elevate rather than regress the
+    # row: PARTIALLY_FILLED, or FILLED when the quantity is complete.
+    #
+    # Without this, an out-of-order ACCEPTED response regresses a
+    # PARTIALLY_FILLED row back to ACCEPTED (defect found in the
+    # 2026-10-20 targeted review of PR #109).
+    if (
+        filled_advanced
+        and current_status not in _TERMINAL
+        and _STATUS_RANK.get(effective_status, 0)
+        < _STATUS_RANK[CANONICAL_PARTIALLY_FILLED]
+    ):
+        if (
+            ordered_qty is not None
+            and ordered_qty > 0
+            and new_filled >= ordered_qty
+        ):
+            effective_status = CANONICAL_FILLED
+        else:
+            effective_status = CANONICAL_PARTIALLY_FILLED
+
     # --- Stale / out-of-order protection ---------------------------------
     if current_status in _TERMINAL and current_status != CANONICAL_FILLED:
         # Terminal non-filled states may only be upgraded by a confirmed
         # fill (broker raced cancel vs fill). Anything else is stale.
         if effective_status != CANONICAL_FILLED:
+            # EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix): a CANCELED
+            # / EXPIRED row may still receive LATE fill evidence — the
+            # broker can report a fill after the cancel/expire was
+            # recorded. The cumulative quantity and average price advance;
+            # the terminal STATUS does not change (a cancel stays a
+            # cancel, we only correct the quantity evidence).
+            if (
+                current_status in (CANONICAL_CANCELED, CANONICAL_EXPIRED)
+                and filled_advanced
+            ):
+                return {
+                    "changed": True,
+                    "status": current_status,
+                    "filled_qty": new_filled or None,
+                    "avg_fill_price": (
+                        ev_price if ev_price is not None else current_price
+                    ),
+                    "terminal": True,
+                    "unresolved": False,
+                    "note": f"{current_status} → {current_status} "
+                    f"(late fill evidence), filled_qty={new_filled}",
+                }
             return {
                 "changed": False,
                 "status": current_status,
