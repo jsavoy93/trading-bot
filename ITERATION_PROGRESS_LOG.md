@@ -5177,3 +5177,90 @@ Implementation complete; PR open and awaiting owner review.
 - **Next action**: OWNER reviews PR #109 (test counts posted as a PR comment).
   No merge, no deploy, no restart without explicit owner authorization.
 - **Josh's approval required**: YES (merge decision + any post-merge restart).
+
+---
+
+## 2026-10-28 20:13 UTC — EXEC-004: tranche / stop-loss / portfolio ledger fidelity (PR #110)
+
+- **Objective**: owner-approved improvement (Josh, 2026-10-28 20:13 UTC). PAPER
+  ONLY. (1) tranche 2/3 buys recorded in the ledger/order event log exactly like
+  tranche 1 (symptom: ledger 39 QQQI vs broker 98); (2) tranches 2/3 pass the
+  same risk checks as initial entries; (3) stop-loss and portfolio orders also go
+  through the ledger; (4) a one-time reconciliation path aligns the ledger with
+  broker positions WITHOUT placing orders. NOT authorized: merge, deploy, restart,
+  BUY-threshold relaxation, strategy/sizing/risk-limit changes, touching the
+  dirty STRAT-020 checkout.
+- **Worktree**: FRESH clean worktree `/root/.openclaw/workspace/trading-bot-exec004`
+  created off `origin/main` **9c4c2a2** (which is the merge commit of PR #109),
+  branch `agent/exec-004-tranche-ledger-fidelity`. The dirty STRAT-020 checkout
+  and `/root/deploy/trading-bot-main` were NOT touched.
+- **Commits**: implementation + tests + docs; reporting commit with the archive.
+  Pushed with a NORMAL push. PR #110 opened. NOT merged, NOT deployed,
+  smartbot-runner NOT restarted.
+- **Files changed**:
+  - src/core/smart_bot.py — NEW `_tranche_risk_gate()` (margin, duplicate open
+    BUY order, position concentration with quantity adjustment, sector,
+    correlation, beta; fail-closed); the tranche loop calls it BEFORE
+    submit_order and marks blocked tranches `'blocked_risk'` with a reason;
+    NEW module-level `_ledger_log_submitted()`; `_place_stop_loss_order()` now
+    writes a SUBMITTED ledger row (side SELL, broker_order_id, pnl NULL);
+    `_place_portfolio_order()` replaces the malformed `insert_data('trades', ...)`
+    call (keys not in the trades schema, no status/broker_order_id) with a proper
+    SUBMITTED row.
+  - scripts/reconcile_ledger_with_broker.py (NEW) — read-only-vs-broker,
+    one-time backfill of FILLED ledger rows for broker fills missing from the
+    ledger; dry-run by default, `--apply` to write; idempotent; refuses a
+    non-paper endpoint unless RECONCILE_ALLOW_LIVE=1.
+  - tests/test_exec_004_tranche_ledger_fidelity.py (NEW, 19 tests).
+  - tests/test_exec_003_shouldfix1_review_fixes.py — TWO existing tests updated
+    (`test_c1_tranche_submission_is_persisted_and_reconciled_to_filled`,
+    `test_c2_tranche_plan_is_not_re_executed_after_submission`): they drive the
+    tranche loop with a stand-in bot, so the NEW risk gate must be stubbed to
+    PASS in them; the gate itself is covered exhaustively by the new file.
+  - MENTOR.md (addendum), ITERATION_PROGRESS_LOG.md (this entry),
+    reports/2026-10-28_203500_exec-004-tranche-ledger-fidelity.md, REPORT.md.
+- **Tests run / results**:
+  - tests/test_exec_004_tranche_ledger_fidelity.py → **19 passed**.
+  - BASELINE PROOF: the same file on a pristine `git archive 9c4c2a2` export →
+    **16 failed, 3 passed** (the 3 passers are must-not-change guards:
+    a2b open stop SELL does not block, b1 tranche submission persistence,
+    c3 the new rows are pollable).
+  - All test_exec_003_* + test_exec_004_* suites → **80 passed, 0 failed**.
+  - Paper-only safety suites → **54 passed, 1 failed**:
+    test_bot002_paper_only_guard.py::test_main_py_installs_sigterm_handler —
+    ENVIRONMENTAL (the LIVE bot holds the lock file); identical on pristine main.
+  - Full suite → **2025 passed, 40 failed** (1 skipped, 13 deselected). FAILED-set
+    diff vs the previous branch baseline: 3 additional failures, all
+    `tests/test_score_002_eligibility_and_ranking.py` — PROVEN ENVIRONMENTAL and
+    TIME-OF-DAY dependent, NOT a regression: the bot's trading-window gate
+    blocks the 15:00 sim-ET hour (coarse check `15 <= hour < 16`), and the
+    current wall clock is 20:2x UTC (15:2x sim-ET). The same 3 tests fail
+    IDENTICALLY on pristine f38d910 and pristine 9c4c2a2 at the same minute, and
+    they PASSED in the earlier full-suite run at 15:45 UTC (10:45 sim-ET).
+  - No Alpaca/network calls: every broker response is scripted by a mock.
+- **Important decisions / discoveries**:
+  1. The tranche gate deliberately EXCLUDES the BUY cooldown (it would disable
+     position scaling entirely) and counts only open BUY orders as duplicates
+     (a held position carries an open stop SELL). Both documented in MENTOR.md
+     and in the gate docstring.
+  2. A blocked tranche is TERMINAL (`'blocked_risk'` + reason) — it does not
+     retry every ~15 s loop, which would spam broker API calls.
+  3. The gate FAILS CLOSED on any unexpected error.
+  4. `_place_portfolio_order`'s old `insert_data('trades', ...)` call was
+     silently broken — the key set does not exist in the trades schema. That is
+     a root cause of the ledger-vs-broker gap.
+  5. The SCORE-002 failures are a wall-clock artifact of the trading-window
+     gate, not a code defect (documented in MENTOR.md as a known footgun).
+- **Remaining risks / follow-ups**:
+  - The tranche plan is still in-memory only (SHOULD-FIX #2, open).
+  - The reconciliation backfill sets `pnl = NULL` for backfilled fills (never
+    fabricated) — a backfilled row therefore does not count as a completed
+    trade for win-rate consumers (which require pnl IS NOT NULL AND
+    status = 'FILLED'). The position gap is closed, but historical P&L is not
+    reconstructed.
+  - Backfilled rows use session_id NULL (not part of a bot session).
+  - The gate does not re-check the drawdown protection (execute_trade does not
+    gate BUY on it either) — no change from current behaviour.
+- **Next action**: OWNER reviews PR #110. NO merge, NO deploy, NO restart without
+  explicit owner authorization.
+- **Josh's approval required**: YES (merge decision + the reconciliation run).
