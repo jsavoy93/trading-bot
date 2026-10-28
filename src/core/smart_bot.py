@@ -387,6 +387,46 @@ def _persist_tranche_submission(
     return True
 
 
+def _ledger_log_submitted(
+    db,
+    trade_data: Dict,
+    context: str,
+) -> bool:
+    """Persist a SUBMITTED trades row for a broker order that was just
+    accepted outside ``execute_trade`` (stop-loss, portfolio management).
+
+    EXEC-004: every broker order must leave a ledger row with its
+    ``broker_order_id`` so the fill poller can reconcile it. Never
+    raises — a persistence failure must never mask an already-submitted
+    broker order (same contract as ``_persist_tranche_submission``).
+    """
+    if db is None:
+        return False
+    try:
+        if not db.is_available():
+            return False
+        persisted = db.log_trade(trade_data.get("session_id"), trade_data)
+    except Exception as e:
+        logging.error(
+            f"PERSISTENCE FAILURE: broker accepted a {context} order "
+            f"({trade_data.get('symbol')}, broker_order_id="
+            f"{trade_data.get('broker_order_id')}) but the trades row was "
+            f"NOT persisted: {e}. The broker-side order remains "
+            f"authoritative; do NOT re-submit."
+        )
+        return False
+    if not persisted:
+        logging.error(
+            f"PERSISTENCE FAILURE: broker accepted a {context} order "
+            f"({trade_data.get('symbol')}, broker_order_id="
+            f"{trade_data.get('broker_order_id')}) but the trades row was "
+            f"NOT persisted. The broker-side order remains authoritative; "
+            f"do NOT re-submit."
+        )
+        return False
+    return True
+
+
 # Load environment variables
 load_dotenv()
 
@@ -6175,6 +6215,138 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.warning(f"EXEC-003 fill poll failed (non-fatal): {e}")
             return summary
 
+    def _tranche_risk_gate(self, symbol: str, quantity: int, price: float,
+                           own_order_ids=None):
+        """EXEC-004: apply the SAME risk checks to entry tranches 2/3 that
+        ``execute_trade`` applies to an initial BUY.
+
+        Checks (mirroring the execute_trade BUY path, same order):
+          1. margin      — block all buys when account cash < 0;
+          2. open BUY orders for the symbol (duplicate-entry guard);
+          3. position concentration (10% cap) — with quantity adjustment;
+          4. sector concentration;
+          5. correlation risk;
+          6. portfolio beta exposure.
+
+        Deliberate deviations, both documented and fail-safe:
+          - NO BUY cooldown: a tranche is a continuation of an entry plan
+            that already passed the full gate; ``mark_recent_trade`` sets a
+            240-minute cooldown after tranche 1, so applying the cooldown
+            here would silently disable position scaling entirely.
+          - The pending-order check considers only open BUY orders for the
+            same symbol: held positions normally carry an open stop-loss
+            SELL order, which must not block a tranche BUY.
+          - The plan's OWN earlier tranche orders (``own_order_ids``) are
+            excluded from the duplicate check: tranche 1 is often still
+            NEW/PARTIALLY_FILLED when tranche 2 fires, and treating our own
+            order as a duplicate would silently kill position scaling.
+
+        Returns ``(allowed, adjusted_quantity, reason)``. NEVER raises —
+        any unexpected error fails CLOSED (the tranche is blocked), because
+        a broker order is irreversible. Two deliberate fail-OPEN reads remain,
+        each matching the equivalent execute_trade behaviour: the account-cash
+        read (execute_trade logs and continues) and the account/portfolio
+        value reads. The open-orders read, by contrast, FAILS CLOSED, because
+        execute_trade's ``has_pending_orders`` blocks when it cannot read
+        open orders.
+        """
+        try:
+            # 1. margin — same rule as execute_trade: block all buys if cash < 0.
+            try:
+                account = self.trading_client.get_account()
+                cash = float(getattr(account, "cash", 0.0) or 0.0)
+                if cash < 0:
+                    return False, 0, f"margin: cash ${cash:.2f} < 0"
+            except Exception as e:
+                # Same as execute_trade: log and continue on a read failure.
+                logging.warning(
+                    f"Tranche risk gate: could not read account cash for "
+                    f"{symbol} ({e}) - continuing (matches execute_trade)"
+                )
+
+            # 2. open BUY orders for the same symbol (duplicate-entry guard).
+            #
+            # NOTE (EXEC-004 review fix): Alpaca's OrderSide is a str-mixin
+            # enum whose str() is "OrderSide.BUY" — comparing str(side) to
+            # "buy" NEVER matches a real broker order. Compare the enum
+            # itself (or its .value), exactly like the rest of the codebase.
+            #
+            # The plan's OWN earlier tranche orders are excluded: tranche 1
+            # is often still NEW/PARTIALLY_FILLED when tranche 2 fires, and
+            # treating our own order as a duplicate would silently kill
+            # position scaling (and, because a blocked tranche is terminal,
+            # the whole plan with it).
+            own_order_ids = {
+                str(oid)
+                for oid in (own_order_ids or [])
+                if oid
+            }
+            try:
+                from alpaca.trading.enums import OrderSide, OrderStatus
+                open_statuses = {
+                    OrderStatus.NEW, OrderStatus.ACCEPTED, OrderStatus.PENDING_NEW,
+                    OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL,
+                    OrderStatus.PENDING_REPLACE, OrderStatus.PENDING_REVIEW,
+                }
+                for o in self.trading_client.get_orders():
+                    if (
+                        str(getattr(o, "symbol", "")).upper() == symbol.upper()
+                        and getattr(o, "status", None) in open_statuses
+                        and getattr(o, "side", None) == OrderSide.BUY
+                        and str(getattr(o, "id", "")) not in own_order_ids
+                    ):
+                        return False, 0, (
+                            f"pending BUY order {getattr(o, 'id', '?')} "
+                            f"already open for {symbol}"
+                        )
+            except Exception as e:
+                # FAIL CLOSED: execute_trade's equivalent (has_pending_orders)
+                # blocks when the open-orders read fails. Matching that
+                # behaviour here keeps the tranche path strictly no more
+                # permissive than the initial-entry path.
+                logging.warning(
+                    f"Tranche risk gate: could not read open orders for {symbol} "
+                    f"({e}) - blocking the tranche (fail-closed)"
+                )
+                return False, 0, (
+                    f"open-orders read failed (fail-closed): {e}"
+                )
+
+            # 3. position concentration (10% cap), with quantity adjustment.
+            portfolio_value = self.get_portfolio_total_value()
+            within_limits, adjusted_quantity, position_percentage = (
+                self.check_position_limits(symbol, quantity, price, portfolio_value)
+            )
+            if adjusted_quantity <= 0:
+                return False, 0, (
+                    f"position limit: projected {position_percentage:.1f}% "
+                    f"exceeds the 10% cap"
+                )
+            quantity = min(quantity, adjusted_quantity)
+
+            # 4. sector concentration.
+            passes_sector, _cur, _proj, sector_reason = (
+                self.check_sector_concentration(symbol, quantity * price)
+            )
+            if not passes_sector:
+                return False, 0, f"sector: {sector_reason}"
+
+            # 5. correlation risk.
+            passes_corr, _max_corr, _corr_syms, corr_reason = (
+                self.check_correlation_risk(symbol)
+            )
+            if not passes_corr:
+                return False, 0, f"correlation: {corr_reason}"
+
+            # 6. portfolio beta exposure.
+            passes_beta, _beta, beta_reason = self.check_beta_exposure()
+            if not passes_beta:
+                return False, 0, f"beta: {beta_reason}"
+
+            return True, quantity, "passed"
+        except Exception as e:
+            return False, 0, f"risk-gate error (fail-closed): {e}"
+
     def _execute_pending_entry_tranches(self):
         """
         Check pending entry tranches (tranches 2 and 3) created by execute_trade()
@@ -6229,6 +6401,36 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     if qty < 1:
                         continue
                     try:
+                        # EXEC-004: tranches 2/3 must pass the same risk
+                        # checks as the initial entry before any order is
+                        # submitted. A blocked tranche is terminal (it does
+                        # not retry every loop) and is recorded on the plan
+                        # with its block reason.
+                        allowed, gated_qty, gate_reason = (
+                            self._tranche_risk_gate(
+                                symbol, qty, current_price,
+                                own_order_ids=[
+                                    str(t.get("broker_order_id"))
+                                    for t in plan.get("tranches", [])
+                                    if t.get("broker_order_id")
+                                ],
+                            )
+                        )
+                        if not allowed:
+                            tranche['status'] = 'blocked_risk'
+                            tranche['block_reason'] = gate_reason
+                            logging.info(
+                                f"Tranche {tranche['tranche_num']} for {symbol} "
+                                f"BLOCKED by risk gate: {gate_reason}"
+                            )
+                            continue
+                        qty = gated_qty
+                        if qty < 1:
+                            tranche['status'] = 'blocked_risk'
+                            tranche['block_reason'] = (
+                                f"risk gate adjusted quantity to {qty} < 1"
+                            )
+                            continue
                         order = self.trading_client.submit_order(
                             order_data=MarketOrderRequest(
                                 symbol=symbol,
@@ -6257,6 +6459,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             ),
                         )
                         tranche['status'] = 'submitted'
+                        # EXEC-004 review fix: remember OUR OWN broker order
+                        # id on the plan. The duplicate-BUY guard must not
+                        # treat the plan's earlier (still open) tranche order
+                        # as a duplicate entry - that would silently kill
+                        # position scaling, and because a blocked tranche is
+                        # terminal it would kill the whole plan.
+                        if getattr(order, "id", None):
+                            tranche['broker_order_id'] = str(order.id)
                         logging.info(
                             f"Tranche {tranche['tranche_num']} submitted: "
                             f"BUY {qty} {symbol} @ ~${current_price:.2f} "
@@ -8610,6 +8820,31 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             order = self.trading_client.submit_order(order_data=stop_order)
 
+            # EXEC-004: record the stop-loss order in the ledger exactly
+            # like any other broker order — a SUBMITTED trades row with the
+            # broker_order_id so the fill poller can reconcile the fill.
+            # Recording only: the placement logic above is unchanged.
+            _ledger_log_submitted(
+                getattr(self, "db", None),
+                {
+                    "session_id": getattr(self, "session_id", None),
+                    "symbol": symbol,
+                    "side": "SELL",
+                    "qty": qty,
+                    "price": stop_price,
+                    "pnl": None,  # NULL until the broker confirms the fill.
+                    "signal": "SELL",
+                    "rsi": None,
+                    "order_time": datetime.now(timezone.utc).isoformat(),
+                    "status": "SUBMITTED",
+                    "broker_order_id": (
+                        str(order.id) if getattr(order, "id", None) else None
+                    ),
+                    "notes": f"STOP-LOSS stop=${stop_price:.2f}",
+                },
+                context="STOP-LOSS",
+            )
+
             logging.info(f"🛑 STOP-LOSS ORDER PLACED: {symbol} - Stop: ${stop_price:.2f}, Qty: {qty}")
             return True
 
@@ -8638,20 +8873,48 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.info("-"*40)
 
             # Log to database if available
-            if self.db.is_available():
-                trade_data = {
-                    'symbol': symbol,
-                    'signal': side.upper(),
-                    'price': 0,  # Will be filled at market
-                    'quantity': quantity,
-                    'reason': f"Portfolio Management: {reason}",
-                    'rsi': 0,
-                    'sma_fast': 0,
-                    'sma_slow': 0,
-                    'timestamp': datetime.now().isoformat()
-                }
-
-                self.db.insert_data('trades', trade_data)
+            # EXEC-004: the old insert_data('trades', ...) call wrote a row
+            # with keys that do not exist in the trades schema ('quantity',
+            # 'reason', 'timestamp', no status/broker_order_id) — the insert
+            # failed silently and portfolio orders never reached the ledger
+            # (a root cause of the ledger-vs-broker quantity gap). Persist a
+            # proper SUBMITTED lifecycle row instead, exactly like
+            # execute_trade, so the fill poller can reconcile the fill.
+            #
+            # EXEC-004 review fix: use the current market price as the
+            # reference price instead of 0. The fill poller only updates
+            # avg_fill_price (never `price`), so a market order stored with
+            # price 0 would show 0 forever in every position/avg-price view.
+            reference_price = None
+            try:
+                quote = self.trading_client.get_market_data(symbol)
+                if quote is not None:
+                    close = quote.iloc[-1].get("close")
+                    reference_price = float(close) if close is not None else None
+            except Exception as e:
+                logging.debug(
+                    f"Portfolio ledger row: no reference price for {symbol} ({e})"
+                )
+            _ledger_log_submitted(
+                getattr(self, "db", None),
+                {
+                    "session_id": getattr(self, "session_id", None),
+                    "symbol": symbol,
+                    "side": str(getattr(order_side, "value", order_side)).upper(),
+                    "qty": quantity,
+                    "price": reference_price,  # market order: current quote
+                    "pnl": None,  # NULL until the broker confirms the fill.
+                    "signal": side.upper(),
+                    "rsi": None,
+                    "order_time": datetime.now(timezone.utc).isoformat(),
+                    "status": "SUBMITTED",
+                    "broker_order_id": (
+                        str(order.id) if getattr(order, "id", None) else None
+                    ),
+                    "notes": f"Portfolio Management: {reason}",
+                },
+                context="PORTFOLIO",
+            )
 
             # Send email notification for portfolio actions
             try:

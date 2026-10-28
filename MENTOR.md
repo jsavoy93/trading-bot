@@ -3685,3 +3685,82 @@ per day. Now:
 whose `order_updated_at` AND `created_at` are both NULL has no usable age: it is
 now treated as OLD and is NOT re-polled (the `IS NULL` pass-through is gone).
 Non-terminal rows are unaffected by the horizon.
+
+## EXEC-004 (2026-10-28, PR #110) — Tranche / stop-loss / portfolio ledger fidelity
+
+Owner-approved scope (PAPER ONLY): tranches 2/3 recorded like tranche 1, tranches
+2/3 pass the same risk checks as an initial entry, stop-loss + portfolio orders go
+through the ledger, and a one-time reconciliation path aligns the ledger with the
+broker WITHOUT placing orders. No strategy, threshold, sizing or risk-limit
+changes; BUY thresholds unchanged.
+
+### 1. Tranches 2/3 now pass a risk gate before ANY order is submitted
+`SmartTradingBot._tranche_risk_gate(symbol, quantity, price)` applies the SAME
+checks as the `execute_trade` BUY path, in the same order:
+margin (cash < 0 → block), open BUY orders for the symbol (duplicate-entry
+guard), position concentration (10% cap, quantity may be REDUCED), sector
+concentration, correlation risk, portfolio beta.
+
+- Returns `(allowed, adjusted_quantity, reason)`. A blocked tranche is marked
+  `'blocked_risk'` on the plan with a `block_reason` — it is TERMINAL (it does
+  not retry every loop) and NO order is submitted and NO ledger row is written.
+- **Fail-closed**: any unexpected exception inside the gate blocks the tranche
+  (a broker order is irreversible). Two reads are deliberately fail-OPEN
+  because the equivalent execute_trade path is fail-open there (the cash read
+  logs and continues). The OPEN-ORDERS read is fail-CLOSED, because
+  execute_trade's `has_pending_orders` BLOCKS when it cannot read open orders
+  — the tranche gate must never be more permissive than the initial entry.
+- **Enum correctness (critical)**: Alpaca's `OrderSide`/`OrderStatus` are
+  str-mixin enums whose `str()` is `"OrderSide.BUY"`, NOT `"buy"`. Comparing
+  `str(order.side).lower() == "buy"` NEVER matches a real broker order, which
+  silently disables the duplicate-entry guard. Always compare the ENUM
+  (`order.side == OrderSide.BUY`) or use `.value`. The same trap applies to
+  `OrderStatus` in any status comparison.
+- **The plan's OWN open tranche orders must not block the next tranche**:
+  after a submission the plan records `tranche['broker_order_id']`, and the
+  gate excludes those ids from the duplicate check. Tranche 1 is usually
+  still NEW when tranche 2 fires; without this, position scaling dies (and
+  because a blocked tranche is terminal, the whole plan dies with it).
+- **Deliberate deviations** (both documented in the docstring):
+  - NO BUY cooldown. `mark_recent_trade` sets a 240-minute cooldown after
+    tranche 1, so applying the cooldown to tranches would silently disable
+    position scaling entirely.
+  - The duplicate-order check considers only open **BUY** orders for the same
+    symbol: a held position normally carries an open stop-loss SELL order,
+    which must not block a tranche BUY.
+
+### 2. Stop-loss and portfolio-management orders go through the ledger
+Both paths previously left NO usable ledger row: the stop-loss path wrote
+nothing at all, and `_place_portfolio_order` wrote a row with keys that do not
+exist in the `trades` schema (`quantity`, `reason`, `timestamp`, no status, no
+broker_order_id) — a silent root cause of the ledger-vs-broker quantity gap.
+Both now write a SUBMITTED row through `log_trade` (new module-level helper
+`_ledger_log_submitted`), carrying `broker_order_id`, so the existing fill
+poller reconciles them like any other order. `pnl` stays NULL until a fill is
+confirmed. Placement logic itself is unchanged.
+
+### 3. One-time reconciliation: scripts/reconcile_ledger_with_broker.py
+Read-only against the broker (get_orders / get_all_positions only — the file
+contains NO submit/cancel/replace call), writes only to the local SQLite
+ledger. Dry-run by default; `--apply` inserts FILLED rows for broker fills
+whose `broker_order_id` is missing from the ledger. Idempotent (a re-run
+inserts nothing). It also REPORTS per-symbol broker-vs-ledger gaps and
+ledger rows the broker does not know about (never deletes or modifies them).
+Refuses to run against a non-paper broker endpoint unless `--allow-live`
+is passed explicitly. Uses the SAME environment variables as the bot:
+`ALPACA_API_KEY` / `ALPACA_API_SECRET` (the `_ID` / `_KEY` spellings are
+accepted as a fallback), and Alpaca's enum `.value` for side/status — the
+raw `str()` of those enums is `"OrderSide.BUY"`, which would make the whole
+reconciliation a silent no-op. The DB is opened through the module
+singleton, re-pointed at `--db` BEFORE the schema is initialised, so a dry
+run does not touch the default (repo-root) database. Reconcile a COPY of the
+live ledger and stop the bot before `--apply` against the real file.
+
+### Known footguns
+- The SCORE-002 eligibility tests fail between 20:00 and 20:59 UTC (the
+  bot's trading-window gate blocks the 15:00 sim-ET hour because the
+  coarse hour check `15 <= hour < 16` also covers 15:00-15:44). This is
+  TIME-OF-DAY dependent and unrelated to any change — verify regressions by
+  comparing failure sets at the same wall-clock time, not by absolute counts.
+- The tranche plan lives in memory only (`self._pending_entry_tranches`): a
+  restart loses the plan (SHOULD-FIX #2 from the EXEC-003 review, still open).

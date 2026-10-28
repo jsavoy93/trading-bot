@@ -513,6 +513,28 @@ def test_c1_tranche_submission_is_persisted_and_reconciled_to_filled(db):
         calculate_indicators=lambda data: data,
     )
 
+    # EXEC-004 (2026-10-28): tranches 2/3 now pass the same risk checks
+    # as an initial entry before any order is submitted. These two tests
+    # exercise SUBMISSION persistence, so the risk gate is stubbed to
+    # PASS here (all-healthy account/portfolio). The gate itself is
+    # covered exhaustively in tests/test_exec_004_tranche_ledger_fidelity.py.
+    from types import SimpleNamespace as _NS
+    # EXEC-004 review fix: the gate reads the cash and the open orders from
+    # self.trading_client (not from the bot), so the BROKER stand-in must
+    # provide them - setting them on `fake` was dead code.
+    broker.get_account = lambda: _NS(cash=10_000.0, portfolio_value=100_000.0)
+    broker.get_orders = lambda: []
+    fake.get_portfolio_total_value = lambda: 100_000.0
+    fake.check_position_limits = lambda s, q, pr, pv: (True, q, 5.0)
+    fake.check_sector_concentration = lambda s, d: (True, 0.0, 0.0, "ok")
+    fake.check_correlation_risk = lambda s: (True, 0.0, [], "ok")
+    fake.check_beta_exposure = lambda: (True, 1.0, "ok")
+    fake._tranche_risk_gate = (
+        lambda s, q, pr, **kw: SmartTradingBot._tranche_risk_gate(
+            fake, s, q, pr, **kw
+        )
+    )
+
     SmartTradingBot._execute_pending_entry_tranches.__get__(fake, type(fake))()
 
     # Only the tranche whose trigger fired is submitted (never tranche 3).
@@ -575,6 +597,28 @@ def test_c2_tranche_plan_is_not_re_executed_after_submission(db):
         _pending_entry_tranches={"TEST": plan},
         get_market_data=lambda symbol: df,
         calculate_indicators=lambda data: data,
+    )
+
+    # EXEC-004 (2026-10-28): tranches 2/3 now pass the same risk checks
+    # as an initial entry before any order is submitted. These two tests
+    # exercise SUBMISSION persistence, so the risk gate is stubbed to
+    # PASS here (all-healthy account/portfolio). The gate itself is
+    # covered exhaustively in tests/test_exec_004_tranche_ledger_fidelity.py.
+    from types import SimpleNamespace as _NS
+    # EXEC-004 review fix: the gate reads the cash and the open orders from
+    # self.trading_client (not from the bot), so the BROKER stand-in must
+    # provide them - setting them on `fake` was dead code.
+    broker.get_account = lambda: _NS(cash=10_000.0, portfolio_value=100_000.0)
+    broker.get_orders = lambda: []
+    fake.get_portfolio_total_value = lambda: 100_000.0
+    fake.check_position_limits = lambda s, q, pr, pv: (True, q, 5.0)
+    fake.check_sector_concentration = lambda s, d: (True, 0.0, 0.0, "ok")
+    fake.check_correlation_risk = lambda s: (True, 0.0, [], "ok")
+    fake.check_beta_exposure = lambda: (True, 1.0, "ok")
+    fake._tranche_risk_gate = (
+        lambda s, q, pr, **kw: SmartTradingBot._tranche_risk_gate(
+            fake, s, q, pr, **kw
+        )
     )
 
     bound = SmartTradingBot._execute_pending_entry_tranches.__get__(fake, type(fake))
