@@ -216,6 +216,176 @@ sys.path.append(str(Path(__file__).parent.parent))
 from database.simple_rest import simple_rest
 from analysis.ai_agent import ai_agent
 from core import settings_service
+from core import order_lifecycle
+
+
+# ---------------------------------------------------------------------------
+# EXEC-003 SHOULD-FIX #1 — order-lifecycle helpers
+#
+# These are MODULE-LEVEL functions on purpose: the fill poller and the
+# entry-tranche executor are frequently exercised with lightweight
+# stand-in objects in tests, and a `self.<helper>` call would couple the
+# bookkeeping contract to the concrete SmartTradingBot instance.
+# ---------------------------------------------------------------------------
+
+#: Deterministic outcome classes for an UNRESOLVED poll. The class is
+#: stored verbatim in ``order_events.event_note`` so the next poll can
+#: compare against it and decide whether the outcome CHANGED. The class
+#: must stay deterministic: it must not embed error text (which varies
+#: between polls) or a timestamp.
+OUTCOME_BROKER_UNREACHABLE = "broker-unreachable"
+OUTCOME_RECONCILE_EXCEPTION = "reconcile-exception"
+OUTCOME_UNRECOGNIZED_STATUS_PREFIX = "unrecognized-status:"
+
+
+def _unresolved_outcome_class(
+    broker_event: Optional[Dict],
+    fetch_failed: bool,
+) -> str:
+    """Classify an unresolved poll outcome deterministically.
+
+    ``broker-unreachable``      — the broker could not be reached (fetch
+                                  raised, or it returned nothing usable).
+    ``unrecognized-status:<x>`` — the broker answered with a raw status
+                                  this bot does not recognize (the raw
+                                  token is embedded so the outcome is
+                                  still distinguishable).
+    ``reconcile-exception``     — reconciliation itself failed.
+    """
+    if fetch_failed or broker_event is None:
+        return OUTCOME_BROKER_UNREACHABLE
+    if broker_event.get("canonical_status") == order_lifecycle.CANONICAL_UNRESOLVED:
+        raw = broker_event.get("raw_status") or "none"
+        return f"{OUTCOME_UNRECOGNIZED_STATUS_PREFIX}{raw}"
+    return OUTCOME_BROKER_UNREACHABLE
+
+
+def _record_unresolved_event(
+    db,
+    row: Dict,
+    broker_order_id: Optional[str],
+    raw_status: Optional[str],
+    outcome_class: str,
+) -> bool:
+    """Append an unresolved audit event ONLY when the outcome changed.
+
+    An unresolved poll repeats on every analysis loop (~10-17 s).
+    Writing one ``order_events`` row per poll floods the audit table, so
+    a row is written only when the outcome class differs from the
+    order's MOST RECENT ``order_events`` row. The comparison is a DB
+    lookup (newest first), so it survives a process restart — there is
+    no in-memory-only state.
+
+    ``event_note`` carries the outcome class verbatim (that is the
+    comparison key). ``raw_status`` keeps the broker's raw status token
+    when the broker answered.
+
+    Resolved transitions are unaffected: they are still written by
+    ``update_trade_lifecycle`` exactly as before.
+
+    Never raises.
+    """
+    recorder = getattr(db, "record_order_event", None)
+    if not callable(recorder):
+        logging.warning(
+            "EXEC-003 fill poll: db has no record_order_event(); "
+            "unresolved audit event dropped"
+        )
+        return False
+    try:
+        last_lookup = getattr(db, "get_last_order_event", None)
+        if callable(last_lookup):
+            last = last_lookup(row.get("id"))
+            if last is not None and (last.get("event_note") or "") == outcome_class:
+                # Same outcome as the previous poll — no new audit row.
+                return False
+        return bool(
+            recorder(
+                trade_id=row.get("id"),
+                broker_order_id=broker_order_id,
+                raw_status=raw_status,
+                note=outcome_class,
+                unresolved=True,
+            )
+        )
+    except Exception as e:
+        logging.warning(
+            f"EXEC-003 fill poll: could not record unresolved audit "
+            f"event for trade_id={row.get('id')}: {e}"
+        )
+        return False
+
+
+def _persist_tranche_submission(
+    db,
+    session_id,
+    symbol: str,
+    qty: float,
+    price: float,
+    rsi: float,
+    tranche: Dict,
+    broker_order_id: Optional[str],
+) -> bool:
+    """Persist an entry-tranche submission as a SUBMITTED trades row.
+
+    EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix): tranche 2/3 orders
+    used to bypass the ledger entirely — the broker order id was never
+    persisted, so the fill poller could never reconcile them, and the
+    tranche was mislabelled 'filled' the moment it was submitted. This
+    writes the same SUBMITTED lifecycle row that ``execute_trade``
+    writes for tranche 1, so EVERY outstanding paper order is pollable.
+
+    SUBMITTED != FILLED: ``pnl`` stays NULL until the broker confirms
+    the fill. Never raises — a persistence failure must never mask an
+    already-submitted broker order.
+    """
+    if db is None:
+        return False
+    try:
+        if not db.is_available():
+            return False
+    except Exception:
+        return False
+    if not session_id:
+        return False
+    tranche_num = tranche.get("tranche_num")
+    trigger = tranche.get("trigger")
+    try:
+        trade_data = {
+            "session_id": session_id,
+            "symbol": symbol,
+            "side": "BUY",
+            "qty": qty,
+            "price": price,
+            "pnl": None,  # NULL until the broker confirms the fill.
+            "signal": "BUY",
+            "rsi": rsi,
+            "order_time": datetime.now(timezone.utc).isoformat(),
+            "status": "SUBMITTED",
+            "broker_order_id": broker_order_id,
+            "notes": (
+                f"EXEC-003 entry tranche {tranche_num} (trigger={trigger})"
+            ),
+        }
+        persisted = db.log_trade(session_id, trade_data)
+    except Exception as e:
+        logging.error(
+            f"PERSISTENCE FAILURE: broker accepted tranche {tranche_num} "
+            f"for {symbol} (broker_order_id={broker_order_id}) but the "
+            f"trades row was NOT persisted: {e}. The broker-side order "
+            f"remains authoritative; do NOT re-submit."
+        )
+        return False
+    if not persisted:
+        logging.error(
+            f"PERSISTENCE FAILURE: broker accepted tranche {tranche_num} "
+            f"for {symbol} (broker_order_id={broker_order_id}) but the "
+            f"trades row was NOT persisted. The broker-side order "
+            f"remains authoritative; do NOT re-submit."
+        )
+        return False
+    return True
+
 
 # Load environment variables
 load_dotenv()
@@ -5850,6 +6020,161 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             self.errors_count += 1
             return False
 
+    # ------------------------------------------------------------------
+    # EXEC-003 SHOULD-FIX #1: order fill confirmation (bookkeeping only)
+    # ------------------------------------------------------------------
+
+    def poll_order_fills(self) -> Dict[str, int]:
+        """Poll broker status for outstanding trades rows and persist
+        confirmed lifecycle transitions.
+
+        Contract (extends the merged EXEC-003.1 PR #100 contract):
+
+        - Reads only rows with status IN (SUBMITTED, ACCEPTED,
+          PARTIALLY_FILLED, UNKNOWN) AND a broker_order_id. Terminal
+          rows are never re-polled; rows without a broker id stay
+          explicitly unresolved (never fabricated).
+        - A row is marked FILLED only when the broker confirms it
+          (raw status 'filled' / cumulative filled_qty >= ordered qty).
+          Submission is NEVER classified as a confirmed fill.
+        - Repeated polls of the same state are idempotent: filled_qty
+          is cumulative and monotonic, avg_fill_price moves only when
+          filled_qty advances (no double counting), and stale /
+          out-of-order broker responses are ignored by
+          order_lifecycle.reconcile.
+        - This method performs ZERO trading actions: it does not
+          submit, cancel, replace, or size anything, and does not
+          touch trades_executed / slot accounting
+          (OBS_001_SLOT_SEMANTICS_VERSION remains 1).
+        - Broker fetch failures leave the row SUBMITTED and record an
+          explicitly-unresolved audit event. Missing confirmation is
+          persisted AS unresolved — never guessed. Every unresolved
+          poll (unreachable broker, unrecognized status, reconcile
+          exception) is AUDITED with an order_events row carrying
+          unresolved = 1, and leaves the trades row untouched (see the
+          next bullet for when a new row is actually written).
+        - An unresolved poll repeats on every analysis loop (~10-17 s).
+          The audit row is written ONLY when the OUTCOME CHANGED for
+          that order: the deterministic outcome class
+          (broker-unreachable / unrecognized-status:<raw> /
+          reconcile-exception, stored in order_events.event_note) is
+          compared against the order's most recent order_events row,
+          read from the DB so the decision survives a restart.
+          Repeated identical outcomes write NO new row. Resolved
+          transitions are still recorded exactly as before.
+
+        Returns a small summary dict for tests/telemetry. Never raises.
+        """
+        summary = {
+            "polled": 0,
+            "updated": 0,
+            "unresolved": 0,
+            "errors": 0,
+        }
+        try:
+            db = getattr(self, "db", None)
+            if db is None or not db.is_available():
+                return summary
+            pending = db.get_pending_fill_trades()
+            if not pending:
+                return summary
+            fetch_order = getattr(self.trading_client, "get_order_by_id", None)
+            for row in pending:
+                broker_order_id = row.get("broker_order_id")
+                if not broker_order_id:
+                    continue  # defensive; get_pending_fill_trades filters
+                summary["polled"] += 1
+                broker_event = None
+                fetch_failed = False
+                try:
+                    if callable(fetch_order):
+                        broker_event = order_lifecycle.extract_broker_event(
+                            fetch_order(broker_order_id)
+                        )
+                    else:
+                        # Broker client without a single-order fetch API:
+                        # explicitly unresolved, never fabricated.
+                        broker_event = None
+                except Exception as e:
+                    summary["errors"] += 1
+                    fetch_failed = True
+                    logging.warning(
+                        f"EXEC-003 fill poll: broker fetch failed for "
+                        f"order {broker_order_id} (trade_id={row.get('id')}): {e}"
+                    )
+                    broker_event = None
+                try:
+                    result = order_lifecycle.reconcile(row, broker_event)
+                except Exception as e:
+                    summary["errors"] += 1
+                    logging.warning(
+                        f"EXEC-003 fill poll: reconcile failed for "
+                        f"trade_id={row.get('id')}: {e}"
+                    )
+                    # EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix): a
+                    # reconcile failure is an unresolved outcome — record
+                    # a durable audit event instead of silently dropping it.
+                    _record_unresolved_event(
+                        db,
+                        row,
+                        broker_order_id,
+                        (broker_event or {}).get("raw_status"),
+                        OUTCOME_RECONCILE_EXCEPTION,
+                    )
+                    continue
+                if result["unresolved"]:
+                    summary["unresolved"] += 1
+                    # EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix): an
+                    # unresolved poll MUST leave a durable audit trail.
+                    # The trades row is deliberately NOT modified — the
+                    # append-only order_events row is the record.
+                    #
+                    # EXEC-003 SHOULD-FIX #1 follow-up (2026-10-28): an
+                    # unresolved poll repeats every loop (~10-17 s). The
+                    # audit row is written ONLY when the outcome class
+                    # CHANGED for this order (compared against the
+                    # order's most recent order_events row, read from the
+                    # DB so the decision survives a restart).
+                    _record_unresolved_event(
+                        db,
+                        row,
+                        broker_order_id,
+                        (broker_event or {}).get("raw_status"),
+                        _unresolved_outcome_class(broker_event, fetch_failed),
+                    )
+                    # An unresolved outcome never changes lifecycle state.
+                    continue
+                if not result["changed"]:
+                    continue
+                ok = db.update_trade_lifecycle(
+                    trade_id=row["id"],
+                    status=result["status"],
+                    filled_qty=result["filled_qty"],
+                    avg_fill_price=result["avg_fill_price"],
+                    broker_order_id=broker_order_id,
+                    raw_status=(broker_event or {}).get("raw_status"),
+                    note=result.get("note"),
+                    unresolved=result["unresolved"],
+                )
+                if ok:
+                    summary["updated"] += 1
+                    log_fn = logging.info
+                    if result["status"] == "FILLED":
+                        log_fn = logging.warning  # confirmed fills are rare; surface
+                    log_fn(
+                        f"EXEC-003 lifecycle: trade_id={row['id']} "
+                        f"{row.get('symbol')} {result['note']} "
+                        f"(filled_qty={result['filled_qty']}, "
+                        f"avg_fill_price={result['avg_fill_price']})"
+                    )
+                else:
+                    summary["errors"] += 1
+            return summary
+        except Exception as e:
+            # Bookkeeping must never break the analysis cycle.
+            logging.warning(f"EXEC-003 fill poll failed (non-fatal): {e}")
+            return summary
+
     def _execute_pending_entry_tranches(self):
         """
         Check pending entry tranches (tranches 2 and 3) created by execute_trade()
@@ -5912,9 +6237,28 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                 time_in_force=TimeInForce.DAY,
                             )
                         )
-                        tranche['status'] = 'filled'
+                        # EXEC-003 SHOULD-FIX #1 (2026-10-20 review fix):
+                        # a tranche order is SUBMITTED, never 'filled'.
+                        # Persist it as a SUBMITTED trades row (with the
+                        # broker order id) so the fill poller reconciles
+                        # it exactly like any other outstanding order.
+                        _persist_tranche_submission(
+                            db=getattr(self, "db", None),
+                            session_id=getattr(self, "session_id", None),
+                            symbol=symbol,
+                            qty=qty,
+                            price=current_price,
+                            rsi=current_rsi,
+                            tranche=tranche,
+                            broker_order_id=(
+                                str(order.id)
+                                if getattr(order, "id", None)
+                                else None
+                            ),
+                        )
+                        tranche['status'] = 'submitted'
                         logging.info(
-                            f"Tranche {tranche['tranche_num']} executed: "
+                            f"Tranche {tranche['tranche_num']} submitted: "
                             f"BUY {qty} {symbol} @ ~${current_price:.2f} "
                             f"({tranche['trigger']})"
                         )
@@ -5936,6 +6280,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # Clear market data cache for fresh analysis cycle
         self._market_data_cache.clear()
         self._cycle_start_time = datetime.now(timezone.utc)
+
+        # ── EXEC-003 SHOULD-FIX #1: poll outstanding order fills ────────────
+        # Bookkeeping-only pass over previously SUBMITTED paper orders.
+        # NEVER submits, cancels, or modifies orders; NEVER changes slot
+        # accounting (OBS_001_SLOT_SEMANTICS_VERSION stays 1 — slots are
+        # consumed on submit_order, unchanged); never raises into the
+        # analysis cycle (worst case it logs a warning and continues).
+        self.poll_order_fills()
 
         # ── OBS-001 Phase A: cycle bookkeeping (observability only) ─────────
         # cycle_id is used by decision_history and cycle_funnel to bind

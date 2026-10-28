@@ -4948,6 +4948,29 @@ Implementation complete; PR open and awaiting owner review.
      stays BUY Eligibility and URL stays the same
    - Press F5 → same tab + range restored from hash
 
+## 2026-10-20 02:55 UTC — EXEC-003 SHOULD-FIX #1: Paper order fill confirmation & bookkeeping
+
+- Backlog item / objective: EXEC-003 deferred SHOULD-FIX #1, authorized by owner directive 2026-10-20 02:15 UTC. TSV-001 cancelled as duplicate of PR #100. Implement confirmed-fill bookkeeping for paper orders with no strategy/safety changes and no order placement.
+- Branch: agent/exec-003-shouldfix1-fill-confirmation (clean worktree from main @ 1f2fd24; original dirty research checkout untouched)
+- Commit: d3798c5 (implementation) + reporting commit
+- Status: DONE (awaiting owner code review; PR #109 OPEN, not merged, not deployed)
+- Files changed:
+  - NEW src/core/order_lifecycle.py (canonical lifecycle vocabulary, Alpaca mapping, monotonic reconcile with stale/out-of-order + no-fabrication guarantees)
+  - src/database/sqlite_db.py (additive trades columns filled_qty/avg_fill_price/order_updated_at; append-only order_events audit table; get_pending_fill_trades / update_trade_lifecycle / get_order_events)
+  - src/core/smart_bot.py (poll_order_fills at run_analysis start — bookkeeping-only, never raises, no trading actions, OBS_001_SLOT_SEMANTICS_VERSION stays 1)
+  - src/brokerage/mock.py (additive scriptable get_order_by_id/set_order_state)
+  - NEW tests/test_exec_003_fill_confirmation.py (21 deterministic mocked-broker tests covering all 12 owner-directed scenarios)
+- Tests run: new suite 21/21 PASS; EXEC-003.1 + brokerage-safety suites 47/47 PASS (incl. TEST-001 negative subprocess tests); full suite 1948 passed / 37 failed with the 37 verified IDENTICAL on clean main with changes stashed (environmental: dashboard/settings tests require the 9 GB production DB absent from the worktree). git diff --check clean.
+- Key decisions/discoveries:
+  1. Verified FILLED/fill-polling genuinely unimplemented on main (PR #100 docstring reserves it) — no duplication of existing work.
+  2. slot_consumed_semantics_version kept at 1: fill confirmation is audit bookkeeping; slot semantics (submit-consumed) unchanged per contract review.
+  3. SHOULD-FIX #2 (tranche restart loss) is NOT a blocking dependency — polling keys on DB-persisted broker_order_id and survives restarts.
+  4. Reconcile rules: cumulative monotonic filled_qty, avg price only on advance (no double-count), terminal states never regress (confirmed fill may race past CANCELED; nothing downgrades FILLED), FILLED-without-quantity distrusted → ACCEPTED, unknown/no broker response → explicit UNRESOLVED.
+- Remaining risks: independent reviewer pass pending; live-traffic validation necessarily pending (zero current order flow); pre-PR#100 rows lack broker ids and stay explicitly non-pollable.
+- Next action: Josh reviews/merges PR #109. No deploy, no merge, no new tasks without approval.
+
+**EXEC-003 SHOULD-FIX #1 COMPLETE — AWAITING OWNER CODE REVIEW.**
+
 ---
 
 ## 2026-10-21 14:18 UTC — TXSE UNIVERSE OUTAGE MINIMAL REPAIR
@@ -4990,4 +5013,167 @@ Implementation complete; PR open and awaiting owner review.
   After merge+restart (under normal change control) verify universe returns non-zero in
   trading_bot.log. PARKING LOT (not authorized): alpaca-py TXSE tracking, empty-queue
   retry log rate-limiting, log rotation, OBS-001 cycle_funnel for empty-queue cycles.
+- **Josh's approval required**: YES (merge decision + any post-merge restart).
+
+---
+
+## 2026-10-28 14:49 UTC — EXEC-003 SHOULD-FIX #1: 2026-10-20 review fixes (a)(b)(c) on PR #109
+
+- **Backlog item / objective**: EXEC-003 deferred SHOULD-FIX #1, review-fix iteration
+  authorized by owner directive 2026-10-28 14:41 UTC ("IMPLEMENTATION AUTHORIZATION
+  (NO MERGE, NO DEPLOY)"). Fix ONLY the three defects confirmed still open by the
+  2026-10-20 targeted review of PR #109 (head ce6b92a). No strategy / threshold /
+  sizing / risk-limit changes. Paper only.
+- **Branch**: agent/exec-003-shouldfix1-fill-confirmation, clean worktree
+  /root/.openclaw/workspace/trading-bot-exec003, rebased onto origin/main f38d910
+  (PR #111 merged). Only conflict: ITERATION_PROGRESS_LOG.md — resolved by keeping
+  BOTH entries (EXEC-003 2026-10-20 then TXSE 2026-10-21, chronological order).
+  The dirty STRAT-020 checkout (/root/.openclaw/workspace/trading-bot) and the
+  deployed checkout (/root/deploy/trading-bot-main) were NOT touched.
+- **Commits**: a238ccb (rebased d3798c5, implementation), 20f5048 (rebased ce6b92a,
+  archive/log/MENTOR), plus this review-fix commit (code + tests + docs + report).
+- **Status**: IMPLEMENTED — branch pushed, PR #109 updated, NOT merged, NOT deployed,
+  smartbot-runner NOT restarted. AWAITING OWNER REVIEW.
+- **Files changed**:
+  - src/core/order_lifecycle.py — reconcile() ELEVATES on a quantity advance (a
+    sub-PARTIALLY_FILLED status becomes PARTIALLY_FILLED, or FILLED when the qty
+    is complete) so an out-of-order ACCEPTED can no longer regress a
+    PARTIALLY_FILLED row; CANCELED/EXPIRED rows now accept LATE fill evidence
+    (filled_qty + avg_fill_price advance, terminal STATUS unchanged).
+  - src/database/sqlite_db.py — NEW append-only record_order_event(trade_id,
+    broker_order_id, raw_status, note, unresolved=True): INSERTs into order_events,
+    NEVER updates the trades row; get_pending_fill_trades() now re-polls
+    CANCELED/EXPIRED rows younger than 24h (REPOLL_HORIZON_HOURS, julianday on
+    COALESCE(order_updated_at, created_at)); FILLED/REJECTED stay final; additive
+    nullable trades.notes column (tranche marker).
+  - src/core/smart_bot.py — poll_order_fills() records exactly ONE unresolved
+    order_events row (unresolved=1) for every unresolved outcome (broker
+    unreachable, unrecognized status, reconcile exception) and leaves the trades row
+    untouched; _execute_pending_entry_tranches() persists each tranche submission
+    via log_trade (status SUBMITTED, broker_order_id, pnl NULL, notes = tranche
+    number + trigger) and marks the in-memory tranche 'submitted' (never 'filled').
+    Both helpers are MODULE-LEVEL functions (record_unresolved_event /
+    persist_tranche_submission) so the contract does not depend on a concrete
+    SmartTradingBot instance.
+  - tests/test_exec_003_shouldfix1_review_fixes.py (NEW, 14 tests) — every defect
+    test fails on ce6b92a and passes after the fix.
+  - MENTOR.md (addendum), ITERATION_PROGRESS_LOG.md (this entry),
+    reports/2026-10-28_144917_exec-003-review-fixes.md, REPORT.md (rolling).
+- **Tests run / results**:
+  - tests/test_exec_003_shouldfix1_review_fixes.py → 14 passed (NEW).
+  - Baseline check: the same 14 tests against a pristine `git archive ce6b92a`
+    export → 12 failed, 2 passed (the 2 passers are "must-not-change" guards:
+    FILLED/REJECTED never re-polled, stale event on a terminal row changes
+    nothing). Every defect test therefore demonstrably fails on ce6b92a.
+  - tests/test_exec_003_fill_confirmation.py + tests/test_exec_003_1_trade_persistence.py
+    + new review-fix suite → 46 passed, 0 failed.
+  - Paper-only safety suites (test_bot002_paper_only_guard, test_brokerage_safety_enforcement,
+    test_brokerage_live_block, test_brokerage_mock) → 54 passed, 1 failed.
+    The single failure is test_main_py_installs_sigterm_handler: ENVIRONMENTAL —
+    the LIVE bot (PID 1649235) holds the lock file, so the subprocess under test
+    exits "Bot already running" instead of installing the handler. Not a regression.
+  - Full suite on the branch → 1994 passed, 37 failed, 1 skipped, 13 deselected
+    (134.76s). The 37 failures are the same pre-existing environmental set
+    (dashboard Phase-A/B/C + buy-funnel + settings-service tests that require the
+    9 GB production trading_bot.db absent from a worktree) plus the SIGTERM lock
+    test. Pristine origin/main (f38d910) baseline → 1958 passed, 38 failed; the
+    FAILED-set diff shows ZERO new failures on the branch (the single extra main
+    failure is an export artifact — a `git archive` tree has no .git directory).
+  - git diff --check → clean. No Alpaca/network calls: all broker responses mocked.
+- **Important decisions / discoveries**:
+  1. The two helpers had to become MODULE-LEVEL functions: as `self.<helper>`
+     methods they broke every test that binds SmartBot methods to a lightweight
+     stand-in object (caught by the new suite, not by inspection).
+  2. `get_pending_fill_trades()` needed the CANCELED/EXPIRED statuses INSIDE the
+    status IN-list, plus a separate horizon predicate — adding only the predicate
+    silently returned zero rows.
+  3. A quantity advance now implies at least a partial fill, so a COMPLETE advance
+    on a non-terminal row yields FILLED (sanctioned by the module contract:
+    "filled_qty >= ordered qty" is broker-reported fill evidence).
+  4. Tranche 2/3 still bypass execute_trade's safety guards (pending-order guard,
+    cooldown, concentration/sector/beta, buying power). PRE-EXISTING behaviour,
+    explicitly out of the authorized scope → follow-up, not fixed here.
+  5. Tranche 1 is still marked 'filled' in memory by execute_trade (its ledger row
+    is already a correct SUBMITTED row) → follow-up, out of the authorized scope.
+- **Remaining risks**: broker identity check (response order_id vs requested id)
+  still missing → follow-up; SHOULD-FIX #2 (in-memory tranche plan lost on
+  restart) unchanged; live-traffic validation pending by definition (zero current
+  order flow); pre-PR#100 rows still lack broker ids and stay non-pollable.
+- **Next action**: OWNER reviews PR #109 (branch pushed, test counts posted as a PR
+  comment). No merge, no deploy, no restart without explicit owner authorization.
+- **Josh's approval required**: YES (merge decision + any post-merge restart).
+
+---
+
+## 2026-10-28 15:39 UTC — EXEC-003 SHOULD-FIX #1: owner-approved narrow follow-up (event-log flood + NULL timestamps)
+
+- **Backlog item / objective**: narrow follow-up implementation authorized by owner
+  directive 2026-10-28 15:35 UTC. TWO fixes only, on PR #109 (head 46013b6):
+  (1) EVENT-LOG FLOOD — an unresolved order wrote an order_events row
+  (unresolved=1) on EVERY loop (~10-17 s); (2) NULL-TIMESTAMP LOOSE END — a
+  CANCELED/EXPIRED row with NULL order_updated_at AND NULL created_at was
+  re-polled forever. NOT authorized: merge, deploy, restart, strategy/threshold/
+  sizing/risk-limit/stop-loss/portfolio-order changes.
+- **Branch**: agent/exec-003-shouldfix1-fill-confirmation, worktree
+  /root/.openclaw/workspace/trading-bot-exec003. Verified before starting:
+  `git status --short` EMPTY and HEAD == origin head == 46013b6. The dirty
+  STRAT-020 checkout and /root/deploy/trading-bot-main were NOT touched.
+- **Commits**: implementation + tests + docs, then the reporting commit (see
+  archive). Pushed with a NORMAL `git push` (no force).
+- **Status**: IMPLEMENTED — PR #109 updated, NOT merged, NOT deployed,
+  smartbot-runner NOT restarted. AWAITING OWNER REVIEW.
+- **Files changed**:
+  - src/core/smart_bot.py — deterministic outcome classes
+    (OUTCOME_BROKER_UNREACHABLE / OUTCOME_UNRECOGNIZED_STATUS_PREFIX /
+    OUTCOME_RECONCILE_EXCEPTION) + `_unresolved_outcome_class()`;
+    `_record_unresolved_event()` now writes an audit row ONLY when the class
+    differs from the order's most recent order_events row (DB-backed lookup, no
+    in-memory state); `poll_order_fills()` tracks fetch failures to classify the
+    outcome. RESOLVED transitions are untouched.
+  - src/database/sqlite_db.py — NEW `get_last_order_event(trade_id)`
+    (`ORDER BY id DESC LIMIT 1`); `get_pending_fill_trades()` no longer passes
+    NULL-timestamp terminal rows through — a CANCELED/EXPIRED row with NULL
+    order_updated_at AND NULL created_at is treated as OLD and is not re-polled.
+  - tests/test_exec_003_unresolved_event_dedup.py (NEW, 15 tests).
+  - tests/test_exec_003_shouldfix1_review_fixes.py — ONE existing test updated
+    (test_a5_unresolved_poll_is_idempotent_in_the_ledger_only): it asserted the
+    OLD every-poll behaviour (2 rows after 2 identical unresolved polls) and now
+    asserts 1 row. No other existing test was changed.
+  - MENTOR.md (addendum), ITERATION_PROGRESS_LOG.md (this entry),
+    reports/2026-10-28_153954_exec-003-event-dedup.md, REPORT.md (rolling).
+- **Tests run / results**:
+  - tests/test_exec_003_unresolved_event_dedup.py → 15 passed (NEW).
+  - Baseline proof: the same 15 tests against a pristine `git archive 46013b6`
+    export → 12 failed, 3 passed. The 3 passers are must-not-change guards
+    (non-terminal rows still polled, recent terminal rows still re-polled,
+    resolved transitions still recorded).
+  - All test_exec_003_* suites → 61 passed, 0 failed.
+  - Paper-only safety suites (bot002 guard, brokerage safety/live-block/mock) →
+    54 passed, 1 failed: test_main_py_installs_sigterm_handler, ENVIRONMENTAL —
+    the LIVE bot (PID 1649235) holds the lock file, so the subprocess under test
+    exits "Bot already running" before installing the handler. Identical on
+    pristine main. NOT a regression.
+  - Full suite → see archive; FAILED-set diff vs pristine main = 0 new failures.
+  - git diff --check → clean. No Alpaca/network calls: all broker responses mocked.
+- **Important decisions / discoveries**:
+  1. HEARTBEAT NOT implemented (owner marked it optional). The owner's fallback
+     test — "a test that no extra rows are written" — is implemented instead.
+     Consequence: an order stuck unresolved keeps exactly ONE audit row and
+     produces no further audit evidence; the poller keeps polling it and the
+     trades row still carries the real lifecycle state.
+  2. The outcome class is stored in the EXISTING `order_events.event_note`
+     column (no new table, no new column). `raw_status` still carries the
+     broker's raw token, so no information is lost on the unrecognized-status path.
+  3. The comparison key is the class string, so the class must stay
+     deterministic — error text and timestamps are logged, never stored in the key.
+  4. A consequence to watch: changing the class strings later makes every
+     unresolved order write one extra row on its next poll.
+  5. The comparison is against the MOST RECENT order_events row of ANY kind, so
+     resolved → unresolved again is correctly treated as a CHANGE (a new row).
+- **Remaining risks**: broker identity check still missing (follow-up); SHOULD-FIX
+  #2 unchanged; live-traffic validation pending by definition; an unresolved order
+  now leaves a single audit row (no heartbeat) — accepted trade-off, documented in
+  MENTOR.md.
+- **Next action**: OWNER reviews PR #109 (test counts posted as a PR comment).
+  No merge, no deploy, no restart without explicit owner authorization.
 - **Josh's approval required**: YES (merge decision + any post-merge restart).

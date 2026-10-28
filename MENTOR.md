@@ -3571,3 +3571,117 @@ minutes — the SHAPE remains stable).
 - MACD 17/18 — NOT in this PR.
 - Hourly data availability — NOT in this PR.
 - Unrelated dashboard performance — NOT in this PR.
+
+## EXEC-003 SHOULD-FIX #1 — Paper Order Fill Confirmation (2026-10-20, PR #109)
+
+Extends the EXEC-003.1 (PR #100) trades-persistence contract with confirmed-fill
+bookkeeping. Bookkeeping only — no strategy/safety/slot-semantics changes.
+
+- `src/core/order_lifecycle.py` (pure): canonical statuses SUBMITTED / ACCEPTED /
+  PARTIALLY_FILLED / FILLED / CANCELED / REJECTED / EXPIRED / UNRESOLVED; Alpaca
+  raw→canonical map; `reconcile()` enforces: cumulative monotonic filled_qty,
+  avg_fill_price moves only on qty advance (no double-count), stale/out-of-order
+  events ignored, terminal states never regress (a confirmed fill may race past
+  CANCELED — broker authoritative), FILLED token without quantity evidence is
+  distrusted (→ ACCEPTED), and missing/unknown broker responses stay explicitly
+  UNRESOLVED — a fill is NEVER fabricated and submission is NEVER a fill.
+- DB: additive trades columns filled_qty / avg_fill_price / order_updated_at;
+  append-only `order_events` audit table (one row per applied transition and per
+  unresolved poll). `get_pending_fill_trades()` polls only non-terminal rows that
+  have a broker_order_id (pre-PR#100 rows are explicitly non-pollable).
+- `SmartTradingBot.poll_order_fills()` runs at each run_analysis start; never
+  submits/cancels/replaces, never mutates trades_executed/max_trades, never
+  raises. OBS_001_SLOT_SEMANTICS_VERSION stays 1 (slots remain submit-consumed;
+  fill confirmation is audit, not slot accounting).
+- Known footgun: the 37 dashboard/settings test failures in a fresh worktree are
+  ENVIRONMENTAL (those tests need the 9 GB production trading_bot.db); they fail
+  identically on clean main. Verify regressions by stashing changes and comparing
+  failure sets, not by absolute pass counts.
+
+## EXEC-003 SHOULD-FIX #1 — 2026-10-20 Review Fixes (PR #109, ce6b92a → review-fix commit)
+
+The 2026-10-20 targeted review of PR #109 (head ce6b92a) confirmed three
+defects OPEN. All three are now fixed on `agent/exec-003-shouldfix1-fill-confirmation`
+(rebased onto main @ f38d910). Read this before touching the lifecycle code again.
+
+### (a) Unresolved polls now leave a durable audit trail
+`SQLiteDB.record_order_event(trade_id, broker_order_id, raw_status, note,
+unresolved=True)` is APPEND-ONLY: it INSERTs into `order_events` and NEVER
+issues an UPDATE against `trades` (status / filled_qty / avg_fill_price /
+order_updated_at are untouched). `poll_order_fills()` calls it for every
+unresolved outcome — broker unreachable (network failure), unrecognized broker
+status, and the reconcile-exception path. Exactly ONE event row per unresolved
+poll; unresolved never mutates lifecycle state. Helper is the MODULE-LEVEL
+`_record_unresolved_event(db, row, ...)` in smart_bot.py (module-level on
+purpose: the poller is exercised with stand-in objects in tests, and
+`self.<helper>` would couple the contract to the SmartTradingBot instance).
+
+### (b) Lifecycle never regresses; late fill evidence stays reachable
+- `reconcile()` ELEVATES on a quantity advance: if filled_qty advances on a
+  NON-TERMINAL row and the event status ranks below PARTIALLY_FILLED (e.g. an
+  out-of-order ACCEPTED arriving after a partial fill), the status becomes
+  PARTIALLY_FILLED — or FILLED when the quantity is complete. Without this,
+  PARTIALLY_FILLED(4/10) + ACCEPTED(6) regressed to ACCEPTED.
+- CANCELED / EXPIRED rows accept LATE fill evidence: filled_qty and
+  avg_fill_price advance, the terminal STATUS does not change (a cancel stays a
+  cancel; only the quantity evidence is corrected).
+- `get_pending_fill_trades()` now includes CANCELED / EXPIRED rows younger than
+  24 h (`REPOLL_HORIZON_HOURS`, judged with `julianday(COALESCE(order_updated_at,
+  created_at))`). FILLED / REJECTED stay final and are never re-polled.
+
+### (c) Entry tranches 2/3 finally go through the ledger
+`_execute_pending_entry_tranches()` persists every tranche submission via
+`log_trade` (status SUBMITTED, broker_order_id, qty, price, rsi, pnl NULL,
+`notes` = "EXEC-003 entry tranche N (trigger=...)"), so the fill poller
+reconciles tranche orders exactly like any other outstanding order. The
+in-memory tranche status is now `'submitted'` — NEVER `'filled'` at submission
+time. `trades.notes` is a NEW additive nullable column (idempotent ALTER, same
+pattern as filled_qty / avg_fill_price / order_updated_at).
+Do NOT change the stop-loss or portfolio-order paths — they are follow-ups.
+
+### Follow-ups deliberately NOT fixed here (owner scope)
+- Tranche 1 is still marked `'filled'` in memory by `execute_trade` (its ledger
+  row is already a correct SUBMITTED row) — follow-up only.
+- Tranche 2/3 still bypass execute_trade's safety guards (pending-order guard,
+  cooldown, concentration/sector/beta, buying power) — pre-existing behaviour,
+  follow-up only.
+- Broker identity check (response order_id vs requested id) — cheap hardening,
+  follow-up only.
+- SHOULD-FIX #2 (in-memory tranche plan lost on restart) — unchanged.
+
+## EXEC-003 SHOULD-FIX #1 — 2026-10-28 follow-up: unresolved-event de-duplication (PR #109)
+
+Two owner-approved narrow fixes on top of the review fixes. Bookkeeping only.
+
+### 1. Event-log flood — an unresolved poll is audited only when the OUTCOME CHANGES
+`poll_order_fills()` used to append an `order_events` row (unresolved = 1) on EVERY
+analysis loop (~10-17 s) for every unresolved order — thousands of identical rows
+per day. Now:
+- The outcome is classified into a DETERMINISTIC class, stored verbatim in
+  `order_events.event_note`:
+  - `broker-unreachable` — fetch raised, or the broker returned nothing usable;
+  - `unrecognized-status:<raw_status>` — the broker answered with a raw token the
+    bot does not recognize (the token is embedded so outcomes stay distinguishable);
+  - `reconcile-exception` — reconciliation itself failed.
+- A new row is written ONLY when the class differs from that order's MOST RECENT
+  `order_events` row. The comparison is a DB query
+  (`SQLiteDB.get_last_order_event(trade_id)` → `ORDER BY id DESC LIMIT 1`), so it
+  survives a restart — there is NO in-memory-only state. Repeated identical
+  outcomes write NO new row.
+- The class must stay deterministic: never embed error text or a timestamp in it
+  (the error text goes to the log, the class goes to `event_note`).
+- `raw_status` still carries the broker's raw token when the broker answered.
+- RESOLVED transitions are unchanged — `update_trade_lifecycle()` still writes
+  them exactly as before, with `unresolved = 0`.
+- HEARTBEAT: NOT implemented (explicitly optional). A prolonged unresolved order
+  therefore keeps exactly ONE audit row. Consequence to know: an order that is
+  stuck unresolved produces no further audit evidence after the first row — the
+  poller keeps polling it and the trades row still shows the real lifecycle state.
+- Trade-off: if you ever change the class strings, every unresolved order will
+  write one more row on the next poll (the class differs from the stored one).
+
+### 2. NULL-timestamp loose end
+`get_pending_fill_trades()` re-polls CANCELED/EXPIRED rows younger than 24 h. A row
+whose `order_updated_at` AND `created_at` are both NULL has no usable age: it is
+now treated as OLD and is NOT re-polled (the `IS NULL` pass-through is gone).
+Non-terminal rows are unaffected by the horizon.

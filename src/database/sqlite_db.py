@@ -6,11 +6,34 @@ import sqlite3
 import logging
 import json
 import os
+import importlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Iterable
 
 DB_PATH = Path(__file__).parent.parent.parent / "trading_bot.db"
+
+
+def _canonicalize_raw_status(raw_status: Optional[str]) -> str:
+    """Map a raw broker status token to the canonical lifecycle vocabulary.
+
+    Delegates to the pure ``order_lifecycle`` module when it is
+    importable (it has no I/O and no project dependencies). Falls back
+    to the conservative ``UNRESOLVED`` token when it is not — a status
+    is never guessed.
+    """
+    if not raw_status:
+        return "UNRESOLVED"
+    for module_path in ("core.order_lifecycle", "src.core.order_lifecycle"):
+        try:
+            module = importlib.import_module(module_path)
+        except Exception:
+            continue
+        try:
+            return module.canonicalize_raw_status(raw_status)
+        except Exception:
+            continue
+    return "UNRESOLVED"
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -553,6 +576,71 @@ class SQLiteDB:
                     "WHERE status IS NULL;"
                 )
 
+                # ── EXEC-003 SHOULD-FIX #1: fill-confirmation columns ─────────
+                # Additive, nullable, idempotent migration extending the
+                # EXEC-003.1 lifecycle contract with confirmed-fill data:
+                #
+                #   filled_qty      REAL — cumulative broker-confirmed filled
+                #                           quantity (monotonic; never a
+                #                           submission-time guess)
+                #   avg_fill_price  REAL — broker-reported average fill price;
+                #                           moves only when filled_qty advances
+                #                           (prevents double-counting repeated
+                #                           polls of the same partial fill)
+                #   order_updated_at TEXT — ISO timestamp of the most recent
+                #                           lifecycle update applied to the row
+                #   notes            TEXT — free-form lifecycle annotation
+                #                           (e.g. the entry-tranche number of
+                #                           a SUBMITTED tranche order)
+                #
+                # status vocabulary grows from EXEC-003.1's
+                # {SUBMITTED, FILLED, REJECTED, CANCELED, UNKNOWN} to also
+                # include ACCEPTED, PARTIALLY_FILLED, EXPIRED, UNRESOLVED.
+                # All new tokens are additive; existing dashboard filters
+                # (status = 'FILLED') keep their exact semantics.
+                for _col_ddl in (
+                    "ALTER TABLE trades ADD COLUMN filled_qty REAL;",
+                    "ALTER TABLE trades ADD COLUMN avg_fill_price REAL;",
+                    "ALTER TABLE trades ADD COLUMN order_updated_at TEXT;",
+                    "ALTER TABLE trades ADD COLUMN notes TEXT;",
+                ):
+                    try:
+                        conn.execute(_col_ddl)
+                    except sqlite3.OperationalError as e:
+                        if "duplicate column name" not in str(e):
+                            raise
+
+                # ── EXEC-003 SHOULD-FIX #1: order_events append-only log ─────
+                # One row per applied lifecycle transition (and per
+                # explicitly-unresolved poll result). Append-only: events
+                # are never mutated; the trades row is the current-state
+                # projection and order_events is the audit trail.
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS order_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        trade_id INTEGER NOT NULL,
+                        broker_order_id TEXT,
+                        canonical_status TEXT NOT NULL,
+                        raw_status TEXT,
+                        filled_qty REAL,
+                        avg_fill_price REAL,
+                        event_note TEXT,
+                        unresolved INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL DEFAULT
+                            (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_order_events_trade_id "
+                    "ON order_events (trade_id);"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_order_events_broker_order_id "
+                    "ON order_events (broker_order_id);"
+                )
+
                 # ── MKT-CACHE-001: market_data_eligibility_cache table ──────────
                 # Additive migration to introduce a per-symbol market-data
                 # eligibility cache. The cache answers one question only:
@@ -1031,6 +1119,262 @@ class SQLiteDB:
                 return [_row_to_dict(r) for r in rows]
         except Exception as e:
             logging.debug(f"Error getting trades: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # EXEC-003 SHOULD-FIX #1: order lifecycle / fill confirmation
+    # ------------------------------------------------------------------
+
+    #: Non-terminal statuses eligible for fill polling. Terminal rows
+    #: (FILLED / REJECTED) are never re-polled.
+    POLLABLE_STATUSES = (
+        "SUBMITTED",
+        "ACCEPTED",
+        "PARTIALLY_FILLED",
+        "UNKNOWN",
+    )
+
+    #: Terminal-but-recent statuses that are still re-polled, because a
+    #: broker can report a fill AFTER a cancel/expire was recorded
+    #: (cancel-vs-fill race). The cumulative quantity may still advance;
+    #: the terminal status never changes. FILLED / REJECTED are truly
+    #: final and are never re-polled.
+    REPOLL_STATUSES = (
+        "CANCELED",
+        "EXPIRED",
+    )
+
+    #: Horizon (hours) for re-polling CANCELED / EXPIRED rows. Older
+    #: terminal rows are considered settled and are not re-polled.
+    REPOLL_HORIZON_HOURS = 24
+
+    def get_pending_fill_trades(self, limit: int = 200) -> List[Dict]:
+        """Return trades rows eligible for fill polling.
+
+        Rows are eligible when they are non-terminal (status in
+        ``POLLABLE_STATUSES``) OR recently terminal (``REPOLL_STATUSES``
+        within ``REPOLL_HORIZON_HOURS`` of their last update) AND they
+        carry a ``broker_order_id``. A row without one cannot be polled
+        and stays explicitly unresolved until a human reconciles it
+        (never fabricated).
+
+        A CANCELED / EXPIRED row whose ``order_updated_at`` AND
+        ``created_at`` are both NULL has no usable age: it is treated as
+        OLD and is NOT re-polled (it is not silently treated as fresh).
+        Non-terminal rows are unaffected by the horizon.
+        """
+        try:
+            with _get_conn() as conn:
+                pollable = (*self.POLLABLE_STATUSES, *self.REPOLL_STATUSES)
+                placeholders = ", ".join("?" * len(pollable))
+                repoll_placeholders = ", ".join("?" * len(self.REPOLL_STATUSES))
+                rows = conn.execute(
+                    f"SELECT * FROM trades WHERE status IN ({placeholders}) "
+                    f"AND broker_order_id IS NOT NULL "
+                    f"AND ("
+                    f"status NOT IN ({repoll_placeholders}) "
+                    f"OR ("
+                    f"julianday(COALESCE(order_updated_at, created_at)) IS NOT NULL "
+                    f"AND julianday(COALESCE(order_updated_at, created_at)) "
+                    f">= julianday('now', ?) "
+                    f") "
+                    f") "
+                    f"ORDER BY id ASC LIMIT ?",
+                    (
+                        *pollable,
+                        *self.REPOLL_STATUSES,
+                        f"-{self.REPOLL_HORIZON_HOURS} hours",
+                        limit,
+                    ),
+                ).fetchall()
+                return [_row_to_dict(r) for r in rows]
+        except Exception as e:
+            logging.warning(f"Error fetching pending fill trades: {e}")
+            return []
+
+    def update_trade_lifecycle(
+        self,
+        trade_id: int,
+        status: str,
+        filled_qty: Optional[float] = None,
+        avg_fill_price: Optional[float] = None,
+        broker_order_id: Optional[str] = None,
+        raw_status: Optional[str] = None,
+        note: Optional[str] = None,
+        unresolved: bool = False,
+    ) -> bool:
+        """Apply a reconciled lifecycle update to a trades row.
+
+        Idempotent by construction: the caller (SmartBot poller) passes
+        only *reconciled* values from ``order_lifecycle.reconcile``;
+        re-applying the same broker state produces the same row and a
+        duplicate order_events entry recording the (no-op) poll.
+
+        - ``status`` is always written (canonical vocabulary enforced
+          upstream by reconcile; defensive check below).
+        - ``filled_qty`` / ``avg_fill_price`` are only overwritten when
+          the caller supplies non-None values, so a CANCELED-after-partial
+          row keeps its cumulative fill data.
+        - An order_events audit row is appended for every call.
+        """
+        if status not in (
+            "SUBMITTED",
+            "ACCEPTED",
+            "PARTIALLY_FILLED",
+            "FILLED",
+            "CANCELED",
+            "REJECTED",
+            "EXPIRED",
+            "UNKNOWN",
+            "UNRESOLVED",
+        ):
+            logging.warning(
+                f"update_trade_lifecycle refusing non-canonical status "
+                f"{status!r}; trade_id={trade_id}"
+            )
+            return False
+        try:
+            with _get_conn() as conn:
+                sets = ["status = ?"]
+                params: list = [status]
+                if filled_qty is not None:
+                    sets.append("filled_qty = ?")
+                    params.append(filled_qty)
+                if avg_fill_price is not None:
+                    sets.append("avg_fill_price = ?")
+                    params.append(avg_fill_price)
+                sets.append("order_updated_at = ?")
+                params.append(datetime.now(timezone.utc).isoformat())
+                params.append(trade_id)
+                conn.execute(
+                    f"UPDATE trades SET {', '.join(sets)} WHERE id = ?", params
+                )
+                conn.execute(
+                    """
+                    INSERT INTO order_events
+                        (trade_id, broker_order_id, canonical_status,
+                         raw_status, filled_qty, avg_fill_price,
+                         event_note, unresolved)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trade_id,
+                        broker_order_id,
+                        status,
+                        raw_status,
+                        filled_qty,
+                        avg_fill_price,
+                        note,
+                        1 if unresolved else 0,
+                    ),
+                )
+            return True
+        except Exception as e:
+            logging.warning(
+                f"Exception updating trade lifecycle (trade_id={trade_id}): {e}"
+            )
+            if os.getenv("TRADING_BOT_TESTING_FATAL_PERSISTENCE") == "1":
+                raise
+            return False
+
+    def record_order_event(
+        self,
+        trade_id: int,
+        broker_order_id: Optional[str] = None,
+        raw_status: Optional[str] = None,
+        note: Optional[str] = None,
+        unresolved: bool = True,
+    ) -> bool:
+        """Append an ``order_events`` audit row WITHOUT touching the row.
+
+        Append-only audit sink for poll outcomes that must not change the
+        current-state projection: an unresolved poll (broker unreachable,
+        broker status unrecognized, reconcile exception). The ``trades``
+        row — ``status``, ``filled_qty``, ``avg_fill_price`` and
+        ``order_updated_at`` — is left byte-for-byte unchanged; this
+        method NEVER issues an UPDATE against ``trades``.
+
+        ``unresolved=True`` (the default) records the outcome with
+        ``unresolved = 1`` and the canonical status ``UNRESOLVED``, so an
+        audit trail exists for every poll that could not obtain a broker
+        answer. Nothing is ever fabricated: the row stays exactly as it
+        was until the broker actually answers.
+        """
+        canonical_status = (
+            "UNRESOLVED" if unresolved else _canonicalize_raw_status(raw_status)
+        )
+        try:
+            with _get_conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO order_events
+                        (trade_id, broker_order_id, canonical_status,
+                         raw_status, filled_qty, avg_fill_price,
+                         event_note, unresolved)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trade_id,
+                        broker_order_id,
+                        canonical_status,
+                        raw_status,
+                        None,
+                        None,
+                        note,
+                        1 if unresolved else 0,
+                    ),
+                )
+            return True
+        except Exception as e:
+            logging.warning(
+                f"Exception recording order event (trade_id={trade_id}): {e}"
+            )
+            if os.getenv("TRADING_BOT_TESTING_FATAL_PERSISTENCE") == "1":
+                raise
+            return False
+
+    def get_last_order_event(self, trade_id: int) -> Optional[Dict]:
+        """Return the most recent ``order_events`` row for a trade.
+
+        Used to decide whether an unresolved poll outcome is a CHANGE
+        (a new audit row is warranted) or a repeat of the previous
+        outcome (no new row — an unresolved poll repeats on every loop).
+
+        Ordered by ``id DESC`` so the newest insert wins. The lookup is
+        a DB query, not in-memory state, so the decision survives a
+        process restart.
+        """
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM order_events WHERE trade_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (trade_id,),
+                ).fetchone()
+                return _row_to_dict(row) if row else None
+        except Exception as e:
+            logging.warning(
+                f"Error fetching last order event (trade_id={trade_id}): {e}"
+            )
+            return None
+
+    def get_order_events(self, trade_id: Optional[int] = None) -> List[Dict]:
+        """Return the append-only lifecycle audit trail (newest first)."""
+        try:
+            with _get_conn() as conn:
+                if trade_id is None:
+                    rows = conn.execute(
+                        "SELECT * FROM order_events ORDER BY id DESC LIMIT 1000"
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM order_events WHERE trade_id = ? "
+                        "ORDER BY id DESC",
+                        (trade_id,),
+                    ).fetchall()
+                return [_row_to_dict(r) for r in rows]
+        except Exception as e:
+            logging.debug(f"Error getting order events: {e}")
             return []
 
     # ------------------------------------------------------------------
