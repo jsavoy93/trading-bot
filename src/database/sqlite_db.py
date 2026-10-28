@@ -1157,6 +1157,11 @@ class SQLiteDB:
         carry a ``broker_order_id``. A row without one cannot be polled
         and stays explicitly unresolved until a human reconciles it
         (never fabricated).
+
+        A CANCELED / EXPIRED row whose ``order_updated_at`` AND
+        ``created_at`` are both NULL has no usable age: it is treated as
+        OLD and is NOT re-polled (it is not silently treated as fresh).
+        Non-terminal rows are unaffected by the horizon.
         """
         try:
             with _get_conn() as conn:
@@ -1168,9 +1173,11 @@ class SQLiteDB:
                     f"AND broker_order_id IS NOT NULL "
                     f"AND ("
                     f"status NOT IN ({repoll_placeholders}) "
-                    f"OR julianday(COALESCE(order_updated_at, created_at)) IS NULL "
-                    f"OR julianday(COALESCE(order_updated_at, created_at)) "
+                    f"OR ("
+                    f"julianday(COALESCE(order_updated_at, created_at)) IS NOT NULL "
+                    f"AND julianday(COALESCE(order_updated_at, created_at)) "
                     f">= julianday('now', ?) "
+                    f") "
                     f") "
                     f"ORDER BY id ASC LIMIT ?",
                     (
@@ -1325,6 +1332,31 @@ class SQLiteDB:
             if os.getenv("TRADING_BOT_TESTING_FATAL_PERSISTENCE") == "1":
                 raise
             return False
+
+    def get_last_order_event(self, trade_id: int) -> Optional[Dict]:
+        """Return the most recent ``order_events`` row for a trade.
+
+        Used to decide whether an unresolved poll outcome is a CHANGE
+        (a new audit row is warranted) or a repeat of the previous
+        outcome (no new row — an unresolved poll repeats on every loop).
+
+        Ordered by ``id DESC`` so the newest insert wins. The lookup is
+        a DB query, not in-memory state, so the decision survives a
+        process restart.
+        """
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT * FROM order_events WHERE trade_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (trade_id,),
+                ).fetchone()
+                return _row_to_dict(row) if row else None
+        except Exception as e:
+            logging.warning(
+                f"Error fetching last order event (trade_id={trade_id}): {e}"
+            )
+            return None
 
     def get_order_events(self, trade_id: Optional[int] = None) -> List[Dict]:
         """Return the append-only lifecycle audit trail (newest first)."""

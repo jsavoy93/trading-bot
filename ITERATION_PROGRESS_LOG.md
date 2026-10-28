@@ -5102,3 +5102,78 @@ Implementation complete; PR open and awaiting owner review.
 - **Next action**: OWNER reviews PR #109 (branch pushed, test counts posted as a PR
   comment). No merge, no deploy, no restart without explicit owner authorization.
 - **Josh's approval required**: YES (merge decision + any post-merge restart).
+
+---
+
+## 2026-10-28 15:39 UTC — EXEC-003 SHOULD-FIX #1: owner-approved narrow follow-up (event-log flood + NULL timestamps)
+
+- **Backlog item / objective**: narrow follow-up implementation authorized by owner
+  directive 2026-10-28 15:35 UTC. TWO fixes only, on PR #109 (head 46013b6):
+  (1) EVENT-LOG FLOOD — an unresolved order wrote an order_events row
+  (unresolved=1) on EVERY loop (~10-17 s); (2) NULL-TIMESTAMP LOOSE END — a
+  CANCELED/EXPIRED row with NULL order_updated_at AND NULL created_at was
+  re-polled forever. NOT authorized: merge, deploy, restart, strategy/threshold/
+  sizing/risk-limit/stop-loss/portfolio-order changes.
+- **Branch**: agent/exec-003-shouldfix1-fill-confirmation, worktree
+  /root/.openclaw/workspace/trading-bot-exec003. Verified before starting:
+  `git status --short` EMPTY and HEAD == origin head == 46013b6. The dirty
+  STRAT-020 checkout and /root/deploy/trading-bot-main were NOT touched.
+- **Commits**: implementation + tests + docs, then the reporting commit (see
+  archive). Pushed with a NORMAL `git push` (no force).
+- **Status**: IMPLEMENTED — PR #109 updated, NOT merged, NOT deployed,
+  smartbot-runner NOT restarted. AWAITING OWNER REVIEW.
+- **Files changed**:
+  - src/core/smart_bot.py — deterministic outcome classes
+    (OUTCOME_BROKER_UNREACHABLE / OUTCOME_UNRECOGNIZED_STATUS_PREFIX /
+    OUTCOME_RECONCILE_EXCEPTION) + `_unresolved_outcome_class()`;
+    `_record_unresolved_event()` now writes an audit row ONLY when the class
+    differs from the order's most recent order_events row (DB-backed lookup, no
+    in-memory state); `poll_order_fills()` tracks fetch failures to classify the
+    outcome. RESOLVED transitions are untouched.
+  - src/database/sqlite_db.py — NEW `get_last_order_event(trade_id)`
+    (`ORDER BY id DESC LIMIT 1`); `get_pending_fill_trades()` no longer passes
+    NULL-timestamp terminal rows through — a CANCELED/EXPIRED row with NULL
+    order_updated_at AND NULL created_at is treated as OLD and is not re-polled.
+  - tests/test_exec_003_unresolved_event_dedup.py (NEW, 15 tests).
+  - tests/test_exec_003_shouldfix1_review_fixes.py — ONE existing test updated
+    (test_a5_unresolved_poll_is_idempotent_in_the_ledger_only): it asserted the
+    OLD every-poll behaviour (2 rows after 2 identical unresolved polls) and now
+    asserts 1 row. No other existing test was changed.
+  - MENTOR.md (addendum), ITERATION_PROGRESS_LOG.md (this entry),
+    reports/2026-10-28_153954_exec-003-event-dedup.md, REPORT.md (rolling).
+- **Tests run / results**:
+  - tests/test_exec_003_unresolved_event_dedup.py → 15 passed (NEW).
+  - Baseline proof: the same 15 tests against a pristine `git archive 46013b6`
+    export → 12 failed, 3 passed. The 3 passers are must-not-change guards
+    (non-terminal rows still polled, recent terminal rows still re-polled,
+    resolved transitions still recorded).
+  - All test_exec_003_* suites → 61 passed, 0 failed.
+  - Paper-only safety suites (bot002 guard, brokerage safety/live-block/mock) →
+    54 passed, 1 failed: test_main_py_installs_sigterm_handler, ENVIRONMENTAL —
+    the LIVE bot (PID 1649235) holds the lock file, so the subprocess under test
+    exits "Bot already running" before installing the handler. Identical on
+    pristine main. NOT a regression.
+  - Full suite → see archive; FAILED-set diff vs pristine main = 0 new failures.
+  - git diff --check → clean. No Alpaca/network calls: all broker responses mocked.
+- **Important decisions / discoveries**:
+  1. HEARTBEAT NOT implemented (owner marked it optional). The owner's fallback
+     test — "a test that no extra rows are written" — is implemented instead.
+     Consequence: an order stuck unresolved keeps exactly ONE audit row and
+     produces no further audit evidence; the poller keeps polling it and the
+     trades row still carries the real lifecycle state.
+  2. The outcome class is stored in the EXISTING `order_events.event_note`
+     column (no new table, no new column). `raw_status` still carries the
+     broker's raw token, so no information is lost on the unrecognized-status path.
+  3. The comparison key is the class string, so the class must stay
+     deterministic — error text and timestamps are logged, never stored in the key.
+  4. A consequence to watch: changing the class strings later makes every
+     unresolved order write one extra row on its next poll.
+  5. The comparison is against the MOST RECENT order_events row of ANY kind, so
+     resolved → unresolved again is correctly treated as a CHANGE (a new row).
+- **Remaining risks**: broker identity check still missing (follow-up); SHOULD-FIX
+  #2 unchanged; live-traffic validation pending by definition; an unresolved order
+  now leaves a single audit row (no heartbeat) — accepted trade-off, documented in
+  MENTOR.md.
+- **Next action**: OWNER reviews PR #109 (test counts posted as a PR comment).
+  No merge, no deploy, no restart without explicit owner authorization.
+- **Josh's approval required**: YES (merge decision + any post-merge restart).

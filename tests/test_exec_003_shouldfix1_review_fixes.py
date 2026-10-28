@@ -279,7 +279,14 @@ def test_a4_record_order_event_is_append_only(db):
 
 
 def test_a5_unresolved_poll_is_idempotent_in_the_ledger_only(db):
-    """Repeated unresolved polls append audit rows; the trades row is stable."""
+    """Repeated unresolved polls do NOT append duplicate audit rows.
+
+    UPDATED 2026-10-28 (owner-approved follow-up): this test used to
+    assert the OLD every-poll behaviour (2 rows after 2 identical
+    unresolved polls). An unresolved poll now writes an audit row only
+    when the OUTCOME CHANGES, so two identical polls produce exactly
+    ONE row. The trades row is unchanged either way.
+    """
     tid = _insert_trade(db, status="SUBMITTED", qty=10, oid="ord-1")
     before = _trade_row(db, tid)
 
@@ -289,8 +296,9 @@ def test_a5_unresolved_poll_is_idempotent_in_the_ledger_only(db):
     poll()
 
     events = _events(db, tid)
-    assert len(events) == 2
-    assert all(e["unresolved"] == 1 for e in events)
+    assert len(events) == 1
+    assert events[0]["unresolved"] == 1
+    assert events[0]["event_note"] == "broker-unreachable"
     _assert_trades_row_unchanged(before, _trade_row(db, tid))
 
 

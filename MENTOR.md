@@ -3648,3 +3648,40 @@ Do NOT change the stop-loss or portfolio-order paths — they are follow-ups.
 - Broker identity check (response order_id vs requested id) — cheap hardening,
   follow-up only.
 - SHOULD-FIX #2 (in-memory tranche plan lost on restart) — unchanged.
+
+## EXEC-003 SHOULD-FIX #1 — 2026-10-28 follow-up: unresolved-event de-duplication (PR #109)
+
+Two owner-approved narrow fixes on top of the review fixes. Bookkeeping only.
+
+### 1. Event-log flood — an unresolved poll is audited only when the OUTCOME CHANGES
+`poll_order_fills()` used to append an `order_events` row (unresolved = 1) on EVERY
+analysis loop (~10-17 s) for every unresolved order — thousands of identical rows
+per day. Now:
+- The outcome is classified into a DETERMINISTIC class, stored verbatim in
+  `order_events.event_note`:
+  - `broker-unreachable` — fetch raised, or the broker returned nothing usable;
+  - `unrecognized-status:<raw_status>` — the broker answered with a raw token the
+    bot does not recognize (the token is embedded so outcomes stay distinguishable);
+  - `reconcile-exception` — reconciliation itself failed.
+- A new row is written ONLY when the class differs from that order's MOST RECENT
+  `order_events` row. The comparison is a DB query
+  (`SQLiteDB.get_last_order_event(trade_id)` → `ORDER BY id DESC LIMIT 1`), so it
+  survives a restart — there is NO in-memory-only state. Repeated identical
+  outcomes write NO new row.
+- The class must stay deterministic: never embed error text or a timestamp in it
+  (the error text goes to the log, the class goes to `event_note`).
+- `raw_status` still carries the broker's raw token when the broker answered.
+- RESOLVED transitions are unchanged — `update_trade_lifecycle()` still writes
+  them exactly as before, with `unresolved = 0`.
+- HEARTBEAT: NOT implemented (explicitly optional). A prolonged unresolved order
+  therefore keeps exactly ONE audit row. Consequence to know: an order that is
+  stuck unresolved produces no further audit evidence after the first row — the
+  poller keeps polling it and the trades row still shows the real lifecycle state.
+- Trade-off: if you ever change the class strings, every unresolved order will
+  write one more row on the next poll (the class differs from the stored one).
+
+### 2. NULL-timestamp loose end
+`get_pending_fill_trades()` re-polls CANCELED/EXPIRED rows younger than 24 h. A row
+whose `order_updated_at` AND `created_at` are both NULL has no usable age: it is
+now treated as OLD and is NOT re-polled (the `IS NULL` pass-through is gone).
+Non-terminal rows are unaffected by the horizon.

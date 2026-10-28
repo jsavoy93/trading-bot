@@ -228,19 +228,62 @@ from core import order_lifecycle
 # bookkeeping contract to the concrete SmartTradingBot instance.
 # ---------------------------------------------------------------------------
 
+#: Deterministic outcome classes for an UNRESOLVED poll. The class is
+#: stored verbatim in ``order_events.event_note`` so the next poll can
+#: compare against it and decide whether the outcome CHANGED. The class
+#: must stay deterministic: it must not embed error text (which varies
+#: between polls) or a timestamp.
+OUTCOME_BROKER_UNREACHABLE = "broker-unreachable"
+OUTCOME_RECONCILE_EXCEPTION = "reconcile-exception"
+OUTCOME_UNRECOGNIZED_STATUS_PREFIX = "unrecognized-status:"
+
+
+def _unresolved_outcome_class(
+    broker_event: Optional[Dict],
+    fetch_failed: bool,
+) -> str:
+    """Classify an unresolved poll outcome deterministically.
+
+    ``broker-unreachable``      — the broker could not be reached (fetch
+                                  raised, or it returned nothing usable).
+    ``unrecognized-status:<x>`` — the broker answered with a raw status
+                                  this bot does not recognize (the raw
+                                  token is embedded so the outcome is
+                                  still distinguishable).
+    ``reconcile-exception``     — reconciliation itself failed.
+    """
+    if fetch_failed or broker_event is None:
+        return OUTCOME_BROKER_UNREACHABLE
+    if broker_event.get("canonical_status") == order_lifecycle.CANONICAL_UNRESOLVED:
+        raw = broker_event.get("raw_status") or "none"
+        return f"{OUTCOME_UNRECOGNIZED_STATUS_PREFIX}{raw}"
+    return OUTCOME_BROKER_UNREACHABLE
+
 
 def _record_unresolved_event(
     db,
     row: Dict,
     broker_order_id: Optional[str],
     raw_status: Optional[str],
-    note: Optional[str],
+    outcome_class: str,
 ) -> bool:
-    """Append an unresolved audit event; the trades row is untouched.
+    """Append an unresolved audit event ONLY when the outcome changed.
 
-    Append-only companion to ``SQLiteDB.record_order_event``. Kept as
-    a small helper so the poller never has to touch the trades row for
-    an outcome it could not resolve. Never raises.
+    An unresolved poll repeats on every analysis loop (~10-17 s).
+    Writing one ``order_events`` row per poll floods the audit table, so
+    a row is written only when the outcome class differs from the
+    order's MOST RECENT ``order_events`` row. The comparison is a DB
+    lookup (newest first), so it survives a process restart — there is
+    no in-memory-only state.
+
+    ``event_note`` carries the outcome class verbatim (that is the
+    comparison key). ``raw_status`` keeps the broker's raw status token
+    when the broker answered.
+
+    Resolved transitions are unaffected: they are still written by
+    ``update_trade_lifecycle`` exactly as before.
+
+    Never raises.
     """
     recorder = getattr(db, "record_order_event", None)
     if not callable(recorder):
@@ -250,12 +293,18 @@ def _record_unresolved_event(
         )
         return False
     try:
+        last_lookup = getattr(db, "get_last_order_event", None)
+        if callable(last_lookup):
+            last = last_lookup(row.get("id"))
+            if last is not None and (last.get("event_note") or "") == outcome_class:
+                # Same outcome as the previous poll — no new audit row.
+                return False
         return bool(
             recorder(
                 trade_id=row.get("id"),
                 broker_order_id=broker_order_id,
                 raw_status=raw_status,
-                note=note,
+                note=outcome_class,
                 unresolved=True,
             )
         )
@@ -6001,8 +6050,18 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
           explicitly-unresolved audit event. Missing confirmation is
           persisted AS unresolved — never guessed. Every unresolved
           poll (unreachable broker, unrecognized status, reconcile
-          exception) appends exactly ONE order_events row with
-          unresolved = 1 and leaves the trades row untouched.
+          exception) is AUDITED with an order_events row carrying
+          unresolved = 1, and leaves the trades row untouched (see the
+          next bullet for when a new row is actually written).
+        - An unresolved poll repeats on every analysis loop (~10-17 s).
+          The audit row is written ONLY when the OUTCOME CHANGED for
+          that order: the deterministic outcome class
+          (broker-unreachable / unrecognized-status:<raw> /
+          reconcile-exception, stored in order_events.event_note) is
+          compared against the order's most recent order_events row,
+          read from the DB so the decision survives a restart.
+          Repeated identical outcomes write NO new row. Resolved
+          transitions are still recorded exactly as before.
 
         Returns a small summary dict for tests/telemetry. Never raises.
         """
@@ -6026,6 +6085,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     continue  # defensive; get_pending_fill_trades filters
                 summary["polled"] += 1
                 broker_event = None
+                fetch_failed = False
                 try:
                     if callable(fetch_order):
                         broker_event = order_lifecycle.extract_broker_event(
@@ -6037,6 +6097,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         broker_event = None
                 except Exception as e:
                     summary["errors"] += 1
+                    fetch_failed = True
                     logging.warning(
                         f"EXEC-003 fill poll: broker fetch failed for "
                         f"order {broker_order_id} (trade_id={row.get('id')}): {e}"
@@ -6058,7 +6119,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         row,
                         broker_order_id,
                         (broker_event or {}).get("raw_status"),
-                        f"reconcile failed: {e}",
+                        OUTCOME_RECONCILE_EXCEPTION,
                     )
                     continue
                 if result["unresolved"]:
@@ -6067,12 +6128,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     # unresolved poll MUST leave a durable audit trail.
                     # The trades row is deliberately NOT modified — the
                     # append-only order_events row is the record.
+                    #
+                    # EXEC-003 SHOULD-FIX #1 follow-up (2026-10-28): an
+                    # unresolved poll repeats every loop (~10-17 s). The
+                    # audit row is written ONLY when the outcome class
+                    # CHANGED for this order (compared against the
+                    # order's most recent order_events row, read from the
+                    # DB so the decision survives a restart).
                     _record_unresolved_event(
                         db,
                         row,
                         broker_order_id,
                         (broker_event or {}).get("raw_status"),
-                        result.get("note"),
+                        _unresolved_outcome_class(broker_event, fetch_failed),
                     )
                     # An unresolved outcome never changes lifecycle state.
                     continue
