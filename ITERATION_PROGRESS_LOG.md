@@ -5315,3 +5315,16 @@ Implementation complete; PR open and awaiting owner review.
 - Decision/finding: backfill rows previously inserted NULL sleeve via log_trade; all pre-sleeve-era activity is Sleeve S, so backfills now hard-tagged 'S'
 - Risk: none known (no pre-P1 'L' path existed)
 - Next: Josh reviews/approves PR #115 (merge human-gated); approval required
+
+## 2026-10-29 18:10 UTC — STRAT-022 research (dip-buy 2–5d holds)
+
+- **Item**: STRAT-022 — pre-registered short-term dip-buy backtest (research only)
+- **Branch/commit**: `research/strat-022-dip-buy`; prereg frozen 76f9dba; dev 76c7df2; final (this commit)
+- **Status**: DONE (conditional accept; holdout passed frozen bar)
+- **Files**: experiments/strat_022/* (prereg, downloader, engine, sanity checks, 379 symbol CSVs, results), reports/2026-10-29_180502_STRAT-022.md, REPORT.md
+- **Backtests**: dev 2021–2024 all 8 configs vs matched random baseline (5/10 bps);
+  holdout 2025–2026 run ONCE for frozen selection C4 (RSI(2)<10, ATR 3.0, 10d):
+  +0.246%/trade net 10 bps, t=3.09, baseline +0.151% → PASS, edge narrowed vs dev.
+- **Decisions/risks**: survivorship bias upward; close-checked stops; raw adjustment;
+  baseline single draw; baseline N > strat N (anti-overlap asymmetry, documented).
+- **Next**: PR review by Josh (not merged). Any shadow-sleeve proposal is a new task.

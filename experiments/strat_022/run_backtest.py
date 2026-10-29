@@ -125,7 +125,7 @@ def eligible_indices(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp,
 # trade-level + equity metrics live in metrics_equity()
 
 
-def main(period: str):
+def main(period: str, only: str | None = None):
     assert period in ("dev", "holdout")
     start = pd.Timestamp("2021-01-01") if period == "dev" else pd.Timestamp("2025-01-01")
     end = pd.Timestamp("2024-12-31") if period == "dev" else pd.Timestamp("2026-10-28")
@@ -155,6 +155,8 @@ def main(period: str):
     results = {"period": period, "window": [str(start.date()), str(end.date())],
                "symbols": len(frames), "configs": {}}
     for cid, rsi_e, atr_m, ts in CONFIGS:
+        if only and cid != only:
+            continue
         strat_trades, base_trades = [], []
         for s, df in frames.items():
             st = run_trades(df, s, sig[cid][s], atr_m, ts)
@@ -231,4 +233,4 @@ def metrics_equity(trades, frames, dates_index, cost):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "dev")
+    main(sys.argv[1] if len(sys.argv) > 1 else "dev", sys.argv[2] if len(sys.argv) > 2 else None)
