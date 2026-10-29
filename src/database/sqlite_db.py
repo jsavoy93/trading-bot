@@ -94,6 +94,12 @@ class SQLiteDB:
                         -- SUBMITTED != FILLED contract.
                         status TEXT DEFAULT 'SUBMITTED',
                         broker_order_id TEXT,
+                        -- SLEEVE-P1 (two-sleeve design §6): logical sleeve
+                        -- ownership of this ledger row. 'L' = long-term
+                        -- factor sleeve, 'S' = short-term technical
+                        -- (SmartBot) sleeve, NULL = legacy pre-sleeve
+                        -- rows (never back-filled by guessing; D7).
+                        sleeve TEXT,
                         created_at TEXT DEFAULT (datetime('now')),
                         FOREIGN KEY (session_id) REFERENCES trading_sessions(id)
                     );
@@ -610,6 +616,27 @@ class SQLiteDB:
                         if "duplicate column name" not in str(e):
                             raise
 
+                # ── SLEEVE-P1: trades.sleeve tagging column ─────────────────
+                # Additive, nullable, idempotent migration per the
+                # two-sleeve portfolio design §6 / §10-P1:
+                #
+                #   sleeve TEXT — logical sleeve ownership of the
+                #                 ledger row ('L' factor sleeve,
+                #                 'S' SmartBot technical sleeve).
+                #                 NULL = legacy pre-sleeve row. Legacy
+                #                 rows are deliberately LEFT NULL and
+                #                 never guessed/back-filled (D7 default).
+                #
+                # order_events inherits sleeve via the parent trades
+                # row (join through trade_id) — no order_events column.
+                # Re-running the migration on an already-migrated DB is
+                # a no-op (guarded ALTER below).
+                try:
+                    conn.execute("ALTER TABLE trades ADD COLUMN sleeve TEXT;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e):
+                        raise
+
                 # ── EXEC-003 SHOULD-FIX #1: order_events append-only log ─────
                 # One row per applied lifecycle transition (and per
                 # explicitly-unresolved poll result). Append-only: events
@@ -1092,6 +1119,21 @@ class SQLiteDB:
                         f"log_trade called with columns not in trades "
                         f"schema: {unknown}; refusing to persist a row "
                         f"that the schema cannot represent."
+                    )
+                # SLEEVE-P1: sleeve tagging contract (two-sleeve design
+                # §6). When a sleeve value is supplied it MUST be
+                # 'L', 'S', or None (legacy semantics). An invalid
+                # value fails CLOSED: the row is refused rather than
+                # persisted with a guessed/normalized sleeve, so the
+                # per-sleeve position map can never be built from a
+                # mislabelled fill.
+                _sleeve = trade_data.get("sleeve")
+                if _sleeve not in ("L", "S", None):
+                    raise sqlite3.OperationalError(
+                        f"log_trade called with invalid sleeve "
+                        f"{_sleeve!r}; allowed values are 'L', 'S', or "
+                        f"None (legacy). Refusing to persist a row "
+                        f"with an unrepresentable sleeve tag."
                     )
                 conn.execute(
                     f"INSERT INTO trades ({col_names}) VALUES ({placeholders})",

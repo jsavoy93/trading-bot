@@ -5290,3 +5290,28 @@ Implementation complete; PR open and awaiting owner review.
 - **Next action**: OWNER reviews PR #110. NO merge, NO deploy, NO restart without
   explicit owner authorization.
 - **Josh's approval required**: YES (merge decision + the reconciliation run).
+
+---
+
+## 2026-10-29T12:01Z — SLEEVE-P1 — Sleeve tagging on the trades ledger
+
+- **Backlog item / objective:** Two-sleeve portfolio design (PR #113) Phase P1 — §6 sleeve tagging: nullable `trades.sleeve` column, sleeve='S' on all NEW ledger write paths, fail-closed validation, derived SleevePositionBook. PAPER ONLY, no trading-decision changes.
+- **Branch / commit:** `agent/sleeve-p1-tagging` @ `36ed886` (off f8e2144 = origin/main, clean at start)
+- **Status:** DONE (PR #115 open, awaiting manager review + Josh merge approval)
+- **Files changed:** `src/database/sqlite_db.py`, `src/core/smart_bot.py`, `src/core/sleeve_positions.py` (new), `tests/test_sleeve_p1_tagging.py` (new)
+- **Tests:** focused 22 passed; full suite branch 2057P/37F/1S vs clean f8e2144 baseline 2035P/37F/1S — failure sets byte-identical (diff-verified), delta +22 passed, 0 regressions; `test_brokerage_safety_enforcement.py` 13 passed.
+- **Decisions / discoveries:** legacy rows left NULL never back-filled (D7 default); `update_trade_lifecycle` (reconciliation) never writes sleeve so fills inherit the parent row's tag; `_ledger_log_submitted` tags centrally and preserves a caller-supplied valid 'L'/'S'; SleevePositionBook deliberately unwired at runtime until P2. The 37 pre-existing baseline failures (dashboard phase-C/settings/live-endpoint tests) are out of scope.
+- **Risks:** future invalid-sleeve callers fail closed (row refused) — intended; avg_entry in the book is a weighted heuristic on a derived, non-authoritative map.
+- **Next action:** manager review of PR #115 (https://github.com/jsavoy93/trading-bot/pull/115), then Josh's merge decision. P2 governor only after P1 merges (§10 gating). Josh approval required.
+
+---
+
+## 2026-10-29T12:08Z — SLEEVE-P1 review fix: backfill sleeve tagging (PR #115)
+- Backlog: PR #115 review SHOULD-FIX (reconciliation backfills must be tagged, design §6)
+- Branch/commit: agent/sleeve-p1-tagging / 27c95c6
+- Status: DONE
+- Files changed: scripts/reconcile_ledger_with_broker.py (build_backfill_row emits sleeve='S'), tests/test_exec_004_tranche_ledger_fidelity.py (new test_d8)
+- Tests: test_exec_004_tranche_ledger_fidelity.py 27 passed; test_sleeve_p1_tagging.py + test_brokerage_safety_enforcement.py 35 passed
+- Decision/finding: backfill rows previously inserted NULL sleeve via log_trade; all pre-sleeve-era activity is Sleeve S, so backfills now hard-tagged 'S'
+- Risk: none known (no pre-P1 'L' path existed)
+- Next: Josh reviews/approves PR #115 (merge human-gated); approval required

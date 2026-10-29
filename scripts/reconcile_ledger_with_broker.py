@@ -118,6 +118,10 @@ def build_backfill_row(order: Dict) -> Dict:
         "broker_order_id": order["id"],
         "filled_qty": order["filled_qty"],
         "avg_fill_price": order["filled_avg_price"] or None,
+        "sleeve": "S",  # SLEEVE-P1 review fix: all pre-sleeve-era bot
+        # activity is the SmartBot (short-term technical) sleeve 'S';
+        # a NULL here would be indistinguishable from legacy pre-sleeve
+        # rows (two-sleeve design §6 requires backfills to be tagged).
         "notes": RECONCILIATION_NOTE,
     }
 

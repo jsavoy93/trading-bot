@@ -509,6 +509,25 @@ def test_d3_reconciliation_is_idempotent(db):
     assert recon.find_unrecorded_fills(ledger_rows, orders) == []
 
 
+def test_d8_backfill_rows_are_sleeve_tagged(db):
+    """SLEEVE-P1 review fix (PR #115): reconciliation backfills must
+    carry sleeve='S'. A NULL backfill row would be indistinguishable from
+    a legacy pre-sleeve row (two-sleeve design §6)."""
+    _require_recon()
+    order = recon.normalize_broker_order(_broker_order("tag-1", filled_qty=7))
+    row = recon.build_backfill_row(order)
+    assert row["sleeve"] == "S"
+
+    inserted = recon.apply_backfill(db, [row])
+    assert inserted == 1
+    with sqlite_db_module._get_conn() as conn:
+        stored = conn.execute(
+            "SELECT sleeve FROM trades WHERE broker_order_id = ?", ("tag-1",)
+        ).fetchone()
+    assert stored is not None, "backfill row must be persisted"
+    assert stored["sleeve"] == "S", "backfilled row must be tagged 'S', not NULL"
+
+
 def test_d4_position_summary_is_signed_by_side():
     _require_recon()
     ledger = [

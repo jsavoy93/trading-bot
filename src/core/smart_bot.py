@@ -366,6 +366,9 @@ def _persist_tranche_submission(
             "notes": (
                 f"EXEC-003 entry tranche {tranche_num} (trigger={trigger})"
             ),
+            # SLEEVE-P1: every ledger write path tags its sleeve.
+            # The current SmartBot is Sleeve S (short-term technical).
+            "sleeve": "S",
         }
         persisted = db.log_trade(session_id, trade_data)
     except Exception as e:
@@ -405,6 +408,15 @@ def _ledger_log_submitted(
     try:
         if not db.is_available():
             return False
+        # SLEEVE-P1: every ledger write path tags its sleeve. This
+        # helper is the single persistence sink for stop-loss and
+        # portfolio-management orders, so the tag is applied centrally
+        # here (current SmartBot = Sleeve S). If the caller already
+        # supplied a valid sleeve it is preserved; log_trade validates
+        # the final value against {'L','S',None}.
+        if trade_data.get("sleeve") not in ("L", "S"):
+            trade_data = dict(trade_data)
+            trade_data["sleeve"] = "S"
         persisted = db.log_trade(trade_data.get("session_id"), trade_data)
     except Exception as e:
         logging.error(
@@ -5928,6 +5940,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     'order_time': datetime.now(timezone.utc).isoformat(),
                     'status': 'SUBMITTED',
                     'broker_order_id': str(order.id) if order.id else None,
+                    # SLEEVE-P1: every ledger write path tags its
+                    # sleeve; the current SmartBot is Sleeve S.
+                    'sleeve': 'S',
                 }
                 # EXEC-003.1 review: capture the return value so a
                 # persistence failure surfaces as an explicit ERROR-level
