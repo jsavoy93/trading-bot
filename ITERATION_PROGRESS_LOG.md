@@ -5315,3 +5315,16 @@ Implementation complete; PR open and awaiting owner review.
 - Decision/finding: backfill rows previously inserted NULL sleeve via log_trade; all pre-sleeve-era activity is Sleeve S, so backfills now hard-tagged 'S'
 - Risk: none known (no pre-P1 'L' path existed)
 - Next: Josh reviews/approves PR #115 (merge human-gated); approval required
+
+## 2026-10-30T00:43Z — DASH-SLEEVE live sleeve panel
+- Backlog/objective: Josh-approved dashboard update (PAPER ONLY): live sleeve
+  panel with per-sleeve positions/P&L, cash, recent trades/signals, bot
+  health, ledger-vs-broker reconciliation.
+- Branch/commit: `dashboard/sleeve-live-panel` @ 546ad93 (base 3e2cee5, worktree /root/.openclaw/worktrees/dash-sleeve)
+- Status: DONE (PR open, awaiting Josh review; NOT merged)
+- Files changed: dashboard.py (+~305), templates/dashboard.html (+~89), tests/test_dashboard_sleeve_live.py (new, 11 tests), REPORT.md, reports/2026-10-30_004300_dash-sleeve-panel.md
+- Ported from dirty checkout: nothing (dashboard files identical to 3e2cee5, no local mods); skipped STRAT-020 research dirt per scope.
+- Tests: focused 11/11 passed. Full safe suite: 37 failed/2080 passed after vs 37 failed/2069 passed baseline — failure sets byte-identical (pre-existing env/live-DB failures). Broker PAPER-ONLY guard active; no real Alpaca calls in tests.
+- Key decisions: new GET /api/sleeve-live (read-only, loopback, no auth changes); broker authoritative, per-sleeve split derived pro-rata via SleevePositionBook; legacy = broker qty − tagged qty; failed_analyses "No market data" = only real data errors; UI auto-refresh 45 s.
+- Risks: derived split only as good as sleeve tags (mismatch banner surfaces drift); legacy bucket can go negative (surfaced); systemctl --user probe degrades to "unavailable".
+- Next: Josh reviews PR + authorizes documented deploy/rollback steps. Approval required: yes.
