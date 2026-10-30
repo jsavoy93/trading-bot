@@ -1085,6 +1085,16 @@
             {% endif %}
         </div>
 
+        <!-- DASH-SLEEVE: live sleeve panel (read-only, auto-refresh) -->
+        <div class="card" id="slee-live-card">
+            <div class="card-header">
+                <span class="card-title">🫛 Sleeves — Live</span>
+                <span style="font-size: 11px; color: #8b949e; margin-left: 8px;">paper · broker authoritative · auto-refresh 45s</span>
+                <button onclick="loadSleevePanel()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 12px;">🔄 Refresh</button>
+            </div>
+            <div id="slee-live-body"><p class="no-data">Loading sleeve panel…</p></div>
+        </div>
+
         <!-- Phase B — Latest Cycle Funnel -->
         <div class="card" id="latest-cycle-card">
             <div class="card-header">
@@ -3905,6 +3915,85 @@
 // hash, and does NOT reset the active tab / scroll position. The
 // user stays on the BUY→HOLD Attribution card (or any other card)
 // while numbers update underneath them.
+// ── DASH-SLEEVE: live sleeve panel (read-only) ──────────────────
+async function loadSleevePanel() {
+    const body = document.getElementById('slee-live-body');
+    if (!body) return;
+    try {
+        const r = await fetch('/api/sleeve-live');
+        const d = await r.json();
+        const h = d.health || {};
+        const holdH = h.holds_last_hour || {};
+        const svc = h.smartbot_service_state || 'unknown';
+        const svcColor = svc === 'active' ? 'green' : 'red';
+        let html = '';
+
+        html += '<div style="margin-bottom:8px;font-size:13px;">' +
+            'Cash: <strong>$' + (d.cash != null ? Number(d.cash).toFixed(2) : '—') + '</strong>' +
+            ' · Portfolio: <strong>$' + (d.portfolio_value != null ? Number(d.portfolio_value).toFixed(2) : '—') + '</strong>' +
+            ' · Bot service: <strong class="' + svcColor + '">' + svc + '</strong>' +
+            (h.last_session && h.last_session.session_start
+                ? ' · Last loop start: ' + h.last_session.session_start
+                : ' · Last loop: —') +
+            ' · Last 1h: ' + (holdH.data_errors != null ? holdH.data_errors + ' data errors' : '—') +
+            ' / ' + (holdH.total_holds != null ? holdH.total_holds + ' HOLDs' : '—') +
+            '</div>';
+
+        if (h.mismatch_count > 0) {
+            html += '<div style="margin-bottom:8px;color:#da3633;font-size:12px;">⚠️ ' +
+                h.mismatch_count + ' ledger-vs-broker qty mismatch(es): ' +
+                h.ledger_broker_mismatches.slice(0, 5).map(m =>
+                    m.symbol + ' (ledger ' + m.ledger_qty + ' / broker ' + m.broker_qty + ')'
+                ).join(', ') + '</div>';
+        } else {
+            html += '<div style="margin-bottom:8px;color:#3fb950;font-size:12px;">✅ Ledger and broker quantities agree</div>';
+        }
+
+        html += '<table style="width:100%;margin-bottom:10px;"><thead><tr>' +
+            '<th style="text-align:left;">Sleeve</th><th style="text-align:right;">Positions</th>' +
+            '<th style="text-align:right;">Market Value</th><th style="text-align:right;">Unrealized P&L</th>' +
+            '</tr></thead><tbody>';
+        (d.sleeves || []).forEach(s => {
+            html += '<tr><td>' + (s.sleeve || 'legacy') + ' — ' + s.label + '</td>' +
+                '<td style="text-align:right;">' + s.position_count + '</td>' +
+                '<td style="text-align:right;">$' + Number(s.market_value).toFixed(2) + '</td>' +
+                '<td style="text-align:right;" class="' + (s.unrealized_pl >= 0 ? 'green' : 'red') + '">$' +
+                Number(s.unrealized_pl).toFixed(2) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+
+        html += '<div style="display:flex;gap:16px;flex-wrap:wrap;">';
+        html += '<div style="flex:1;min-width:260px;"><strong style="font-size:12px;">Recent Trades</strong>' +
+            '<table style="width:100%;"><thead><tr><th style="text-align:left;">Time</th><th style="text-align:left;">Sym</th>' +
+            '<th style="text-align:left;">Side</th><th style="text-align:right;">Qty</th><th style="text-align:left;">Sleeve</th></tr></thead><tbody>' +
+            ((d.recent_trades || []).slice(0, 8).map(t =>
+                '<tr><td style="font-size:11px;">' + (t.created_at || '-') + '</td>' +
+                '<td class="symbol">' + (t.symbol || '-') + '</td>' +
+                '<td class="side-' + ((t.side || '').toLowerCase()) + '">' + (t.side || '-') + '</td>' +
+                '<td style="text-align:right;">' + (t.filled_qty != null ? t.filled_qty : (t.qty != null ? t.qty : '-')) + '</td>' +
+                '<td>' + (t.sleeve || 'legacy') + '</td></tr>'
+            ).join('') || '<tr><td colspan="5" class="no-data">No trades</td></tr>') +
+            '</tbody></table></div>';
+        html += '<div style="flex:1;min-width:260px;"><strong style="font-size:12px;">Latest Signals</strong>' +
+            '<table style="width:100%;"><thead><tr><th style="text-align:left;">Sym</th><th style="text-align:left;">Signal</th>' +
+            '<th style="text-align:right;">Score</th><th style="text-align:left;">Analyzed</th></tr></thead><tbody>' +
+            ((d.recent_signals || []).slice(0, 8).map(s =>
+                '<tr><td class="symbol">' + s.symbol + '</td>' +
+                '<td class="' + (s.signal === 'BUY' ? 'green' : (s.signal === 'SELL' ? 'red' : '')) + '">' + s.signal + '</td>' +
+                '<td style="text-align:right;">' + s.total_score + '</td>' +
+                '<td style="font-size:11px;">' + (s.last_analyzed || '-') + '</td></tr>'
+            ).join('') || '<tr><td colspan="4" class="no-data">No signals</td></tr>') +
+            '</tbody></table></div>';
+        html += '</div>';
+        html += '<div style="font-size:10px;color:#8b949e;margin-top:6px;">' + (d.notes || '') + '</div>';
+        body.innerHTML = html;
+    } catch (e) {
+        body.innerHTML = '<p class="no-data">Sleeve panel unavailable (' + e.message + ')</p>';
+    }
+}
+loadSleevePanel();
+setInterval(loadSleevePanel, 45000);
+
 setInterval(refreshData, 30000);
 
         // ── Database Status ──────────────────────────────────────────────

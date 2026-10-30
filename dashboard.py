@@ -770,6 +770,313 @@ def get_recent_sessions(limit: int = 5) -> List[Dict]:
     return db.get_sessions(limit)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# DASH-SLEEVE: live sleeve panel read model (read-only, paper account)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Two-sleeve design (§6.3, SLEEVE-P1): the broker reports ONE aggregate
+# position per symbol because both sleeves share a single paper account.
+# This panel is a READ-ONLY observability projection:
+#
+#   - The BROKER (Alpaca paper) is authoritative for quantities, market
+#     values, cash, and P&L. Every aggregate below is DERIVED from broker
+#     numbers, never from the ledger alone.
+#   - Per-sleeve attribution is derived from `trades.sleeve` ledger tags
+#     via SleevePositionBook (same contract: only FILLED rows with a
+#     confirmed filled_qty and a valid 'L'/'S' tag count; NULL-sleeve
+#     legacy rows are never guessed).
+#   - Legacy attribution: broker qty minus tagged sleeve qty is labeled
+#     sleeve `None` ("legacy / unattributed"). It can be negative if the
+#     ledger disagrees with the broker — that is surfaced as a mismatch,
+#     not hidden.
+#   - Nothing here alters, gates, sizes, or exits trades. No auth changes;
+#     the endpoint is loopback-bound like every other dashboard route.
+
+SLEEVE_PANEL_REFRESH_SECONDS = 45
+SLEEVE_LEDGER_ROW_LIMIT = 1_000_000
+
+
+def _sleeve_systemd_state(unit: str = "smartbot-runner.service") -> str:
+    """Read-only `systemctl --user is-active` probe for the bot service.
+
+    Returns the raw state string ('active', 'inactive', 'failed', ...) or
+    'unavailable' when systemctl cannot be queried. Never raises, never
+    restarts anything.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True, text=True, timeout=2,
+        )
+        state = (out.stdout or "").strip() or "unknown"
+        return state
+    except Exception:
+        return "unavailable"
+
+
+def _sleeve_db_path():
+    """Resolve the trading DB path from the sqlite_db module (test-patchable)."""
+    from pathlib import Path as _P
+    import database.sqlite_db as _mod
+    return _P(str(_mod.DB_PATH))
+
+
+def _sleeve_recent_signals(limit: int = 10) -> List[Dict]:
+    """Latest analyzed_stocks signals via a read-only sqlite connection."""
+    import sqlite3 as _sqlite3
+    db_path = _sleeve_db_path()
+    if not db_path.exists():
+        return []
+    try:
+        conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = _sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT symbol, signal, signal_strength, total_score, "
+                "last_analyzed FROM analyzed_stocks "
+                "ORDER BY last_analyzed DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"sleeve panel: recent signals read failed: {e}")
+        return []
+
+
+def _sleeve_holds_last_hour() -> Dict:
+    """failed_analyses counts for the last hour (read-only).
+
+    MENTOR.md contract: failed_analyses logs every HOLD, not errors. Only
+    'No market data' rows are real Alpaca data problems; the rest are normal
+    HOLD outcomes and are reported as context, not failures.
+    """
+    import sqlite3 as _sqlite3
+    db_path = _sleeve_db_path()
+    if not db_path.exists():
+        return {"total_holds": None, "data_errors": None}
+    try:
+        conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = _sqlite3.Row
+        try:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(hours=1)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN blocked_by = 'No market data' "
+                "         OR failed_filters LIKE '%No market data%' "
+                "         THEN 1 ELSE 0 END) AS data_errors "
+                "FROM failed_analyses WHERE timestamp >= ?",
+                (cutoff,),
+            ).fetchone()
+            return {
+                "total_holds": row["total"] or 0,
+                "data_errors": row["data_errors"] or 0,
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"sleeve panel: failed_analyses read failed: {e}")
+        return {"total_holds": None, "data_errors": None}
+
+
+def _sleeve_ledger_position_qty(ledger_rows: List[Dict]) -> Dict[str, float]:
+    """Per-symbol net ledger qty from ALL confirmed fills (any sleeve tag).
+
+    Used only for ledger-vs-broker reconciliation. Mirrors the
+    SleevePositionBook fill contract: only status='FILLED' rows with a
+    confirmed filled_qty count; SELL is negative.
+    """
+    out: Dict[str, float] = {}
+    for row in ledger_rows or []:
+        try:
+            if row.get("status") != "FILLED":
+                continue
+            qty = row.get("filled_qty")
+            if qty is None:
+                continue
+            side = (row.get("side") or "").upper()
+            signed = float(qty) * (1.0 if side != "SELL" else -1.0)
+            out[row.get("symbol")] = out.get(row.get("symbol"), 0.0) + signed
+        except Exception:
+            continue
+    return out
+
+
+def get_sleeve_live_snapshot() -> Dict:
+    """Build the DASH-SLEEVE live panel snapshot. Read-only; never raises.
+
+    Broker (Alpaca paper) is authoritative for qty/value/P&L/cash; the
+    per-sleeve split is derived from trades.sleeve ledger attribution via
+    SleevePositionBook (same contract as the bot's own book).
+    """
+    snapshot: Dict = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "paper_only": True,
+        "cash": None,
+        "sleeves": [],
+        "recent_trades": [],
+        "recent_signals": [],
+        "health": {},
+        "notes": (
+            "Broker (Alpaca paper) is authoritative for quantities, values "
+            "and cash; per-sleeve split is derived from trades.sleeve "
+            "ledger attribution (SLEEVE-P1)."
+        ),
+    }
+
+    # ── Cash + account (paper) ─────────────────────────────────────────
+    try:
+        account = get_account_info()
+        if account and "cash" in account:
+            snapshot["cash"] = round(float(account["cash"]), 2)
+            snapshot["portfolio_value"] = round(
+                float(account.get("portfolio_value") or 0.0), 2
+            )
+    except Exception as e:
+        logger.warning(f"sleeve panel: account read failed: {e}")
+
+    # ── Broker positions (authoritative) ──────────────────────────────
+    broker_positions: List[Dict] = []
+    if trading_client:
+        try:
+            for p in trading_client.get_all_positions():
+                qty = float(p.qty or 0)
+                if qty <= 0:
+                    continue
+                broker_positions.append({
+                    "symbol": p.symbol,
+                    "qty": qty,
+                    "market_value": float(p.market_value or 0),
+                    "unrealized_pl": float(p.unrealized_pl or 0),
+                    "current_price": float(p.current_price or 0),
+                    "avg_entry_price": float(p.avg_entry_price or 0),
+                })
+        except Exception as e:
+            logger.warning(f"sleeve panel: broker positions read failed: {e}")
+
+    # ── Ledger attribution (derived) ───────────────────────────────────
+    ledger_rows: List[Dict] = []
+    try:
+        ledger_rows = db.get_all_trades(SLEEVE_LEDGER_ROW_LIMIT)
+    except Exception as e:
+        logger.warning(f"sleeve panel: ledger read failed: {e}")
+
+    book = None
+    try:
+        from core.sleeve_positions import book_from_ledger_rows
+        book = book_from_ledger_rows(ledger_rows)
+    except Exception as e:
+        logger.warning(f"sleeve panel: sleeve book build failed: {e}")
+
+    def sleeve_qty(symbol: str, tag: str) -> float:
+        if book is None:
+            return 0.0
+        pos = book.get(symbol, tag)
+        return float(pos["qty"]) if pos else 0.0
+
+    # ── Per-sleeve aggregation (derived; broker numbers authoritative) ─
+    sleeve_defs = [
+        ("S", "Short-term technical (SmartBot)"),
+        ("L", "Long-term factor"),
+        (None, "Legacy / unattributed (pre-sleeve)"),
+    ]
+    sleeves_out: List[Dict] = []
+    for tag, label in sleeve_defs:
+        agg = {
+            "sleeve": tag,
+            "label": label,
+            "position_count": 0,
+            "market_value": 0.0,
+            "unrealized_pl": 0.0,
+            "positions": [],
+        }
+        for bp in broker_positions:
+            qty_share = (
+                sleeve_qty(bp["symbol"], tag) if tag is not None
+                else bp["qty"] - sleeve_qty(bp["symbol"], "S")
+                - sleeve_qty(bp["symbol"], "L")
+            )
+            if abs(qty_share) < 1e-9:
+                continue
+            fraction = qty_share / bp["qty"] if bp["qty"] else 0.0
+            agg["position_count"] += 1
+            agg["market_value"] += bp["market_value"] * fraction
+            agg["unrealized_pl"] += bp["unrealized_pl"] * fraction
+            agg["positions"].append({
+                "symbol": bp["symbol"],
+                "qty": round(qty_share, 6),
+                "share_of_symbol_qty": round(fraction, 4),
+                "current_price": bp["current_price"],
+                "market_value": round(bp["market_value"] * fraction, 2),
+                "unrealized_pl": round(bp["unrealized_pl"] * fraction, 2),
+            })
+        agg["market_value"] = round(agg["market_value"], 2)
+        agg["unrealized_pl"] = round(agg["unrealized_pl"], 2)
+        sleeves_out.append(agg)
+    snapshot["sleeves"] = sleeves_out
+
+    # ── Recent trades + latest signals ─────────────────────────────────
+    try:
+        snapshot["recent_trades"] = ledger_rows[:15]
+    except Exception:
+        pass
+    snapshot["recent_signals"] = _sleeve_recent_signals(10)
+
+    # ── Health ─────────────────────────────────────────────────────────
+    last_session = {}
+    try:
+        sessions = db.get_sessions(1)
+        if sessions:
+            s = sessions[0]
+            last_session = {
+                "id": s.get("id"),
+                "session_start": s.get("session_start"),
+                "session_end": s.get("session_end"),
+                "total_symbols_processed": s.get("total_symbols_processed"),
+                "total_trades_executed": s.get("total_trades_executed"),
+                "error_count": s.get("error_count"),
+            }
+    except Exception as e:
+        logger.warning(f"sleeve panel: session read failed: {e}")
+
+    mismatches: List[Dict] = []
+    try:
+        ledger_qty = _sleeve_ledger_position_qty(ledger_rows)
+        broker_qty = {bp["symbol"]: bp["qty"] for bp in broker_positions}
+        for sym in sorted(set(ledger_qty) | set(broker_qty)):
+            lq = round(ledger_qty.get(sym, 0.0), 6)
+            bq = round(broker_qty.get(sym, 0.0), 6)
+            if abs(lq - bq) > 1e-6:
+                mismatches.append({
+                    "symbol": sym,
+                    "ledger_qty": lq,
+                    "broker_qty": bq,
+                    "delta": round(bq - lq, 6),
+                })
+    except Exception as e:
+        logger.warning(f"sleeve panel: reconciliation failed: {e}")
+
+    snapshot["health"] = {
+        "smartbot_runner_active": is_smartbot_runner_active(),
+        "smartbot_service_state": _sleeve_systemd_state(),
+        "last_session": last_session,
+        "holds_last_hour": _sleeve_holds_last_hour(),
+        "ledger_broker_mismatches": mismatches,
+        "mismatch_count": len(mismatches),
+    }
+    return snapshot
+
+
+@app.get("/api/sleeve-live")
+def api_sleeve_live():
+    """DASH-SLEEVE live panel snapshot (read-only; no auth changes)."""
+    return get_sleeve_live_snapshot()
+
+
 # Routes
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
