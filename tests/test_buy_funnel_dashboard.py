@@ -31,6 +31,42 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 
 
+def _sql_ts(offset_seconds: float = 0.0) -> str:
+    """Return a quoted UTC ISO-8601 timestamp literal anchored near `now()`.
+
+    ENG-04b: the BUY-funnel endpoints filter rows with the same
+    wall-clock range windows used elsewhere in the dashboard
+    (`today` / `24h` / `7d` cutoffs are computed from
+    `datetime.now(timezone.utc)`). Synthetic rows pinned to a fixed
+    calendar date fall outside every window once real time advances
+    past that date, so the endpoint silently returns an empty list and
+    the test fails for reasons unrelated to what it asserts.
+
+    Anchoring to `now()` keeps the range filters meaningful.
+    `offset_seconds` shifts a row backwards in time while keeping it
+    inside the window (used by the dedup scenarios, which need an
+    older/newer pair).
+
+    The result is returned pre-quoted so it can be dropped straight
+    into the single-quoted SQL literals these builders use.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    ts = _dt.now(_tz.utc) + _td(seconds=offset_seconds)
+    return "'" + ts.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00") + "'"
+
+
+# Synthetic-row timestamps, now()-anchored (ENG-04b). The relative
+# ordering (OLDER < NEWER) is preserved so the dedup scenarios keep
+# their "latest state per symbol" semantics.
+_TS_MAIN = _sql_ts()
+_TS_OLDER = _sql_ts(offset_seconds=-3600)
+_TS_NEWER = _sql_ts(offset_seconds=3600)
+
+# Raw (unquoted) variants for parameter binding.
+_TS_MAIN_RAW = _TS_MAIN[1:-1]
+_TS_NEWER_RAW = _TS_NEWER[1:-1]
+
+
 def _import_dashboard():
     """Import dashboard.py from the repo root without polluting sys.path."""
     if str(REPO_ROOT) not in sys.path:
@@ -416,19 +452,19 @@ def _build_synthetic_db(path: Path):
         )
     """)
     # Insert a synthetic recent decision
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO decision_history
             (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot)
-        VALUES (1, 'cycle_synth', 'XYZ', '2026-09-27T19:00:00+00:00', 1, '{}')
+        VALUES (1, 'cycle_synth', 'XYZ', {_TS_MAIN}, 1, '{{}}')
     """)
-    cur.execute("""
+    cur.execute(f"""
         INSERT INTO decision_gate_evaluations
             (decision_history_id, cycle_id, symbol, cycle_start, ordinality,
              gate_name, gate_category, applied, passed, observed_value, threshold_value, reason)
         VALUES
-        (1, 'cycle_synth', 'XYZ', '2026-09-27T19:00:00+00:00', 1,
+        (1, 'cycle_synth', 'XYZ', {_TS_MAIN}, 1,
          'rsi_oversold', 'strategy_gate', 1, 1, 31.0, 30.0, 'RSI 31.0 <= threshold 30.0'),
-        (1, 'cycle_synth', 'XYZ', '2026-09-27T19:00:00+00:00', 2,
+        (1, 'cycle_synth', 'XYZ', {_TS_MAIN}, 2,
          'sma_uptrend', 'strategy_gate', 1, 0, 28.0, 30.0, 'SMA fast <= SMA slow')
     """)
     conn.commit()
@@ -728,57 +764,72 @@ def _build_synthetic_db_v02(path: Path, scenario: str):
     """)
     if scenario == "VALID_NEAR_MISS":
         # symbol AAA: RSI PASS, SMA FAIL, MACD PASS, VOL PASS \u2192 valid (sole fail = sma)
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (1, 'c_synth_v1', 'AAA', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (1, 'c_synth_v1', 'AAA', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (1, 'c_synth_v1', 'AAA', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (1, 'c_synth_v1', 'AAA', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (1, 'c_synth_v1', 'AAA', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (1, 'c_synth_v1', 'AAA', {_TS_MAIN}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "ALL_PASS":
         # symbol EEE: every required gate applied and passed \u2192 not a near miss
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (5, 'c_synth_v5', 'EEE', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (5, 'c_synth_v5', 'EEE', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (5, 'c_synth_v5', 'EEE', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (5, 'c_synth_v5', 'EEE', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (5, 'c_synth_v5', 'EEE', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (5, 'c_synth_v5', 'EEE', {_TS_MAIN}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "FAIL_BOTH_RSI_SMA":
         # symbol DDD: two required gates fail \u2192 not a near miss
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 9.0, 11.0, 'sma fail'), (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (4, 'c_synth_v4', 'DDD', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (4, 'c_synth_v4', 'DDD', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (4, 'c_synth_v4', 'DDD', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (4, 'c_synth_v4', 'DDD', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 0, 9.0, 11.0, 'sma fail'), (4, 'c_synth_v4', 'DDD', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (4, 'c_synth_v4', 'DDD', {_TS_MAIN}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "FAIL_RSI_ABSENT_SMA":
         # symbol CCC: RSI FAIL + SMA required-but-absent \u2192 not a near miss
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 2, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (3, 'c_synth_v3', 'CCC', '2026-09-27T19:00:00+00:00', 3, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (3, 'c_synth_v3', 'CCC', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (3, 'c_synth_v3', 'CCC', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (3, 'c_synth_v3', 'CCC', {_TS_MAIN}, 2, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (3, 'c_synth_v3', 'CCC', {_TS_MAIN}, 3, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "FAIL_ABSENT_MACD":
         # symbol FFF: macd_positive required-and-absent \u2192 not a near miss
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (6, 'c_synth_v6', 'FFF', '2026-09-27T19:00:00+00:00', 3, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (6, 'c_synth_v6', 'FFF', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (6, 'c_synth_v6', 'FFF', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (6, 'c_synth_v6', 'FFF', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (6, 'c_synth_v6', 'FFF', {_TS_MAIN}, 3, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "FAIL_ABSENT_VOLUME":
         # symbol VVV: volume_confirmation required-and-absent \u2192 not a near miss
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (7, 'c_synth_v7', 'VVV', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (7, 'c_synth_v7', 'VVV', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (7, 'c_synth_v7', 'VVV', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (7, 'c_synth_v7', 'VVV', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (7, 'c_synth_v7', 'VVV', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok')")
     elif scenario == "MACD_FAIL_NEAR_MISS":
         # symbol MMM: macd is the sole fail \u2192 valid near miss
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 0, -0.3, 0.0, 'macd fail'), (8, 'c_synth_v8', 'MMM', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (8, 'c_synth_v8', 'MMM', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (8, 'c_synth_v8', 'MMM', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (8, 'c_synth_v8', 'MMM', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (8, 'c_synth_v8', 'MMM', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 0, -0.3, 0.0, 'macd fail'), (8, 'c_synth_v8', 'MMM', {_TS_MAIN}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "VOLUME_FAIL_NEAR_MISS":
         # symbol GGG: volume is the sole fail \u2192 valid near miss
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (9, 'c_synth_v9', 'GGG', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 0, 0.5, 1.0, 'vol fail')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (9, 'c_synth_v9', 'GGG', {_TS_MAIN}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (9, 'c_synth_v9', 'GGG', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (9, 'c_synth_v9', 'GGG', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (9, 'c_synth_v9', 'GGG', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (9, 'c_synth_v9', 'GGG', {_TS_MAIN}, 4, 'volume_confirmation', 'strategy_gate', 1, 0, 0.5, 1.0, 'vol fail')")
     elif scenario == "SELL_PARENT_NOT_NEAR_MISS":
         # symbol SSS: SELL signal \u2192 near-miss must exclude (different pipeline)
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 1, '{\"strategy_eligibility\": {\"signal\": \"SELL\", \"outcome\": \"BUY_INELIGIBLE\"}}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (10, 'c_synth_v10', 'SSS', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(
+            "INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, "
+            "analytics_persistence_version, decision_snapshot) "
+            "VALUES (10, 'c_synth_v10', 'SSS', ?, 1, ?)",
+            (_TS_MAIN_RAW, '{"strategy_eligibility": {"signal": "SELL", "outcome": "BUY_INELIGIBLE"}}'),
+        )
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (10, 'c_synth_v10', 'SSS', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (10, 'c_synth_v10', 'SSS', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (10, 'c_synth_v10', 'SSS', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (10, 'c_synth_v10', 'SSS', {_TS_MAIN}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "INVALID_DATA_NOT_NM":
         # symbol III: SKIPPED_INVALID_DATA outcome \u2192 excluded by outcome filter
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 1, '{\"strategy_eligibility\": {\"signal\": \"HOLD\", \"outcome\": \"SKIPPED_INVALID_DATA\"}}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (11, 'c_synth_v11', 'III', '2026-09-27T19:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(
+            "INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, "
+            "analytics_persistence_version, decision_snapshot) "
+            "VALUES (11, 'c_synth_v11', 'III', ?, 1, ?)",
+            (_TS_MAIN_RAW, '{"strategy_eligibility": {"signal": "HOLD", "outcome": "SKIPPED_INVALID_DATA"}}'),
+        )
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (11, 'c_synth_v11', 'III', {_TS_MAIN}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (11, 'c_synth_v11', 'III', {_TS_MAIN}, 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (11, 'c_synth_v11', 'III', {_TS_MAIN}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (11, 'c_synth_v11', 'III', {_TS_MAIN}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     elif scenario == "LATEST_NEAR_MISS_NEWER_NOT_NEAR_MISS":
         # symbol QQQ: T1 valid near miss, T2 (newer) invalid_data outcome
         # (excluded by signal/outcome filter), so QQQ should NOT appear.
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (20, 'c_dedup_q1', 'QQQ', '2026-09-27T18:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (21, 'c_dedup_q2', 'QQQ', '2026-09-27T20:00:00+00:00', 1, '{\"strategy_eligibility\": {\"signal\": \"HOLD\", \"outcome\": \"SKIPPED_INVALID_DATA\"}}')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (20, 'c_dedup_q1', 'QQQ', {_TS_OLDER}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (20, 'c_dedup_q1', 'QQQ', {_TS_OLDER}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (20, 'c_dedup_q1', 'QQQ', {_TS_OLDER}, 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (20, 'c_dedup_q1', 'QQQ', {_TS_OLDER}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (20, 'c_dedup_q1', 'QQQ', {_TS_OLDER}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(
+            "INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, "
+            "analytics_persistence_version, decision_snapshot) "
+            "VALUES (21, 'c_dedup_q2', 'QQQ', ?, 1, ?)",
+            (_TS_NEWER_RAW, '{"strategy_eligibility": {"signal": "HOLD", "outcome": "SKIPPED_INVALID_DATA"}}'),
+        )
     elif scenario == "LATEST_NEAR_MISS_REPLACES_OLDER":
         # symbol RRR: T1 has sma fail, T2 (newer) has rsi fail. Both near miss.
         # Expected: appears once, with failed_gate='rsi_oversold' (newer wins).
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (30, 'c_dedup_r1', 'RRR', '2026-09-27T18:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
-        cur.execute("INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 1, '{}')")
-        cur.execute("INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (31, 'c_dedup_r2', 'RRR', '2026-09-27T20:00:00+00:00', 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (30, 'c_dedup_r1', 'RRR', {_TS_OLDER}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (30, 'c_dedup_r1', 'RRR', {_TS_OLDER}, 1, 'rsi_oversold', 'strategy_gate', 1, 1, 28.0, 35.0, 'rsi ok'), (30, 'c_dedup_r1', 'RRR', {_TS_OLDER}, 2, 'sma_uptrend', 'strategy_gate', 1, 0, 10.0, 11.0, 'sma fail'), (30, 'c_dedup_r1', 'RRR', {_TS_OLDER}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (30, 'c_dedup_r1', 'RRR', {_TS_OLDER}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
+        cur.execute(f"INSERT INTO decision_history (id, cycle_id, symbol, cycle_start, analytics_persistence_version, decision_snapshot) VALUES (31, 'c_dedup_r2', 'RRR', {_TS_NEWER}, 1, '{{}}')")
+        cur.execute(f"INSERT INTO decision_gate_evaluations (decision_history_id, cycle_id, symbol, cycle_start, ordinality, gate_name, gate_category, applied, passed, observed_value, threshold_value, reason) VALUES (31, 'c_dedup_r2', 'RRR', {_TS_NEWER}, 1, 'rsi_oversold', 'strategy_gate', 1, 0, 50.0, 35.0, 'rsi fail'), (31, 'c_dedup_r2', 'RRR', {_TS_NEWER}, 2, 'sma_uptrend', 'strategy_gate', 1, 1, 12.0, 11.0, 'sma ok'), (31, 'c_dedup_r2', 'RRR', {_TS_NEWER}, 3, 'macd_positive', 'strategy_gate', 1, 1, 0.5, 0.0, 'macd ok'), (31, 'c_dedup_r2', 'RRR', {_TS_NEWER}, 4, 'volume_confirmation', 'strategy_gate', 1, 1, 1.5, 1.0, 'vol ok')")
     conn.commit()
     conn.close()
 

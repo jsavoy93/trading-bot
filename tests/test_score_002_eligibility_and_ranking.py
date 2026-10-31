@@ -33,6 +33,39 @@ import pandas as pd
 import pytest
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Trading-window stub (ENG-04b)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# `SmartTradingBot.analyze_symbol` gates a BUY on
+# `src.analysis.trading_windows.is_trading_allowed()`, which refuses
+# trading on weekends, in the first/last 15 minutes of the session, and
+# in historically-blocked hours. That is a WALL-CLOCK dependency: on a
+# Saturday (or outside 09:45-15:45 ET on a weekday) a perfectly
+# eligible candidate is downgraded to HOLD before the eligibility logic
+# is ever reached, and the SCORE-002 assertions below fail for reasons
+# unrelated to what they test.
+#
+# The window check is not what these tests are about, so it is stubbed
+# to "allowed". `smart_bot` imports the symbol INSIDE the function
+# (`from src.analysis.trading_windows import is_trading_allowed`), so
+# patching the attribute on the package module is what takes effect.
+@pytest.fixture(autouse=True)
+def allow_trading_window(monkeypatch):
+    """Force `is_trading_allowed()` to report trading as allowed.
+
+    Autouse: no test in this module is about the trading-window
+    calendar, so every test in it should be evaluated with the window
+    open. Leaving the window to the real clock would make the whole
+    module fail on weekends and outside 09:45-15:45 ET.
+    """
+    import src.analysis.trading_windows as _tw
+    monkeypatch.setattr(
+        _tw, "is_trading_allowed", lambda *a, **kw: (True, "Trading allowed")
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Test scaffolding
 # ---------------------------------------------------------------------------

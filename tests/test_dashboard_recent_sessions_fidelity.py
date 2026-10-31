@@ -30,8 +30,18 @@ import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
+
+# ENG-04b: resolve the checkout under TEST, not a sibling checkout.
+# These fixtures used to hardcode "/root/.openclaw/workspace/trading-bot"
+# on sys.path, so `import dashboard` / `import database.sqlite_db`
+# resolved to that other checkout and the tests exercised code that was
+# NOT the code under test.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT_STR = str(_REPO_ROOT)
+_SRC_ROOT = str(_REPO_ROOT / "src")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -50,8 +60,8 @@ def _build_isolated_db(monkeypatch):
     schema, and return (sqlite_mod, db_path)."""
     import src.database.sqlite_db as sqlite_mod_src
 
-    if "/root/.openclaw/workspace/trading-bot/src" not in sys.path:
-        sys.path.insert(0, "/root/.openclaw/workspace/trading-bot/src")
+    if _SRC_ROOT not in sys.path:
+        sys.path.insert(0, _SRC_ROOT)
     import database.sqlite_db as sqlite_mod
 
     tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
@@ -170,8 +180,8 @@ def isolated_recent_sessions_db(monkeypatch):
 def dashboard_module(monkeypatch):
     """Import the dashboard module with the same isolation helpers used by
     the existing dashboard tests."""
-    if "/root/.openclaw/workspace/trading-bot" not in sys.path:
-        sys.path.insert(0, "/root/.openclaw/workspace/trading-bot")
+    if _REPO_ROOT_STR not in sys.path:
+        sys.path.insert(0, _REPO_ROOT_STR)
     import dashboard as dash_module
 
     # Stub the Alpaca client so importing dashboard.py doesn't reach the
