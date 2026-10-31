@@ -5357,3 +5357,12 @@ Implementation complete; PR open and awaiting owner review.
 - Decisions: LOG-ONLY by construction (no order path at all; only GET `/v2/stocks/bars` from the Alpaca paper DATA API); own kill-switch file `experiments/strat_026_shadow/KILL_SWITCH` (exit 3) plus `STRAT026_LOG_ONLY=1` env guard (exit 2); frozen params from the research record (RSI(2)<10, SPY>SMA200, 2×ATR init stop, 3×ATR chandelier, 50% at +2R, 15-day time exit) — parity test compares exits against `run_research.pro_exits_trade` on 25 randomized trials; timer Mon..Fri 21:30 UTC (15 min after strat023's 21:15), units committed but NOT installed/enabled
 - Risks: 40 inherited suite failures (pre-existing on main); STRAT-026 holdout edge below the pre-declared t_vs_base=2 bar (1.84, research record); +2R fill assumption optimistic; raw-adjustment split artifacts; **deviation** — PR #121 merged into `research/strat-023-recheck`, not `main` (Josh's message said main), so the PR to `main` also carries PR #121's research files until PR #121 lands in main
 - Next action: Josh reviews the PR; installing/enabling `strat026-rsi2-shadow.timer` is a separate human step. Josh approval required.
+
+## 2026-10-31_210221 UTC — ENG-11 follow-up (Part D): dispatch helper documented/default code-work target
+- Backlog: ENG-11 Part D — document engineering-manager as the default CODE-work dispatch target (trading-manager remains explicit for RESEARCH)
+- Branch/commit: agent/trading-ENG-02-20261031-1816 / 7122429 (merge of origin/main cfe1085 retained both ENG-02 and STRAT-026 entries)
+- Status: DONE (implementation) — Josh review/approval required; PR #126 not merged
+- Files changed: scripts/dispatch_agent.sh (usage/header text only), tests/test_dispatch_agent.py, AGENTS.md, ITERATION_PROGRESS_LOG.md, reports/2026-10-31_210221_ENG-11-ENG-02-dispatch-target.md, REPORT.md (ignored)
+- Tests: ./.venv/bin/python -m pytest tests/test_dispatch_agent.py -q => 14 passed in 0.57s (0 failed); git diff --check clean; script diff comments/usage only
+- Decisions/risks: agent-id remains required and positional (no default); runtime behavior unchanged; merge conflict in ITERATION_PROGRESS_LOG.md resolved by keeping both sides; origin/main STRAT-026 files retained
+- Next action: Josh reviews PR #126 (head 712242911d48b8a8919e4b4608dd011ffa33a6d2); Josh approval required before any merge
