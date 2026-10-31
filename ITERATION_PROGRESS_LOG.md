@@ -5328,3 +5328,12 @@ Implementation complete; PR open and awaiting owner review.
 - **Decisions/risks**: survivorship bias upward; close-checked stops; raw adjustment;
   baseline single draw; baseline N > strat N (anti-overlap asymmetry, documented).
 - **Next**: PR review by Josh (not merged). Any shadow-sleeve proposal is a new task.
+
+## 2026-10-31 ~13:5x UTC — STRAT-026 pro-swing research (subagent, trading-exec)
+- Backlog: STRAT-026 paper research (pro-swing entries w/ professional exits vs random baseline)
+- Branch: research/strat-026-pro-swing (from research/strat-023-recheck @ 9b164c3); worktree /root/.openclaw/workspace/strat-026-wt
+- Status: DONE
+- Files changed: .gitignore; experiments/strat_026/{run_research.py,engine.py,RESULTS.md,results/_results_dev.json,results/_dev_selection.json,results/_results_holdout.json}; REPORT.md (ignored); reports/<ts>_strat-026.md; this log
+- Tests/backtests: run_research.py dev (all 6 strategies) + holdout (rsi2_regime only). rsi2_regime dev n=10857 +0.258%/trade t=3.02 t_vs_base=2.74 PASS; holdout n=6258 +0.579% t=5.19 t_vs_base=1.84 (positive edge, below t=2 bar). volbrk_regime fail (t_vs_base -0.78). pead_proxy fail (1.36). momentum 1/2/4w negative absolute, no edge vs random.
+- Decisions/risks: split artifacts (raw adjustment) corrupt per-trade DD for entry strategies (documented); partial-at-2R fill assumption optimistic; PEAD is gap+volume proxy (no earnings dates in repo); holdout window almost fully regime-ON.
+- Next action: Josh decides — drop or paper shadow runner for rsi2_regime. Approval required for anything further.
