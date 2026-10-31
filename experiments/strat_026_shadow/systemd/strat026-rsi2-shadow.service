@@ -1,0 +1,14 @@
+[Unit]
+Description=STRAT-026 RSI(2) dip-buy shadow runner, LOG-ONLY (no orders, not even paper)
+# NOT INSTALLED / NOT ENABLED. Josh must review and install manually:
+#   cp systemd/strat026-rsi2-shadow.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now strat026-rsi2-shadow.timer
+
+[Service]
+Type=oneshot
+# Hard LOG-ONLY guard: the runner refuses to start without this.
+Environment=STRAT026_LOG_ONLY=1
+WorkingDirectory=%h
+ExecStart=/root/.openclaw/workspace/trading-bot/.venv/bin/python /root/worktrees/strat026-shadow/experiments/strat_026_shadow/shadow_runner.py
+# Own kill-switch: %h/strat026-rsi2-shadow-KILL would halt the run; the runner
+# also checks experiments/strat_026_shadow/KILL_SWITCH next to the script.

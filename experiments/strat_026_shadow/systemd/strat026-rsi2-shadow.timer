@@ -1,0 +1,12 @@
+[Unit]
+Description=STRAT-026 daily RSI(2) shadow run (after US close; DISABLED until Josh enables)
+
+[Timer]
+# 21:30 UTC Mon-Fri: after 16:00 ET close in both DST (20:00 UTC) and winter
+# (21:00 UTC), and 15 min after strat023-c4-shadow (21:15) to avoid overlap.
+OnCalendar=Mon..Fri 21:30 UTC
+Persistent=true
+Unit=strat026-rsi2-shadow.service
+
+[Install]
+WantedBy=timers.target
