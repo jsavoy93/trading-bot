@@ -158,3 +158,6 @@ node_modules/
 
 # STRAT-023: raw price CSVs are re-downloadable data, not source (PR 116 review)
 experiments/strat_022/data/*.csv
+
+# STRAT-023: shadow runner local state
+experiments/strat_023/shadow.db

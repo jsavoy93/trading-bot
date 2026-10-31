@@ -1,0 +1,13 @@
+[Unit]
+Description=STRAT-023 paper-only C4 dip-buy shadow runner (one pass/day)
+
+[Service]
+Type=oneshot
+# Hard paper-only guard: the runner refuses to start without this.
+Environment=TRADING_BOT_PAPER_ONLY=1
+WorkingDirectory=%h
+# NOTE: points at the STRAT-023 worktree because the branch is not merged yet.
+# After merge, update this path to the stable checkout (e.g.
+# /root/deploy/trading-bot-main) and run `systemctl --user daemon-reload`.
+ExecStart=/root/.openclaw/workspace/trading-bot/.venv/bin/python /tmp/strat023-b/experiments/strat_023/shadow_runner.py
+# Standalone research tool: no access to the main bot account, no orders.
