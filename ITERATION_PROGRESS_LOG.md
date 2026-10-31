@@ -5315,3 +5315,13 @@ Implementation complete; PR open and awaiting owner review.
 - Decision/finding: backfill rows previously inserted NULL sleeve via log_trade; all pre-sleeve-era activity is Sleeve S, so backfills now hard-tagged 'S'
 - Risk: none known (no pre-P1 'L' path existed)
 - Next: Josh reviews/approves PR #115 (merge human-gated); approval required
+
+## 2026-10-31T18:38Z — ENG-02: dispatch helper script for hostile messages
+- Backlog: ENG-02 (dispatch helper script for messages containing pipes/quotes/$/backticks/newlines)
+- Branch/commit: agent/trading-ENG-02-20261031-1816 / (pending)
+- Status: DONE
+- Files changed: scripts/dispatch_agent.sh (new), tests/test_dispatch_agent.py (new), AGENTS.md (dispatch conventions), ITERATION_PROGRESS_LOG.md
+- Tests: baseline `pytest -q` on origin/main = 40 failed, 2055 passed, 1 skipped, 13 deselected (161s); after = 40 failed, 2065 passed, 1 skipped (160s) — failure sets byte-identical, 0 new failures; ENG-02 tests 10/10 pass
+- Decisions: openclaw CLI flags are `--agent`, `--session-key`, `--model`, `--message`, `--json`, `--timeout`; session key uses sub-second stamp `agent:<agent>:<TASKID>-<unix%N>` so keys are never reused; message read from file with a sentinel to preserve trailing newlines; dry-run prints shell-escaped exact command + verbatim message + sha256
+- Risk: dispatch path (non-dry-run) not exercised against a live agent by design; real dispatch requires the gateway and a valid agent id
+- Next: Josh reviews/approves the ENG-02 PR (merge human-gated); approval required
