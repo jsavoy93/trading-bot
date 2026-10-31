@@ -157,6 +157,28 @@ If an implementation task fails or stops early, the agent must still write `REPO
 `REPORT.md` is the current rolling report and must remain listed in `.gitignore`. The `reports/` directory must not be added to `.gitignore`; archived reports are reviewable and may be committed when the task requires it.
 
 
+## Agent Message Dispatch Conventions (ENG-01 / ENG-02)
+
+- **Never inline an agent message.** Always write the message to a FILE first,
+  using a quoted heredoc (`cat > /path/msg.txt <<'EOF'` — quoted so `$`, `` ` ``,
+  `|`, `'` and `"` are preserved literally) or by uploading a file. Inline
+  `--message "..."` arguments are fragile: pipes, quotes, `$`, backticks, and
+  newlines can be mangled or interpreted by the shell.
+- **Use the helper:** `scripts/dispatch_agent.sh [--dry-run|--echo] <agent-id> <task-id> <model> <message-file>`.
+  It validates that the message file exists and is non-empty, generates a fresh
+  session key of the form `agent:<agent>:<TASKID>-<unix-time>` (ENG-01 rule:
+  session keys are never reused), and dispatches with safe quoting.
+- **Target the right agent by work type:** CODE work dispatches to
+  `engineering-manager`; RESEARCH work dispatches to `trading-manager`.
+  The agent-id argument remains required and positional, so there is no default
+  value. Canonical examples:
+  - `scripts/dispatch_agent.sh engineering-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
+  - `scripts/dispatch_agent.sh trading-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
+- **Test with `--dry-run` / `--echo`:** this prints the exact command and the
+  message verbatim WITHOUT dispatching any agent. Never dispatch real agents in
+  tests.
+- Run log path is `/root/<task-id>_run.log`.
+
 ## Controlled Agent Workflow
 
 All agents must follow `AGENT_OPERATING_PLAN.md`, `AGENT_BACKLOG.md`, and `OWNERS.md`.
