@@ -90,3 +90,82 @@ that C4 parameters are not relaxed.
 - Signals pending fill when a symbol's data stops are cancelled (`data_gap`).
 - This is forward paper-shadow data collection only — it says nothing about
   expected live performance beyond what PR 116 already reported.
+
+## STRAT-024 — live PAPER-order runner (`live_paper_runner.py`)
+
+Same frozen C4 rule, but places **real orders on the Alpaca PAPER account
+only**. Josh-approved 2026-10-31 (STRAT-024).
+
+### Hard guards (exit code 2, no orders)
+
+1. `TRADING_BOT_PAPER_ONLY=1` must be set.
+2. Trading API base URL must be exactly `https://paper-api.alpaca.markets`
+   (hardcoded; any `STRAT024_API_BASE_URL` override to a non-paper URL is
+   rejected).
+3. Kill switch: if `experiments/strat_023/STRAT024_KILL` exists
+   (override: `STRAT024_KILL_FILE`), the runner refuses to place ANY order.
+4. Fixture bars + live API requires `STRAT024_FIXTURE_LIVE=1` (prevents
+   accidental orders from synthetic data).
+
+### Sleeve sizing defaults (conservative)
+
+| Default | Value |
+|---|---|
+| Sleeve | **30% of account equity** (`SLEEVE_EQUITY_FRAC=0.30`) |
+| Max open runner positions | **3** (`MAX_POSITIONS`) |
+| Max position size | **10% of account equity** (`MAX_POSITION_PCT`) |
+
+Per-position notional = min(remaining sleeve cash, 10% × equity, buying
+power), whole shares only; entries are skipped when one share is not
+affordable. Sleeve cash is reduced by open runner positions AND still-open
+runner entry orders.
+
+### Collision safety with the main bot
+
+- Every `client_order_id` starts with `sl_short-` and every order row in
+  `live_paper.db` records `sleeve='short'`.
+- Exit quantities are capped at the runner's own tracked qty — the runner
+  NEVER sells shares it did not buy, even if the main bot holds the same
+  symbol.
+- Entries are skipped for symbols the account already holds beyond the
+  runner's own position.
+
+### Exits (placed as orders — C4 rules unchanged)
+
+- **3xATR stop**: resting GTC sell `stop` order placed right after the
+  entry fill, at `fill_price − 3 × ATR14(signal day)`.
+- **close > SMA5** on the latest completed close → cancel the stop, submit
+  a DAY market sell (fills at next open; the backtest exits at the
+  triggering close — known honest divergence).
+- **10 trading days held** → same cancel-stop + market-sell path.
+
+### Idempotency
+
+Deterministic `client_order_id`s (`sl_short-<SYM>-e/s/x…-<YYYYMMDD>`)
+checked against the local `orders` table AND open Alpaca orders before
+submission; Alpaca rejects duplicate client_order_ids as a final defense.
+Reruns place no duplicate orders.
+
+### Run / DB
+
+```bash
+TRADING_BOT_PAPER_ONLY=1 .venv/bin/python experiments/strat_023/live_paper_runner.py
+```
+
+DB: `experiments/strat_023/live_paper.db` (gitignored; override
+`STRAT024_DB`). Tables: `orders` (PK = client_order_id, `sleeve='short'`)
+and `positions` (`pending_fill → open → closed`).
+
+### Tests
+
+```bash
+TRADING_BOT_PAPER_ONLY=1 TESTING=1 .venv/bin/python -m pytest \
+    experiments/strat_023/test_live_paper_runner.py -p no:cacheprovider -v
+```
+
+Proves: all four guards, frozen C4/sleeve parameters, sizing caps
+(30%/10%/whole-share/skip), sl_short tagging + sleeve=short record,
+main-bot-hold entry skip, max 3 positions, 3xATR stop price formula,
+SMA5 exit (market sell + stop cancelled first), time exit after 10 days,
+never-sells-more-than-own-qty, rerun idempotency, external stop-fill
+closes the tracked position.
