@@ -169,6 +169,30 @@ Before modifying files:
 4. State the files allowed to change.
 5. Create or use the assigned agent branch.
 
+### Worktree and identity rules (ENG-08)
+
+- Every task worktree is created from the standalone clean clone
+  `/root/.openclaw/clean/trading-bot`:
+  `git -C /root/.openclaw/clean/trading-bot worktree add /root/.openclaw/worktrees/<TASKID> -b <branch> origin/main`
+- **Never** run `git worktree add` from `/root/deploy/trading-bot-main` or
+  `/root/.openclaw/workspace/trading-bot`.
+- `/root/.openclaw/workspace/trading-bot` is a **protected dirty checkout** and
+  must not be modified.
+- `/root/deploy/trading-bot-main` hosts the **live paper bot**
+  (`main.py --continuous`) and must not be modified.
+- Set a per-worktree Git identity so commits identify the authoring agent:
+  `git config user.name <agent-id>` and
+  `git config user.email <agent-id>@openclaw.local`.
+
+Full rules live in `BRANCHING.md` under "Worktrees and Git Identity (ENG-08)".
+
+### Review gate (ENG-07)
+
+An independent reviewer-agent verdict (`APPROVE` or `BLOCK` with reasons) is
+required before asking Josh to merge. A `BLOCK` verdict must be resolved
+before the merge request is presented. See `BRANCHING.md` under "Review Gate
+Before Asking Josh to Merge (ENG-07)".
+
 Hard restrictions:
 
 - Never merge into main.
@@ -294,6 +318,15 @@ For every completion packet:
 - Do not trust prior prose as the sole source
 - Identify proposed details as proposals rather than verified implementation
 - Josh remains the approval authority
+- **State the model that actually completed the work** (ENG-05). Use
+  `executionTrace.winnerModel` / `executionTrace.fallbackUsed` and the
+  `model_fallback_decision` lines in `/tmp/openclaw/*.log`. If a fallback
+  model completed the work, name the fallback model and note that the
+  primary model's quota was exhausted. Never report the requested model when
+  a fallback produced the result.
+- **Record the independent reviewer-agent verdict** (ENG-07): `APPROVE` or
+  `BLOCK`, plus the reviewer agent id and, for `BLOCK`, the verbatim
+  reasons. An unresolved `BLOCK` must not be presented as a merge request.
 
 #### 7. Recommended Next Prompt
 

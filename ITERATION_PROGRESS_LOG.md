@@ -5337,3 +5337,76 @@ Implementation complete; PR open and awaiting owner review.
 - Tests/backtests: run_research.py dev (all 6 strategies) + holdout (rsi2_regime only). rsi2_regime dev n=10857 +0.258%/trade t=3.02 t_vs_base=2.74 PASS; holdout n=6258 +0.579% t=5.19 t_vs_base=1.84 (positive edge, below t=2 bar). volbrk_regime fail (t_vs_base -0.78). pead_proxy fail (1.36). momentum 1/2/4w negative absolute, no edge vs random.
 - Decisions/risks: split artifacts (raw adjustment) corrupt per-trade DD for entry strategies (documented); partial-at-2R fill assumption optimistic; PEAD is gap+volume proxy (no earnings dates in repo); holdout window almost fully regime-ON.
 - Next action: Josh decides — drop or paper shadow runner for rsi2_regime. Approval required for anything further.
+
+---
+
+## 2026-10-31T19:05Z — ENG-05-08-DOCS — Operating rules for model quota, routing, review gate, worktrees (ENG-05/06/07/08 docs)
+
+- **Backlog / objective:** Combined documentation PR for the engineering-program
+  operating rules. Four rule sets, each placed in the most appropriate existing
+  document — no new redundant files:
+  - **ENG-05b — model-quota discipline** → `AGENT_OPERATING_PLAN.md`
+    ("Model-Quota Discipline (ENG-05)"): run only ONE GLM-heavy job at a time;
+    every final report must name the model that actually completed the work
+    (evidence: `executionTrace.winnerModel`, `executionTrace.fallbackUsed`, and
+    `model_fallback_decision` lines in `/tmp/openclaw/*.log`); the 429 quota
+    signature `429 Weekly/Monthly Limit Exhausted … reset at 2026-11-02
+    20:33:34 UTC`.
+  - **ENG-06b — model routing** → `AGENT_OPERATING_PLAN.md` ("Model Routing
+    (ENG-06)"): `docs-agent` (MiniMax-M3 primary, GLM fallback) handles ONLY
+    reports, `ITERATION_PROGRESS_LOG.md` entries, `reports/` archives and other
+    documentation/mechanical text; `zai/glm-5.1` (`trading-manager`,
+    `trading-exec`, `dashboard-agent`, `engineering-manager`) handles design,
+    code changes, debugging, multi-step analysis. Includes a decision table.
+  - **ENG-07b — review gate** → `AGENT_OPERATING_PLAN.md` ("Review Gate
+    (ENG-07)") + `BRANCHING.md` ("Review Gate Before Asking Josh to Merge
+    (ENG-07)"): an independent read-only reviewer-agent verdict
+    (`APPROVE` / `BLOCK` with reasons) is REQUIRED before asking Josh to merge;
+    a `BLOCK` must be resolved first, otherwise the task stops as
+    `REWORK`/`BLOCKED`.
+  - **ENG-08b — worktree + identity** → `BRANCHING.md` ("Worktrees and Git
+    Identity (ENG-08)") + `AGENTS.md`: worktrees are always created from
+    `/root/.openclaw/clean/trading-bot` via
+    `git -C /root/.openclaw/clean/trading-bot worktree add /root/.openclaw/worktrees/<TASKID> -b <branch> origin/main`;
+    NEVER from `/root/deploy/trading-bot-main` or `/root/.openclaw/workspace/trading-bot`;
+    `/root/.openclaw/workspace/trading-bot` is a protected dirty checkout and
+    `/root/deploy/trading-bot-main` hosts the live paper bot (`main.py --continuous`)
+    — neither may be modified; per-worktree identity
+    `git config user.name <agent-id>` / `git config user.email <agent-id>@openclaw.local`.
+- **Also carried forward:** the ENG-01 "Session and Dispatch Conventions"
+  section (added on `agent/trading-ENG-01-20261031-1626`, not yet in `main`)
+  is included in `AGENT_OPERATING_PLAN.md` so this branch's operating-plan
+  document is self-consistent and ENG-05..08 extend rather than duplicate it.
+- **Branch / commit:** `agent/trading-ENG-05-08-DOCS-20261031-1855` (base
+  `origin/main` @ `8fd2353`); worktree `/root/.openclaw/worktrees/ENG-05-08-DOCS`;
+  git identity `trading-exec <trading-exec@openclaw.local>`.
+- **Status:** DONE (PR opened against `main`; awaiting Josh's merge approval
+  and an independent reviewer-agent verdict).
+- **Files changed:** `AGENT_OPERATING_PLAN.md`, `AGENTS.md`, `BRANCHING.md`,
+  `MENTOR.md`, `ITERATION_PROGRESS_LOG.md` (this entry),
+  `reports/<ts>_ENG-05-08-DOCS.md`.
+- **Tests:** full suite BEFORE (baseline, `origin/main` @ `8fd2353`) and AFTER
+  (this branch). Baseline summary line
+  `= 40 failed, 2055 passed, 1 skipped, 13 deselected, 83 warnings in 217.50s (0:03:37) =`.
+  AFTER summary line identical; failure sets compared byte-for-byte —
+  0 new failures, 0 fixed (the 40 are the known pre-existing environmental
+  set: dashboard live-endpoint / settings tests that need the 9 GB production
+  `trading_bot.db`).
+- **Decisions / discoveries:** the system `python3` lacks the project deps
+  (`pydantic`, `pandas`, `fastapi`) → 16 collection errors; the suite must be
+  run with `/root/.openclaw/workspace/trading-bot/.venv/bin/python -m pytest -q`
+  (reading that interpreter is fine; the checkout itself stays untouched).
+  Documented in `MENTOR.md`. ENG-01's section is not on `main`, so it is
+  carried in this branch rather than re-written.
+- **Risks:** docs-only change, no runtime impact. The 40 baseline failures
+  remain open — they are owned by ENG-04b and are deliberately NOT touched
+  here. This branch touches no test file.
+- **Model that completed the work:** `minimax-portal/MiniMax-M3` (the requested
+  `zai/glm-5.1` primary was quota-exhausted with
+  `429 Weekly/Monthly Limit Exhausted`, reset 2026-11-02 20:33:34 UTC; the
+  fallback `minimax-portal/MiniMax-M3` succeeded — confirmed by the
+  `model_fallback_decision` `candidate_succeeded` entries in
+  `/tmp/openclaw/openclaw-2026-10-31.log`).
+- **Next action:** independent reviewer-agent reads the PR diff against the
+  acceptance criteria and returns `APPROVE` or `BLOCK`; then Josh's merge
+  decision. Approval required: YES (merge).
