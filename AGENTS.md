@@ -161,6 +161,16 @@ If an implementation task fails or stops early, the agent must still write `REPO
 
 All agents must follow `AGENT_OPERATING_PLAN.md`, `AGENT_BACKLOG.md`, and `OWNERS.md`.
 
+### Code Work Routing
+
+- Code tasks are planned, dispatched, and reviewed by the engineering-manager.
+- Strategy and research tasks belong to the trading-manager.
+- Standard dispatch example:
+
+      scripts/dispatch_agent.sh engineering-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt
+
+- Agents still work in a worktree and open a PR; only Josh merges.
+
 Before modifying files:
 
 1. Verify the repository is clean.
