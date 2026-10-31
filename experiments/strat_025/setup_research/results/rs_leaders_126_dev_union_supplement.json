@@ -1,0 +1,44 @@
+{
+ "result": {
+  "setup": "rs_leaders_126",
+  "window": [
+   "2021-01-01",
+   "2024-12-31"
+  ],
+  "configs": {
+   "g1": {
+    "atr_mult": 3.0,
+    "time_stop": 20,
+    "strat": {
+     "n": 2711,
+     "mean_net": 0.00104904166060698,
+     "t": 0.3629480364642757,
+     "win_rate": 0.48579859830320915,
+     "sharpe": 0.006970752969760671,
+     "avg_win": 0.10340805475629938,
+     "avg_loss": -0.09565599438460601
+    },
+    "baseline": {
+     "n_draws": 1000,
+     "mean_of_draw_means": 0.007548004001138027,
+     "p5_draw_mean": 0.006386369882292369,
+     "p95_draw_mean": 0.008706843456090678,
+     "pooled_mean": 0.00754761599834731,
+     "pooled_n": 7913256
+    }
+   }
+  }
+ },
+ "selection": {
+  "selected": "g1",
+  "params": {
+   "atr_mult": 3.0,
+   "time_stop": 20
+  },
+  "dev_pass": false,
+  "t": 0.3629480364642757,
+  "mean_net": 0.00104904166060698,
+  "baseline_mean": 0.007548004001138027,
+  "reason": "t_bar=False edge_bar=False"
+ }
+}

@@ -1,0 +1,13 @@
+union symbols: 861
+  rsi2_uptrend_v2/g1: n=15658 mean=0.013% t=0.29 base=-0.069%
+  rsi2_uptrend_v2/g2: n=13326 mean=-0.057% t=-0.81 base=0.087%
+  rsi2_uptrend_v2/g3: n=15486 mean=0.015% t=0.32 base=-0.072%
+  rsi2_uptrend_v2/g4: n=12977 mean=-0.057% t=-0.8 base=0.087%
+rsi2_uptrend_v2: selected=g3 dev_pass=False (t_bar=False edge_bar=False)
+  gap_fill_fade/g1: n=16999 mean=0.791% t=1.18 base=-0.298%
+  gap_fill_fade/g2: n=15581 mean=0.922% t=1.26 base=-0.25%
+  gap_fill_fade/g3: n=16975 mean=0.78% t=1.17 base=-0.304%
+  gap_fill_fade/g4: n=15476 mean=0.91% t=1.24 base=-0.265%
+gap_fill_fade: selected=g2 dev_pass=False (t_bar=False edge_bar=True)
+  rs_leaders_126/g1: n=2711 mean=0.105% t=0.36 base=0.755%
+rs_leaders_126: selected=g1 dev_pass=False (t_bar=False edge_bar=False)

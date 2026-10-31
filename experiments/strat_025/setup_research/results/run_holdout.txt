@@ -1,0 +1,12 @@
+loaded 672 symbols
+ema20_pullback: skip holdout (did not pass dev)
+high20_breakout_vol: skip holdout (did not pass dev)
+vcp_minervini: skip holdout (did not pass dev)
+gap_and_go: skip holdout (did not pass dev)
+gap_fill_fade: skip holdout (did not pass dev)
+rs_leaders_63: skip holdout (did not pass dev)
+rs_leaders_126: skip holdout (did not pass dev)
+inside_day: skip holdout (did not pass dev)
+nr7: skip holdout (did not pass dev)
+rsi2_uptrend_v2: skip holdout (did not pass dev)
+DONE

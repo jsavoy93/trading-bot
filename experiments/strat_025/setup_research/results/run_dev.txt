@@ -1,0 +1,46 @@
+loaded 672 symbols
+  ema20_pullback/g1: n=13749 mean=-0.23% t=-2.74 base=0.109%
+  ema20_pullback/g2: n=9593 mean=-0.348% t=-2.81 base=0.367%
+  ema20_pullback/g3: n=13657 mean=-0.219% t=-2.59 base=0.111%
+  ema20_pullback/g4: n=9377 mean=-0.353% t=-2.77 base=0.398%
+ema20_pullback: selected=g3 dev_pass=False (t_bar=False edge_bar=False)
+  high20_breakout_vol/g1: n=6835 mean=-1.029% t=-4.53 base=-0.028%
+  high20_breakout_vol/g2: n=6107 mean=-1.457% t=-5.53 base=0.116%
+  high20_breakout_vol/g3: n=6821 mean=-1.03% t=-4.47 base=-0.027%
+  high20_breakout_vol/g4: n=6064 mean=-1.474% t=-5.49 base=0.146%
+high20_breakout_vol: selected=g3 dev_pass=False (t_bar=False edge_bar=False)
+  vcp_minervini/g1: n=368 mean=-0.291% t=-0.62 base=0.192%
+  vcp_minervini/g2: n=368 mean=-1.315% t=-2.92 base=0.457%
+  vcp_minervini/g3: n=368 mean=-0.27% t=-0.57 base=0.231%
+  vcp_minervini/g4: n=367 mean=-1.299% t=-2.84 base=0.5%
+vcp_minervini: selected=g3 dev_pass=False (t_bar=False edge_bar=False)
+  gap_and_go/g1: n=9622 mean=-1.466% t=-8.81 base=-0.219%
+  gap_and_go/g2: n=8260 mean=-1.813% t=-7.35 base=-0.186%
+  gap_and_go/g3: n=9612 mean=-1.472% t=-8.8 base=-0.222%
+  gap_and_go/g4: n=8182 mean=-1.781% t=-7.1 base=-0.192%
+gap_and_go: selected=g4 dev_pass=False (t_bar=False edge_bar=False)
+  gap_fill_fade/g1: n=14060 mean=-0.232% t=-0.72 base=-0.286%
+  gap_fill_fade/g2: n=12851 mean=-0.245% t=-0.69 base=-0.238%
+  gap_fill_fade/g3: n=14041 mean=-0.239% t=-0.74 base=-0.289%
+  gap_fill_fade/g4: n=12763 mean=-0.269% t=-0.75 base=-0.251%
+gap_fill_fade: selected=g2 dev_pass=False (t_bar=False edge_bar=False)
+  rs_leaders_63/g1: n=2881 mean=-0.413% t=-1.64 base=0.631%
+rs_leaders_63: selected=g1 dev_pass=False (t_bar=False edge_bar=False)
+  rs_leaders_126/g1: n=2597 mean=0.07% t=0.25 base=0.76%
+rs_leaders_126: selected=g1 dev_pass=False (t_bar=False edge_bar=False)
+  inside_day/g1: n=21262 mean=-0.294% t=-5.5 base=-0.04%
+  inside_day/g2: n=15598 mean=-0.281% t=-3.47 base=0.109%
+  inside_day/g3: n=21214 mean=-0.298% t=-5.55 base=-0.04%
+  inside_day/g4: n=15444 mean=-0.249% t=-3.04 base=0.11%
+inside_day: selected=g4 dev_pass=False (t_bar=False edge_bar=False)
+  nr7/g1: n=23769 mean=-0.273% t=-7.8 base=-0.03%
+  nr7/g2: n=17445 mean=-0.294% t=-4.16 base=0.115%
+  nr7/g3: n=23745 mean=-0.274% t=-7.8 base=-0.033%
+  nr7/g4: n=17284 mean=-0.329% t=-5.64 base=0.117%
+nr7: selected=g2 dev_pass=False (t_bar=False edge_bar=False)
+  rsi2_uptrend_v2/g1: n=12381 mean=0.037% t=0.72 base=-0.067%
+  rsi2_uptrend_v2/g2: n=10509 mean=-0.077% t=-1.03 base=0.083%
+  rsi2_uptrend_v2/g3: n=12249 mean=0.041% t=0.8 base=-0.066%
+  rsi2_uptrend_v2/g4: n=10226 mean=-0.083% t=-1.09 base=0.086%
+rsi2_uptrend_v2: selected=g3 dev_pass=False (t_bar=False edge_bar=True)
+DONE

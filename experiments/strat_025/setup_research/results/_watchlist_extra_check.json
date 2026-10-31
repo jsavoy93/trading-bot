@@ -1,0 +1,34 @@
+{
+ "prereg_universe": {
+  "csv_files": 672,
+  "symbols_with_data": 672,
+  "symbols_with_eligible_days": 475,
+  "eligible_symbol_days": 333154,
+  "signal_days": {
+   "ema20_pullback": 31088,
+   "high20_breakout_vol": 6455,
+   "vcp_minervini": 269,
+   "gap_and_go": 5416,
+   "gap_fill_fade": 5897,
+   "inside_day": 20982,
+   "nr7": 27373,
+   "rsi2_uptrend_v2": 16231
+  }
+ },
+ "watchlist_extra": {
+  "csv_files": 191,
+  "symbols_with_data": 189,
+  "symbols_with_eligible_days": 49,
+  "eligible_symbol_days": 13479,
+  "signal_days": {
+   "ema20_pullback": 1095,
+   "high20_breakout_vol": 320,
+   "vcp_minervini": 8,
+   "gap_and_go": 390,
+   "gap_fill_fade": 370,
+   "inside_day": 667,
+   "nr7": 930,
+   "rsi2_uptrend_v2": 512
+  }
+ }
+}

@@ -160,3 +160,7 @@ node_modules/
 experiments/strat_022/recheck/data_delisted/
 experiments/strat_022/data/*.csv
 experiments/strat_023/shadow.db
+
+# STRAT-025 setup research daily bars (regenerate with prepare_data.py)
+experiments/strat_025/setup_research/data/
+experiments/strat_025/setup_research/data_watchlist_extra/

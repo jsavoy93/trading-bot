@@ -1,0 +1,11 @@
+setup,label,selected_config,atr_mult,time_stop,dev_trades,dev_mean_net_pct,dev_t,dev_win_rate_pct,dev_sharpe,baseline_mean_net_pct,baseline_p5_pct,baseline_p95_pct,baseline_draws,edge_vs_base_bps,dev_pass,dev_reason,holdout_run,holdout_trades,holdout_mean_net_pct,holdout_t,holdout_baseline_mean_net_pct,holdout_pass
+ema20_pullback,(a) EMA20 pullback in uptrend,g3,3.0,10,13657,-0.2192,-2.591,47.51,-0.0222,0.1111,0.0403,0.1838,1000,-33.0,False,t_bar=False edge_bar=False,False,,,,,
+high20_breakout_vol,(b) 20d-high breakout on 1.5x volume,g3,3.0,10,6821,-1.0304,-4.472,46.46,-0.0542,-0.0266,-0.1861,0.1546,1000,-100.4,False,t_bar=False edge_bar=False,False,,,,,
+vcp_minervini,(c) Minervini VCP,g3,3.0,10,368,-0.2695,-0.572,46.47,-0.0298,0.2315,-0.3725,0.8177,1000,-50.1,False,t_bar=False edge_bar=False,False,,,,,
+gap_and_go,(d1) Gap-and-go,g4,3.0,10,8182,-1.781,-7.099,43.84,-0.0785,-0.1923,-0.3959,0.0269,1000,-158.9,False,t_bar=False edge_bar=False,False,,,,,
+gap_fill_fade,(d2) Gap-fill fade,g2,2.5,10,12851,-0.2446,-0.685,58.09,-0.006,-0.238,-0.3679,-0.1136,1000,-0.7,False,t_bar=False edge_bar=False,False,,,,,
+rs_leaders_63,(e) RS leaders vs SPY (3m),g1,3.0,20,2881,-0.4134,-1.644,48.0,-0.0306,0.6306,0.5196,0.741,1000,-104.4,False,t_bar=False edge_bar=False,False,,,,,
+rs_leaders_126,(e) RS leaders vs SPY (6m),g1,3.0,20,2597,0.0698,0.246,48.67,0.0048,0.7597,0.6526,0.8713,1000,-69.0,False,t_bar=False edge_bar=False,False,,,,,
+inside_day,(f1) Inside day,g4,3.0,10,15444,-0.2491,-3.044,48.48,-0.0245,0.1105,0.0198,0.2009,1000,-36.0,False,t_bar=False edge_bar=False,False,,,,,
+nr7,(f2) NR7,g2,2.5,10,17445,-0.2942,-4.157,48.0,-0.0315,0.115,0.0429,0.1848,1000,-40.9,False,t_bar=False edge_bar=False,False,,,,,
+rsi2_uptrend_v2,"(g) RSI(2) uptrend, distinct exit",g3,3.0,5,12249,0.0413,0.802,49.28,0.0073,-0.0663,-0.1333,0.0091,1000,10.8,False,t_bar=False edge_bar=True,False,,,,,
