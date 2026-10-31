@@ -5328,3 +5328,21 @@ Implementation complete; PR open and awaiting owner review.
 - **Decisions/risks**: survivorship bias upward; close-checked stops; raw adjustment;
   baseline single draw; baseline N > strat N (anti-overlap asymmetry, documented).
 - **Next**: PR review by Josh (not merged). Any shadow-sleeve proposal is a new task.
+
+---
+
+## 2026-10-31T00:10Z — STRAT-023 Task B — paper-only C4 shadow runner + PR 116 gitignore fix
+- Branch/commits: `research/strat-022-dip-buy` @ `7c140da` (gitignore+untrack 379 CSVs);
+  `research/strat-023-c4-shadow` @ `986a6de` (runner+tests+systemd units). PR #118 (base
+  research/strat-022-dip-buy), NOT merged: https://github.com/jsavoy93/trading-bot/pull/118
+- Status: DONE (awaiting Josh review)
+- Files: experiments/strat_023/{shadow_runner.py,test_shadow_runner.py,README.md,systemd/*},
+  .gitignore (both branches)
+- Tests: `pytest experiments/strat_023/test_shadow_runner.py -p no:cacheprovider` → 6 passed
+  (guard, e2e fixture, RSI/entry/exit parity vs run_backtest, param freeze)
+- Decisions/risks: fill at next-day open (backtest parity); exits at close (backtest honest-stop
+  convention); systemd timer installed DISABLED at ~/.config/systemd/user (21:15 UTC Mon–Fri);
+  ExecStart points at /tmp worktree until merge; disabled timers don't show in list-timers
+  (is-enabled/is-active used as proof)
+- Next: Josh reviews PR #118; on merge, update ExecStart to stable checkout, then optionally
+  `systemctl --user enable --now strat023-c4-shadow.timer` (Josh approval required)
