@@ -5328,3 +5328,31 @@ Implementation complete; PR open and awaiting owner review.
 - **Decisions/risks**: survivorship bias upward; close-checked stops; raw adjustment;
   baseline single draw; baseline N > strat N (anti-overlap asymmetry, documented).
 - **Next**: PR review by Josh (not merged). Any shadow-sleeve proposal is a new task.
+
+---
+
+## 2026-10-31T00:10Z — STRAT-023 Task B — paper-only C4 shadow runner + PR 116 gitignore fix
+- Branch/commits: `research/strat-022-dip-buy` @ `7c140da` (gitignore+untrack 379 CSVs);
+  `research/strat-023-c4-shadow` @ `986a6de` (runner+tests+systemd units). PR #118 (base
+  research/strat-022-dip-buy), NOT merged: https://github.com/jsavoy93/trading-bot/pull/118
+- Status: DONE (awaiting Josh review)
+- Files: experiments/strat_023/{shadow_runner.py,test_shadow_runner.py,README.md,systemd/*},
+  .gitignore (both branches)
+- Tests: `pytest experiments/strat_023/test_shadow_runner.py -p no:cacheprovider` → 6 passed
+  (guard, e2e fixture, RSI/entry/exit parity vs run_backtest, param freeze)
+- Decisions/risks: fill at next-day open (backtest parity); exits at close (backtest honest-stop
+  convention); systemd timer installed DISABLED at ~/.config/systemd/user (21:15 UTC Mon–Fri);
+  ExecStart points at /tmp worktree until merge; disabled timers don't show in list-timers
+  (is-enabled/is-active used as proof)
+- Next: Josh reviews PR #118; on merge, update ExecStart to stable checkout, then optionally
+  `systemctl --user enable --now strat023-c4-shadow.timer` (Josh approval required)
+
+## 2026-10-31_010333 — STRAT-024 live paper-order runner
+- Objective: real orders (paper only) for the C4 sleeve, idempotent, kill switch, sl_short tagging, order-based exits, 30% sleeve with caps.
+- Branch/commit: research/strat-024-live-paper @ 86761ea (PR 119, base research/strat-023-c4-shadow; NOT merged).
+- Status: DONE (awaiting Josh review)
+- Files changed: experiments/strat_023/{live_paper_runner.py,test_live_paper_runner.py,README.md}
+- Tests: pytest experiments/strat_023/ → 24 passed, 0 failed (no network; FakeAPI).
+- Decisions: sleeve defaults 30%/3 positions/10% cap; exits = resting 3xATR GTC stop + cancel-and-market-sell for SMA5/time (next-open fill divergence documented); fixture+live needs STRAT024_FIXTURE_LIVE=1 second opt-in.
+- Risks: next-open exit fills vs backtest close fills; pending-entry notional uses reference price.
+- Next: Josh approves PR 119 → merge → switch timer per archived report steps. Josh approval required.

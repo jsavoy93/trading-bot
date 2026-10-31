@@ -156,5 +156,7 @@ node_modules/
 /draft-center/
 .trading-dashboard.env
 
-# STRAT-023: raw price CSVs are re-downloadable data, not source (PR 116 review)
+# STRAT-023 recheck large data
+experiments/strat_022/recheck/data_delisted/
 experiments/strat_022/data/*.csv
+experiments/strat_023/shadow.db
