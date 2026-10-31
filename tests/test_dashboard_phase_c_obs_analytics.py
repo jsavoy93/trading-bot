@@ -62,6 +62,35 @@ OBS_002_BOUNDARY = "2026-09-14T20:24:55"
 # the original automatically.
 
 
+def _now_iso():
+    """Return the current UTC timestamp as `+00:00` ISO-8601 string.
+
+    Re-evaluated at every call so each migrated test gets a fresh
+    anchor. Microseconds kept for lexicographic correctness.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    return _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
+def _phase_c7_at(index: int, offset_seconds: float = 0.0) -> str:
+    """Return a distinct, `now()`-anchored ISO-8601 UTC timestamp.
+
+    ENG-04b: the Phase C endpoints filter rows by a wall-clock range
+    window (`today` / `24h` / `7d` cutoffs are computed from
+    `datetime.now(timezone.utc)`). Synthetic rows pinned to a fixed
+    calendar date fall outside every window once real time advances
+    past that date, so the endpoint silently returns zero rows and the
+    test fails for reasons unrelated to what it asserts.
+
+    Anchoring to `now()` keeps the range filters meaningful. `index`
+    gives each row a distinct, increasing timestamp so ordering
+    assertions and uniqueness constraints still hold.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    ts = _dt.now(_tz.utc) + _td(seconds=index + offset_seconds)
+    return ts.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
 def _build_synthetic_phase_c_db():
     """Build an in-memory sqlite DB with controlled synthetic gate
     records. Returns (conn, inserted_row_descriptions).
@@ -114,7 +143,7 @@ def _build_synthetic_phase_c_db():
     rows = [
         # c1: applied=true, passed=true (rsi_oversold) -> passed +1
         (
-            "c1", "AAA", "2026-09-15T10:00:00+00:00", json.dumps({
+            "c1", "AAA", _phase_c7_at(0), json.dumps({
                 "decision": {"outcome": "HOLD_INELIGIBLE"},
                 "strategy_eligibility": {
                     "gates": [
@@ -127,7 +156,7 @@ def _build_synthetic_phase_c_db():
         ),
         # c2: applied=true, passed=false (rsi_oversold) -> failed +1
         (
-            "c2", "BBB", "2026-09-15T10:01:00+00:00", json.dumps({
+            "c2", "BBB", _phase_c7_at(1), json.dumps({
                 "decision": {"outcome": "HOLD_INELIGIBLE"},
                 "strategy_eligibility": {
                     "gates": [
@@ -140,7 +169,7 @@ def _build_synthetic_phase_c_db():
         ),
         # c3: applied=false (rsi_oversold) -> contributes 0
         (
-            "c3", "CCC", "2026-09-15T10:02:00+00:00", json.dumps({
+            "c3", "CCC", _phase_c7_at(2), json.dumps({
                 "decision": {"outcome": "HOLD_INELIGIBLE"},
                 "strategy_eligibility": {
                     "gates": [
@@ -153,7 +182,7 @@ def _build_synthetic_phase_c_db():
         ),
         # c4: malformed applied (field missing) (rsi_oversold) -> fails closed -> 0
         (
-            "c4", "DDD", "2026-09-15T10:03:00+00:00", json.dumps({
+            "c4", "DDD", _phase_c7_at(3), json.dumps({
                 "decision": {"outcome": "HOLD_INELIGIBLE"},
                 "strategy_eligibility": {
                     "gates": [
@@ -167,7 +196,7 @@ def _build_synthetic_phase_c_db():
         ),
         # c5: applied=true, passed=false (sma_uptrend) -> +1 failed, +1 total
         (
-            "c5", "EEE", "2026-09-15T10:04:00+00:00", json.dumps({
+            "c5", "EEE", _phase_c7_at(4), json.dumps({
                 "decision": {"outcome": "HOLD_INELIGIBLE"},
                 "strategy_eligibility": {
                     "gates": [
@@ -180,7 +209,7 @@ def _build_synthetic_phase_c_db():
         ),
         # c6: HOLD_INELIGIBLE with empty gates[] -> 0 to any gate count
         (
-            "c6", "FFF", "2026-09-15T10:05:00+00:00", json.dumps({
+            "c6", "FFF", _phase_c7_at(5), json.dumps({
                 "decision": {"outcome": "HOLD_INELIGIBLE"},
                 "strategy_eligibility": {"gates": []}
             })
@@ -206,7 +235,7 @@ def _build_synthetic_phase_c_db():
         " order_submission_attempt_count, order_submitted_count, "
         " order_failed_count, not_attempted_count, schema_version) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("c1", "2026-09-15T10:00:00+00:00", "2026-09-15T10:00:30+00:00",
+        ("c1", _phase_c7_at(0), _phase_c7_at(0, offset_seconds=30),
          6, 0, 0, 0, 0, 0, 0, 0, 0, 2),
     )
 
@@ -346,84 +375,111 @@ def _client():
 # need the production path must opt in via the explicit `live_phase_c_db`
 # fixture defined above (or skip when `DB_PATH` is missing).
 
-# Original PHASE-C7 default rows promoted to module-level constants
+# Original PHASE-C7 default rows promoted to module-level factories
 # so the generalized factory can reuse them. Kept identical so
 # `TestGateAggregationAppliedFilter` continues to pass unchanged.
-_PHASE_C7_DEFAULT_DECISION_ROWS = [
-    # (cycle_id, symbol, cycle_start, decision_snapshot_json, decision_schema_version)
-    (
-        "c1", "AAA", "2026-09-15T10:00:00+00:00", json.dumps({
-            "decision": {"outcome": "HOLD_INELIGIBLE"},
-            "strategy_eligibility": {
-                "gates": [
-                    {"name": "rsi_oversold", "category": "technical",
-                     "applied": True, "passed": True,
-                     "observed_value": 30, "threshold_value": 25}
-                ]
-            }
-        }), 2,
-    ),
-    (
-        "c2", "BBB", "2026-09-15T10:01:00+00:00", json.dumps({
-            "decision": {"outcome": "HOLD_INELIGIBLE"},
-            "strategy_eligibility": {
-                "gates": [
-                    {"name": "rsi_oversold", "category": "technical",
-                     "applied": True, "passed": False,
-                     "observed_value": 40, "threshold_value": 25}
-                ]
-            }
-        }), 2,
-    ),
-    (
-        "c3", "CCC", "2026-09-15T10:02:00+00:00", json.dumps({
-            "decision": {"outcome": "HOLD_INELIGIBLE"},
-            "strategy_eligibility": {
-                "gates": [
-                    {"name": "rsi_oversold", "category": "technical",
-                     "applied": False, "passed": None,
-                     "observed_value": None, "threshold_value": None}
-                ]
-            }
-        }), 2,
-    ),
-    (
-        "c4", "DDD", "2026-09-15T10:03:00+00:00", json.dumps({
-            "decision": {"outcome": "HOLD_INELIGIBLE"},
-            "strategy_eligibility": {
-                "gates": [
-                    {"name": "rsi_oversold", "category": "technical",
-                     "passed": True,
-                     "observed_value": 50, "threshold_value": 25}
-                    # NOTE: 'applied' field intentionally absent
-                ]
-            }
-        }), 2,
-    ),
-    (
-        "c5", "EEE", "2026-09-15T10:04:00+00:00", json.dumps({
-            "decision": {"outcome": "HOLD_INELIGIBLE"},
-            "strategy_eligibility": {
-                "gates": [
-                    {"name": "sma_uptrend", "category": "technical",
-                     "applied": True, "passed": False,
-                     "observed_value": 0.95, "threshold_value": 1.05}
-                ]
-            }
-        }), 2,
-    ),
-    (
-        "c6", "FFF", "2026-09-15T10:05:00+00:00", json.dumps({
-            "decision": {"outcome": "HOLD_INELIGIBLE"},
-            "strategy_eligibility": {"gates": []}
-        }), 2,
-    ),
-]
+#
+# ENG-04b: the `cycle_start` values are anchored to `now()` at CALL
+# time (not import time) instead of being pinned to a fixed calendar
+# date. `/api/phase-c/strategy-gates` filters rows with the same
+# wall-clock range windows used by `_phase_c_range_clause`
+# (`today` / `24h` / `7d`), so a fixed 2026-09-15 date falls outside
+# every window once real time advances past it and the endpoint
+# silently returns zero gates. Anchoring to `now()` keeps the range
+# filter meaningful without pinning the suite to a particular day.
+def _phase_c7_default_decision_rows():
+    """Return the PHASE-C7 default decision_history rows, now()-anchored."""
+    def _snap(payload):
+        return json.dumps(payload)
 
-_PHASE_C7_DEFAULT_FUNNEL_ROW = (
-    "c1", "2026-09-15T10:00:00+00:00", "2026-09-15T10:00:30+00:00",
-    6, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-)
+    # Distinct, increasing sub-second offsets keep the rows ordered
+    # and unique (the UNIQUE(cycle_id, symbol) constraint and the
+    # "newest first" ordering assertions both rely on that).
+    def _at(i):
+        return _phase_c7_at(i)
+
+    return [
+        # (cycle_id, symbol, cycle_start, decision_snapshot_json, decision_schema_version)
+        (
+            "c1", "AAA", _at(0), _snap({
+                "decision": {"outcome": "HOLD_INELIGIBLE"},
+                "strategy_eligibility": {
+                    "gates": [
+                        {"name": "rsi_oversold", "category": "technical",
+                         "applied": True, "passed": True,
+                         "observed_value": 30, "threshold_value": 25}
+                    ]
+                }
+            }), 2,
+        ),
+        (
+            "c2", "BBB", _at(1), _snap({
+                "decision": {"outcome": "HOLD_INELIGIBLE"},
+                "strategy_eligibility": {
+                    "gates": [
+                        {"name": "rsi_oversold", "category": "technical",
+                         "applied": True, "passed": False,
+                         "observed_value": 40, "threshold_value": 25}
+                    ]
+                }
+            }), 2,
+        ),
+        (
+            "c3", "CCC", _at(2), _snap({
+                "decision": {"outcome": "HOLD_INELIGIBLE"},
+                "strategy_eligibility": {
+                    "gates": [
+                        {"name": "rsi_oversold", "category": "technical",
+                         "applied": False, "passed": None,
+                         "observed_value": None, "threshold_value": None}
+                    ]
+                }
+            }), 2,
+        ),
+        (
+            "c4", "DDD", _at(3), _snap({
+                "decision": {"outcome": "HOLD_INELIGIBLE"},
+                "strategy_eligibility": {
+                    "gates": [
+                        {"name": "rsi_oversold", "category": "technical",
+                         "passed": True,
+                         "observed_value": 50, "threshold_value": 25}
+                        # NOTE: 'applied' field intentionally absent
+                    ]
+                }
+            }), 2,
+        ),
+        (
+            "c5", "EEE", _at(4), _snap({
+                "decision": {"outcome": "HOLD_INELIGIBLE"},
+                "strategy_eligibility": {
+                    "gates": [
+                        {"name": "sma_uptrend", "category": "technical",
+                         "applied": True, "passed": False,
+                         "observed_value": 0.95, "threshold_value": 1.05}
+                    ]
+                }
+            }), 2,
+        ),
+        (
+            "c6", "FFF", _at(5), _snap({
+                "decision": {"outcome": "HOLD_INELIGIBLE"},
+                "strategy_eligibility": {"gates": []}
+            }), 2,
+        ),
+    ]
+
+
+def _phase_c7_default_funnel_row():
+    """Return the PHASE-C7 default cycle_funnel row, now()-anchored."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = _dt.now(_tz.utc)
+    start = now.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+    end = (now + _td(seconds=30)).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+    return (
+        "c1", start, end,
+        6, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+    )
 
 
 def phase_c_decision_row(cycle_id, symbol, cycle_start,
@@ -460,8 +516,8 @@ def phase_c_dataset_funnel():
     Forward path: analyzed=6 -> eligible=3 -> ranked=2 -> exec=1 -> submitted=1
     Off path:    blocked=1, failed=1, not_attempted=1
     """
-    base = "2026-09-15T10:00:00+00:00"
-    end = "2026-09-15T10:00:30+00:00"
+    base = _phase_c7_at(0)
+    end = _phase_c7_at(0, offset_seconds=30)
     decision_rows = [
         phase_c_decision_row("c1", f"SYM{i}", base, {
             "decision": {"outcome": "HOLD_INELIGIBLE"},
@@ -486,7 +542,7 @@ def phase_c_dataset_gates_coverage():
     rsi_oversold has applied=true rows with mixed passed values;
     sma_uptrend has one applied=true+passed=false row.
     """
-    base = "2026-09-15T10:00:00+00:00"
+    base = _phase_c7_at(0)
     decision_rows = [
         phase_c_decision_row("c1", "AAA", base, {
             "decision": {"outcome": "HOLD_INELIGIBLE"},
@@ -520,7 +576,7 @@ def phase_c_dataset_gates_coverage():
         }),
     ]
     funnel_rows = [
-        phase_c_funnel_row("c1", base, base.replace("10:00:00", "10:00:30")),
+        phase_c_funnel_row("c1", base, _phase_c7_at(0, offset_seconds=30)),
     ]
     return decision_rows, funnel_rows
 
@@ -531,7 +587,7 @@ def phase_c_dataset_outcomes():
     Satisfies `test_skipped_invalid_data_separated`: SKIPPED_INVALID_DATA
     must be its own row, not merged with HOLD_INELIGIBLE.
     """
-    base = "2026-09-15T10:00:00+00:00"
+    base = _phase_c7_at(0)
     decision_rows = [
         phase_c_decision_row("c1", "AAA", base, {
             "decision": {"outcome": "HOLD_INELIGIBLE"},
@@ -551,7 +607,7 @@ def phase_c_dataset_outcomes():
         }),
     ]
     funnel_rows = [
-        phase_c_funnel_row("c1", base, base.replace("10:00:00", "10:00:30"),
+        phase_c_funnel_row("c1", base, _phase_c7_at(0, offset_seconds=30),
                             analyzed=4, strategy_eligible=1, ranked=1,
                             exec_attempt=1, order_submit_attempt=1,
                             order_submitted=1),
@@ -565,10 +621,19 @@ def phase_c_dataset_coverage():
     Satisfies `test_coverage_response_has_pre_and_post_obs002_bands`:
     both bands present, each with the four stat keys.
     """
-    pre_start = "2026-09-14T10:00:00+00:00"
-    pre_end = "2026-09-14T10:00:30+00:00"
-    post_start = "2026-09-15T10:00:00+00:00"
-    post_end = "2026-09-15T10:00:30+00:00"
+    # ENG-04b: the post-OBS-002 cycle is anchored to `now()` so the
+    # `today`/`24h`/`7d` range filters still match it. The pre-OBS-002
+    # cycle MUST stay strictly before the fixed OBS-002 deployment
+    # boundary ("2026-09-14T20:24:55") — that is the whole point of
+    # the pre/post split this dataset exists to produce — so it keeps
+    # a fixed historical timestamp. (It therefore falls outside a
+    # `7d` window; that is inherent to a fixed historical boundary and
+    # is why `phase_c_dataset_coverage_windowed()` exists for the
+    # window-sensitive assertions.)
+    pre_start = "2026-09-14T20:24:54.999999+00:00"
+    pre_end = "2026-09-14T20:24:55.999999+00:00"
+    post_start = _phase_c7_at(0)
+    post_end = _phase_c7_at(0, offset_seconds=30)
     decision_rows = [
         phase_c_decision_row("post1", "AAA", post_start, {
             "decision": {"outcome": "HOLD_INELIGIBLE"},
@@ -595,7 +660,7 @@ def phase_c_dataset_range_cohort():
     echoes `cohort` and `range` regardless of cohort=all vs cohort=
     post_obs002 (both must include this single cycle).
     """
-    base = "2026-09-15T10:00:00+00:00"
+    base = _phase_c7_at(0)
     decision_rows = [
         phase_c_decision_row("c1", "AAA", base, {
             "decision": {"outcome": "HOLD_INELIGIBLE"},
@@ -603,7 +668,7 @@ def phase_c_dataset_range_cohort():
         }),
     ]
     funnel_rows = [
-        phase_c_funnel_row("c1", base, base.replace("10:00:00", "10:00:30"),
+        phase_c_funnel_row("c1", base, _phase_c7_at(0, offset_seconds=30),
                             analyzed=1),
     ]
     return decision_rows, funnel_rows
@@ -619,16 +684,6 @@ def phase_c_dataset_range_cohort():
 # The cohort filter is independent: `post_obs002` checks
 # `cycle_start >= "2026-09-14T20:24:55"`, which any now()-anchored
 # timestamp satisfies; `all` is `(1=1)`.
-def _now_iso():
-    """Return the current UTC timestamp as `+00:00` ISO-8601 string.
-
-    Re-evaluated at every call so each migrated test gets a fresh
-    anchor. Microseconds kept for lexicographic correctness.
-    """
-    from datetime import datetime as _dt, timezone as _tz
-    return _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
-
-
 def phase_c_dataset_windowed():
     """Small forward-path + one applied-gate row pinned near `now()`.
 
@@ -775,9 +830,9 @@ def _build_phase_c_db(decision_rows=None, funnel_rows=None, path=None):
     block.
     """
     if decision_rows is None:
-        decision_rows = _PHASE_C7_DEFAULT_DECISION_ROWS
+        decision_rows = _phase_c7_default_decision_rows()
     if funnel_rows is None:
-        funnel_rows = [_PHASE_C7_DEFAULT_FUNNEL_ROW]
+        funnel_rows = [_phase_c7_default_funnel_row()]
 
     if path is None:
         conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -931,7 +986,7 @@ def _build_phase_c_db_with_hybrid(decision_rows=None, funnel_rows=None,
     elif decision_rows_extended is None:
         decision_rows_extended = []
         if decision_rows is None:
-            decision_rows = _PHASE_C7_DEFAULT_DECISION_ROWS
+            decision_rows = _phase_c7_default_decision_rows()
         for row in decision_rows:
             if len(row) >= 6:
                 decision_rows_extended.append(row)
@@ -939,7 +994,7 @@ def _build_phase_c_db_with_hybrid(decision_rows=None, funnel_rows=None,
                 decision_rows_extended.append(row + (0,))
 
     if funnel_rows is None:
-        funnel_rows = [_PHASE_C7_DEFAULT_FUNNEL_ROW]
+        funnel_rows = [_phase_c7_default_funnel_row()]
 
     if path is None:
         conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -3503,9 +3558,9 @@ class TestStrategyGatesHybridReadPath:
         snapshot_other = json.dumps({"decision": {"outcome": "HOLD_INELIGIBLE"}})
 
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot_gates, 1, 0),
-            ("c2", "BBB", "2026-09-24T10:00:01+00:00", snapshot_gates, 1, 0),
-            ("c3", "CCC", "2026-09-24T10:00:02+00:00", snapshot_gates, 1, 0),
+            ("c1", "AAA", "_phase_c7_at(0)", snapshot_gates, 1, 0),
+            ("c2", "BBB", "_phase_c7_at(1)", snapshot_gates, 1, 0),
+            ("c3", "CCC", "_phase_c7_at(2)", snapshot_gates, 1, 0),
         ]
         # Stale gate child rows for v0 parents — MUST be ignored.
         # If the hybrid reader incorrectly joined, totals would
@@ -3513,13 +3568,13 @@ class TestStrategyGatesHybridReadPath:
         gate_rows_v1 = [
             # (dh_id, cycle_id, symbol, cycle_start, ord, name,
             #  category, applied, passed, observed, threshold, reason)
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1, "rsi_oversold",
+            (1, "c1", "AAA", "_phase_c7_at(0)", 1, "rsi_oversold",
              "trend", 1, 1, 1.0, 30.0, "STALE CHILD — must be ignored"),
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2, "sma_uptrend",
+            (1, "c1", "AAA", "_phase_c7_at(0)", 2, "sma_uptrend",
              "trend", 1, 1, 1.0, 0.0, "STALE CHILD — must be ignored"),
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "rsi_oversold",
+            (2, "c2", "BBB", "_phase_c7_at(1)", 1, "rsi_oversold",
              "trend", 1, 1, 1.0, 30.0, "STALE CHILD — must be ignored"),
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "sma_uptrend",
+            (2, "c2", "BBB", "_phase_c7_at(1)", 2, "sma_uptrend",
              "trend", 1, 1, 1.0, 0.0, "STALE CHILD — must be ignored"),
         ]
         synthetic_phase_c_hybrid_db(
@@ -3562,22 +3617,22 @@ class TestStrategyGatesHybridReadPath:
         }, "decision": {"outcome": "BUY_ELIGIBLE_NOT_SELECTED"}})
 
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
-            ("c2", "BBB", "2026-09-24T10:00:01+00:00", decoy_snapshot, 1, 1),
-            ("c3", "CCC", "2026-09-24T10:00:02+00:00", decoy_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", decoy_snapshot, 1, 1),
+            ("c2", "BBB", "_phase_c7_at(1)", decoy_snapshot, 1, 1),
+            ("c3", "CCC", "_phase_c7_at(2)", decoy_snapshot, 1, 1),
         ]
         gate_rows_v1 = [
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1, "rsi_oversold",
+            (1, "c1", "AAA", "_phase_c7_at(0)", 1, "rsi_oversold",
              "trend", 1, 0, 0.0, 30.0, "AUTHORITATIVE child row"),
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2, "sma_uptrend",
+            (1, "c1", "AAA", "_phase_c7_at(0)", 2, "sma_uptrend",
              "trend", 1, 0, 0.0, 0.0, "AUTHORITATIVE child row"),
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "rsi_oversold",
+            (2, "c2", "BBB", "_phase_c7_at(1)", 1, "rsi_oversold",
              "trend", 1, 0, 0.0, 30.0, "AUTHORITATIVE child row"),
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "sma_uptrend",
+            (2, "c2", "BBB", "_phase_c7_at(1)", 2, "sma_uptrend",
              "trend", 1, 0, 0.0, 0.0, "AUTHORITATIVE child row"),
-            (3, "c3", "CCC", "2026-09-24T10:00:02+00:00", 1, "rsi_oversold",
+            (3, "c3", "CCC", "_phase_c7_at(2)", 1, "rsi_oversold",
              "trend", 1, 1, 1.0, 30.0, "AUTHORITATIVE child row"),
-            (3, "c3", "CCC", "2026-09-24T10:00:02+00:00", 2, "sma_uptrend",
+            (3, "c3", "CCC", "_phase_c7_at(2)", 2, "sma_uptrend",
              "trend", 1, 1, 1.0, 0.0, "AUTHORITATIVE child row"),
         ]
         synthetic_phase_c_hybrid_db(
@@ -3615,13 +3670,13 @@ class TestStrategyGatesHybridReadPath:
         }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
 
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", v0_snapshot, 1, 0),
-            ("c2", "BBB", "2026-09-24T10:00:01+00:00", v0_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", v0_snapshot, 1, 0),
+            ("c2", "BBB", "_phase_c7_at(1)", v0_snapshot, 1, 1),
         ]
         gate_rows_v1 = [
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "rsi_oversold",
+            (2, "c2", "BBB", "_phase_c7_at(1)", 1, "rsi_oversold",
              "trend", 1, 0, 0.0, 30.0, "child row"),
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "sma_uptrend",
+            (2, "c2", "BBB", "_phase_c7_at(1)", 2, "sma_uptrend",
              "trend", 1, 1, 1.0, 0.0, "child row"),
         ]
         synthetic_phase_c_hybrid_db(
@@ -3663,7 +3718,7 @@ class TestStrategyGatesHybridReadPath:
         }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
 
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", decoy_snapshot, 1, 1),
         ]
         # No gate_rows_v1 for c1.
         synthetic_phase_c_hybrid_db(
@@ -3690,7 +3745,7 @@ class TestStrategyGatesHybridReadPath:
             "gates": [_gate(1, "rsi_oversold", "trend", True, True, 25, 30)]
         }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot_gates, 1, 0),
+            ("c1", "AAA", "_phase_c7_at(0)", snapshot_gates, 1, 0),
         ]
         synthetic_phase_c_hybrid_db(decision_rows=decision_rows, gate_rows_v1=[])
         c = _client()
@@ -3723,13 +3778,13 @@ class TestStrategyGatesHybridReadPath:
             ]
         }, "decision": {"outcome": "HOLD_INELIGIBLE"}})
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", v0_snapshot, 1, 0),
-            ("c2", "BBB", "2026-09-24T10:00:01+00:00", v0_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", v0_snapshot, 1, 0),
+            ("c2", "BBB", "_phase_c7_at(1)", v0_snapshot, 1, 1),
         ]
         # v1 parent adds 1 more failure to beta (so beta ends up
         # with 2 failures total).
         gate_rows_v1 = [
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "beta",
+            (2, "c2", "BBB", "_phase_c7_at(1)", 2, "beta",
              "trend", 1, 0, 0.0, 0.0, "extra v1 fail"),
         ]
         synthetic_phase_c_hybrid_db(
@@ -3751,14 +3806,14 @@ class TestStrategyGatesHybridReadPath:
         applied=0 rows are excluded by SQL (g.applied = 1 filter)
         and contribute zero to totals."""
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", "{}", 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", "{}", 1, 1),
         ]
         gate_rows_v1 = [
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1, "rsi_oversold",
+            (1, "c1", "AAA", "_phase_c7_at(0)", 1, "rsi_oversold",
              "trend", 1, 1, 1.0, 30.0, "applied=true passed"),
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2, "rsi_oversold",
+            (1, "c1", "AAA", "_phase_c7_at(0)", 2, "rsi_oversold",
              "trend", 1, 0, 0.0, 30.0, "applied=true failed"),
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 3, "rsi_oversold",
+            (1, "c1", "AAA", "_phase_c7_at(0)", 3, "rsi_oversold",
              "trend", 0, None, None, None, "applied=false (excluded)"),
         ]
         synthetic_phase_c_hybrid_db(
@@ -3794,7 +3849,7 @@ class TestExecutionBlockersHybridReadPath:
         }, "decision": {"outcome": "BUY_BLOCKED_DYNAMIC"}})
 
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", decoy_snapshot, 1, 1),
         ]
         # No exec_rows_v1.
         synthetic_phase_c_hybrid_db(
@@ -3823,10 +3878,10 @@ class TestExecutionBlockersHybridReadPath:
         }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
 
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot, 1, 0),
+            ("c1", "AAA", "_phase_c7_at(0)", snapshot, 1, 0),
         ]
         exec_rows_v1 = [
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+            (1, "c1", "AAA", "_phase_c7_at(0)", 1,
              "stale_child_check", 1, 1, 1, 0, "STALE", None, 1),
         ]
         synthetic_phase_c_hybrid_db(
@@ -3852,13 +3907,13 @@ class TestExecutionBlockersHybridReadPath:
         }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
 
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", decoy_snapshot, 1, 1),
         ]
         exec_rows_v1 = [
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+            (1, "c1", "AAA", "_phase_c7_at(0)", 1,
              "buying_power_check", 1, 0, 1, 0,
              "v1 authoritative", None, 1),
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 2,
+            (1, "c1", "AAA", "_phase_c7_at(0)", 2,
              "buying_power_check", 1, 1, 1, 0,
              "v1 authoritative", None, 0),
         ]
@@ -3888,13 +3943,13 @@ class TestExecutionBlockersHybridReadPath:
             "first_blocking_check": "a",
         }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", v0_snapshot, 1, 0),
-            ("c2", "BBB", "2026-09-24T10:00:01+00:00", v0_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", v0_snapshot, 1, 0),
+            ("c2", "BBB", "_phase_c7_at(1)", v0_snapshot, 1, 1),
         ]
         exec_rows_v1 = [
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 1, "b", 1, 0,
+            (2, "c2", "BBB", "_phase_c7_at(1)", 1, "b", 1, 0,
              1, 0, "v1 fb", None, 1),
-            (2, "c2", "BBB", "2026-09-24T10:00:01+00:00", 2, "b", 1, 0,
+            (2, "c2", "BBB", "_phase_c7_at(1)", 2, "b", 1, 0,
              1, 0, "v1 fb", None, 1),
         ]
         synthetic_phase_c_hybrid_db(
@@ -3919,7 +3974,7 @@ class TestExecutionBlockersHybridReadPath:
             "first_blocking_check": "buying_power_check",
         }, "decision": {"outcome": "SELL_BLOCKED_DYNAMIC"}})
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", snapshot, 1, 0),
+            ("c1", "AAA", "_phase_c7_at(0)", snapshot, 1, 0),
         ]
         synthetic_phase_c_hybrid_db(
             decision_rows=decision_rows, exec_rows_v1=[],
@@ -3984,7 +4039,7 @@ class TestHybridZeroBothParent:
             "decision": {"outcome": "HOLD_INELIGIBLE"},
         })
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", decoy_snapshot, 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", decoy_snapshot, 1, 1),
         ]
         # NO gate_rows_v1, NO exec_rows_v1.
         synthetic_phase_c_hybrid_db(
@@ -4027,14 +4082,14 @@ class TestHybridRangeParamBinding:
         path without SQL parameter-binding errors. Pre-fix, 'latest'
         would crash because v1 SQL had a hardcoded extra '?'."""
         decision_rows = [
-            ("c1", "AAA", "2026-09-24T10:00:00+00:00", "{}", 1, 1),
+            ("c1", "AAA", "_phase_c7_at(0)", "{}", 1, 1),
         ]
         gate_rows_v1 = [
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+            (1, "c1", "AAA", "_phase_c7_at(0)", 1,
              "rsi_oversold", "trend", 1, 1, 25, 30, "v1"),
         ]
         exec_rows_v1 = [
-            (1, "c1", "AAA", "2026-09-24T10:00:00+00:00", 1,
+            (1, "c1", "AAA", "_phase_c7_at(0)", 1,
              "buying_power_check", 1, 1, 1, 0, "v1", None, 0),
         ]
         synthetic_phase_c_hybrid_db(

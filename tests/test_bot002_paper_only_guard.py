@@ -13,6 +13,7 @@ Proves that:
 """
 import os
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -251,7 +252,11 @@ def test_main_py_installs_sigterm_handler() -> None:
     env["LOCK_FILE_OVERRIDE"] = tempfile.mktemp(prefix="trading_bot_test_")
     result = subprocess.run(
         [sys.executable, "-c", code],
-        cwd="/root/.openclaw/workspace/trading-bot",
+        # ENG-04b: run against the checkout under TEST. This used to be
+        # hardcoded to "/root/.openclaw/workspace/trading-bot", so the
+        # subprocess imported `main` from a different checkout than the
+        # one being tested.
+        cwd=str(Path(__file__).resolve().parents[1]),
         env=env,
         capture_output=True,
         text=True,

@@ -54,6 +54,7 @@ Acceptance criteria covered:
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = REPO_ROOT / "templates" / "dashboard.html"
+
+# Make the shared synthetic-DB helper importable regardless of how
+# pytest is invoked (rootdir insertion vs. explicit `python -m pytest`).
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
 
 
 def _read_template() -> str:
@@ -1004,10 +1011,20 @@ class TestLiveEndpointsReturnExpectedShape:
     that the new template renderer depends on."""
 
     @pytest.fixture
-    def client(self):
+    def client(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
         import sys
         sys.path.insert(0, str(REPO_ROOT))
+        # ENG-04b: point the dashboard at a DETERMINISTIC synthetic DB
+        # instead of whatever live `trading_bot.db` happens to sit next
+        # to the checkout. These endpoints read `analyzed_stocks` /
+        # `decision_history` / `cycle_funnel` straight from that file,
+        # so without this the assertions below depend on live runtime
+        # state (and silently pass on an empty DB by taking the
+        # "no history rows" branch).
+        from _synthetic_dashboard_db import build_dashboard_db
+        db_path = build_dashboard_db(tmp_path / "dashboard_synth.db")
+        monkeypatch.setenv("TRADING_BOT_DASHBOARD_DB", str(db_path))
         # Import dashboard as a module without running the live broker
         # reachability checks (we are only exercising OBS-001 DB endpoints).
         # The app is built at import time; we just need the TestClient.

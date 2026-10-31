@@ -918,12 +918,17 @@
                   style="font-size:11px;color:#8b949e;margin-left:6px;">
                 {%- if _rs.get('fully_ready') -%}
                     Running
+                {%- elif not _rs.get('alpaca_api_reachable') -%}
+                    {# ENG-04b: the legend must agree with the dot. The dot
+                       is red whenever Alpaca is unreachable, so "API Offline"
+                       has to win over the runner state — otherwise a running
+                       runner with a dead API shows a red dot next to a
+                       green-sounding "Runner Active" legend. #}
+                    API Offline
                 {%- elif _rs.get('smartbot_runner_active') -%}
                     Runner Active, No Session
-                {%- elif _rs.get('alpaca_api_reachable') -%}
-                    API Online, Bot Off
                 {%- else -%}
-                    API Offline
+                    API Online, Bot Off
                 {%- endif -%}
             </span>
         </div>
