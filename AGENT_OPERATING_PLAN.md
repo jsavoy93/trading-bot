@@ -90,6 +90,153 @@ The dashboard agent must not independently invent or tune trading strategy logic
 - Agents must stop if the requested scope is unclear.
 - Agents must stop if changes extend beyond allowed files.
 - Agents must stop after three consecutive failed iterations.
+- Only one GLM-heavy job may run at a time (see Model-Quota Discipline).
+- Every final report must state which model actually completed the work.
+- An independent reviewer-agent verdict is required before asking Josh to
+  merge (see Review Gate).
+
+## Session and Dispatch Conventions (ENG-01)
+
+When dispatching a task to an agent session (e.g. `openclaw` subagent dispatch),
+the dispatcher must follow:
+
+- **One fresh session key per task**: `agent:<agent>:<TASKID>-<unix-time>`.
+  Never reuse a session key such as `grokbot`.
+- Use `--thinking low` unless the task needs more.
+
+## Model-Quota Discipline (ENG-05)
+
+`zai/glm-5.1` is a metered provider. Its weekly/monthly allowance is shared
+across every agent lane, so concurrent GLM-heavy jobs can exhaust the quota
+and then fail over mid-task.
+
+### One GLM-heavy job at a time
+
+- Run only **one** GLM-heavy (judgement-heavy) job at a time. Do not fan the
+  same subtask out to several GLM-backed lanes concurrently.
+- A GLM-heavy job is any task whose success depends on design, debugging,
+  code-change judgement, or multi-step analysis.
+- Documentation-only and mechanical text work should be routed to the
+  docs-agent (see Model Routing), which does not consume GLM quota.
+- If a GLM request fails over because the quota is exhausted, **wait for the
+  reset** rather than retrying GLM in a loop. Retrying a quota-exhausted
+  provider consumes wall-clock time and produces nothing.
+
+### Quota exhaustion signature
+
+Weekly/monthly quota exhaustion appears as:
+
+```
+429 Weekly/Monthly Limit Exhausted. Your limit will reset at <UTC timestamp>
+```
+
+Observed reset for the 2026-10-31 exhaustion: **2026-11-02 20:33:34 UTC**.
+The reset timestamp is carried in the error text; quote it rather than
+guessing. When the provider chain is exhausted entirely, the agent lane
+reports `FailoverError: ⚠️ Weekly/Monthly Limit Exhausted`.
+
+### Reporting which model actually did the work
+
+Every final report — manager packet, iteration log entry, archive report —
+**must state the model that actually completed the work**, not the model that
+was requested. Never report the primary model when a fallback produced the
+result.
+
+Evidence sources, in priority order:
+
+1. `executionTrace.winnerModel` — the model that produced the final result.
+2. `executionTrace.fallbackUsed` — whether a fallback occurred at all.
+3. `model_fallback_decision` lines in `/tmp/openclaw/*.log` — the
+   `decision: "candidate_succeeded"` entry names
+   `candidateProvider` / `candidateModel` (the model that won), and
+   `previousAttempts` lists what failed first.
+
+Example evidence from `/tmp/openclaw/openclaw-2026-10-31.log`:
+
+```json
+{"event":"model_fallback_decision","decision":"candidate_succeeded",
+ "requestedProvider":"zai","requestedModel":"glm-5.1",
+ "candidateProvider":"minimax-portal","candidateModel":"MiniMax-M3",
+ "attempt":2,"total":2,
+ "fallbackStepFromFailureReason":"rate_limit","status":429,
+ "errorPreview":"429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-02 20:33:34",
+ "previousAttempts":[{"provider":"zai","model":"glm-5.1","reason":"rate_limit","status":429}]}
+```
+
+Reading it: the requested model was `zai/glm-5.1`; attempt 1 failed with a
+429 quota error; the fallback `minimax-portal/MiniMax-M3` succeeded. The
+report must therefore say **MiniMax-M3 completed the work**, and note that
+GLM's quota was exhausted.
+
+A report that omits the completing model, or that names the requested model
+instead of the completing one, is incomplete.
+
+## Model Routing (ENG-06)
+
+Work is routed by **task kind**, not by convenience. The cheaper model handles
+mechanical text; the judgement model handles anything where quality of
+reasoning determines the outcome.
+
+### Decision table
+
+| Task kind | Examples | Primary | Fallback |
+|---|---|---|---|
+| Documentation / mechanical text | final reports, `ITERATION_PROGRESS_LOG.md` entries, `reports/` archive files, log excerpts, changelog text | `docs-agent` — `minimax-portal/MiniMax-M3` | `zai/glm-5.1` |
+| Design & architecture | API/interface design, migration plans, trade-off decisions | `zai/glm-5.1` | `minimax-portal/MiniMax-M3` |
+| Code changes | backend, strategy, execution, dashboard implementation, test authoring | `zai/glm-5.1` | `minimax-portal/MiniMax-M3` |
+| Debugging | failing tests, runtime faults, data-pipeline diagnosis | `zai/glm-5.1` | `minimax-portal/MiniMax-M3` |
+| Multi-step analysis | forensic analysis of trades/failures, cross-table investigations | `zai/glm-5.1` | `minimax-portal/MiniMax-M3` |
+| Review / verdict | independent reviewer-agent APPROVE/BLOCK verdict | `zai/glm-5.1` | `minimax-portal/MiniMax-M3` |
+
+### Lanes
+
+- **`docs-agent`** (primary `minimax-portal/MiniMax-M3`, fallback
+  `zai/glm-5.1`) handles **only** reports, `ITERATION_PROGRESS_LOG.md`
+  entries, `reports/` archive files, and other documentation/mechanical text
+  work. It does not write production code and does not make design
+  decisions. Its work is still subject to the Model-Quota Discipline above:
+  because it does not consume GLM quota, it is the correct lane to run
+  *concurrently* with a GLM-heavy job, but only one GLM-heavy job at a time.
+- **`zai/glm-5.1`** backs `trading-manager`, `trading-exec`, `dashboard-agent`,
+  and `engineering-manager`. These lanes handle design, code changes,
+  debugging, multi-step analysis, and anything else where judgement quality
+  matters.
+
+### Routing rules
+
+- Choose the lane by the **highest-quality requirement** in the task. A task
+  that is "mostly docs" but contains a design decision routes to the GLM
+  lane for the design portion.
+- Never route a design or debugging decision to `docs-agent` because the
+  quota is currently exhausted. Route it to the GLM lane and accept the
+  fallback, or wait for the reset — but do not downgrade the reasoning
+  quality of the work.
+- The routing decision, the lane used, and the completing model are recorded
+  in the task's final report.
+- When the primary model for the lane is exhausted and a fallback model
+  completes the work, the report states the completing model explicitly (see
+  Model-Quota Discipline).
+
+## Review Gate (ENG-07)
+
+An **independent reviewer-agent verdict** (`APPROVE` or `BLOCK` with reasons)
+is a **required** step before asking Josh to merge.
+
+- The reviewer is a separate agent session that did not author the change.
+- The reviewer works **read-only**: it reads the PR diff against the task's
+  acceptance criteria and returns a verdict. It does not edit, commit, push,
+  or merge.
+- A `BLOCK` verdict **must be resolved** — fixed and re-reviewed, or
+  explicitly accepted by Josh with the reason recorded — before the merge
+  request is presented. An unresolved `BLOCK` stops the task as
+  `REWORK`/`BLOCKED` with the reasons copied verbatim; it never escalates
+  into a merge request.
+- The verdict, the reviewer agent id, and the reasons are recorded in the
+  report and the `ITERATION_PROGRESS_LOG.md` entry.
+
+The full mechanics (how the verdict is obtained, what the reviewer may and
+may not do) live in `BRANCHING.md` under "Review Gate Before Asking Josh to
+Merge".
 
 ## Iteration Flow
 
@@ -103,12 +250,14 @@ The dashboard agent must not independently invent or tune trading strategy logic
 8. Run tests.
 9. Run a backtest when relevant.
 10. Review the exact diff.
-11. Record task end time and elapsed time.
-12. Report continuity status (continuous or resumed).
-13. Report blocked or stale status if applicable.
-14. Commit and push the branch.
-15. Report through Telegram.
-16. Stop.
+11. Obtain an independent reviewer-agent verdict (`APPROVE` / `BLOCK`).
+12. Resolve any `BLOCK` verdict before requesting a merge.
+13. Record task end time and elapsed time.
+14. Report continuity status (continuous or resumed).
+15. Report blocked or stale status if applicable.
+16. Commit and push the branch.
+17. Report through Telegram, stating which model completed the work.
+18. Stop.
 
 ## Infrastructure-Dependent Verification States
 
