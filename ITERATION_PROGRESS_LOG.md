@@ -5346,3 +5346,13 @@ Implementation complete; PR open and awaiting owner review.
   (is-enabled/is-active used as proof)
 - Next: Josh reviews PR #118; on merge, update ExecStart to stable checkout, then optionally
   `systemctl --user enable --now strat023-c4-shadow.timer` (Josh approval required)
+
+## 2026-10-31_010333 — STRAT-024 live paper-order runner
+- Objective: real orders (paper only) for the C4 sleeve, idempotent, kill switch, sl_short tagging, order-based exits, 30% sleeve with caps.
+- Branch/commit: research/strat-024-live-paper @ 86761ea (PR 119, base research/strat-023-c4-shadow; NOT merged).
+- Status: DONE (awaiting Josh review)
+- Files changed: experiments/strat_023/{live_paper_runner.py,test_live_paper_runner.py,README.md}
+- Tests: pytest experiments/strat_023/ → 24 passed, 0 failed (no network; FakeAPI).
+- Decisions: sleeve defaults 30%/3 positions/10% cap; exits = resting 3xATR GTC stop + cancel-and-market-sell for SMA5/time (next-open fill divergence documented); fixture+live needs STRAT024_FIXTURE_LIVE=1 second opt-in.
+- Risks: next-open exit fills vs backtest close fills; pending-entry notional uses reference price.
+- Next: Josh approves PR 119 → merge → switch timer per archived report steps. Josh approval required.
