@@ -5315,3 +5315,25 @@ Implementation complete; PR open and awaiting owner review.
 - Decision/finding: backfill rows previously inserted NULL sleeve via log_trade; all pre-sleeve-era activity is Sleeve S, so backfills now hard-tagged 'S'
 - Risk: none known (no pre-P1 'L' path existed)
 - Next: Josh reviews/approves PR #115 (merge human-gated); approval required
+
+## 2026-10-29 18:10 UTC — STRAT-022 research (dip-buy 2–5d holds)
+
+- **Item**: STRAT-022 — pre-registered short-term dip-buy backtest (research only)
+- **Branch/commit**: `research/strat-022-dip-buy`; prereg frozen 76f9dba; dev 76c7df2; final (this commit)
+- **Status**: DONE (conditional accept; holdout passed frozen bar)
+- **Files**: experiments/strat_022/* (prereg, downloader, engine, sanity checks, 379 symbol CSVs, results), reports/2026-10-29_180502_STRAT-022.md, REPORT.md
+- **Backtests**: dev 2021–2024 all 8 configs vs matched random baseline (5/10 bps);
+  holdout 2025–2026 run ONCE for frozen selection C4 (RSI(2)<10, ATR 3.0, 10d):
+  +0.246%/trade net 10 bps, t=3.09, baseline +0.151% → PASS, edge narrowed vs dev.
+- **Decisions/risks**: survivorship bias upward; close-checked stops; raw adjustment;
+  baseline single draw; baseline N > strat N (anti-overlap asymmetry, documented).
+- **Next**: PR review by Josh (not merged). Any shadow-sleeve proposal is a new task.
+
+## 2026-10-31 ~13:5x UTC — STRAT-026 pro-swing research (subagent, trading-exec)
+- Backlog: STRAT-026 paper research (pro-swing entries w/ professional exits vs random baseline)
+- Branch: research/strat-026-pro-swing (from research/strat-023-recheck @ 9b164c3); worktree /root/.openclaw/workspace/strat-026-wt
+- Status: DONE
+- Files changed: .gitignore; experiments/strat_026/{run_research.py,engine.py,RESULTS.md,results/_results_dev.json,results/_dev_selection.json,results/_results_holdout.json}; REPORT.md (ignored); reports/<ts>_strat-026.md; this log
+- Tests/backtests: run_research.py dev (all 6 strategies) + holdout (rsi2_regime only). rsi2_regime dev n=10857 +0.258%/trade t=3.02 t_vs_base=2.74 PASS; holdout n=6258 +0.579% t=5.19 t_vs_base=1.84 (positive edge, below t=2 bar). volbrk_regime fail (t_vs_base -0.78). pead_proxy fail (1.36). momentum 1/2/4w negative absolute, no edge vs random.
+- Decisions/risks: split artifacts (raw adjustment) corrupt per-trade DD for entry strategies (documented); partial-at-2R fill assumption optimistic; PEAD is gap+volume proxy (no earnings dates in repo); holdout window almost fully regime-ON.
+- Next action: Josh decides — drop or paper shadow runner for rsi2_regime. Approval required for anything further.

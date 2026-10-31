@@ -155,3 +155,12 @@ node_modules/
 # Preserved fantasy app split-out/runtime copy must not live in trading-bot
 /draft-center/
 .trading-dashboard.env
+
+# STRAT-023 recheck large data
+experiments/strat_022/recheck/data_delisted/
+
+# STRAT-026 research data (symlink to frozen STRAT-025 CSVs) and generated outputs
+experiments/strat_026/data
+experiments/strat_026/results/*.csv
+experiments/strat_026/__pycache__/
+experiments/strat_026/_run_*.log
