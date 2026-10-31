@@ -168,6 +168,12 @@ If an implementation task fails or stops early, the agent must still write `REPO
   It validates that the message file exists and is non-empty, generates a fresh
   session key of the form `agent:<agent>:<TASKID>-<unix-time>` (ENG-01 rule:
   session keys are never reused), and dispatches with safe quoting.
+- **Target the right agent by work type:** CODE work dispatches to
+  `engineering-manager`; RESEARCH work dispatches to `trading-manager`.
+  The agent-id argument remains required and positional, so there is no default
+  value. Canonical examples:
+  - `scripts/dispatch_agent.sh engineering-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
+  - `scripts/dispatch_agent.sh trading-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
 - **Test with `--dry-run` / `--echo`:** this prints the exact command and the
   message verbatim WITHOUT dispatching any agent. Never dispatch real agents in
   tests.

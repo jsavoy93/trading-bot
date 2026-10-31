@@ -144,6 +144,55 @@ def test_wrong_arg_count_rejected():
     assert r.returncode == 2
 
 
+def test_usage_documents_engineering_manager_as_code_work_default():
+    r = run_script()
+    assert r.returncode == 2, r.stderr
+    combined = r.stdout + r.stderr
+    assert "engineering-manager" in combined
+    assert "default target for CODE work is engineering-manager" in combined
+    canonical = (
+        "scripts/dispatch_agent.sh engineering-manager <TASKID> "
+        "minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt"
+    )
+    assert canonical in combined
+
+
+def test_usage_documents_trading_manager_as_research_alternative():
+    r = run_script()
+    assert r.returncode == 2, r.stderr
+    combined = r.stdout + r.stderr
+    assert "trading-manager" in combined
+    assert "RESEARCH work" in combined
+    canonical = (
+        "scripts/dispatch_agent.sh trading-manager <TASKID> "
+        "minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt"
+    )
+    assert canonical in combined
+
+
+def test_agent_id_argument_is_still_required_no_default_substituted(tmp_path):
+    msg_file = make_message_file(tmp_path, "hello")
+    r = run_script("--dry-run", "TASK", "m", msg_file)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "dispatched agent=" not in r.stdout
+    assert "engineering-manager" not in r.stdout
+
+
+def test_explicit_trading_manager_target_dry_run_command(tmp_path):
+    msg_file = make_message_file(tmp_path, "research brief")
+    r = run_script(
+        "--dry-run", "trading-manager", "ENG-11-TEST", "minimax-portal/MiniMax-M3", msg_file
+    )
+    assert r.returncode == 0, r.stderr
+    assert re.search(
+        r"session key: agent:trading-manager:ENG-11-TEST-\d{10,}", r.stdout
+    ), r.stdout
+    assert "--agent trading-manager" in r.stdout
+    assert "--session-key agent:trading-manager:ENG-11-TEST-" in r.stdout
+    assert "dispatched agent=" not in r.stdout
+    assert "DRY-RUN" in r.stdout
+
+
 def test_dry_run_never_dispatches(tmp_path):
     msg_file = make_message_file(tmp_path, "hello")
     r = run_script("--dry-run", "ag", "TASK", "m", msg_file)

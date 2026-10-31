@@ -6,6 +6,13 @@
 # Usage:
 #   scripts/dispatch_agent.sh [--dry-run|--echo] <agent-id> <task-id> <model> <message-file>
 #
+# The documented and default target for CODE work is engineering-manager:
+#   scripts/dispatch_agent.sh engineering-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt
+#
+# The agent-id argument stays REQUIRED and positional (there is no default value),
+# so this helper can still target trading-manager for RESEARCH work:
+#   scripts/dispatch_agent.sh trading-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt
+#
 # --dry-run / --echo: print the exact command that would run plus the message
 # verbatim, then exit 0 WITHOUT dispatching anything. Tests rely on this.
 #
@@ -17,6 +24,13 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage: dispatch_agent.sh [--dry-run|--echo] <agent-id> <task-id> <model> <message-file>
+
+The documented and default target for CODE work is engineering-manager:
+  scripts/dispatch_agent.sh engineering-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt
+
+The agent-id argument stays REQUIRED and positional (there is no default value),
+so this helper can still target trading-manager for RESEARCH work:
+  scripts/dispatch_agent.sh trading-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt
 USAGE
   exit 2
 }
