@@ -5318,10 +5318,33 @@ Implementation complete; PR open and awaiting owner review.
 
 ## 2026-10-31T18:38Z — ENG-02: dispatch helper script for hostile messages
 - Backlog: ENG-02 (dispatch helper script for messages containing pipes/quotes/$/backticks/newlines)
-- Branch/commit: agent/trading-ENG-02-20261031-1816 / (pending)
+- Branch/commit: agent/trading-ENG-02-20261031-1816 / 8bd010f (+ d92fc4e archive report, + merge of origin/main)
 - Status: DONE
 - Files changed: scripts/dispatch_agent.sh (new), tests/test_dispatch_agent.py (new), AGENTS.md (dispatch conventions), ITERATION_PROGRESS_LOG.md
 - Tests: baseline `pytest -q` on origin/main = 40 failed, 2055 passed, 1 skipped, 13 deselected (161s); after = 40 failed, 2065 passed, 1 skipped (160s) — failure sets byte-identical, 0 new failures; ENG-02 tests 10/10 pass
 - Decisions: openclaw CLI flags are `--agent`, `--session-key`, `--model`, `--message`, `--json`, `--timeout`; session key uses sub-second stamp `agent:<agent>:<TASKID>-<unix%N>` so keys are never reused; message read from file with a sentinel to preserve trailing newlines; dry-run prints shell-escaped exact command + verbatim message + sha256
 - Risk: dispatch path (non-dry-run) not exercised against a live agent by design; real dispatch requires the gateway and a valid agent id
 - Next: Josh reviews/approves the ENG-02 PR (merge human-gated); approval required
+
+## 2026-10-29 18:10 UTC — STRAT-022 research (dip-buy 2–5d holds)
+
+- **Item**: STRAT-022 — pre-registered short-term dip-buy backtest (research only)
+- **Branch/commit**: `research/strat-022-dip-buy`; prereg frozen 76f9dba; dev 76c7df2; final (this commit)
+- **Status**: DONE (conditional accept; holdout passed frozen bar)
+- **Files**: experiments/strat_022/* (prereg, downloader, engine, sanity checks, 379 symbol CSVs, results), reports/2026-10-29_180502_STRAT-022.md, REPORT.md
+- **Backtests**: dev 2021–2024 all 8 configs vs matched random baseline (5/10 bps);
+  holdout 2025–2026 run ONCE for frozen selection C4 (RSI(2)<10, ATR 3.0, 10d):
+  +0.246%/trade net 10 bps, t=3.09, baseline +0.151% → PASS, edge narrowed vs dev.
+- **Decisions/risks**: survivorship bias upward; close-checked stops; raw adjustment;
+  baseline single draw; baseline N > strat N (anti-overlap asymmetry, documented).
+- **Next**: PR review by Josh (not merged). Any shadow-sleeve proposal is a new task.
+
+## 2026-10-31 ~13:5x UTC — STRAT-026 pro-swing research (subagent, trading-exec)
+- Backlog: STRAT-026 paper research (pro-swing entries w/ professional exits vs random baseline)
+- Branch: research/strat-026-pro-swing (from research/strat-023-recheck @ 9b164c3); worktree /root/.openclaw/workspace/strat-026-wt
+- Status: DONE
+- Files changed: .gitignore; experiments/strat_026/{run_research.py,engine.py,RESULTS.md,results/_results_dev.json,results/_dev_selection.json,results/_results_holdout.json}; REPORT.md (ignored); reports/<ts>_strat-026.md; this log
+- Tests/backtests: run_research.py dev (all 6 strategies) + holdout (rsi2_regime only). rsi2_regime dev n=10857 +0.258%/trade t=3.02 t_vs_base=2.74 PASS; holdout n=6258 +0.579% t=5.19 t_vs_base=1.84 (positive edge, below t=2 bar). volbrk_regime fail (t_vs_base -0.78). pead_proxy fail (1.36). momentum 1/2/4w negative absolute, no edge vs random.
+- Decisions/risks: split artifacts (raw adjustment) corrupt per-trade DD for entry strategies (documented); partial-at-2R fill assumption optimistic; PEAD is gap+volume proxy (no earnings dates in repo); holdout window almost fully regime-ON.
+- Next action: Josh decides — drop or paper shadow runner for rsi2_regime. Approval required for anything further.
+

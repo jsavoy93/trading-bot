@@ -1,0 +1,26 @@
+{
+ "rsi2_regime": {
+  "dev_pass": true,
+  "t_vs_base": 2.7395235365690493
+ },
+ "volbrk_regime": {
+  "dev_pass": false,
+  "t_vs_base": -0.7808285796514447
+ },
+ "pead_proxy": {
+  "dev_pass": false,
+  "t_vs_base": 1.3568924369123103
+ },
+ "momentum_1w": {
+  "dev_pass": false,
+  "t_vs_base": -0.1446203285186698
+ },
+ "momentum_2w": {
+  "dev_pass": false,
+  "t_vs_base": -0.6169084958772731
+ },
+ "momentum_4w": {
+  "dev_pass": false,
+  "t_vs_base": -0.7300143026849685
+ }
+}
