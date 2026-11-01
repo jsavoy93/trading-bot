@@ -101,7 +101,27 @@ year per company — a deliberate, disclosed property of the test, not a modelli
 
 ## 3. Coverage inside the investable universe (the number that decides usefulness)
 
-*(filled in from the panel build — see `fundamentals_meta.json`)*
+"How many of the stocks we are allowed to buy actually have usable fundamentals as of that
+month?" — medians over the months of each year (`check_fundamentals_coverage.py`):
+
+| Year | Months | Liquid-eligible names | With return-on-equity (QUALITY) | With earnings yield (VALUE) |
+|---|---|---|---|---|
+| 2021 | 12 | 977 | 611 | 474 |
+| 2022 | 12 | 1,042 | 682 | 535 |
+| 2023 | 12 | 997 | 662 | 537 |
+| 2024 | 12 | 1,086 | 726 | 590 |
+| 2025 | 12 | 1,336 | 901 | 764 |
+| 2026 | 9 (to 2026-09-01) | 1,498 | 1,038 | 889 |
+
+- Development window (2021–2024): median 1,031 eligible names → **680** usable for QUALITY
+  and **540** usable for VALUE (worst month 533 / 412).
+- Holdout window (2025–2026): median 1,433 eligible → **959** / **823**.
+
+Both factors are therefore testable on a few hundred names per month, which is enough for
+a cross-sectional ranking of a 30-stock portfolio. The factors are **not** tested on the
+same universe as the price-based factors, so each factor's random-portfolio benchmark is
+drawn from that factor's own eligible universe — otherwise the null test would be
+confounded by a different opportunity set.
 
 ---
 
@@ -117,3 +137,10 @@ year per company — a deliberate, disclosed property of the test, not a modelli
   its own year end, not the calendar.
 - **Not available:** point-in-time index membership, intraday prices, order-book data.
   Costs are therefore a flat per-side rate, not a spread model.
+- **One trap worth recording for the next agent:** the fundamentals panel must be kept at
+  **fact level** (every filing version of every fact, with its release date). An earlier
+  version of this study collapsed facts into one row per company-fiscal-year, which mixed
+  facts from different filings and made the "as of" selector pick ancient fiscal years
+  (e.g. American Airlines' FY2016 earnings against a 2021 share price). That inflated the
+  development-window value result. The fix — and the re-verified numbers — are in
+  `build_fundamentals.py` and `fundamentals.py`.
