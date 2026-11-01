@@ -1,0 +1,156 @@
+{
+  "meta": {
+    "fresh_days": 400,
+    "diagnostics": "development window only"
+  },
+  "value_fresh_400d_dev": {
+    "eligible_avg_dev": 536.9375,
+    "strategy_net": {
+      "periods": 48,
+      "total_return": 1.3394810299418713,
+      "ann_return": 0.2367441990975514,
+      "ann_vol": 0.21824371190139052,
+      "sharpe": 1.084769852175718,
+      "max_drawdown": -0.23548135844697793,
+      "mean_period_return": 0.019788946247129614,
+      "std_period_return": 0.06300153290760548,
+      "worst_period": -0.13063588988755928,
+      "best_period": 0.1270450483294416,
+      "positive_periods": 30,
+      "mean_period_turnover": 0.4428762286950914,
+      "ann_turnover": 5.314514744341097
+    },
+    "strategy_gross": {
+      "periods": 48,
+      "total_return": 1.3890260386996816,
+      "ann_return": 0.24324070464216896,
+      "ann_vol": 0.21820843344657218,
+      "sharpe": 1.114717249009195,
+      "max_drawdown": -0.2316071399341475,
+      "mean_period_return": 0.020231822475824706,
+      "std_period_return": 0.0629913488949125,
+      "worst_period": -0.12997095613841392,
+      "best_period": 0.1273705663244711,
+      "positive_periods": 30
+    },
+    "spy": {
+      "periods": 48,
+      "total_return": 0.662811869978482,
+      "ann_return": 0.13556181167823245,
+      "ann_vol": 0.15601062075303862,
+      "sharpe": 0.8689268142380114,
+      "max_drawdown": -0.23313871888977533,
+      "mean_period_return": 0.011649589862341643,
+      "std_period_return": 0.04503638694410374,
+      "worst_period": -0.0909622930524222,
+      "best_period": 0.08724580260639714,
+      "positive_periods": 32
+    },
+    "tstat_vs_random_gross": {
+      "random_mean": 0.0077709937028164425,
+      "random_std": 0.0036703181973197097,
+      "z_unpaired_mean": 3.3950268350324286,
+      "t_paired_periods": 3.905134806020519,
+      "percentile_of_random_means": 99.8,
+      "n_random": 1000
+    },
+    "tstat_vs_random_net": {
+      "random_mean": 0.005866525931918407,
+      "random_std": 0.003670356689494527,
+      "z_unpaired_mean": 3.7932063537749974,
+      "t_paired_periods": 4.365907824451677,
+      "percentile_of_random_means": 99.9,
+      "n_random": 1000
+    },
+    "random_net_ann_return_p95": 0.12555258510237038
+  },
+  "value_yearly_dev": [
+    {
+      "year": 2021,
+      "months": 12,
+      "strategy_net_total": 0.5313950177030624,
+      "spy_total": 0.28601023450803265,
+      "strategy_vol_ann": 0.14561255542318044,
+      "strategy_sharpe": 3.6493763615281507
+    },
+    {
+      "year": 2022,
+      "months": 12,
+      "strategy_net_total": -0.13134229884143245,
+      "spy_total": -0.17992079479097867,
+      "strategy_vol_ann": 0.29127827208441637,
+      "strategy_sharpe": -0.45091691152084173
+    },
+    {
+      "year": 2023,
+      "months": 12,
+      "strategy_net_total": 0.38648998400544166,
+      "spy_total": 0.24708124676541532,
+      "strategy_vol_ann": 0.24154617718855656,
+      "strategy_sharpe": 1.600066656007305
+    },
+    {
+      "year": 2024,
+      "months": 12,
+      "strategy_net_total": 0.2753755461110132,
+      "spy_total": 0.2642941927153246,
+      "strategy_vol_ann": 0.15960831918252533,
+      "strategy_sharpe": 1.725320757222551
+    }
+  ],
+  "value_concentration_dev": {
+    "n_names_held": 150,
+    "sum_of_single_name_contributions": 0.6109575491229018,
+    "top10_contribution": 0.303119866647606,
+    "bottom10_contribution": -0.11166355284182372,
+    "top10_share_of_total": 0.4961389986632764,
+    "top10_names": [
+      "SMCI",
+      "AVGO",
+      "AEHR",
+      "AR",
+      "MLI",
+      "FHN",
+      "KLAC",
+      "ORLY",
+      "NRG",
+      "NVDA"
+    ],
+    "bottom10_names": [
+      "GRPN",
+      "ARI",
+      "AMZN",
+      "LUMN",
+      "NXH",
+      "TALO",
+      "APT",
+      "GPRO",
+      "HYLN",
+      "HTZ"
+    ],
+    "top10_values": [
+      0.0582,
+      0.0431,
+      0.0313,
+      0.0289,
+      0.0275,
+      0.0268,
+      0.0236,
+      0.022,
+      0.0215,
+      0.0203
+    ],
+    "bottom10_values": [
+      -0.0064,
+      -0.007,
+      -0.0076,
+      -0.0082,
+      -0.0083,
+      -0.0091,
+      -0.012,
+      -0.0149,
+      -0.0154,
+      -0.0226
+    ]
+  }
+}

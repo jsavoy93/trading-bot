@@ -164,3 +164,9 @@ experiments/strat_026/data
 experiments/strat_026/results/*.csv
 experiments/strat_026/__pycache__/
 experiments/strat_026/_run_*.log
+
+# STRAT-027 research data (derived price panel, regenerable via build_panel.py) and generated outputs
+# ... but the plain-language STRAT-027 report IS part of the deliverable and must be committed
+!experiments/strat_027/REPORT.md
+experiments/strat_027/data/
+experiments/strat_027/__pycache__/
