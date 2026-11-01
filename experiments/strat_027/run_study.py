@@ -34,6 +34,7 @@ from panel import compute_factors, load_panel
 
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
+FACTOR_CACHE = HERE / "data" / "fundamental_factors.npz"
 
 # ---- frozen pre-registration constants -------------------------------------
 DEV_START = np.datetime64("2021-01-01")
@@ -136,7 +137,7 @@ def main() -> int:
     factor_values = dict(ff.values)
     factor_list = list(PRICE_FACTORS)
     if fund is not None:
-        q, v = fundamental_factors(fund, panel.symbols, dates, last_close_m)
+        q, v = fundamental_factors(fund, panel.symbols, dates, last_close_m, cache=FACTOR_CACHE)
         factor_values["QUALITY"] = q
         factor_values["VALUE"] = v
         factor_list += FUND_FACTORS

@@ -1,18 +1,23 @@
-"""STRAT-027 — point-in-time fundamental factors (QUALITY, VALUE).
+"""STRAT-027 — point-in-time fundamental factors (QUALITY, VALUE) from the fact-level panel.
 
-The panel is produced by the data audit / build step and contains one row per
-10-K filing fact set:
+The panel (built by build_fundamentals.py) is FACT LEVEL: every filing version of every
+XBRL fact is kept, together with the public release date (`filed`).
 
-    symbol, cik, fiscal_period_end, form, filed, net_income, stockholders_equity,
-    assets, revenue_contract, revenues_total, shares_outstanding, cash, ...
+POINT-IN-TIME RULE
+  At a rebalance date d we may only use facts whose `filed` date is <= d. For each symbol:
+    * fiscal_year_end  = the LATEST fiscal year end whose annual NetIncomeLoss was
+                         already public on or before d
+    * net_income       = the newest publicly-known version of that annual NetIncomeLoss
+    * stockholders_equity = the newest publicly-known version of StockholdersEquity at
+                         that same fiscal year end (missing -> factor unavailable)
+    * shares_outstanding   = the newest publicly-known version of
+                         CommonStockSharesOutstanding
 
-POINT-IN-TIME RULE: at a rebalance date d we use, for each symbol, the most
-recent filing whose `filed` date is <= d. Nothing filed after d is ever used.
+  QUALITY = net_income / stockholders_equity          (return on equity; higher is better)
+  VALUE   = net_income / (price * shares_outstanding)  (earnings yield; higher is better)
 
-QUALITY = ROE   = net_income (FY) / stockholders_equity (FY end)      [higher is better]
-VALUE   = earnings yield = net_income (FY) / market_cap(d)
-          market_cap(d) = adjusted close at d-1 * shares_outstanding (from the latest filing)
-                                                                                        [higher is better]
+  The source dataset contains ANNUAL filings only, so both factors are step functions
+  that change once a year per company. That is a property of the data and is disclosed.
 """
 from __future__ import annotations
 
@@ -25,6 +30,10 @@ HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
 FUND_PATH = DATA / "fundamentals_pit.parquet"
 
+NI_TAG = "NetIncomeLoss"
+EQ_TAG = "StockholdersEquity"
+SH_TAG = "CommonStockSharesOutstanding"
+
 
 def load_fundamentals(path: Path | None = None):
     path = path or FUND_PATH
@@ -32,13 +41,48 @@ def load_fundamentals(path: Path | None = None):
         return None
     df = pd.read_parquet(path)
     df["filed"] = pd.to_datetime(df["filed"]).dt.normalize()
-    df = df.sort_values(["symbol", "filed"]).reset_index(drop=True)
+    df["ddate"] = pd.to_datetime(df["ddate"]).dt.normalize()
     return df
 
 
+def _group_versions(sub: pd.DataFrame):
+    """Group a fact table by fiscal period end.
+
+    Returns (dperiods, first_filed, filed_lists, value_lists) where each entry of
+    filed_lists/value_lists is the version history of one fiscal period, sorted by the
+    public release date.
+    """
+    groups = []
+    for ddate, g in sub.groupby("ddate"):
+        g = g.sort_values("filed")
+        groups.append((pd.Timestamp(ddate), g["filed"].astype("int64").to_numpy(),
+                        g["value"].to_numpy(dtype=float)))
+    groups.sort(key=lambda t: t[0])
+    if not groups:
+        return [], np.array([]), [], []
+    dperiods = np.array([g[0] for g in groups], dtype="datetime64[ns]")
+    first_filed = np.array([g[1][0] for g in groups], dtype="int64")
+    filed_lists = [g[1] for g in groups]
+    value_lists = [g[2] for g in groups]
+    return dperiods, first_filed, filed_lists, value_lists
+
+
 def fundamental_factors(fund, symbols: np.ndarray, rebal_dates: np.ndarray,
-                        last_close: np.ndarray):
-    """Return (QUALITY, VALUE) arrays of shape (R, S), NaN where unavailable."""
+                        last_close: np.ndarray, cache: Path | None = None):
+    """Return (QUALITY, VALUE) arrays of shape (R, S), NaN where unavailable.
+
+    `cache` (optional) is a .npz path: the resolved arrays are cached there so the
+    study and the sensitivity grid do not each pay the as-of resolution cost.
+    """
+    if cache is not None and cache.exists():
+        try:
+            z = np.load(cache, allow_pickle=False)
+            if (z["symbols"].shape == symbols.shape and z["dates"].shape == rebal_dates.shape
+                    and np.array_equal(z["symbols"].astype(str), symbols.astype(str))
+                    and np.array_equal(z["dates"], rebal_dates)):
+                return z["quality"], z["value"]
+        except Exception as exc:  # stale or unreadable cache -> recompute
+            print(f"fundamental factor cache unusable ({exc}); recomputing")
     R = len(rebal_dates)
     S = len(symbols)
     quality = np.full((R, S), np.nan, dtype=np.float32)
@@ -48,25 +92,57 @@ def fundamental_factors(fund, symbols: np.ndarray, rebal_dates: np.ndarray,
 
     sym_pos = {s: k for k, s in enumerate(symbols)}
     dates_ord = pd.DatetimeIndex(rebal_dates).astype("int64").to_numpy()
-    px = last_close.astype(np.float64)          # (R, S) close strictly before each rebalance
+    px = np.asarray(last_close, dtype=np.float64)     # (R, S) close strictly before each rebalance
+    reb_dates = pd.DatetimeIndex(rebal_dates)
 
     for sym, grp in fund.groupby("symbol", sort=False):
         k = sym_pos.get(sym)
         if k is None:
             continue
-        g = grp.sort_values("filed")
-        filed_ord = g["filed"].astype("int64").to_numpy()
-        ni = g["net_income"].to_numpy(dtype=float)
-        eq = g["stockholders_equity"].to_numpy(dtype=float)
-        sh = g["shares_outstanding"].to_numpy(dtype=float)
+        ni_sub = grp[grp["tag"] == NI_TAG]
+        if ni_sub.empty:
+            continue
+        ni_d, ni_first, ni_filed, ni_val = _group_versions(ni_sub)
+        eq_d, eq_first, eq_filed, eq_val = _group_versions(grp[grp["tag"] == EQ_TAG])
+        eq_index = {pd.Timestamp(d): i for i, d in enumerate(eq_d)}
+        # shares: sort by (filed, ddate) so that, among versions filed on the same day,
+        # the one with the LATEST fact date wins (most recent share count known at d)
+        sh_sub = grp[grp["tag"] == SH_TAG].sort_values(["filed", "ddate"])
+        sh_filed = sh_sub["filed"].astype("int64").to_numpy()
+        sh_val = sh_sub["value"].to_numpy(dtype=float)
+
         for r in range(R):
-            idx = np.searchsorted(filed_ord, dates_ord[r], side="right") - 1
-            if idx < 0:
+            d = dates_ord[r]
+            # fiscal year in force: the newest annual period already public at d
+            avail = np.flatnonzero(ni_first <= d)
+            if avail.size == 0:
                 continue
-            n_i, e_i, s_i = ni[idx], eq[idx], sh[idx]
-            if np.isfinite(n_i) and np.isfinite(e_i) and e_i > 0 and n_i is not None:
-                quality[r, k] = n_i / e_i
-            p = px[r, k]
-            if np.isfinite(n_i) and np.isfinite(s_i) and s_i > 0 and np.isfinite(p) and p > 0:
-                value[r, k] = n_i / (p * s_i)
+            gi = avail[-1]                       # ni_d is sorted by fiscal period
+            j = np.searchsorted(ni_filed[gi], d, side="right") - 1
+            if j < 0:
+                continue
+            ni_v = ni_val[gi][j]
+            if not np.isfinite(ni_v):
+                continue
+            fye = pd.Timestamp(ni_d[gi])
+            # equity at the same fiscal year end, as known at d
+            ei = eq_index.get(fye)
+            if ei is not None and eq_first[ei] <= d:
+                je = np.searchsorted(eq_filed[ei], d, side="right") - 1
+                if je >= 0:
+                    eq_v = eq_val[ei][je]
+                    if np.isfinite(eq_v) and eq_v > 0:
+                        quality[r, k] = ni_v / eq_v
+            # shares: newest public disclosure
+            if sh_filed.size:
+                js = np.searchsorted(sh_filed, d, side="right") - 1
+                if js >= 0:
+                    sh_v = sh_val[js]
+                    p = px[r, k]
+                    if np.isfinite(sh_v) and sh_v > 0 and np.isfinite(p) and p > 0:
+                        value[r, k] = ni_v / (p * sh_v)
+    if cache is not None:
+        np.savez_compressed(cache, quality=quality, value=value,
+                            symbols=np.asarray(symbols, dtype="U16"),
+                            dates=np.asarray(rebal_dates, dtype="datetime64[ns]"))
     return quality, value
