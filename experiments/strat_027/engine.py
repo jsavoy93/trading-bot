@@ -68,6 +68,7 @@ def simulate(selections: list[np.ndarray], weights: list[np.ndarray],
     """
     periods = len(selections)
     res = SimResult(label=label)
+    gross_l, net_l, turn_l = [], [], []
     prev_sel = None
     prev_w = None
     prev_gross = None
@@ -90,24 +91,30 @@ def simulate(selections: list[np.ndarray], weights: list[np.ndarray],
             turnover = float(turnover)
         cost = turnover * cost_rate
         res.period_dates.append(r)
-        res.gross.append(gross)
-        res.net.append(gross - cost)
-        res.turnover.append(turnover)
+        gross_l.append(gross)
+        net_l.append(gross - cost)
+        turn_l.append(turnover)
         res.holdings.append(sel.copy())
         res.weights.append(w.copy())
         prev_sel, prev_w, prev_gross = sel, w, gross
-    res.gross = np.array(res.gross)
-    res.net = np.array(res.net)
-    res.turnover = np.array(res.turnover)
+    res.gross = np.array(gross_l)
+    res.net = np.array(net_l)
+    res.turnover = np.array(turn_l)
     return res
 
 
 def cap_weights(w: np.ndarray, cap: float) -> np.ndarray:
     """Apply a single-name cap with proportional redistribution (no cash)."""
     w = np.array(w, dtype=float)
-    if cap <= 0 or cap >= 1:
+    if cap <= 0 or cap >= 1 or w.size == 0:
         return w
-    for _ in range(500):
+    if w.sum() > 0:
+        w = w / w.sum()
+    if w.size * cap < 1.0:
+        # INFEASIBLE to fully invest under the cap: hold cap per name and leave the
+        # remainder as uninvested cash (cash earns 0 in this study).
+        return np.full(w.size, cap)
+    for _ in range(1000):
         over = w > cap + 1e-12
         if not over.any():
             break
