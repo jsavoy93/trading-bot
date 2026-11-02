@@ -86,6 +86,9 @@ The dashboard agent must not independently invent or tune trading strategy logic
   work, or wait for the workers in the same run, and make sure the work is
   committed and a PR is opened before finishing. sessions_yield is only for
   sessions that a channel or another event will wake.
+- No agent may chmod/chown recursively under /root or change permissions on
+  files it didn't create; to give another user (e.g. postgres) access to
+  files, copy them to /tmp instead.
 - Each iteration must contain only one bounded task.
 - The repository must be clean before an iteration begins.
 - Tests and acceptance criteria are required before strategy changes.
