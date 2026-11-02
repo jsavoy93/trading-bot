@@ -48,8 +48,44 @@ from engineering.registry import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-TRADING_BOT_ROOT = Path("/root/.openclaw/workspace/trading-bot")
+# ENG-04c: derive the repo under test from this file, not a fixed checkout.
+TRADING_BOT_ROOT = Path(__file__).resolve().parents[1]
 FANTASY_ROOT = Path("/root/.openclaw/workspace/fantasy-draft-command-center")
+
+
+@pytest.fixture(autouse=True)
+def _portable_fantasy_root(tmp_path: Path, monkeypatch):
+    """ENG-04c: build a synthetic fantasy repo per test.
+
+    The real fantasy checkout only exists on the workstation; CI runners
+    and clean clones do not have it, so every test that loads a registry
+    containing the fantasy project must run against a synthetic repo tree
+    with the required governance files present.
+    """
+    root = tmp_path / "fantasy-draft-command-center"
+    root.mkdir()
+    for name in (
+        "AGENT_BACKLOG.md",
+        "AGENT_OPERATING_PLAN.md",
+        "OWNERS.md",
+        "AUTONOMOUS_ENGINEERING_HANDOFF.md",
+    ):
+        (root / name).write_text("# synthetic governance stub\n", encoding="utf-8")
+    entry: dict[str, Any] = {**_FANTASY_ENTRY}
+    entry["repository_root"] = str(root)
+    entry["governance_files"] = {
+        "backlog_path": str(root / "AGENT_BACKLOG.md"),
+        "operating_plan_path": str(root / "AGENT_OPERATING_PLAN.md"),
+        "owners_path": str(root / "OWNERS.md"),
+        "handoff_path": str(root / "AUTONOMOUS_ENGINEERING_HANDOFF.md"),
+    }
+    entry["workflow_files"] = {
+        "workflow_store_path": str(root / ".engineering" / "workflow_store.json"),
+        "event_store_path": str(root / ".engineering" / "event_store.db"),
+        "report_dir": str(root / ".engineering" / "reports"),
+    }
+    monkeypatch.setattr(sys.modules[__name__], "FANTASY_ROOT", root)
+    monkeypatch.setattr(sys.modules[__name__], "_FANTASY_ENTRY", entry)
 
 # Minimal valid project entries used across tests
 _TRADING_BOT_ENTRY: dict[str, Any] = {

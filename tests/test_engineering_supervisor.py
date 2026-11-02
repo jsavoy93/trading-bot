@@ -43,7 +43,8 @@ from engineering.supervisor import Supervisor
 # Fixtures
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path("/root/.openclaw/workspace/trading-bot")
+# ENG-04c: derive the repo under test from this file, not a fixed checkout.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture

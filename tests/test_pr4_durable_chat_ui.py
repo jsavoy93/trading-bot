@@ -54,7 +54,7 @@ def _run_dashboard_script_case(script: str, body: str) -> None:
 def _populated_snapshot_dict() -> dict[str, object]:
     return {
         "data_freshness_timestamp": "2026-09-08T16:00:00+00:00",
-        "repository": {"root": "/root/.openclaw/workspace/trading-bot", "is_dirty": False, "head": "main", "head_commit": "b7f113a"},
+        "repository": {"root": str(Path(__file__).resolve().parents[1]), "is_dirty": False, "head": "main", "head_commit": "b7f113a"},
         "pull_request": {"number": None, "url": None, "state": None, "title": None, "base": None, "head": None, "mergeable": None, "checks": []},
         "engineering_health": {"status": "healthy", "details": []},
         "health_warnings": [],
@@ -1285,7 +1285,7 @@ def test_full_safe_suite_passes_after_pr4() -> None:
          "tests/test_chat_history_durable.py",
          "--ignore=tests/test_pr4_durable_chat_ui.py"],
         capture_output=True, text=True, timeout=300,
-        cwd="/root/.openclaw/workspace/trading-bot",
+        cwd=str(Path(__file__).resolve().parents[1]),
         env={"PATH": __import__("os").environ.get("PATH", ""), "TESTING": "1", "UNIT_TESTING": "1", "PYTHONPATH": "."},
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

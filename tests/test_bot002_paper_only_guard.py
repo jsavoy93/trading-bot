@@ -253,7 +253,7 @@ def test_main_py_installs_sigterm_handler() -> None:
     result = subprocess.run(
         [sys.executable, "-c", code],
         # ENG-04b: run against the checkout under TEST. This used to be
-        # hardcoded to "/root/.openclaw/workspace/trading-bot", so the
+        # hardcoded to a sibling workspace checkout, so the
         # subprocess imported `main` from a different checkout than the
         # one being tested.
         cwd=str(Path(__file__).resolve().parents[1]),

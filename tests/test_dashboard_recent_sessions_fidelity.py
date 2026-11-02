@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 
 # ENG-04b: resolve the checkout under TEST, not a sibling checkout.
-# These fixtures used to hardcode "/root/.openclaw/workspace/trading-bot"
+# These fixtures used to hardcode a sibling workspace checkout path
 # on sys.path, so `import dashboard` / `import database.sqlite_db`
 # resolved to that other checkout and the tests exercised code that was
 # NOT the code under test.

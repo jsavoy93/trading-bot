@@ -20,7 +20,8 @@ from engineering.models import GovernanceFiles, ProjectConfig, WorkflowFiles
 # Fixtures
 # ---------------------------------------------------------------------------
 
-TRADING_BOT_ROOT = Path("/root/.openclaw/workspace/trading-bot")
+# ENG-04c: derive the repo under test from this file, not a fixed checkout.
+TRADING_BOT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _minimal_config(repo_root: Path) -> ProjectConfig:
