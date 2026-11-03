@@ -157,6 +157,28 @@ If an implementation task fails or stops early, the agent must still write `REPO
 `REPORT.md` is the current rolling report and must remain listed in `.gitignore`. The `reports/` directory must not be added to `.gitignore`; archived reports are reviewable and may be committed when the task requires it.
 
 
+## Agent Message Dispatch Conventions (ENG-01 / ENG-02)
+
+- **Never inline an agent message.** Always write the message to a FILE first,
+  using a quoted heredoc (`cat > /path/msg.txt <<'EOF'` — quoted so `$`, `` ` ``,
+  `|`, `'` and `"` are preserved literally) or by uploading a file. Inline
+  `--message "..."` arguments are fragile: pipes, quotes, `$`, backticks, and
+  newlines can be mangled or interpreted by the shell.
+- **Use the helper:** `scripts/dispatch_agent.sh [--dry-run|--echo] <agent-id> <task-id> <model> <message-file>`.
+  It validates that the message file exists and is non-empty, generates a fresh
+  session key of the form `agent:<agent>:<TASKID>-<unix-time>` (ENG-01 rule:
+  session keys are never reused), and dispatches with safe quoting.
+- **Target the right agent by work type:** CODE work dispatches to
+  `engineering-manager`; RESEARCH work dispatches to `trading-manager`.
+  The agent-id argument remains required and positional, so there is no default
+  value. Canonical examples:
+  - `scripts/dispatch_agent.sh engineering-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
+  - `scripts/dispatch_agent.sh trading-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
+- **Test with `--dry-run` / `--echo`:** this prints the exact command and the
+  message verbatim WITHOUT dispatching any agent. Never dispatch real agents in
+  tests.
+- Run log path is `/root/<task-id>_run.log`.
+
 ## Controlled Agent Workflow
 
 All agents must follow `AGENT_OPERATING_PLAN.md`, `AGENT_BACKLOG.md`, and `OWNERS.md`.
@@ -168,6 +190,30 @@ Before modifying files:
 3. State measurable acceptance criteria.
 4. State the files allowed to change.
 5. Create or use the assigned agent branch.
+
+### Worktree and identity rules (ENG-08)
+
+- Every task worktree is created from the standalone clean clone
+  `/root/.openclaw/clean/trading-bot`:
+  `git -C /root/.openclaw/clean/trading-bot worktree add /root/.openclaw/worktrees/<TASKID> -b <branch> origin/main`
+- **Never** run `git worktree add` from `/root/deploy/trading-bot-main` or
+  `/root/.openclaw/workspace/trading-bot`.
+- `/root/.openclaw/workspace/trading-bot` is a **protected dirty checkout** and
+  must not be modified.
+- `/root/deploy/trading-bot-main` hosts the **live paper bot**
+  (`main.py --continuous`) and must not be modified.
+- Set a per-worktree Git identity so commits identify the authoring agent:
+  `git config user.name <agent-id>` and
+  `git config user.email <agent-id>@openclaw.local`.
+
+Full rules live in `BRANCHING.md` under "Worktrees and Git Identity (ENG-08)".
+
+### Review gate (ENG-07)
+
+An independent reviewer-agent verdict (`APPROVE` or `BLOCK` with reasons) is
+required before asking Josh to merge. A `BLOCK` verdict must be resolved
+before the merge request is presented. See `BRANCHING.md` under "Review Gate
+Before Asking Josh to Merge (ENG-07)".
 
 Hard restrictions:
 
@@ -294,6 +340,15 @@ For every completion packet:
 - Do not trust prior prose as the sole source
 - Identify proposed details as proposals rather than verified implementation
 - Josh remains the approval authority
+- **State the model that actually completed the work** (ENG-05). Use
+  `executionTrace.winnerModel` / `executionTrace.fallbackUsed` and the
+  `model_fallback_decision` lines in `/tmp/openclaw/*.log`. If a fallback
+  model completed the work, name the fallback model and note that the
+  primary model's quota was exhausted. Never report the requested model when
+  a fallback produced the result.
+- **Record the independent reviewer-agent verdict** (ENG-07): `APPROVE` or
+  `BLOCK`, plus the reviewer agent id and, for `BLOCK`, the verbatim
+  reasons. An unresolved `BLOCK` must not be presented as a merge request.
 
 #### 7. Recommended Next Prompt
 
