@@ -43,12 +43,33 @@ from engineering.supervisor import Supervisor
 # Fixtures
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path("/root/.openclaw/workspace/trading-bot")
+# ENG-04c: derive the repo under test from this file, not a fixed checkout.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def supervisor() -> Supervisor:
-    return Supervisor(repo_root=REPO_ROOT)
+def supervisor(tmp_path) -> Supervisor:
+    """A Supervisor rooted at an isolated, throwaway repo directory.
+
+    ENG-04b: this fixture previously pointed at a FIXED absolute path
+    (a sibling workspace checkout) — a different checkout —
+    and relied on a gitignored local `REPORT.md` artifact happening to
+    exist there. `Supervisor._read_report_md` checks
+    `report_path.is_file()` BEFORE consulting the mocked byte reader, so
+    with no such artifact every "report_md" assertion failed on
+    `report_md_exists`/`report_md_stale` even though the test's own
+    content was fully mocked.
+
+    The fixture now builds a tmp repo containing a real `REPORT.md` so
+    the tests depend only on the code under test.
+    """
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "REPORT.md").write_text(
+        "# Test report\n\nTask ENGPLAT-002B implementation complete.\n",
+        encoding="utf-8",
+    )
+    return Supervisor(repo_root=repo_root)
 
 
 @pytest.fixture

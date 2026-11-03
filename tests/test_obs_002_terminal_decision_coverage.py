@@ -82,7 +82,7 @@ def _temp_db(monkeypatch):
     from pathlib import Path as _P
     import sys
     import src.database.sqlite_db as sqlite_mod_src
-    src_root = "/root/.openclaw/workspace/trading-bot/src"
+    src_root = str(Path(__file__).resolve().parents[1] / "src")
     if src_root not in sys.path:
         sys.path.insert(0, src_root)
     import database.sqlite_db as sqlite_mod_dash

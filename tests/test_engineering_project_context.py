@@ -248,7 +248,7 @@ class TestProtocolConformance:
     """
 
     def test_git_adapter_impl_satisfies_protocol(self):
-        assert isinstance(GitAdapterImpl(Path("/root/.openclaw/workspace/trading-bot")), GitReadAdapter)
+        assert isinstance(GitAdapterImpl(Path(__file__).resolve().parents[1]), GitReadAdapter)
 
     def test_concrete_governance_adapter_satisfies_protocol(self):
         assert issubclass(GovernanceAdapterImpl, GovernanceAdapter)
