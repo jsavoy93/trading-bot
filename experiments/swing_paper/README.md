@@ -22,10 +22,11 @@ placement was removed from this runner; C4 continues on the existing
 ## Order labels
 
 ```
-rsi2-AMD-20261103-1          entry market buy
-rsi2-AMD-20261103-1-stop     protective stop (sell)
-rsi2-AMD-20261103-1-stop-p   partial-exit limit (sell, +2R)
-rsi2-AMD-20261103-1-timeexit 15-day time exit (sell, market)
+rsi2-AMD-20261103-1            entry market buy
+rsi2-AMD-20261103-1-stop       protective stop (sell, remainder)
+rsi2-AMD-20261103-1-stop-p     partial-exit limit leg (sell, +2R, OCO)
+rsi2-AMD-20261103-1-stop-oco   partial-exit stop leg (sell, same OCO)
+rsi2-AMD-20261103-1-timeexit   15-day time exit (sell, market)
 ```
 
 Labels are deterministic per symbol per day (`next_sequence` over existing
@@ -36,24 +37,37 @@ skipped outright.
 ## Run order (idempotent; safe to re-run same day)
 
 1. **Exits** for open RSI(2) trades: 15-trading-day time exit (cancels
-   stop/partial, market-sells held qty), chandelier trail
-   (`max(close since entry) - 3*ATR14`) raises the stop, never lowers it.
-   Closed trades are removed from `state.json` so the slice budget frees up.
-2. **Stop-after-fill**: sell stop + partial limit are placed only AFTER a
-   confirmed entry fill. Total open sell qty for a symbol (existing sells +
-   new partial + new stop) NEVER exceeds held qty: the partial gets at most
-   half the remaining room and the stop covers the rest.
+   stop/OCO — the market sell is sent only after every cancel is
+   CONFIRMED; a failed cancel means no sell and no double order),
+   chandelier trail (`max(close since entry) - 3*ATR14`) raises the stop,
+   never lowers it (a replace returns a NEW order id — state tracks it).
+   A position that is gone (e.g. the stop filled) is closed in
+   `state.json` so the slot and slice budget free up.
+2. **Stop-after-fill**: protection is placed only AFTER a confirmed entry
+   fill, and the WHOLE position is always protected: the partial-exit
+   half goes out as an OCO bracket (limit target + stop for that half)
+   and the remainder gets a plain stop. Total open sell qty for a symbol
+   (existing sells + OCO half + stop) NEVER exceeds held qty. The
+   initial stop / +2R target are recomputed from the ACTUAL fill price
+   (frozen formulas, signal-day ATR14), and the 15-day clock starts on
+   the FILL date.
 3. **New entries** (RSI(2) only): skip symbols held in the account, symbols
    with ANY open/pending order (any label, including `sl_short-*` C4 shadow
-   orders), and symbols C4 signaled the same day (best-effort read of
-   `live_paper.db`; any error → empty set). Refuses to trade an incomplete
-   daily bar (last bar must be a prior day, or today after ~21:05 UTC).
-   `TRADING_BOT_PAPER_ONLY=1` is REQUIRED for `--execute` (same guard as
-   the C4 shadow runner).
+   orders), and symbols C4 signaled the same day. The C4 shadow DB
+   (`/root/strat-swing/experiments/strat_023/live_paper.db`, real columns
+   `orders.created_ts` / `orders.ref_date`; override with `--c4-db` or
+   `STRAT_SWING_C4_DB`) is read READ-ONLY and FAILS LOUDLY — a missing or
+   unreadable DB aborts the run instead of guessing "no C4 signal".
+   Refuses to trade an incomplete daily bar (last bar must be a prior
+   day, or today after ~21:05 UTC). `TRADING_BOT_PAPER_ONLY=1` is
+   REQUIRED for `--execute` (same guard as the C4 shadow runner).
 
 ## Sizing (per position, not first-come-takes-all)
 
-- slice = portfolio_value × `--bucket-pct` (default 30%)
+- slice = portfolio_value × `--bucket-pct` (default 30%) MINUS the value
+  of currently-open C4 positions (read from the C4 shadow DB, same
+  fail-loud read) — RSI(2) and C4 share the 30% bucket, so combined
+  exposure respects it
 - each position ≤ `--per-position-cap` (default 10%) of the slice
 - ≤ `--rsi2-cap` new buys/day (default 4), ranked by lowest RSI(2)
 - ≤ `--max-open` open RSI(2) positions (default 4)

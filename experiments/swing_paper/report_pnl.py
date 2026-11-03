@@ -65,9 +65,12 @@ def _is_fill(order: dict) -> bool:
 
 
 def fetch_all_orders(since: str | None) -> list:
-    """Paginate closed orders with after/until windows (no Page-Token)."""
+    """Paginate closed orders with after windows (no Page-Token).
+    FIX I(1): advance the window by the FULL timestamp of the last order
+    (date-granularity windows could re-fetch/double-count a whole day or
+    loop forever) and de-duplicate by order id as a second guard."""
     headers = _headers()
-    out = []
+    out, seen = [], set()
     after = since
     while True:
         params = {"status": "closed", "limit": PAGE, "direction": "asc",
@@ -78,22 +81,28 @@ def fetch_all_orders(since: str | None) -> list:
                          headers=headers, timeout=20)
         r.raise_for_status()
         batch = r.json()
-        out.extend(batch)
+        for o in batch:
+            oid = o.get("id")
+            if oid is None or oid not in seen:
+                if oid is not None:
+                    seen.add(oid)
+                out.append(o)
         if len(batch) < PAGE:
             break
         # advance the window past the last order we already have
         last_ts = batch[-1].get("submitted_at") or batch[-1].get("created_at")
-        if not last_ts:
-            break
-        after = last_ts[:10]
+        if not last_ts or last_ts == after:
+            break  # cannot advance further — terminate instead of looping
+        after = last_ts
     return out
 
 
 def fetch_fill_activities(since: str | None = None) -> list:
-    """Account activities FILL feed (optional cross-check). Paginated with
-    after/until windows."""
+    """Account activities FILL feed (optional cross-check). Paginated
+    with after windows; same full-timestamp + de-dup guards as
+    fetch_all_orders (FIX I(1))."""
     headers = _headers()
-    out = []
+    out, seen = [], set()
     after = since
     while True:
         params = {"activity_types": "FILL", "page_size": 100,
@@ -104,10 +113,19 @@ def fetch_fill_activities(since: str | None = None) -> list:
                          params=params, headers=headers, timeout=20)
         r.raise_for_status()
         batch = r.json()
-        out.extend(batch)
+        for a in batch:
+            key = (a.get("order_id"), a.get("transaction_time"),
+                   a.get("symbol"), a.get("qty"), a.get("price"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(a)
         if len(batch) < 100:
             break
-        after = batch[-1].get("date", "")[:10]
+        last_ts = batch[-1].get("date") or batch[-1].get("transaction_time")
+        if not last_ts or last_ts == after:
+            break
+        after = last_ts
     return out
 
 
@@ -151,6 +169,20 @@ def _fill_legs(order: dict) -> list:
              "kind": "fill"}]
 
 
+def _fifo_close(buys: list, sell_qty: float, sell_px: float) -> float:
+    """Close `sell_qty` against the FIFO `buys` queue [[qty, px], ...];
+    returns realized pnl. Mutates `buys` (leftover = open inventory)."""
+    q, pnl = sell_qty, 0.0
+    while q > 1e-9 and buys:
+        take = min(q, buys[0][0])
+        pnl += take * (sell_px - buys[0][1])
+        buys[0][0] -= take
+        q -= take
+        if buys[0][0] <= 1e-9:
+            buys.pop(0)
+    return pnl
+
+
 def collect_from_orders(orders: list, since: str | None = None) -> dict:
     fills = defaultdict(list)   # strategy -> list of fill orders
     for o in orders:
@@ -163,6 +195,7 @@ def collect_from_orders(orders: list, since: str | None = None) -> dict:
 
     realized = defaultdict(float)
     trades = defaultdict(list)
+    leftovers = defaultdict(dict)  # strategy -> symbol -> FIFO buys left
     for strat in STRATEGIES:
         by_sym = defaultdict(list)
         for o in fills[strat]:
@@ -175,21 +208,14 @@ def collect_from_orders(orders: list, since: str | None = None) -> dict:
                 if leg["side"] == "buy":
                     buys.append([leg["qty"], leg["px"]])
                 else:
-                    q = leg["qty"]
-                    pnl = 0.0
-                    while q > 1e-9 and buys:
-                        take = min(q, buys[0][0])
-                        pnl += take * (leg["px"] - buys[0][1])
-                        buys[0][0] -= take
-                        q -= take
-                        if buys[0][0] <= 1e-9:
-                            buys.pop(0)
+                    pnl = _fifo_close(buys, leg["qty"], leg["px"])
                     trades[strat].append({
                         "symbol": sym, "sell_id": leg["id"],
                         "qty": leg["qty"], "exit_px": leg["px"],
                         "pnl": round(pnl, 2),
                     })
                     realized[strat] += pnl
+            leftovers[strat][sym] = buys
         realized[strat] = realized.get(strat, 0.0)
 
     # Open positions attributed by LABELED FILLS ONLY: net labeled
@@ -213,14 +239,21 @@ def collect_from_orders(orders: list, since: str | None = None) -> dict:
         if not claimants:
             continue  # unlabeled position — not attributed by last buyer
         _, strat = max(claimants)  # deterministic: largest net labeled qty
-        qty = float(p["qty"])
-        avg = float(p["avg_entry_price"])
+        # FIX I(3): use the strategy-LABELED net qty (capped by what the
+        # account actually holds), not the whole-account quantity.
+        qty = min(net[strat].get(p["symbol"], 0.0), float(p["qty"]))
+        # avg entry from the strategy's own labeled FIFO leftovers
+        inv = leftovers[strat].get(p["symbol"]) or []
+        inv_qty = sum(q for q, _px in inv)
+        avg = (sum(q * px for q, px in inv) / inv_qty) if inv_qty > 0 \
+            else float(p["avg_entry_price"] or 0)
         last = fetch_last_quote(p["symbol"]) or float(p["current_price"] or avg)
         upnl = qty * (last - avg)
         unrealized[strat] += upnl
         open_by_strat[strat].append({
-            "symbol": p["symbol"], "qty": qty, "avg_entry": avg,
+            "symbol": p["symbol"], "qty": qty, "avg_entry": round(avg, 2),
             "last": last, "unrealized": round(upnl, 2),
+            "account_qty": float(p["qty"]),
         })
 
     return {
@@ -231,21 +264,45 @@ def collect_from_orders(orders: list, since: str | None = None) -> dict:
     }
 
 
-def collect_from_activities(activities: list) -> dict:
-    """Cross-check path: realized P&L from the FILL activity feed."""
-    realized = defaultdict(float)
-    trades = defaultdict(list)
+def collect_from_activities(activities: list, order_id_map: dict | None = None) -> dict:
+    """Cross-check path: realized P&L from the FILL activity feed.
+    FIX I(2): the activities feed provides symbol/side/qty/price and the
+    ALPACA order_id — it does NOT provide `pl` or `client_order_id`.
+    Attribution therefore goes through order_id -> client_order_id (from
+    the fetched orders) and realized P&L is computed by FIFO from the
+    fill legs themselves."""
+    id_map = order_id_map or {}
+    fills_by_strat = defaultdict(lambda: defaultdict(list))
     for a in activities or []:
-        strat = attribute(a.get("client_order_id") or "")
+        kind = str(a.get("activity_type") or a.get("type") or "").upper()
+        if kind and kind != "FILL":
+            continue
+        coid = a.get("client_order_id") or id_map.get(a.get("order_id")) or ""
+        strat = attribute(coid)
         if strat is None:
             continue
-        pnl = float(a.get("pl") or 0)
-        realized[strat] += pnl
-        trades[strat].append({
-            "symbol": a.get("symbol"), "qty": float(a.get("qty") or 0),
-            "px": float(a.get("price") or 0), "pnl": round(pnl, 2),
-            "ts": a.get("transaction_time"), "id": a.get("client_order_id"),
+        fills_by_strat[strat][a.get("symbol")].append({
+            "side": a.get("side"), "qty": float(a.get("qty") or 0),
+            "px": float(a.get("price") or 0),
+            "ts": a.get("transaction_time") or a.get("timestamp") or "",
+            "id": coid,
         })
+    realized = defaultdict(float)
+    trades = defaultdict(list)
+    for strat in STRATEGIES:
+        for sym, legs in fills_by_strat.get(strat, {}).items():
+            buys = []
+            for leg in sorted(legs, key=lambda l: l["ts"]):
+                if leg["side"] == "buy":
+                    buys.append([leg["qty"], leg["px"]])
+                else:
+                    pnl = _fifo_close(buys, leg["qty"], leg["px"])
+                    realized[strat] += pnl
+                    trades[strat].append({
+                        "symbol": sym, "qty": leg["qty"], "px": leg["px"],
+                        "pnl": round(pnl, 2), "ts": leg["ts"],
+                        "id": leg["id"],
+                    })
     return {
         "trades": {s: trades.get(s, []) for s in STRATEGIES},
         "realized": {s: round(realized.get(s, 0.0), 2) for s in STRATEGIES},
@@ -253,10 +310,12 @@ def collect_from_activities(activities: list) -> dict:
 
 
 def collect(since: str | None = None, use_activities: bool = False) -> dict:
-    rep = collect_from_orders(fetch_all_orders(since), since)
+    orders = fetch_all_orders(since)
+    rep = collect_from_orders(orders, since)
     if use_activities:
+        id_map = {o.get("id"): o.get("client_order_id") for o in orders}
         rep["activities_check"] = collect_from_activities(
-            fetch_fill_activities(since))
+            fetch_fill_activities(since), id_map)
     return rep
 
 

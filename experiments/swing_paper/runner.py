@@ -41,15 +41,15 @@ import requests
 
 import signals
 from rules import (RSI2, make_client_order_id, make_labels,
-                   make_partial_client_order_id, next_sequence,
-                   rsi2_slice_dollars, rsi2_skip_blocked, size_rsi2_position,
-                   symbol_has_open_order)
+                   make_oco_stop_client_order_id, make_partial_client_order_id,
+                   next_sequence, rsi2_slice_dollars, rsi2_skip_blocked,
+                   size_rsi2_position, symbol_has_open_order)
 
 HERE = Path(__file__).resolve().parent
 LOG_DIR = Path(os.environ.get("STRAT_SWING_LOG_DIR", HERE / "logs"))
 STATE_PATH = LOG_DIR / "state.json"
 EVENTS_PATH = LOG_DIR / "swing_events.jsonl"
-DEFAULT_C4_DB = Path("/root/deploy/trading-bot-main/live_paper.db")
+DEFAULT_C4_DB = Path("/root/strat-swing/experiments/strat_023/live_paper.db")
 
 PAPER_TRADING_URL = "https://paper-api.alpaca.markets"
 DATA_URL = "https://data.alpaca.markets"
@@ -232,43 +232,78 @@ def all_client_order_ids(api) -> list:
     return labels
 
 
+def _c4_db_path(db_path=None) -> Path:
+    return Path(db_path or os.environ.get("STRAT_SWING_C4_DB", DEFAULT_C4_DB))
+
+
+def _c4_connect(db_path=None):
+    """Open the strat023-c4-shadow live_paper.db READ-ONLY. FAILS LOUDLY
+    (RuntimeError) when the db is missing or unreadable: a missing C4
+    signal source must never be silently treated as 'no C4 signal' (PR
+    #135 round-2 review, fix A)."""
+    path = _c4_db_path(db_path)
+    if not path.exists():
+        raise RuntimeError(
+            f"C4 shadow DB not found at {path} — refusing to guess. "
+            f"Set STRAT_SWING_C4_DB or --c4-db to the live_paper.db used by "
+            f"strat023-c4-shadow (columns: orders.created_ts, orders.ref_date, "
+            f"positions.status).")
+    uri = f"file:{path}?mode=ro&immutable=0"
+    try:
+        return sqlite3.connect(uri, uri=True, timeout=5)
+    except Exception as exc:
+        raise RuntimeError(f"cannot open C4 shadow DB {path} read-only: {exc!r}")
+
+
 def c4_signaled_today(symbols, db_path=None) -> set:
-    """Best-effort set of `symbols` that C4 signaled TODAY, read from the
-    strat023-c4-shadow live_paper.db (labels sl_short-*). Any error —
-    missing file, unknown schema, locked db — returns an empty set (the
-    skip rule then relies on positions/open-orders overlap)."""
-    path = Path(db_path or os.environ.get("STRAT_SWING_C4_DB", DEFAULT_C4_DB))
-    if not path.exists() or not symbols:
+    """Set of `symbols` that C4 signaled TODAY, read from the
+    strat023-c4-shadow live_paper.db (labels sl_short-*). Real schema:
+    orders(created_ts, ref_date). FAILS LOUDLY (RuntimeError) when the db
+    is missing or the query fails — never silently 'no C4 signal'."""
+    if not symbols:
         return set()
     out = set()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     wanted = {str(s).strip().upper() for s in symbols}
-    uri = f"file:{path}?mode=ro&immutable=0"
     try:
-        con = sqlite3.connect(uri, uri=True, timeout=5)
-        try:
-            tables = {r[0] for r in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-            if "orders" in tables:
-                rows = con.execute(
-                    "SELECT DISTINCT symbol FROM orders WHERE "
-                    "client_order_id LIKE 'sl_short-%' AND "
-                    "(substr(created_at,1,10)=? OR substr(submitted_at,1,10)=? "
-                    " OR substr(filled_at,1,10)=?)",
-                    (today, today, today))
-                out.update(r[0].upper() for r in rows if r[0])
-            elif "trades" in tables:
-                rows = con.execute(
-                    "SELECT DISTINCT symbol FROM trades WHERE "
-                    "(client_order_id LIKE 'sl_short-%' OR symbol IN (%s)) "
-                    "AND date(trade_date)=?" % ",".join("?" * len(symbols)),
-                    tuple(symbols) + (today,))
-                out.update(r[0].upper() for r in rows if r[0])
-        finally:
-            con.close()
-    except Exception:
-        return out
+        con = _c4_connect(db_path)
+    except RuntimeError:
+        raise
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT symbol FROM orders WHERE "
+            "substr(created_ts,1,10)=? OR substr(ref_date,1,10)=?",
+            (today, today))
+        out.update(str(r[0]).strip().upper() for r in rows if r[0])
+    except Exception as exc:
+        raise RuntimeError(
+            f"C4 same-day query failed on {_c4_db_path(db_path)} "
+            f"(expected columns orders.created_ts / orders.ref_date): {exc!r}")
+    finally:
+        con.close()
     return out & wanted
+
+
+def c4_open_notional(db_path=None) -> float:
+    """Dollar value of currently-open C4 positions (positions.status='open'),
+    read from the C4 shadow DB. The RSI(2) runner and C4 share the 30%
+    short-term bucket, so C4's open notional must be subtracted before
+    RSI(2) sizing (PR #135 round-2 review, fix H). FAILS LOUDLY."""
+    try:
+        con = _c4_connect(db_path)
+    except RuntimeError:
+        raise
+    try:
+        rows = con.execute(
+            "SELECT COALESCE(qty,0), COALESCE(entry_price,0) FROM positions "
+            "WHERE status='open'")
+        return sum(float(q or 0) * float(p or 0) for q, p in rows)
+    except Exception as exc:
+        raise RuntimeError(
+            f"C4 open-notional query failed on {_c4_db_path(db_path)} "
+            f"(expected positions.qty/entry_price/status): {exc!r}")
+    finally:
+        con.close()
 
 
 # ------------------------------------------------------- exits (each run)
@@ -309,6 +344,20 @@ def chandelier_stop(df, entry_date, atr14_now: float) -> float | None:
     return max(closes) - signals.RSI2_TRAIL_ATR * float(atr14_now)
 
 
+def _ensure_canceled(api, order_id, client_order_id=None) -> bool:
+    """Cancel `order_id` and CONFIRM the cancellation (via the order's
+    status when a client_order_id is known). Returns False when the
+    cancel failed or the order is still live afterwards."""
+    if not api.cancel_order(order_id):
+        return False
+    if client_order_id:
+        o = api.get_order_by_client_id(client_order_id)
+        if o is not None and str(o.get("status")) not in (
+                "canceled", "expired", "filled"):
+            return False
+    return True
+
+
 def _close_trade(state, entry_id, reason, results):
     state["open"].pop(entry_id, None)
     results["closed"].append({"entry_id": entry_id, "reason": reason})
@@ -344,15 +393,62 @@ def process_exits(state, api, bars, positions, results):
                     t["entry_fill_px"] = float(
                         o.get("filled_avg_price") or t.get("ref_px") or 0)
                     t["entry_order_id"] = o.get("id")
+                    # FIX F: stops/target re-anchored to the ACTUAL fill
+                    # price (frozen formulas, signal-day ATR14), not the
+                    # signal close. Only while no stop has been placed.
+                    fill_px = t["entry_fill_px"]
+                    atr_sig = float(t.get("atr14") or 0)
+                    if fill_px > 0 and atr_sig > 0 and not t.get("stop_order_id"):
+                        init_stop, _ch, partial_px = signals.rsi2_stops(
+                            fill_px, atr_sig)
+                        t["stop_px"] = round(init_stop, 2)
+                        t["partial_px"] = round(partial_px, 2)
+                        t["entry_notional"] = float(t.get("qty", 0)) * fill_px
+                    # FIX G: the 15-day time exit counts from the FILL
+                    # date, not the signal date.
+                    filled_at = str(o.get("filled_at") or "")
+                    if filled_at:
+                        t["entry_date"] = filled_at[:10]
                 else:  # still pending — nothing to manage yet
                     continue
+
+            # -- FIX D: position gone / stop filled -> close, free slot --
+            if held_qty(positions, sym) <= 0:
+                reason = "position_gone"
+                scoid = t.get("stop_client_order_id")
+                if scoid:
+                    so = api.get_order_by_client_id(scoid)
+                    if so is not None and so.get("status") == "filled":
+                        reason = "stop_filled"
+                _close_trade(state, entry_id, reason, results)
+                continue
 
             # -- time exit: 15 trading days after entry bar --
             days = trading_days_since(df, t["entry_date"])
             if days >= signals.RSI2_TIME_EXIT:
-                for oid in (t.get("stop_order_id"), t.get("partial_order_id")):
-                    if oid:
-                        api.cancel_order(oid)
+                # FIX C: confirm every protective sell order is actually
+                # canceled BEFORE the market sell — a failed cancel must
+                # NOT be followed by a market sell (double-order risk).
+                cancels = [
+                    (t.get("stop_order_id"), t.get("stop_client_order_id")),
+                    (t.get("partial_order_id"), t.get("partial_client_order_id")),
+                    (t.get("oco_order_id"), None),
+                ]
+                cancel_ok = True
+                for oid, coid in cancels:
+                    if not oid:
+                        continue
+                    if not _ensure_canceled(api, oid, coid):
+                        cancel_ok = False
+                        log_event({"ts": now_utc(), "type": "exit_error",
+                                   "entry_id": entry_id,
+                                   "error": f"cancel failed for {oid}; "
+                                            f"market sell skipped"})
+                if not cancel_ok:
+                    results["errors"].append(
+                        {"entry_id": entry_id,
+                         "error": "time_exit: cancel failed; no sell sent"})
+                    continue
                 sell_qty = int(min(float(t["qty"]), held_qty(positions, sym)))
                 if sell_qty <= 0:
                     _close_trade(state, entry_id, "time_exit_no_position", results)
@@ -383,6 +479,10 @@ def process_exits(state, api, bars, positions, results):
                         log_event({"ts": now_utc(), "type": "stop_update_error",
                                    "entry_id": entry_id, "error": resp["error"]})
                     else:
+                        # FIX B: a replace returns a NEW order id — always
+                        # store the id from the response.
+                        t["stop_order_id"] = (resp.get("id")
+                                              or t["stop_order_id"])
                         t["stop_px"] = new_px
                         log_event({"ts": now_utc(), "type": "stop_update",
                                    "entry_id": entry_id, "new_stop": new_px})
@@ -412,23 +512,28 @@ def place_stops_after_fill(state, api, positions, open_orders, results):
             room = int(held - already)
             if room <= 0:
                 continue
-            # Allocate: partial gets at most half the room, the stop
-            # covers the rest. TOTAL open sell qty (existing + partial +
-            # stop) never exceeds held qty (fixes the 1.5x stop+partial
-            # overhang from the review).
+            # FIX E: the whole position is always protected. The
+            # partial-exit half goes out as an OCO bracket (limit target +
+            # stop for the SAME half), and the remainder gets a plain
+            # stop. Total open sell qty (existing + OCO half + stop) never
+            # exceeds held qty.
             half = int(t["qty"] // 2)
             partial_qty = min(half, max(0, room // 2))
             stop_qty = min(int(t["qty"]) - partial_qty, room - partial_qty)
             if stop_qty <= 0 and partial_qty <= 0:
                 continue
+            stop_coid = make_labels(RSI2, sym, t["date"], t["n"])[1]
+            partial_coid = make_partial_client_order_id(
+                RSI2, sym, t["date"], t["n"])
+            oco_stop_coid = make_oco_stop_client_order_id(
+                RSI2, sym, t["date"], t["n"])
             stop_resp = None
             if stop_qty >= 1:
                 stop_resp = api.submit_order({
                     "symbol": sym, "qty": stop_qty, "side": "sell",
                     "type": "stop", "stop_price": round(float(t["stop_px"]), 2),
                     "time_in_force": "gtc",
-                    "client_order_id": make_labels(
-                        RSI2, sym, t["date"], t["n"])[1],
+                    "client_order_id": stop_coid,
                 })
                 if stop_resp.get("error"):
                     log_event({"ts": now_utc(), "type": "stop_error",
@@ -440,19 +545,31 @@ def place_stops_after_fill(state, api, positions, open_orders, results):
                     stop_resp = None
                 else:
                     t["stop_order_id"] = stop_resp.get("id")
+                    t["stop_client_order_id"] = stop_coid
                     open_orders = list(open_orders) + [
                         {"symbol": sym, "side": "sell", "qty": stop_qty}]
                     log_event({"ts": now_utc(), "type": "stop_placed",
                                "entry_id": entry_id, "symbol": sym,
                                "qty": stop_qty, "dry_run": api.dry_run})
             if partial_qty >= 1:
+                # OCO bracket for the partial half: limit target OR stop,
+                # whichever hits first. The half is never left naked.
                 p_resp = api.submit_order({
                     "symbol": sym, "qty": partial_qty, "side": "sell",
-                    "type": "limit",
-                    "limit_price": round(float(t["partial_px"]), 2),
-                    "time_in_force": "gtc",
-                    "client_order_id": make_partial_client_order_id(
-                        RSI2, sym, t["date"], t["n"]),
+                    "type": "market", "time_in_force": "gtc",
+                    "order_class": "oco",
+                    "legs": [
+                        {"symbol": sym, "qty": partial_qty, "side": "sell",
+                         "type": "limit",
+                         "limit_price": round(float(t["partial_px"]), 2),
+                         "time_in_force": "gtc",
+                         "client_order_id": partial_coid},
+                        {"symbol": sym, "qty": partial_qty, "side": "sell",
+                         "type": "stop",
+                         "stop_price": round(float(t["stop_px"]), 2),
+                         "time_in_force": "gtc",
+                         "client_order_id": oco_stop_coid},
+                    ],
                 })
                 if p_resp.get("error"):
                     log_event({"ts": now_utc(), "type": "partial_error",
@@ -460,17 +577,18 @@ def place_stops_after_fill(state, api, positions, open_orders, results):
                                "error": p_resp["error"]})
                     results["errors"].append(
                         {"entry_id": entry_id,
-                         "error": "partial: " + str(p_resp["error"])[:200]})
+                         "error": "oco: " + str(p_resp["error"])[:200]})
                 else:
-                    t["partial_order_id"] = p_resp.get("id")
+                    t["oco_order_id"] = p_resp.get("id")
+                    t["partial_client_order_id"] = partial_coid
                     open_orders.append({"symbol": sym, "side": "sell",
                                         "qty": partial_qty})
-                    log_event({"ts": now_utc(), "type": "partial_placed",
+                    log_event({"ts": now_utc(), "type": "oco_placed",
                                "entry_id": entry_id, "symbol": sym,
                                "qty": partial_qty, "dry_run": api.dry_run})
             results["stops_placed"].append(
                 {"entry_id": entry_id, "symbol": sym,
-                 "stop_qty": stop_qty, "partial_qty": partial_qty})
+                 "stop_qty": stop_qty, "oco_qty": partial_qty})
         except Exception as exc:
             log_event({"ts": now_utc(), "type": "stop_symbol_error",
                        "entry_id": entry_id, "error": repr(exc)})
@@ -481,7 +599,17 @@ def place_stops_after_fill(state, api, positions, open_orders, results):
 def process_entries(state, api, bars, spy_bars, positions, open_orders,
                     existing_labels, ymd, args, portfolio_value, results):
     slice_dollars = rsi2_slice_dollars(portfolio_value, args.bucket_pct)
-    c4_today = c4_signaled_today(args.symbols)
+    # FIX H: RSI(2) and C4 share the 30% short-term bucket — subtract the
+    # value of currently-open C4 positions so combined exposure respects
+    # the bucket. Both C4 reads fail loudly (fix A).
+    c4_db = getattr(args, "c4_db", None)
+    c4_held = c4_open_notional(c4_db)
+    if c4_held > 0:
+        slice_dollars = max(0.0, slice_dollars - c4_held)
+        log_event({"ts": now_utc(), "type": "c4_bucket_usage",
+                   "c4_open_notional": c4_held,
+                   "rsi2_slice_after": slice_dollars})
+    c4_today = c4_signaled_today(args.symbols, db_path=c4_db)
     if c4_today:
         log_event({"ts": now_utc(), "type": "c4_same_day_skip",
                    "symbols": sorted(c4_today)})
@@ -655,6 +783,11 @@ def main(argv=None):
     p.add_argument("--per-position-cap", type=float, default=0.10,
                    help="per-position cap as a share of the slice budget "
                         "(default 0.10)")
+    p.add_argument("--c4-db", default=None,
+                   help="path to the C4 shadow live_paper.db used for the "
+                        "same-day skip and the 30% bucket overlap "
+                        "(default /root/strat-swing/experiments/"
+                        "strat_023/live_paper.db; fails loudly if missing)")
     args = p.parse_args(argv)
     run(args)
 

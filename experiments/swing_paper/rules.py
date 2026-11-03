@@ -30,6 +30,7 @@ RSI2 = "rsi2"
 ALPACA_CLIENT_ORDER_ID_MAX = 48
 STOP_SUFFIX = "-stop"
 PARTIAL_SUFFIX = "-p"
+OCO_STOP_SUFFIX = "-oco"  # stop leg inside the partial-half OCO bracket
 
 
 def _valid_ymd(ymd: str) -> str:
@@ -67,6 +68,14 @@ def make_partial_client_order_id(strategy: str, symbol: str, ymd: str, n: int) -
     return coid
 
 
+def make_oco_stop_client_order_id(strategy: str, symbol: str, ymd: str,
+                                  n: int) -> str:
+    """Stop leg of the partial-half OCO bracket: stop label + '-oco'."""
+    coid = make_stop_client_order_id(strategy, symbol, ymd, n) + OCO_STOP_SUFFIX
+    _check_length(coid)
+    return coid
+
+
 def make_labels(strategy: str, symbol: str, ymd: str, n: int) -> tuple[str, str]:
     """(entry_client_order_id, stop_client_order_id) for one order pair."""
     return (
@@ -85,7 +94,8 @@ def next_sequence(existing_labels, strategy: str, symbol: str, ymd: str) -> int:
         s = str(label)
         if s.startswith(prefix):
             tail = s[len(prefix):]
-            for suf in (STOP_SUFFIX + PARTIAL_SUFFIX, STOP_SUFFIX):
+            for suf in (STOP_SUFFIX + PARTIAL_SUFFIX, STOP_SUFFIX + OCO_STOP_SUFFIX,
+                        STOP_SUFFIX):
                 if tail.endswith(suf):
                     tail = tail[: -len(suf)]
             if tail.isdigit():
@@ -101,6 +111,9 @@ def parse_label(label: str) -> dict:
     if s.endswith(STOP_SUFFIX + PARTIAL_SUFFIX):
         s = s[: -len(STOP_SUFFIX + PARTIAL_SUFFIX)]
         kind = "partial"
+    elif s.endswith(STOP_SUFFIX + OCO_STOP_SUFFIX):
+        s = s[: -len(STOP_SUFFIX + OCO_STOP_SUFFIX)]
+        kind = "oco_stop"
     elif s.endswith(STOP_SUFFIX):
         s = s[: -len(STOP_SUFFIX)]
         kind = "stop"
