@@ -238,6 +238,15 @@ The full mechanics (how the verdict is obtained, what the reviewer may and
 may not do) live in `BRANCHING.md` under "Review Gate Before Asking Josh to
 Merge".
 
+## Session and Dispatch Conventions
+
+When dispatching a task to an agent session (e.g. `openclaw` subagent dispatch),
+the dispatcher must follow:
+
+- **One fresh session key per task**: `agent:<agent>:<TASKID>-<unix-time>`.
+  Never reuse a session key such as `grokbot`.
+- Use `--thinking low` unless the task needs more.
+
 ## Iteration Flow
 
 1. Verify safe environment.
