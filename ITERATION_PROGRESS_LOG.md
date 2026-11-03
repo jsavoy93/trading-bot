@@ -5478,3 +5478,13 @@ Implementation complete; PR open and awaiting owner review.
   - Tests: new suite 60 passed; full suite 1 failed / 2197 passed / 2 skipped — the single failure (test_strat026_shadow TestSystemdUnits) is identical on main (env-dependent: units installed on host).
   - Risk noted: stop-after-fill uses the "later run after fill confirmed" option (bracket legs can't carry client_order_ids); C4 same-day db read is best-effort and fails open.
   - Next: ENG-07 reviewer pass on PR #135, then Josh merge approval. Approval required.
+
+## 2026-11-03 22:08 UTC — PR-135-R2 round-2 fixes on PR #135 (STRAT-SWING-PAPER)
+- Backlog/objective: implement all independent-review findings A–J on PR #135.
+- Branch: agent/swing-paper-order-tagging-20261103 — commit 9e1091d (pushed; PR #135 updated, NOT merged).
+- Status: DONE
+- Files changed: experiments/swing_paper/{runner,rules,report_pnl,README} , tests/test_swing_paper_{runner,report}.py
+- Tests: swing suites 73 passed; full suite 1 failed / 2210 passed / 2 skipped — single failure (test_strat026_shadow systemd) verified pre-existing on main; zero new failures vs baseline set.
+- Key decisions: C4 reads (same-day skip + bucket overlap) now FAIL LOUDLY on missing/bad DB (real path /root/strat-swing/experiments/strat_023/live_paper.db, real columns created_ts/ref_date, positions.status='open'); partial-exit half is an OCO bracket (new -stop-oco label) so the whole position is always protected; time exit confirms cancels before market sell; stops/target/entry-date anchor to the ACTUAL fill; report_pnl paginates by full timestamp + id dedupe, attributes activities via order_id→client_order_id with FIFO legs, open P&L uses labeled qty/avg.
+- Risks: fail-loudly aborts entries if C4 DB unreadable (operator note); OCO wire format fake-broker-validated only — review first dry-run output; timestamp-boundary orders could be skipped by pagination (dedupe/termination prioritized).
+- Next action: independent reviewer verdict (ENG-07) + Josh merge decision on PR #135. Josh approval required for merge.
