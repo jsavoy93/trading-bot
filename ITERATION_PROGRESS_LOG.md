@@ -5347,3 +5347,12 @@ Implementation complete; PR open and awaiting owner review.
 - Decisions: LOG-ONLY by construction (no order path at all; only GET `/v2/stocks/bars` from the Alpaca paper DATA API); own kill-switch file `experiments/strat_026_shadow/KILL_SWITCH` (exit 3) plus `STRAT026_LOG_ONLY=1` env guard (exit 2); frozen params from the research record (RSI(2)<10, SPY>SMA200, 2×ATR init stop, 3×ATR chandelier, 50% at +2R, 15-day time exit) — parity test compares exits against `run_research.pro_exits_trade` on 25 randomized trials; timer Mon..Fri 21:30 UTC (15 min after strat023's 21:15), units committed but NOT installed/enabled
 - Risks: 40 inherited suite failures (pre-existing on main); STRAT-026 holdout edge below the pre-declared t_vs_base=2 bar (1.84, research record); +2R fill assumption optimistic; raw-adjustment split artifacts; **deviation** — PR #121 merged into `research/strat-023-recheck`, not `main` (Josh's message said main), so the PR to `main` also carries PR #121's research files until PR #121 lands in main
 - Next action: Josh reviews the PR; installing/enabling `strat026-rsi2-shadow.timer` is a separate human step. Josh approval required.
+
+## 2026-11-03 00:50 UTC — STRAT-SWING-PAPER per-strategy order tagging
+- Item: per-strategy order tagging for paper C4 + RSI(2) (Josh-directed task)
+- Branch: agent/swing-paper-order-tagging-20261103; Commit: a0d0ad4 (off main 3a0d6e2)
+- Status: DONE (awaiting Josh review/approval; PR opened)
+- Files: experiments/swing_paper/{rules,signals,runner,report_pnl}.py + README, tests/test_swing_paper_rules.py, .gitignore
+- Tests: new 35/35 pass; full suite 44 failed / 2116 passed — the 44 failures are byte-identical on clean main worktree (environmental; no regression)
+- Decisions: standalone experiments/swing_paper module (src/ untouched); paper-only, dry-run default, single-shot; creds from env vars only; frozen params reused, nothing relaxed; STRAT026_LOG_ONLY untouched
+- Next: Josh approves in chat → merge via normal flow (never this agent); first approved paper run validates P&L report live output
