@@ -15,6 +15,7 @@ layer only.
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = REPO_ROOT / "templates" / "dashboard.html"
+
+# Make the shared synthetic-DB helper importable regardless of how
+# pytest is invoked (rootdir insertion vs. explicit `python -m pytest`).
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
 
 
 def _read_template() -> str:
@@ -43,6 +50,25 @@ class TestCycleCandidatesEndpoint:
     def _client():
         from fastapi.testclient import TestClient
         import sys
+        sys.path.insert(0, str(REPO_ROOT))
+        import dashboard as _dashboard
+        return TestClient(_dashboard.app)
+
+    @staticmethod
+    def _client_with_synthetic_db(tmp_path, monkeypatch):
+        """Return a TestClient bound to a deterministic synthetic DB.
+
+        ENG-04b: `/api/actionability-summary` and
+        `/api/cycle-candidates/{id}` read `cycle_funnel` /
+        `decision_history` straight from the dashboard's sqlite file.
+        Pointing them at a synthetic DB (via
+        `TRADING_BOT_DASHBOARD_DB`) makes the assertions below depend on
+        a known dataset instead of live runtime state.
+        """
+        from fastapi.testclient import TestClient
+        from _synthetic_dashboard_db import build_dashboard_db
+        db_path = build_dashboard_db(tmp_path / "dashboard_synth.db")
+        monkeypatch.setenv("TRADING_BOT_DASHBOARD_DB", str(db_path))
         sys.path.insert(0, str(REPO_ROOT))
         import dashboard as _dashboard
         return TestClient(_dashboard.app)
@@ -90,11 +116,15 @@ class TestCycleCandidatesEndpoint:
         r3 = c.get("/api/cycle-candidates/cycle_DOES_NOT_EXIST?near_miss_limit=3")
         assert r3.json()["near_miss_limit"] == 3
 
-    def test_live_latest_cycle_returns_zero_candidates(self):
+    def test_live_latest_cycle_returns_zero_candidates(self, tmp_path, monkeypatch):
         # The latest live cycle is zero-candidate; this is the realistic
         # state today's bot produces. The endpoint must surface that
         # truthfully rather than fudge candidates from total_score.
-        c = self._client()
+        #
+        # ENG-04b: runs against a deterministic synthetic DB (zero
+        # candidates, one cycle_funnel row) instead of the live DB, so the
+        # assertion cannot be affected by the bot's runtime state.
+        c = self._client_with_synthetic_db(tmp_path, monkeypatch)
         s = c.get("/api/actionability-summary").json()
         cycle_id = s.get("funnel", {}).get("cycle_id")
         assert cycle_id, "no live cycle_funnel row"

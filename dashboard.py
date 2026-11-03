@@ -31,6 +31,38 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI
 app = FastAPI(title="Trading Bot Dashboard")
 
+# ─────────────────────────────────────────────────────────────────────────
+# Central dashboard DB path resolver (ENG-04b)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Several read-only dashboard endpoints open `trading_bot.db` next to
+# this module. Historically each of them inlined
+# `Path(__file__).parent / "trading_bot.db"`, which made the endpoints
+# impossible to exercise hermetically in tests (they always hit
+# whatever live DB happened to sit next to the checkout).
+#
+# `_dashboard_db_path()` is the single resolution point. It keeps the
+# production default EXACTLY as before (the module-relative file) and
+# additionally honours `TRADING_BOT_DASHBOARD_DB` so a test — or an
+# operator pointing the dashboard at a read replica — can select a
+# different database without editing code.
+#
+# ENG-04b rationale: the Phase A / Phase B endpoint tests assert on
+# specific symbol snapshots (ALPXR, WBS) that exist only in the live
+# production DB. Making the path resolvable lets those tests build a
+# deterministic synthetic DB instead of silently depending on — and
+# being affected by — live runtime state.
+def _dashboard_db_path():
+    """Return the dashboard's sqlite database path.
+
+    Defaults to `trading_bot.db` next to this module. Overridable via
+    the `TRADING_BOT_DASHBOARD_DB` environment variable.
+    """
+    override = os.environ.get("TRADING_BOT_DASHBOARD_DB")
+    if override:
+        return Path(override)
+    return Path(__file__).parent / "trading_bot.db"
+
 # Static files
 static_path = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=static_path), name="static")
@@ -967,8 +999,7 @@ def api_decision(symbol: str):
     Legacy rows (decision_snapshot IS NULL) return a sentinel.
     """
     import sqlite3
-    from pathlib import Path as _P
-    db_path = _P(__file__).parent / "trading_bot.db"
+    db_path = _dashboard_db_path()
     if not db_path.exists():
         return {"error": "Database not found"}
     try:
@@ -1012,8 +1043,7 @@ def api_decision(symbol: str):
 def api_decision_history(symbol: str, limit: int = 50):
     """OBS-001 Phase A: cycle-over-cycle decision_history rows for symbol."""
     import sqlite3
-    from pathlib import Path as _P
-    db_path = _P(__file__).parent / "trading_bot.db"
+    db_path = _dashboard_db_path()
     if not db_path.exists():
         return {"error": "Database not found"}
     try:
@@ -1049,8 +1079,7 @@ def api_decision_history(symbol: str, limit: int = 50):
 def api_actionability_summary():
     """OBS-001 Phase A: cycle funnel from the latest cycle_funnel row."""
     import sqlite3
-    from pathlib import Path as _P
-    db_path = _P(__file__).parent / "trading_bot.db"
+    db_path = _dashboard_db_path()
     if not db_path.exists():
         return {"error": "Database not found"}
     try:
@@ -1126,11 +1155,10 @@ def api_cycle_candidates(cycle_id: str, near_miss_limit: int = 3):
     cannot accidentally promote a high-score HOLD to a candidate.
     """
     import sqlite3
-    from pathlib import Path as _P
     # Clamp near_miss_limit defensively (1-10).
     if near_miss_limit < 1: near_miss_limit = 1
     if near_miss_limit > 10: near_miss_limit = 10
-    db_path = _P(__file__).parent / "trading_bot.db"
+    db_path = _dashboard_db_path()
     if not db_path.exists():
         return {"error": "Database not found", "cycle_known": False, "candidates": [], "near_misses": []}
     try:
@@ -2061,8 +2089,7 @@ def _phase_c_window_predicates(range_name: str, cohort: str, column: str):
 def _phase_c_open_db():
     """Open trading_bot.db as a read-only sqlite3 connection."""
     import sqlite3 as _sqlite3
-    from pathlib import Path as _P
-    db_path = _P(__file__).parent / "trading_bot.db"
+    db_path = _dashboard_db_path()
     if not db_path.exists():
         return None
     conn = _sqlite3.connect(str(db_path))
@@ -3292,6 +3319,30 @@ def api_get_settings():
         }
         for key, param in params.items()
     }
+
+
+@app.post("/api/settings")
+def api_update_settings(updates: Dict):
+    """Update one or more trading parameters. Returns updated values.
+
+    ENG-04b: this route was accidentally deleted as collateral damage in
+    the BUY-FUNNEL endpoint insertion (PR #101). The batch helpers it
+    depends on (`_validate_dashboard_settings_batch` /
+    `_persist_dashboard_settings_batch`) were left in place, so the
+    route is restored here to match the pre-#101 behaviour exactly.
+    """
+    global _smart_bot_instance
+    _refresh_trading_params()
+    try:
+        updated = _validate_dashboard_settings_batch(updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    _persist_dashboard_settings_batch(updated)
+    for key, normalized in updated.items():
+        if _smart_bot_instance is not None and hasattr(_smart_bot_instance, key):
+            setattr(_smart_bot_instance, key, normalized)
+    return {"updated": updated, "status": "ok"}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -4786,8 +4837,7 @@ def _p0_open_db():
     coupling the two scopes.
     """
     import sqlite3 as _sqlite3
-    from pathlib import Path as _P
-    db_path = _P(__file__).parent / "trading_bot.db"
+    db_path = _dashboard_db_path()
     if not db_path.exists():
         return None
     conn = _sqlite3.connect(str(db_path))

@@ -5316,6 +5316,16 @@ Implementation complete; PR open and awaiting owner review.
 - Risk: none known (no pre-P1 'L' path existed)
 - Next: Josh reviews/approves PR #115 (merge human-gated); approval required
 
+## 2026-10-31T18:38Z — ENG-02: dispatch helper script for hostile messages
+- Backlog: ENG-02 (dispatch helper script for messages containing pipes/quotes/$/backticks/newlines)
+- Branch/commit: agent/trading-ENG-02-20261031-1816 / 8bd010f (+ d92fc4e archive report, + merge of origin/main)
+- Status: DONE
+- Files changed: scripts/dispatch_agent.sh (new), tests/test_dispatch_agent.py (new), AGENTS.md (dispatch conventions), ITERATION_PROGRESS_LOG.md
+- Tests: baseline `pytest -q` on origin/main = 40 failed, 2055 passed, 1 skipped, 13 deselected (161s); after = 40 failed, 2065 passed, 1 skipped (160s) — failure sets byte-identical, 0 new failures; ENG-02 tests 10/10 pass
+- Decisions: openclaw CLI flags are `--agent`, `--session-key`, `--model`, `--message`, `--json`, `--timeout`; session key uses sub-second stamp `agent:<agent>:<TASKID>-<unix%N>` so keys are never reused; message read from file with a sentinel to preserve trailing newlines; dry-run prints shell-escaped exact command + verbatim message + sha256
+- Risk: dispatch path (non-dry-run) not exercised against a live agent by design; real dispatch requires the gateway and a valid agent id
+- Next: Josh reviews/approves the ENG-02 PR (merge human-gated); approval required
+
 ## 2026-10-29 18:10 UTC — STRAT-022 research (dip-buy 2–5d holds)
 
 - **Item**: STRAT-022 — pre-registered short-term dip-buy backtest (research only)
@@ -5338,6 +5348,109 @@ Implementation complete; PR open and awaiting owner review.
 - Decisions/risks: split artifacts (raw adjustment) corrupt per-trade DD for entry strategies (documented); partial-at-2R fill assumption optimistic; PEAD is gap+volume proxy (no earnings dates in repo); holdout window almost fully regime-ON.
 - Next action: Josh decides — drop or paper shadow runner for rsi2_regime. Approval required for anything further.
 
+## 2026-10-31T19:24Z — ENG-04b — Make the main test suite green
+
+- **Item / objective:** ENG-04b — resolve the 40 failing tests on `origin/main` so `python -m pytest -q` is fully green, without weakening assertions and without deleting tests. PAPER ONLY; no live trading, no brokerage credentials, no live network calls in tests.
+- **Branch / commit:** `agent/trading-ENG-04b-20261031-1848` @ `8fd2353` (off `origin/main`, clean at start). Worktree `/root/.openclaw/worktrees/ENG-04b`.
+- **Status:** DONE (branch pushed, PR opened; awaiting manager review + Josh merge approval — merge remains human-gated).
+- **Files changed:** `dashboard.py`, `main.py`, `templates/dashboard.html`, `tests/_synthetic_dashboard_db.py` (new), `tests/test_bot001_dashboard_status.py`, `tests/test_bot002_paper_only_guard.py`, `tests/test_buy_funnel_dashboard.py`, `tests/test_dashboard_p0_buy_blockers.py`, `tests/test_dashboard_phase_a_history_symbol_trace.py`, `tests/test_dashboard_phase_b_latest_cycle_top_candidates.py`, `tests/test_dashboard_phase_c_obs_analytics.py`, `tests/test_dashboard_recent_sessions_fidelity.py`, `tests/test_score_002_eligibility_and_ranking.py`, `tests/test_engineering_supervisor_evidence_bundle.py`, this log.
+- **Tests:** baseline (before) `40 failed, 2055 passed, 1 skipped, 13 deselected in 210.05s`. After: `2094 passed, 2 skipped, 13 deselected, 83 warnings in 148.33s` — 0 failed, 0 errors. Both remaining skips carry explicit reasons. Re-verified after the item-8 fix: `2094 passed, 2 skipped, 13 deselected, 83 warnings in 155.64s`, exit 0.
+- **Root causes found and fixed (no assertion weakened, no test deleted):**
+  1. **Wall-clock-dependent synthetic test data (30 tests).** Dashboard/funnel endpoints filter rows by `today`/`24h`/`7d` cutoffs computed from `datetime.now(timezone.utc)`. The synthetic fixtures pinned `cycle_start` to fixed September-2026 calendar dates, so once real time advanced past them the endpoints returned zero rows and the tests failed for reasons unrelated to what they assert. Fixed by anchoring the synthetic datasets to `now()` (relative offsets where the test depends on ordering). `test_dashboard_phase_c_obs_analytics.py` already contained the correct `_now_iso()`-style precedent; the same pattern was applied consistently.
+  2. **`POST /api/settings` route accidentally deleted (3 tests).** PR #101's large BUY-FUNNEL endpoint insertion replaced the `@app.post("/api/settings")` block; the helpers it needs (`_validate_dashboard_settings_batch`, `_persist_dashboard_settings_batch`) were left behind unused. Restored verbatim from the pre-#101 revision. **This also fixes a live production bug:** `templates/dashboard.html` POSTs to `/api/settings` for every settings write, and that route was returning HTTP 405 — the dashboard Settings UI could not save anything.
+  3. **Status legend contradicted the status dot (1 test).** The navbar dot is red whenever Alpaca is unreachable, but the legend checked `smartbot_runner_active` first, so a running runner with a dead API showed a red dot labelled "Runner Active, No Session". Legend priority now mirrors the dot (`API Offline` wins).
+  4. **Weekend/after-hours trading-window gate (3 tests).** `SmartTradingBot.analyze_symbol` consults `is_trading_allowed()`, which refuses trading on weekends and outside 09:45–15:45 ET. On a Saturday a fully eligible candidate was downgraded to HOLD before the SCORE-002 eligibility logic was reached. Added an autouse fixture that stubs `is_trading_allowed` to "allowed" for the SCORE-002 module (no test in that module is about the trading-window calendar).
+  5. **Tests importing a sibling checkout (2 tests).** `tests/test_bot001_dashboard_status.py` and `tests/test_dashboard_recent_sessions_fidelity.py` hardcoded `/root/.openclaw/workspace/trading-bot` onto `sys.path`, so `import dashboard` / `import database.sqlite_db` resolved to that other checkout — the suite was exercising code that was NOT the code under test. Now resolved from `Path(__file__).resolve().parents[1]`.
+  6. **Hardcoded `cwd` + non-existent `LOCK_FILE_OVERRIDE` (1 test).** `tests/test_bot002_paper_only_guard.py` spawned its subprocess with `cwd="/root/.openclaw/workspace/trading-bot"` (wrong checkout) and set `LOCK_FILE_OVERRIDE`, but `main.py` hardcoded `LOCK_FILE = "/tmp/trading_bot.lock"` and never read that variable — so the subprocess collided with the running paper bot's lock and exited "Bot already running (PID: …)". `main.py` now honours `LOCK_FILE_OVERRIDE` (production behaviour unchanged when unset) and the test runs from the checkout under test.
+  7. **Live-DB-only endpoints (3 tests).** `/api/decision`, `/api/decision-history`, `/api/actionability-summary`, `/api/cycle-candidates` each inlined `Path(__file__).parent / "trading_bot.db"`. Added one central resolver `dashboard._dashboard_db_path()` (production default unchanged; overridable via `TRADING_BOT_DASHBOARD_DB`) and routed those endpoints plus `_phase_c_open_db` / `_p0_open_db` through it, so the Phase A / Phase B tests can use a deterministic synthetic DB (new `tests/_synthetic_dashboard_db.py`) instead of live runtime state.
+  8. **Evidence-bundle tests depending on a mutable local artifact (latent, 6 tests).** `tests/test_engineering_supervisor_evidence_bundle.py` hardcoded `REPO_ROOT = Path("/root/.openclaw/workspace/trading-bot")` and relied on a gitignored, untracked local `REPORT.md` happening to exist in that other checkout. `Supervisor._read_report_md` checks `report_path.is_file()` BEFORE consulting the test's mocked byte reader, so with no such artifact every `report_md_exists` / `report_md_stale` assertion failed even though the test's own content was fully mocked. The baseline hid this because a `REPORT.md` was present in the workspace at the time. The `supervisor` fixture now roots the Supervisor at an isolated tmp repo containing a real `REPORT.md`. The other engineering modules that reference the workspace path (`test_engineering_file_adapter.py`, `test_engineering_git_adapter.py`, `test_engineering_qa_adapter.py`, `test_engineering_registry.py`, `test_engineering_supervisor.py`) were audited — they do NOT depend on mutable artifacts and all pass unchanged (33/13/17/46/18); migrating them is recommended as follow-up work, out of scope for ENG-04b.
+- **Skips (2, both with explicit reasons):** (a) `test_dashboard_p0_buy_blockers.py::TestLiveVerification::test_live_summary_reproduces_verified_shape` — genuinely a live-forensic-DB test; **verified PASSING against the production DB** (`TRADING_BOT_DASHBOARD_DB=/root/.openclaw/workspace/trading-bot/trading_bot.db` → `1 passed in 126.46s`; live DB has 19,366 post-P0 analyzer-BUY rows and 2,486 in the 7d window). Previously it did not skip when a small leftover artifact DB sat next to the checkout — it ran and failed with a misleading "analyzer_buy_count regressed: got 0". Now it skips with an actionable reason when the DB it finds has an empty `decision_history`. (b) `test_dashboard_phase_a_history_symbol_trace.py::…::test_live_alpxr_snapshot_renders_blocker_row_and_highlight` — pre-existing self-skipping live-regression test, unchanged; **verified passing against the production DB** (`1 passed in 2.56s`).
+- **Decisions / risks:** No assertion was weakened and no test was deleted; every previously-failing test either became hermetic or was given an explicit, justified skip. The two `POST /api/settings` and dashboard-legend changes are production behaviour changes (both fix real live defects); `LOCK_FILE_OVERRIDE` and `TRADING_BOT_DASHBOARD_DB` are opt-in and default to today's behaviour. Residual risk: the P0 forensic verification now skips in CI, so the live-DB regression signal is only obtained when the DB is pointed in explicitly — acceptable because it was previously failing for the wrong reason, and it is verified passing against production.
+- **Next action:** Manager review of the ENG-04b PR, then Josh's merge decision (merge is human-gated and must not be performed by the agent). No further autonomous iterations.
+
+## 2026-11-02T22:26Z — ENG-04c — Path-portable tests + fix test_current_repository_has_required_paths
+
+- **Item / objective:** ENG-04c — remove the `/root/.openclaw/workspace/trading-bot` hardcodes from tests so CI is green on a clean runner, and fix `tests/test_engineering_config.py::test_current_repository_has_required_paths` (cwd-dependent, fails as `('.git',) == ()` in an exported tree). No assertion weakened, no test deleted or skipped.
+- **Branch / commit:** `agent/trading-ENG-04c-20261031-1939` (stacked on `agent/trading-ENG-04b-20261031-1848`, PR #129). Worktree `/root/.openclaw/worktrees/ENG-04c`.
+- **Status:** DONE (branch pushed, PR opened; merge remains Josh-gated).
+- **Files changed:** `tests/test_bot001_dashboard_status.py`, `tests/test_bot002_paper_only_guard.py`, `tests/test_dashboard_recent_sessions_fidelity.py`, `tests/test_engineering_config.py`, `tests/test_engineering_file_adapter.py`, `tests/test_engineering_git_adapter.py`, `tests/test_engineering_project_context.py`, `tests/test_engineering_qa_adapter.py`, `tests/test_engineering_registry.py`, `tests/test_engineering_supervisor.py`, `tests/test_engineering_supervisor_evidence_bundle.py`, `tests/test_obs_002_terminal_decision_coverage.py`, `tests/test_pr4_durable_chat_ui.py`, this log.
+- **Changes:** (1) All `TRADING_BOT_ROOT`/`REPO_ROOT` constants now derive from `Path(__file__).resolve().parents[1]` (the tree under test), matching the ENG-04b precedent. (2) `tests/test_obs_002_terminal_decision_coverage.py` sys.path insert and `tests/test_pr4_durable_chat_ui.py` subprocess `cwd`/snapshot root derive from the file location. (3) `tests/test_engineering_registry.py` gains an autouse `_portable_fantasy_root` fixture that builds a synthetic fantasy repo (with governance files) in `tmp_path` per test and monkeypatches `FANTASY_ROOT`/`_FANTASY_ENTRY`; previously 5 registry tests required the workstation-only fantasy checkout to exist. (4) `test_current_repository_has_required_paths` uses the repo root derived from `__file__` instead of `Path.cwd()`, and skips only the `.git` item with an explicit reason when the tree has no `.git` (git-archive export on CI); all other required-path assertions unchanged.
+- **Tests:** baseline (worktree, before): `2094 passed, 2 skipped, 13 deselected in 148.32s`. After (worktree): `2094 passed, 2 skipped, 13 deselected, 83 warnings in 138.65s`. Simulated clean runner (workspace bind-mounted empty via unshare): `2094 passed, 2 skipped, 13 deselected, 83 warnings in 131.43s` — 0 failed. `test_engineering_config.py` passes from the repo root, with `cwd=/tmp` (`3 passed`), and from a `git archive` export without `.git` (`3 passed`). Zero occurrences of `/root/.openclaw/workspace/trading-bot` under `tests/`.
+- **Decisions / risks:** No production code changed (src/ and engineering/ contain no such hardcodes; `scripts/patch_dashboard.py` and `experiments/strat_022/**` are operator scripts, not run by CI, and were left untouched as out of scope). The synthetic fantasy repo is a minimal stub of the real checkout's governance files — registry tests only assert path resolution and validation, which is unaffected. Risk: none identified beyond the stacked-on-#129 ordering.
+- **Next action:** Merge PR #129 (ENG-04b) first, then this PR. Merge is human-gated (Josh).
+
+---
+
+## 2026-10-31T19:05Z — ENG-05-08-DOCS — Operating rules for model quota, routing, review gate, worktrees (ENG-05/06/07/08 docs)
+
+- **Backlog / objective:** Combined documentation PR for the engineering-program
+  operating rules. Four rule sets, each placed in the most appropriate existing
+  document — no new redundant files:
+  - **ENG-05b — model-quota discipline** → `AGENT_OPERATING_PLAN.md`
+    ("Model-Quota Discipline (ENG-05)"): run only ONE GLM-heavy job at a time;
+    every final report must name the model that actually completed the work
+    (evidence: `executionTrace.winnerModel`, `executionTrace.fallbackUsed`, and
+    `model_fallback_decision` lines in `/tmp/openclaw/*.log`); the 429 quota
+    signature `429 Weekly/Monthly Limit Exhausted … reset at 2026-11-02
+    20:33:34 UTC`.
+  - **ENG-06b — model routing** → `AGENT_OPERATING_PLAN.md` ("Model Routing
+    (ENG-06)"): `docs-agent` (MiniMax-M3 primary, GLM fallback) handles ONLY
+    reports, `ITERATION_PROGRESS_LOG.md` entries, `reports/` archives and other
+    documentation/mechanical text; `zai/glm-5.1` (`trading-manager`,
+    `trading-exec`, `dashboard-agent`, `engineering-manager`) handles design,
+    code changes, debugging, multi-step analysis. Includes a decision table.
+  - **ENG-07b — review gate** → `AGENT_OPERATING_PLAN.md` ("Review Gate
+    (ENG-07)") + `BRANCHING.md` ("Review Gate Before Asking Josh to Merge
+    (ENG-07)"): an independent read-only reviewer-agent verdict
+    (`APPROVE` / `BLOCK` with reasons) is REQUIRED before asking Josh to merge;
+    a `BLOCK` must be resolved first, otherwise the task stops as
+    `REWORK`/`BLOCKED`.
+  - **ENG-08b — worktree + identity** → `BRANCHING.md` ("Worktrees and Git
+    Identity (ENG-08)") + `AGENTS.md`: worktrees are always created from
+    `/root/.openclaw/clean/trading-bot` via
+    `git -C /root/.openclaw/clean/trading-bot worktree add /root/.openclaw/worktrees/<TASKID> -b <branch> origin/main`;
+    NEVER from `/root/deploy/trading-bot-main` or `/root/.openclaw/workspace/trading-bot`;
+    `/root/.openclaw/workspace/trading-bot` is a protected dirty checkout and
+    `/root/deploy/trading-bot-main` hosts the live paper bot (`main.py --continuous`)
+    — neither may be modified; per-worktree identity
+    `git config user.name <agent-id>` / `git config user.email <agent-id>@openclaw.local`.
+- **Also carried forward:** the ENG-01 "Session and Dispatch Conventions"
+  section (added on `agent/trading-ENG-01-20261031-1626`, not yet in `main`)
+  is included in `AGENT_OPERATING_PLAN.md` so this branch's operating-plan
+  document is self-consistent and ENG-05..08 extend rather than duplicate it.
+- **Branch / commit:** `agent/trading-ENG-05-08-DOCS-20261031-1855` (base
+  `origin/main` @ `8fd2353`); worktree `/root/.openclaw/worktrees/ENG-05-08-DOCS`;
+  git identity `trading-exec <trading-exec@openclaw.local>`.
+- **Status:** DONE (PR opened against `main`; awaiting Josh's merge approval
+  and an independent reviewer-agent verdict).
+- **Files changed:** `AGENT_OPERATING_PLAN.md`, `AGENTS.md`, `BRANCHING.md`,
+  `MENTOR.md`, `ITERATION_PROGRESS_LOG.md` (this entry),
+  `reports/<ts>_ENG-05-08-DOCS.md`.
+- **Tests:** full suite BEFORE (baseline, `origin/main` @ `8fd2353`) and AFTER
+  (this branch). Baseline summary line
+  `= 40 failed, 2055 passed, 1 skipped, 13 deselected, 83 warnings in 217.50s (0:03:37) =`.
+  AFTER summary line identical; failure sets compared byte-for-byte —
+  0 new failures, 0 fixed (the 40 are the known pre-existing environmental
+  set: dashboard live-endpoint / settings tests that need the 9 GB production
+  `trading_bot.db`).
+- **Decisions / discoveries:** the system `python3` lacks the project deps
+  (`pydantic`, `pandas`, `fastapi`) → 16 collection errors; the suite must be
+  run with `/root/.openclaw/workspace/trading-bot/.venv/bin/python -m pytest -q`
+  (reading that interpreter is fine; the checkout itself stays untouched).
+  Documented in `MENTOR.md`. ENG-01's section is not on `main`, so it is
+  carried in this branch rather than re-written.
+- **Risks:** docs-only change, no runtime impact. The 40 baseline failures
+  remain open — they are owned by ENG-04b and are deliberately NOT touched
+  here. This branch touches no test file.
+- **Model that completed the work:** `minimax-portal/MiniMax-M3` (the requested
+  `zai/glm-5.1` primary was quota-exhausted with
+  `429 Weekly/Monthly Limit Exhausted`, reset 2026-11-02 20:33:34 UTC; the
+  fallback `minimax-portal/MiniMax-M3` succeeded — confirmed by the
+  `model_fallback_decision` `candidate_succeeded` entries in
+  `/tmp/openclaw/openclaw-2026-10-31.log`).
+- **Next action:** independent reviewer-agent reads the PR diff against the
+  acceptance criteria and returns `APPROVE` or `BLOCK`; then Josh's merge
+  decision. Approval required: YES (merge).
 ## 2026-10-31 18:26 UTC — STRAT-026 RSI(2) dip-buy LOG-ONLY shadow runner
 - Backlog item: STRAT-026 shadow runner (Josh-approved Oct 31 2026; research record = PR #121 / `experiments/strat_026/`)
 - Branch/commit: `strat-026-rsi2-shadow` (base `7097109` = Merge PR #121) / commit recorded in PR
@@ -5348,11 +5461,11 @@ Implementation complete; PR open and awaiting owner review.
 - Risks: 40 inherited suite failures (pre-existing on main); STRAT-026 holdout edge below the pre-declared t_vs_base=2 bar (1.84, research record); +2R fill assumption optimistic; raw-adjustment split artifacts; **deviation** — PR #121 merged into `research/strat-023-recheck`, not `main` (Josh's message said main), so the PR to `main` also carries PR #121's research files until PR #121 lands in main
 - Next action: Josh reviews the PR; installing/enabling `strat026-rsi2-shadow.timer` is a separate human step. Josh approval required.
 
-## 2026-11-03 00:50 UTC — STRAT-SWING-PAPER per-strategy order tagging
-- Item: per-strategy order tagging for paper C4 + RSI(2) (Josh-directed task)
-- Branch: agent/swing-paper-order-tagging-20261103; Commit: a0d0ad4 (off main 3a0d6e2)
-- Status: DONE (awaiting Josh review/approval; PR opened)
-- Files: experiments/swing_paper/{rules,signals,runner,report_pnl}.py + README, tests/test_swing_paper_rules.py, .gitignore
-- Tests: new 35/35 pass; full suite 44 failed / 2116 passed — the 44 failures are byte-identical on clean main worktree (environmental; no regression)
-- Decisions: standalone experiments/swing_paper module (src/ untouched); paper-only, dry-run default, single-shot; creds from env vars only; frozen params reused, nothing relaxed; STRAT026_LOG_ONLY untouched
-- Next: Josh approves in chat → merge via normal flow (never this agent); first approved paper run validates P&L report live output
+## 2026-10-31_210221 UTC — ENG-11 follow-up (Part D): dispatch helper documented/default code-work target
+- Backlog: ENG-11 Part D — document engineering-manager as the default CODE-work dispatch target (trading-manager remains explicit for RESEARCH)
+- Branch/commit: agent/trading-ENG-02-20261031-1816 / 7122429 (merge of origin/main cfe1085 retained both ENG-02 and STRAT-026 entries)
+- Status: DONE (implementation) — Josh review/approval required; PR #126 not merged
+- Files changed: scripts/dispatch_agent.sh (usage/header text only), tests/test_dispatch_agent.py, AGENTS.md, ITERATION_PROGRESS_LOG.md, reports/2026-10-31_210221_ENG-11-ENG-02-dispatch-target.md, REPORT.md (ignored)
+- Tests: ./.venv/bin/python -m pytest tests/test_dispatch_agent.py -q => 14 passed in 0.57s (0 failed); git diff --check clean; script diff comments/usage only
+- Decisions/risks: agent-id remains required and positional (no default); runtime behavior unchanged; merge conflict in ITERATION_PROGRESS_LOG.md resolved by keeping both sides; origin/main STRAT-026 files retained
+- Next action: Josh reviews PR #126 (head 712242911d48b8a8919e4b4608dd011ffa33a6d2); Josh approval required before any merge
