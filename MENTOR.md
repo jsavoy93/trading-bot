@@ -891,6 +891,112 @@ After a substantial feature chain or two levels of follow-up work, return to the
 
 ---
 
+## Agent Operating Rules — Model, Routing, Review, Worktrees (ENG-05..08)
+
+These four rule sets were added on 2026-10-31 (branch
+`agent/trading-ENG-05-08-DOCS-20261031-1855`, PR to `main`). The normative
+text lives in `AGENT_OPERATING_PLAN.md` (ENG-05, ENG-06, ENG-07) and
+`BRANCHING.md` (ENG-07, ENG-08). This section is the pointer + the durable
+facts that must not be rediscovered the hard way.
+
+### ENG-05 — model-quota discipline
+
+`zai/glm-5.1` is metered and its allowance is shared across every agent lane.
+Run only ONE GLM-heavy (judgement-heavy) job at a time. Documentation and
+mechanical text work belongs on the `docs-agent` lane precisely so it does not
+consume GLM quota.
+
+GLM weekly/monthly quota exhaustion looks like this (observed
+2026-10-31T18:48Z in `/tmp/openclaw/openclaw-2026-10-31.log`):
+
+```
+429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-02 20:33:34
+```
+
+When the provider chain is exhausted entirely the lane surfaces
+`FailoverError: ⚠️ Weekly/Monthly Limit Exhausted`. The reset timestamp
+(2026-11-02 20:33:34 UTC for that exhaustion) is carried in the error text —
+quote it, do not guess it.
+
+**Every final report must name the model that actually completed the work.**
+Evidence: `executionTrace.winnerModel`, `executionTrace.fallbackUsed`, and the
+`model_fallback_decision` lines in `/tmp/openclaw/*.log`. A
+`decision: "candidate_succeeded"` entry names the winner in
+`candidateProvider`/`candidateModel` and lists the failed attempts in
+`previousAttempts`. Reporting the *requested* model instead of the
+*completing* model is a report bug.
+
+### ENG-06 — model routing by task kind
+
+`docs-agent` (primary `minimax-portal/MiniMax-M3`, fallback
+`zai/glm-5.1`) handles ONLY reports, `ITERATION_PROGRESS_LOG.md` entries,
+`reports/` archive files, and other documentation/mechanical text work.
+`zai/glm-5.1` backs `trading-manager`, `trading-exec`, `dashboard-agent`, and
+`engineering-manager` for design, code changes, debugging, multi-step
+analysis, and anything where judgement quality matters. Full decision table is
+in `AGENT_OPERATING_PLAN.md` under "Model Routing (ENG-06)".
+
+Never route a design or debugging decision to the docs lane just because the
+GLM quota is exhausted — route it to the GLM lane and accept the fallback, or
+wait for the reset.
+
+### ENG-07 — reviewer-agent gate
+
+An independent reviewer-agent verdict (`APPROVE` / `BLOCK` with reasons) is
+REQUIRED before asking Josh to merge. The reviewer is a separate, read-only
+agent session: it reads the PR diff against the acceptance criteria and
+returns a verdict; it never edits, commits, pushes, or merges. A `BLOCK` must
+be resolved (fixed and re-reviewed, or explicitly accepted by Josh with the
+reason recorded) before the merge request is presented. An unresolved `BLOCK`
+is a process violation and stops the task as `REWORK`/`BLOCKED`.
+
+### ENG-08 — worktrees and git identity
+
+Every task worktree comes from the standalone clean clone:
+
+```bash
+git -C /root/.openclaw/clean/trading-bot fetch origin -q
+git -C /root/.openclaw/clean/trading-bot worktree add \
+  /root/.openclaw/worktrees/<TASKID> -b <branch> origin/main
+```
+
+NEVER run `git worktree add` from `/root/deploy/trading-bot-main` or
+`/root/.openclaw/workspace/trading-bot`.
+
+Two protected checkouts:
+
+- `/root/.openclaw/workspace/trading-bot` — a protected **dirty** checkout.
+  Do not modify it. Its dirty state belongs to another active task. (It does
+  hold the only virtualenv with the project dependencies — reading its
+  `bin/python` interpreter is fine, editing the tree is not.)
+- `/root/deploy/trading-bot-main` — hosts the **live paper bot**
+  (`main.py --continuous`). Do not modify it.
+
+Per-worktree git identity (so commits identify the authoring agent):
+
+```bash
+git -C /root/.openclaw/worktrees/<TASKID> config user.name <agent-id>
+git -C /root/.openclaw/worktrees/<TASKID> config user.email <agent-id>@openclaw.local
+```
+
+### Test-environment footgun (found while running this task)
+
+The system `python3` lacks the project dependencies (`pydantic`, `pandas`,
+`fastapi`), so `python3 -m pytest` aborts with 16 collection errors. Use the
+virtualenv interpreter instead:
+
+```bash
+/root/.openclaw/workspace/trading-bot/.venv/bin/python -m pytest -q
+```
+
+Run it from the task worktree. Baseline on `origin/main` @ `8fd2353` was
+**40 failed, 2055 passed, 1 skipped, 13 deselected** — the 40 failures are
+the known pre-existing set (dashboard live-endpoint / settings tests that need
+the 9 GB production `trading_bot.db`). Compare failure *sets*, not absolute
+counts, when checking for regressions.
+
+---
+
 ## Common Mistakes to Avoid
 
 1. **Never say "X% of symbols failed" without checking `failed_analyses.blocked_by`** — the vast majority of records are normal HOLD signals, not errors.
