@@ -1,20 +1,35 @@
-"""STRAT-SWING-PAPER — single-shot paper swing executor (C4 + RSI(2)).
+"""STRAT-SWING-PAPER — single-shot paper swing executor (RSI(2) ONLY).
 
 Places PAPER orders ONLY (https://paper-api.alpaca.markets) with per-strategy
 client_order_id labels (see rules.py). Default is DRY-RUN: nothing is sent
-unless --execute is passed. Credentials come exclusively from the
-ALPACA_API_KEY / ALPACA_API_SECRET environment variables (paper keys).
+unless --execute is passed, and dry-run writes NOTHING to state.json (only
+the events log). Credentials come exclusively from the ALPACA_API_KEY /
+ALPACA_API_SECRET environment variables (paper keys).
 
-Never loops, never installs timers. Run it once per day from a human-approved
-schedule. Exit logic: stop orders ride with each entry; time exits and
-chandelier updates are applied on subsequent runs from the persisted state
-file (logs/state.json, gitignored).
+SCOPE DECISION (Josh, 2026-11-03): this runner trades RSI(2) ONLY. C4 stays
+on the existing strat023-c4-shadow timer (labels sl_short-..., live_paper.db).
+
+Per-run responsibilities (idempotent; safe to re-run same day):
+  1. EXITS for open RSI(2) trades: chandelier stop updates (never lower),
+     15-trading-day time exit. Closed trades are removed from state so the
+     slice money frees up.
+  2. STOP-AFTER-FILL: sell stops/partials are placed only AFTER a confirmed
+     entry fill; total open sell qty for a symbol never exceeds held qty.
+  3. NEW ENTRIES: skip symbols held in the account, symbols with any
+     open/pending order (any label, including sl_short-*), and symbols C4
+     signaled the same day (best-effort read from live_paper.db). Never
+     trades on an incomplete daily bar. Requires TRADING_BOT_PAPER_ONLY=1
+     (same guard as the C4 shadow runner).
+
+Never loops, never installs timers. Run once per day from a human-approved
+schedule. State: logs/state.json (gitignored).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,19 +40,27 @@ import pandas as pd
 import requests
 
 import signals
-
-from rules import (C4, RSI2, BudgetSlices, apply_rsi2_daily_cap,
-                   make_labels, next_sequence, rsi2_overlap_blocked)
+from rules import (RSI2, make_client_order_id, make_labels,
+                   make_partial_client_order_id, next_sequence,
+                   rsi2_slice_dollars, rsi2_skip_blocked, size_rsi2_position,
+                   symbol_has_open_order)
 
 HERE = Path(__file__).resolve().parent
 LOG_DIR = Path(os.environ.get("STRAT_SWING_LOG_DIR", HERE / "logs"))
 STATE_PATH = LOG_DIR / "state.json"
 EVENTS_PATH = LOG_DIR / "swing_events.jsonl"
+DEFAULT_C4_DB = Path("/root/deploy/trading-bot-main/live_paper.db")
 
 PAPER_TRADING_URL = "https://paper-api.alpaca.markets"
 DATA_URL = "https://data.alpaca.markets"
 LOOKBACK_DAYS = 420  # ~290 trading days, same as the shadow runners
 KILL_SWITCH = HERE / "KILL_SWITCH"  # halt immediately if present
+
+# A US equity daily bar is final only after the regular-session close.
+# 16:00 ET == 20:00/21:00 UTC (DST/EST). We require 21:05 UTC before a
+# same-day bar may be treated as completed.
+DAILY_BAR_FINAL_UTC_HOUR = 21
+DAILY_BAR_FINAL_UTC_MINUTE = 5
 
 
 def fail(msg: str, code: int = 2):
@@ -60,7 +83,7 @@ class AlpacaPaper:
     def __init__(self, key: str, secret: str, dry_run: bool = True):
         if "paper-api.alpaca.markets" not in PAPER_TRADING_URL:
             fail("refusing to run: trading URL is not the paper endpoint")
-        self.key, self.secret = key, secret
+        self.key, self.secret = key, sec = key, secret
         self.dry_run = dry_run
         self.session = requests.Session()
 
@@ -88,13 +111,23 @@ class AlpacaPaper:
         r.raise_for_status()
         return r.json()
 
+    def get_order_by_client_id(self, client_order_id: str) -> dict | None:
+        r = self.session.get(
+            f"{PAPER_TRADING_URL}/v2/orders:by_client_order_id",
+            params={"client_order_id": client_order_id},
+            headers=self._headers(), timeout=15)
+        if r.status_code != 200:
+            return None
+        return r.json()
+
     def daily_bars(self, symbol: str) -> pd.DataFrame | None:
         end = datetime.now(timezone.utc)
         start = pd.Timestamp(end) - pd.Timedelta(days=LOOKBACK_DAYS)
         r = self.session.get(
             f"{DATA_URL}/v2/stocks/{symbol}/bars",
             params={"timeframe": "1Day", "start": start.isoformat(),
-                    "end": end.isoformat(), "limit": 1000, "adjustment": "split"},
+                    "end": end.isoformat(), "limit": 1000,
+                    "adjustment": "split"},
             headers=self._headers(), timeout=30)
         if r.status_code != 200:
             return None
@@ -106,9 +139,21 @@ class AlpacaPaper:
     # ---- writes (suppressed in dry-run) ----
     def submit_order(self, body: dict) -> dict:
         if self.dry_run:
-            return {"dry_run": True, "body": body}
+            return {"dry_run": True, "body": body,
+                    "id": f"dry-{body.get('client_order_id', 'x')}",
+                    "status": "dry_run"}
         r = self.session.post(f"{PAPER_TRADING_URL}/v2/orders",
                               json=body, headers=self._headers(), timeout=15)
+        if r.status_code not in (200, 201):
+            return {"error": r.text}
+        return r.json()
+
+    def replace_order(self, order_id: str, patch: dict) -> dict:
+        """PATCH /v2/orders/{id} — used to raise a stop price (chandelier)."""
+        if self.dry_run:
+            return {"dry_run": True, **patch}
+        r = self.session.patch(f"{PAPER_TRADING_URL}/v2/orders/{order_id}",
+                               json=patch, headers=self._headers(), timeout=15)
         if r.status_code not in (200, 201):
             return {"error": r.text}
         return r.json()
@@ -125,7 +170,7 @@ class AlpacaPaper:
 def load_state() -> dict:
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text())
-    return {"open": {}}  # open[client_order_id of entry] = trade record
+    return {"open": {}}  # open[entry_client_order_id] = trade record
 
 
 def save_state(state: dict) -> None:
@@ -142,190 +187,474 @@ def log_event(evt: dict) -> None:
 
 
 # ------------------------------------------------------------- helpers
-def mmdd_today() -> str:
-    return datetime.now(timezone.utc).strftime("%m%d")
+def ymd_today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
-def strategy_open_notional(state: dict, strategy: str) -> float:
-    return sum(t.get("entry_notional", 0.0) for t in state["open"].values()
-               if t.get("strategy") == strategy)
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def all_client_order_ids(api: AlpacaPaper) -> list:
+def last_bar_is_final(df_last_date, now: datetime | None = None) -> bool:
+    """A daily bar is tradeable only when it is final: either it is a
+    completed prior day, or it is today AND the clock is past the US
+    regular-session close (>= 21:05 UTC covers EST and DST)."""
+    now = now or now_utc()
+    d = pd.Timestamp(df_last_date).date()
+    today = now.date()
+    if d < today:
+        return True
+    if d > today:
+        return False
+    return (now.hour, now.minute) >= (DAILY_BAR_FINAL_UTC_HOUR,
+                                      DAILY_BAR_FINAL_UTC_MINUTE)
+
+
+def rsi2_open_notional(state: dict) -> float:
+    return sum(t.get("entry_notional", 0.0)
+               for t in state.get("open", {}).values())
+
+
+def open_rsi2_count(state: dict) -> int:
+    return len(state.get("open", {}))
+
+
+def all_client_order_ids(api) -> list:
     labels = []
-    for o in api.get_orders(status="open") + api.get_orders(status="closed"):
+    try:
+        orders = api.get_orders(status="open") + api.get_orders(status="closed")
+    except Exception:
+        return []
+    for o in orders:
         coid = o.get("client_order_id")
         if coid:
             labels.append(coid)
     return labels
 
 
-def desired_entry_order(api: AlpacaPaper, symbol: str, qty: int,
-                        strategy: str, mmdd: str, existing_labels: list):
-    n = next_sequence(existing_labels, strategy, symbol, mmdd)
-    entry_id, stop_id = make_labels(strategy, symbol, mmdd, n)
-    return n, entry_id, stop_id
+def c4_signaled_today(symbols, db_path=None) -> set:
+    """Best-effort set of `symbols` that C4 signaled TODAY, read from the
+    strat023-c4-shadow live_paper.db (labels sl_short-*). Any error —
+    missing file, unknown schema, locked db — returns an empty set (the
+    skip rule then relies on positions/open-orders overlap)."""
+    path = Path(db_path or os.environ.get("STRAT_SWING_C4_DB", DEFAULT_C4_DB))
+    if not path.exists() or not symbols:
+        return set()
+    out = set()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    wanted = {str(s).strip().upper() for s in symbols}
+    uri = f"file:{path}?mode=ro&immutable=0"
+    try:
+        con = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            tables = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "orders" in tables:
+                rows = con.execute(
+                    "SELECT DISTINCT symbol FROM orders WHERE "
+                    "client_order_id LIKE 'sl_short-%' AND "
+                    "(substr(created_at,1,10)=? OR substr(submitted_at,1,10)=? "
+                    " OR substr(filled_at,1,10)=?)",
+                    (today, today, today))
+                out.update(r[0].upper() for r in rows if r[0])
+            elif "trades" in tables:
+                rows = con.execute(
+                    "SELECT DISTINCT symbol FROM trades WHERE "
+                    "(client_order_id LIKE 'sl_short-%' OR symbol IN (%s)) "
+                    "AND date(trade_date)=?" % ",".join("?" * len(symbols)),
+                    tuple(symbols) + (today,))
+                out.update(r[0].upper() for r in rows if r[0])
+        finally:
+            con.close()
+    except Exception:
+        return out
+    return out & wanted
+
+
+# ------------------------------------------------------- exits (each run)
+def held_qty(positions, symbol: str) -> float:
+    sym = str(symbol).strip().upper()
+    for p in positions or []:
+        if str(p.get("symbol", "")).strip().upper() == sym:
+            return float(p.get("qty", 0) or 0)
+    return 0.0
+
+
+def open_sell_qty(open_orders, symbol: str) -> float:
+    sym = str(symbol).strip().upper()
+    q = 0.0
+    for o in open_orders or []:
+        if str(o.get("side", "")) != "sell":
+            continue
+        if str(o.get("symbol", "")).strip().upper() != sym:
+            continue
+        q += float(o.get("qty", 0) or 0)
+    return q
+
+
+def trading_days_since(df, entry_date) -> int:
+    """Number of completed daily bars strictly AFTER the entry bar."""
+    entry = pd.Timestamp(entry_date).date()
+    dates = [pd.Timestamp(d).date() for d in df["date"]]
+    return sum(1 for d in dates if d > entry)
+
+
+def chandelier_stop(df, entry_date, atr14_now: float) -> float | None:
+    """max(close since entry) - 3.0*ATR14(current bar)."""
+    entry = pd.Timestamp(entry_date).date()
+    closes = [float(c) for c, d in zip(df["close"], df["date"])
+              if pd.Timestamp(d).date() >= entry]
+    if not closes:
+        return None
+    return max(closes) - signals.RSI2_TRAIL_ATR * float(atr14_now)
+
+
+def _close_trade(state, entry_id, reason, results):
+    state["open"].pop(entry_id, None)
+    results["closed"].append({"entry_id": entry_id, "reason": reason})
+    log_event({"ts": now_utc(), "type": "close", "entry_id": entry_id,
+               "reason": reason})
+
+
+def process_exits(state, api, bars, positions, results):
+    """For every open RSI(2) trade: drop dead entries, manage stops,
+    apply the 15-day time exit. Per-trade try/except; state saved by
+    caller after each mutation is done at run() level via save hook."""
+    for entry_id in list(state.get("open", {}).keys()):
+        try:
+            t = state["open"].get(entry_id)
+            if t is None:
+                continue
+            sym = t["symbol"]
+            df = bars.get(sym)
+            if df is None or len(df) == 0:
+                continue
+
+            # -- confirm entry fill (stop-after-fill contract) --
+            if not t.get("entry_filled"):
+                o = api.get_order_by_client_id(entry_id)
+                if o is None:
+                    continue
+                st = o.get("status")
+                if st in ("canceled", "expired", "rejected"):
+                    _close_trade(state, entry_id, f"entry_{st}", results)
+                    continue
+                if st in ("filled",):
+                    t["entry_filled"] = True
+                    t["entry_fill_px"] = float(
+                        o.get("filled_avg_price") or t.get("ref_px") or 0)
+                    t["entry_order_id"] = o.get("id")
+                else:  # still pending — nothing to manage yet
+                    continue
+
+            # -- time exit: 15 trading days after entry bar --
+            days = trading_days_since(df, t["entry_date"])
+            if days >= signals.RSI2_TIME_EXIT:
+                for oid in (t.get("stop_order_id"), t.get("partial_order_id")):
+                    if oid:
+                        api.cancel_order(oid)
+                sell_qty = int(min(float(t["qty"]), held_qty(positions, sym)))
+                if sell_qty <= 0:
+                    _close_trade(state, entry_id, "time_exit_no_position", results)
+                    continue
+                resp = api.submit_order({
+                    "symbol": sym, "qty": sell_qty, "side": "sell",
+                    "type": "market", "time_in_force": "day",
+                    "client_order_id": make_client_order_id(
+                        RSI2, sym, t["date"], t["n"]) + "-timeexit",
+                })
+                if resp.get("error"):
+                    log_event({"ts": now_utc(), "type": "exit_error",
+                               "entry_id": entry_id, "error": resp["error"]})
+                    continue
+                _close_trade(state, entry_id, "time_exit_15d", results)
+                continue
+
+            # -- chandelier trail: raise stop, never lower --
+            if t.get("stop_order_id") and t.get("entry_filled"):
+                ch = chandelier_stop(df, t["entry_date"],
+                                     float(df["atr14"].iloc[-1]))
+                cur = float(t.get("stop_px", 0) or 0)
+                if ch is not None and ch > cur + 0.01:
+                    new_px = round(ch, 2)
+                    resp = api.replace_order(t["stop_order_id"],
+                                             {"stop_price": new_px})
+                    if resp.get("error"):
+                        log_event({"ts": now_utc(), "type": "stop_update_error",
+                                   "entry_id": entry_id, "error": resp["error"]})
+                    else:
+                        t["stop_px"] = new_px
+                        log_event({"ts": now_utc(), "type": "stop_update",
+                                   "entry_id": entry_id, "new_stop": new_px})
+        except Exception as exc:  # never let one symbol kill the run
+            log_event({"ts": now_utc(), "type": "exit_symbol_error",
+                       "entry_id": entry_id, "error": repr(exc)})
+            results["errors"].append({"entry_id": entry_id,
+                                      "error": repr(exc)})
+
+
+def place_stops_after_fill(state, api, positions, open_orders, results):
+    """Place the labeled stop (+ partial limit) for trades whose entry is
+    confirmed filled but which have no stop yet. Total open sell qty for a
+    symbol NEVER exceeds held qty."""
+    for entry_id in list(state.get("open", {}).keys()):
+        try:
+            t = state.get("open", {}).get(entry_id)
+            if t is None or t.get("stop_order_id"):
+                continue
+            if not t.get("entry_filled"):
+                continue
+            sym = t["symbol"]
+            held = held_qty(positions, sym)
+            if held <= 0:
+                continue  # position gone; exits/next pass will clean up
+            already = open_sell_qty(open_orders, sym)
+            room = int(held - already)
+            if room <= 0:
+                continue
+            # Allocate: partial gets at most half the room, the stop
+            # covers the rest. TOTAL open sell qty (existing + partial +
+            # stop) never exceeds held qty (fixes the 1.5x stop+partial
+            # overhang from the review).
+            half = int(t["qty"] // 2)
+            partial_qty = min(half, max(0, room // 2))
+            stop_qty = min(int(t["qty"]) - partial_qty, room - partial_qty)
+            if stop_qty <= 0 and partial_qty <= 0:
+                continue
+            stop_resp = None
+            if stop_qty >= 1:
+                stop_resp = api.submit_order({
+                    "symbol": sym, "qty": stop_qty, "side": "sell",
+                    "type": "stop", "stop_price": round(float(t["stop_px"]), 2),
+                    "time_in_force": "gtc",
+                    "client_order_id": make_labels(
+                        RSI2, sym, t["date"], t["n"])[1],
+                })
+                if stop_resp.get("error"):
+                    log_event({"ts": now_utc(), "type": "stop_error",
+                               "entry_id": entry_id,
+                               "error": stop_resp["error"]})
+                    results["errors"].append(
+                        {"entry_id": entry_id,
+                         "error": "stop: " + str(stop_resp["error"])[:200]})
+                    stop_resp = None
+                else:
+                    t["stop_order_id"] = stop_resp.get("id")
+                    open_orders = list(open_orders) + [
+                        {"symbol": sym, "side": "sell", "qty": stop_qty}]
+                    log_event({"ts": now_utc(), "type": "stop_placed",
+                               "entry_id": entry_id, "symbol": sym,
+                               "qty": stop_qty, "dry_run": api.dry_run})
+            if partial_qty >= 1:
+                p_resp = api.submit_order({
+                    "symbol": sym, "qty": partial_qty, "side": "sell",
+                    "type": "limit",
+                    "limit_price": round(float(t["partial_px"]), 2),
+                    "time_in_force": "gtc",
+                    "client_order_id": make_partial_client_order_id(
+                        RSI2, sym, t["date"], t["n"]),
+                })
+                if p_resp.get("error"):
+                    log_event({"ts": now_utc(), "type": "partial_error",
+                               "entry_id": entry_id,
+                               "error": p_resp["error"]})
+                    results["errors"].append(
+                        {"entry_id": entry_id,
+                         "error": "partial: " + str(p_resp["error"])[:200]})
+                else:
+                    t["partial_order_id"] = p_resp.get("id")
+                    open_orders.append({"symbol": sym, "side": "sell",
+                                        "qty": partial_qty})
+                    log_event({"ts": now_utc(), "type": "partial_placed",
+                               "entry_id": entry_id, "symbol": sym,
+                               "qty": partial_qty, "dry_run": api.dry_run})
+            results["stops_placed"].append(
+                {"entry_id": entry_id, "symbol": sym,
+                 "stop_qty": stop_qty, "partial_qty": partial_qty})
+        except Exception as exc:
+            log_event({"ts": now_utc(), "type": "stop_symbol_error",
+                       "entry_id": entry_id, "error": repr(exc)})
+            results["errors"].append({"entry_id": entry_id, "error": repr(exc)})
+
+
+# ------------------------------------------------------------- entries
+def process_entries(state, api, bars, spy_bars, positions, open_orders,
+                    existing_labels, ymd, args, portfolio_value, results):
+    slice_dollars = rsi2_slice_dollars(portfolio_value, args.bucket_pct)
+    c4_today = c4_signaled_today(args.symbols)
+    if c4_today:
+        log_event({"ts": now_utc(), "type": "c4_same_day_skip",
+                   "symbols": sorted(c4_today)})
+
+    candidates = []
+    for sym in args.symbols:
+        try:
+            df = bars.get(sym)
+            if df is None or len(df) == 0:
+                continue
+            if rsi2_skip_blocked(positions, open_orders, sym, c4_today):
+                log_event({"ts": now_utc(), "type": "skip", "strategy": RSI2,
+                           "symbol": sym, "reason": "held_or_pending_or_c4"})
+                continue
+            if not last_bar_is_final(df["date"].iloc[-1]):
+                log_event({"ts": now_utc(), "type": "skip", "strategy": RSI2,
+                           "symbol": sym, "reason": "daily_bar_not_final"})
+                continue
+            if spy_bars is None or not last_bar_is_final(spy_bars["date"].iloc[-1]):
+                continue
+            if signals.rsi2_entry_signal(df, spy_bars):
+                candidates.append({"symbol": sym,
+                                   "rsi2": float(df["rsi2"].iloc[-1])})
+        except Exception as exc:
+            log_event({"ts": now_utc(), "type": "entry_symbol_error",
+                       "symbol": sym, "error": repr(exc)})
+            results["errors"].append({"symbol": sym, "error": repr(exc)})
+
+    room = args.max_open - open_rsi2_count(state)
+    if room <= 0:
+        log_event({"ts": now_utc(), "type": "skip", "reason": "max_open_reached"})
+        return
+    cap = min(args.rsi2_cap, room)
+    from rules import apply_rsi2_daily_cap
+    selected = apply_rsi2_daily_cap(candidates, cap=cap)
+
+    for cand in selected:
+        try:
+            sym = cand["symbol"]
+            df = bars[sym]
+            last = len(df) - 1
+            px = float(df["close"].iloc[last])
+            qty = size_rsi2_position(
+                px, slice_dollars,
+                open_notional=rsi2_open_notional(state),
+                per_position_cap_pct=args.per_position_cap,
+                open_positions=open_rsi2_count(state),
+                max_open_positions=args.max_open)
+            if qty <= 0:
+                log_event({"ts": now_utc(), "type": "skip", "strategy": RSI2,
+                           "symbol": sym, "reason": "slice_or_cap_exhausted"})
+                continue
+            # idempotency re-check: symbol may have gained a pending order
+            # earlier in this run or between fetch and submit
+            if symbol_has_open_order(open_orders, sym) or sym in (
+                    t["symbol"] for t in state["open"].values()):
+                continue
+            n = next_sequence(existing_labels, RSI2, sym, ymd)
+            entry_id = make_client_order_id(RSI2, sym, ymd, n)
+            init_stop, _chand, partial_px = signals.rsi2_stops(
+                px, float(df["atr14"].iloc[last]))
+            resp = api.submit_order({
+                "symbol": sym, "qty": qty, "side": "buy", "type": "market",
+                "time_in_force": "day", "client_order_id": entry_id,
+            })
+            existing_labels.append(entry_id)
+            if resp.get("error"):
+                # order failed: record NOTHING in state, log the failure
+                log_event({"ts": now_utc(), "type": "buy_error",
+                           "strategy": RSI2, "symbol": sym,
+                           "client_order_id": entry_id,
+                           "error": str(resp["error"])[:300]})
+                results["errors"].append(
+                    {"symbol": sym,
+                     "error": "buy: " + str(resp["error"])[:200]})
+                continue
+            t = {
+                "strategy": RSI2, "symbol": sym, "qty": qty, "n": n,
+                "date": ymd, "ref_px": px,
+                "entry_notional": qty * px,
+                "stop_px": round(init_stop, 2),
+                "partial_px": round(partial_px, 2),
+                "entry_id": entry_id,
+                "entry_order_id": resp.get("id"),
+                "entry_filled": False,
+                "signal_date": str(df["date"].iloc[last]),
+                "atr14": float(df["atr14"].iloc[last]),
+                "entry_date": str(df["date"].iloc[min(last + 1, len(df) - 1)]),
+            }
+            state["open"][entry_id] = t
+            results["rsi2"].append({"symbol": sym, "qty": qty,
+                                    "rsi2": cand["rsi2"], "entry_id": entry_id,
+                                    "stop_px": t["stop_px"],
+                                    "partial_px": t["partial_px"]})
+            log_event({"ts": now_utc(), "type": "buy", "strategy": RSI2,
+                       "symbol": sym, "qty": qty, "client_order_id": entry_id,
+                       "rsi2": cand["rsi2"], "dry_run": api.dry_run})
+            # persist immediately: one bad symbol must not lose earlier orders
+            if not api.dry_run:
+                save_state(state)
+            open_orders = list(open_orders) + [
+                {"symbol": sym, "side": "buy", "qty": qty,
+                 "client_order_id": entry_id}]
+        except Exception as exc:
+            log_event({"ts": now_utc(), "type": "entry_symbol_error",
+                       "symbol": cand.get("symbol"), "error": repr(exc)})
+            results["errors"].append({"symbol": cand.get("symbol"),
+                                      "error": repr(exc)})
 
 
 def run(args):
     if KILL_SWITCH.exists():
         fail("kill switch present — halting", code=3)
+    if args.execute and os.environ.get("TRADING_BOT_PAPER_ONLY") != "1":
+        fail("refusing to execute: TRADING_BOT_PAPER_ONLY=1 is required "
+             "for --execute (paper-only guard, same as C4 shadow runner)")
     key, sec = load_credentials()
     api = AlpacaPaper(key, sec, dry_run=not args.execute)
 
     state = load_state()
     acct = api.get_account()
     portfolio_value = float(acct["portfolio_value"])
-    slices = BudgetSlices(
-        portfolio_value=portfolio_value,
-        short_term_bucket_pct=args.bucket_pct,
-        c4_share=args.c4_share,
-        rsi2_share=1.0 - args.c4_share,
-    )
     positions = api.get_positions()
     open_orders = api.get_orders(status="open")
-    held_symbols = {p["symbol"] for p in positions}
     existing_labels = all_client_order_ids(api)
-    mmdd = mmdd_today()
+    ymd = ymd_today()
 
     bars = {}
-    for sym in args.symbols + ["SPY"]:
-        b = api.daily_bars(sym)
-        if b is not None:
-            bars[sym] = signals.add_indicators(b)
+    for sym in set(args.symbols) | {t["symbol"] for t in state["open"].values()} | {"SPY"}:
+        try:
+            b = api.daily_bars(sym)
+            if b is not None:
+                bars[sym] = signals.add_indicators(b)
+        except Exception as exc:
+            log_event({"ts": now_utc(), "type": "bars_error", "symbol": sym,
+                       "error": repr(exc)})
 
-    # ---------------------------------------------------- C4 first
-    c4_buys = []
-    for sym in args.symbols:
-        df = bars.get(sym)
-        if df is None or sym in held_symbols:
-            continue
-        if signals.c4_entry_signal(df):
-            c4_buys.append(sym)
+    results = {"rsi2": [], "stops_placed": [], "closed": [], "errors": [],
+               "dry_run": api.dry_run}
 
-    results = {"c4": [], "rsi2": [], "dry_run": api.dry_run}
-    for sym in c4_buys:
-        df = bars[sym]
-        last = len(df) - 1
-        px = float(df["close"].iloc[last])  # sizing ref; entry is next open
-        qty = slices.size_order(C4, px, open_notional=strategy_open_notional(state, C4))
-        if qty <= 0:
-            log_event({"ts": datetime.now(timezone.utc), "type": "skip",
-                       "strategy": C4, "symbol": sym, "reason": "slice_exhausted"})
-            continue
-        n, entry_id, stop_id = desired_entry_order(
-            api, sym, qty, C4, mmdd, existing_labels)
-        stop_px = signals.c4_stop_price(px, float(df["atr14"].iloc[last]))
-        buy = api.submit_order({
-            "symbol": sym, "qty": qty, "side": "buy", "type": "market",
-            "time_in_force": "day", "client_order_id": entry_id,
-        })
-        stop = api.submit_order({
-            "symbol": sym, "qty": qty, "side": "sell", "type": "stop",
-            "stop_price": round(stop_px, 2), "time_in_force": "gtc",
-            "client_order_id": stop_id,
-        })
-        existing_labels += [entry_id, stop_id]
-        state["open"][entry_id] = {
-            "strategy": C4, "symbol": sym, "qty": qty, "date": mmdd,
-            "entry_notional": qty * px, "stop_id": stop_id,
-            "signal_date": str(df["date"].iloc[last]),
-            "atr14": float(df["atr14"].iloc[last]),
-            "entry_date": str(df["date"].iloc[min(last + 1, len(df) - 1)]),
-        }
-        results["c4"].append({"symbol": sym, "qty": qty, "entry_id": entry_id,
-                              "stop_id": stop_id, "stop_px": round(stop_px, 2),
-                              "buy": buy, "stop": stop})
-        log_event({"ts": datetime.now(timezone.utc), "type": "buy",
-                   "strategy": C4, "symbol": sym, "qty": qty,
-                   "client_order_id": entry_id, "stop_client_order_id": stop_id,
-                   "dry_run": api.dry_run})
+    process_exits(state, api, bars, positions, results)
+    if not api.dry_run:
+        save_state(state)
+    place_stops_after_fill(state, api, positions, open_orders, results)
+    if not api.dry_run:
+        save_state(state)
+    process_entries(state, api, bars, bars.get("SPY"), positions, open_orders,
+                    existing_labels, ymd, args, portfolio_value, results)
+    # entries fill later intraday; stops are placed on the NEXT run after
+    # the fill is confirmed (stop-after-fill contract, spec item 4)
 
-    # ---------------------------------------------------- RSI(2) second
-    spy_bars = bars.get("SPY")
-    candidates = []
-    if spy_bars is not None:
-        for sym in args.symbols:
-            df = bars.get(sym)
-            if df is None or sym in held_symbols:
-                continue
-            if rsi2_overlap_blocked(positions, open_orders, sym, mmdd):
-                log_event({"ts": datetime.now(timezone.utc), "type": "skip",
-                           "strategy": RSI2, "symbol": sym,
-                           "reason": "c4_overlap"})
-                continue
-            if signals.rsi2_entry_signal(df, spy_bars):
-                candidates.append({"symbol": sym,
-                                   "rsi2": float(df["rsi2"].iloc[-1])})
-    selected = apply_rsi2_daily_cap(candidates, cap=args.rsi2_cap)
-
-    for cand in selected:
-        sym = cand["symbol"]
-        df = bars[sym]
-        last = len(df) - 1
-        px = float(df["close"].iloc[last])
-        qty = slices.size_order(RSI2, px,
-                                open_notional=strategy_open_notional(state, RSI2))
-        if qty <= 0:
-            log_event({"ts": datetime.now(timezone.utc), "type": "skip",
-                       "strategy": RSI2, "symbol": sym, "reason": "slice_exhausted"})
-            continue
-        n, entry_id, stop_id = desired_entry_order(
-            api, sym, qty, RSI2, mmdd, existing_labels)
-        init_stop, chand_stop, partial_px = signals.rsi2_stops(
-            px, float(df["atr14"].iloc[last]))
-        buy = api.submit_order({
-            "symbol": sym, "qty": qty, "side": "buy", "type": "market",
-            "time_in_force": "day", "client_order_id": entry_id,
-        })
-        stop = api.submit_order({
-            "symbol": sym, "qty": qty, "side": "sell", "type": "stop",
-            "stop_price": round(init_stop, 2), "time_in_force": "gtc",
-            "client_order_id": stop_id,
-        })
-        half = qty // 2
-        partial = None
-        if half >= 1:
-            partial = api.submit_order({
-                "symbol": sym, "qty": half, "side": "sell", "type": "limit",
-                "limit_price": round(partial_px, 2), "time_in_force": "gtc",
-                "client_order_id": stop_id + "-p",
-            })
-        existing_labels += [entry_id, stop_id]
-        state["open"][entry_id] = {
-            "strategy": RSI2, "symbol": sym, "qty": qty, "date": mmdd,
-            "entry_notional": qty * px, "stop_id": stop_id,
-            "signal_date": str(df["date"].iloc[last]),
-            "atr14": float(df["atr14"].iloc[last]),
-            "entry_date": str(df["date"].iloc[min(last + 1, len(df) - 1)]),
-        }
-        results["rsi2"].append({"symbol": sym, "qty": qty, "rsi2": cand["rsi2"],
-                                "entry_id": entry_id, "stop_id": stop_id,
-                                "stop_px": round(init_stop, 2),
-                                "partial_px": round(partial_px, 2),
-                                "buy": buy, "stop": stop, "partial": partial})
-        log_event({"ts": datetime.now(timezone.utc), "type": "buy",
-                   "strategy": RSI2, "symbol": sym, "qty": qty,
-                   "client_order_id": entry_id, "stop_client_order_id": stop_id,
-                   "rsi2": cand["rsi2"], "dry_run": api.dry_run})
-
-    save_state(state)
+    if not api.dry_run:
+        save_state(state)
     print(json.dumps(results, indent=2, default=str))
-    print(f"mode: {'DRY-RUN (nothing sent)' if api.dry_run else 'PAPER ORDERS SENT'}")
+    print(f"mode: {'DRY-RUN (nothing sent, nothing persisted to state)' if api.dry_run else 'PAPER ORDERS SENT'}")
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--symbols", nargs="+", required=True,
-                   help="candidate symbols to evaluate (C4 then RSI(2))")
+                   help="candidate symbols to evaluate (RSI(2) only)")
     p.add_argument("--execute", action="store_true",
-                   help="actually submit PAPER orders (default: dry-run)")
+                   help="actually submit PAPER orders (default: dry-run; "
+                        "dry-run persists nothing to state.json)")
     p.add_argument("--bucket-pct", type=float, default=0.30,
                    help="short-term bucket share of portfolio (default 0.30)")
-    p.add_argument("--c4-share", type=float, default=0.50,
-                   help="C4 share of the bucket; RSI(2) gets the rest")
     p.add_argument("--rsi2-cap", type=int, default=4,
                    help="max RSI(2) new buys per day (default 4)")
+    p.add_argument("--max-open", type=int, default=4,
+                   help="max open RSI(2) positions (default 4)")
+    p.add_argument("--per-position-cap", type=float, default=0.10,
+                   help="per-position cap as a share of the slice budget "
+                        "(default 0.10)")
     args = p.parse_args(argv)
     run(args)
 
