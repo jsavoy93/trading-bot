@@ -21,7 +21,8 @@ from engineering.models import GovernanceFiles, ProjectConfig, WorkflowFiles
 # Test fixtures
 # ---------------------------------------------------------------------------
 
-TRADING_BOT_ROOT = Path("/root/.openclaw/workspace/trading-bot")
+# ENG-04c: derive the repo under test from this file, not a fixed checkout.
+TRADING_BOT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _create_temp_git_repo(tmp_path: Path) -> Path:

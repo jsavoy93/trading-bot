@@ -31,7 +31,7 @@ def client(monkeypatch):
     from pathlib import Path
 
     # ENG-04b: resolve the checkout under TEST, not a sibling checkout.
-    # This fixture used to hardcode "/root/.openclaw/workspace/trading-bot"
+    # This fixture used to hardcode a sibling workspace checkout path
     # on sys.path, so `import dashboard` / `import database.sqlite_db`
     # resolved to that other checkout. The tests then exercised a copy of
     # the code that was NOT the code under test — which silently hid
