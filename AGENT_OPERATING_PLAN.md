@@ -18,28 +18,42 @@ Responsibilities:
 
 Moose does not normally edit trading strategy code.
 
-### trading-manager
+### engineering-manager
 
-The trading manager plans and reviews one bounded task at a time.
+The engineering manager plans and reviews all code work for the trading bot and
+Benny's Games. It is the dispatch target for code work.
 
 Responsibilities:
 
-- Verify that the repository is clean.
 - Select one approved backlog item.
 - Define measurable acceptance criteria.
-- Record task start time before beginning work.
 - Delegate implementation to the appropriate specialist.
-- Review the resulting diff.
-- Verify tests and backtests.
-- Accept or reject the work.
-- Record task end time and compute elapsed time.
+- Review the exact diff.
+- Verify tests and build evidence.
+- Open the PR.
+- Report results, risks, and the next action.
+- Stop after one iteration.
+
+The engineering-manager must NEVER merge into main.
+
+### trading-manager
+
+The trading manager plans and reviews STRATEGY and RESEARCH only — the backlog of
+STRAT tasks and research reviews.
+
+Responsibilities:
+
+- Plan strategy and research work.
+- Maintain the backlog of STRAT tasks.
+- Review research results.
+- Record task start and end times and compute elapsed time.
 - Report continuity status (continuous or resumed) in every report.
 - Report blocked or stale status if the task cannot complete in reasonable time.
-- Push or prepare a review branch.
 - Report through Telegram.
 - Stop after one iteration.
 
-The manager must never merge into main.
+Code implementation planning and code dispatch go to the engineering-manager.
+The trading manager must never merge into main.
 
 ### trading-exec
 
