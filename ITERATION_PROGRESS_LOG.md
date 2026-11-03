@@ -5469,3 +5469,12 @@ Implementation complete; PR open and awaiting owner review.
 - Tests: ./.venv/bin/python -m pytest tests/test_dispatch_agent.py -q => 14 passed in 0.57s (0 failed); git diff --check clean; script diff comments/usage only
 - Decisions/risks: agent-id remains required and positional (no default); runtime behavior unchanged; merge conflict in ITERATION_PROGRESS_LOG.md resolved by keeping both sides; origin/main STRAT-026 files retained
 - Next action: Josh reviews PR #126 (head 712242911d48b8a8919e4b4608dd011ffa33a6d2); Josh approval required before any merge
+
+- 2026-11-03T17:52Z | STRAT-SWING-PAPER PR #135 fixes | branch agent/swing-paper-order-tagging-20261103 @ e19adf3 | DONE
+  - Objective: fix all 10 independent-review bugs on PR #135; scope per Josh: runner is RSI(2) ONLY (C4 removed, stays on strat023-c4-shadow sl_short-* timer).
+  - Branch brought current with main (#133/#134) via merge 715def6 — the branch's 43 extra test failures were merge-base staleness, not PR bugs.
+  - Files: experiments/swing_paper/{rules,runner,report_pnl}.py, README.md; tests/test_swing_paper_{rules,runner,report}.py.
+  - Key contracts: labels now carry the year (rsi2-AMD-20261103-1[-stop|-stop-p]); dry-run persists nothing but swing_events.jsonl; sells only after confirmed fill and total open sell qty never exceeds held; chandelier raise-only + 15d time exit free the slice; skip held / any pending order (any label) / C4-same-day (best-effort live_paper.db read, fails open); TRADING_BOT_PAPER_ONLY=1 guard; incomplete-daily-bar refusal; per-position cap 10% (config) of 30% bucket slice; max 4/day, max-open 4 (config); report_pnl uses filled_qty/filled_avg_price, after/until pagination, includes partial-fill cancels, attributes open positions by labeled fills only.
+  - Tests: new suite 60 passed; full suite 1 failed / 2197 passed / 2 skipped — the single failure (test_strat026_shadow TestSystemdUnits) is identical on main (env-dependent: units installed on host).
+  - Risk noted: stop-after-fill uses the "later run after fill confirmed" option (bracket legs can't carry client_order_ids); C4 same-day db read is best-effort and fails open.
+  - Next: ENG-07 reviewer pass on PR #135, then Josh merge approval. Approval required.
