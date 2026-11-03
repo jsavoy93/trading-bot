@@ -28,13 +28,25 @@ def client(monkeypatch):
     import tempfile
     import os
     import sys
+    from pathlib import Path
+
+    # ENG-04b: resolve the checkout under TEST, not a sibling checkout.
+    # This fixture used to hardcode "/root/.openclaw/workspace/trading-bot"
+    # on sys.path, so `import dashboard` / `import database.sqlite_db`
+    # resolved to that other checkout. The tests then exercised a copy of
+    # the code that was NOT the code under test — which silently hid
+    # template/dashboard changes made in the checkout actually being
+    # tested (and made results depend on whatever was deployed there).
+    repo_root = Path(__file__).resolve().parents[1]
+    repo_root_str = str(repo_root)
+    src_root = str(repo_root / "src")
 
     # 1) Patch DB_PATH on BOTH module references BEFORE any import.
     import src.database.sqlite_db as sqlite_mod_src
     # Force the dashboard-style import path: src must be in sys.path so
     # `from database.sqlite_db import ...` resolves to the same package.
-    if "/root/.openclaw/workspace/trading-bot/src" not in sys.path:
-        sys.path.insert(0, "/root/.openclaw/workspace/trading-bot/src")
+    if src_root not in sys.path:
+        sys.path.insert(0, src_root)
     import database.sqlite_db as sqlite_mod
 
     tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
@@ -55,8 +67,8 @@ def client(monkeypatch):
     sqlite_mod.sqlite_db.close_stale_sessions(cutoff_iso="2999-01-01T00:00:00")
 
     # 3) Patch the Alpaca client so we don't need real credentials.
-    if "/root/.openclaw/workspace/trading-bot" not in sys.path:
-        sys.path.insert(0, "/root/.openclaw/workspace/trading-bot")
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
     import dashboard as dash_module
     dash_module.trading_client = MagicMock()
     dash_module.trading_client.get_account.return_value = MagicMock(

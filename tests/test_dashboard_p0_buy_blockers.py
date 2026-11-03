@@ -39,6 +39,27 @@ TEMPLATE_PATH = REPO_ROOT / "templates" / "dashboard.html"
 P0_BOUNDARY = "2026-09-30T14:10:34+00:00"
 
 
+def _now_iso(offset_seconds: float = 0.0) -> str:
+    """Return a UTC ISO-8601 timestamp anchored near `now()`.
+
+    ENG-04b: the `/api/buy-blockers` endpoints filter rows by a
+    wall-clock range window (`range=today|24h|7d` compute their cutoffs
+    from `datetime.now(timezone.utc)`). Synthetic rows pinned to a
+    fixed calendar date therefore fall OUTSIDE every window as soon as
+    real time advances past that date, and the endpoints silently
+    return zero rows.
+
+    Anchoring the synthetic dataset to `now()` keeps the range filters
+    meaningful (the 24h test still proves old rows are excluded, because
+    its "old" rows are anchored to `now() - 48h`) without tying the
+    suite to any particular day. `offset_seconds` lets a caller shift a
+    row backwards in time while keeping it inside the window.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    ts = _dt.now(_tz.utc) + _td(seconds=offset_seconds)
+    return ts.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
 def _build_synthetic_p0_db(decision_rows=None, decision_rows_with_pipeline=None):
     """Build an in-memory sqlite DB with a controlled synthetic dataset.
 
@@ -264,7 +285,7 @@ class TestLowVolumeSummaryMath:
             rows.append((
                 f"cycle_p0_{i:03d}",
                 f"SYM{i:03d}",
-                "2026-09-30T15:00:00+00:00",
+                _now_iso(),
                 1,
                 snap,
             ))
@@ -315,7 +336,7 @@ class TestMixedSummaryMath:
                 avg_volume=float(avg_v),
                 min_daily_volume=1_000_000.0,
             )
-            rows.append((f"c_lv_{i}", f"LV{i}", "2026-09-30T15:01:00+00:00", 1, snap))
+            rows.append((f"c_lv_{i}", f"LV{i}", _now_iso(), 1, snap))
 
         # 5 high-low range downgrades (avg volume ABOVE min, hl_pct above max)
         for i in range(5):
@@ -329,7 +350,7 @@ class TestMixedSummaryMath:
                 high_low_pct=2.0 + i * 0.1,
                 effective_max_high_low_pct=0.9,
             )
-            rows.append((f"c_hl_{i}", f"HL{i}", "2026-09-30T15:02:00+00:00", 1, snap))
+            rows.append((f"c_hl_{i}", f"HL{i}", _now_iso(), 1, snap))
 
         # 1 could-not-evaluate fail-open (NOT a downgrade)
         snap = _make_pipeline_snapshot(
@@ -340,7 +361,7 @@ class TestMixedSummaryMath:
             avg_volume=0.0,
             min_daily_volume=1_000_000.0,
         )
-        rows.append(("c_cnbe", "CNBE", "2026-09-30T15:03:00+00:00", 1, snap))
+        rows.append(("c_cnbe", "CNBE", _now_iso(), 1, snap))
 
         # 4 pass-through BUYs (final signal == BUY, no downgrade)
         for i in range(4):
@@ -354,13 +375,13 @@ class TestMixedSummaryMath:
                 high_low_pct=0.3,
                 effective_max_high_low_pct=0.9,
             )
-            rows.append((f"c_ok_{i}", f"OK{i}", "2026-09-30T15:04:00+00:00", 1, snap))
+            rows.append((f"c_ok_{i}", f"OK{i}", _now_iso(), 1, snap))
 
         # 2 pre-PR #106 rows with NO signal_pipeline block
         legacy = json.dumps({"schema_version": 1, "decision": {"outcome": "HOLD_INELIGIBLE"}})
         pre_pipeline_rows = [
-            ("c_legacy_0", "LEG0", "2026-09-30T15:05:00+00:00", 1, legacy),
-            ("c_legacy_1", "LEG1", "2026-09-30T15:05:01+00:00", 1, legacy),
+            ("c_legacy_0", "LEG0", _now_iso(), 1, legacy),
+            ("c_legacy_1", "LEG1", _now_iso(), 1, legacy),
         ]
         return rows, pre_pipeline_rows
 
@@ -413,7 +434,7 @@ class TestHighLowClassification:
                 high_low_pct=1.5 + i * 0.1,
                 effective_max_high_low_pct=0.9,
             )
-            rows.append((f"c_hl_{i}", f"HL{i}", "2026-09-30T15:01:00+00:00", 1, snap))
+            rows.append((f"c_hl_{i}", f"HL{i}", _now_iso(), 1, snap))
         p0_db(decision_rows_with_pipeline=rows)
         c = _client()
         r = c.get("/api/buy-blockers/summary?range=7d&cohort=post_p0_attribution")
@@ -444,7 +465,7 @@ class TestRangeFiltering:
                 avg_volume=500_000.0,
                 min_daily_volume=1_000_000.0,
             )
-            recent.append((f"c_recent_{i}", f"REC{i}", "2026-09-30T15:00:00+00:00", 1, snap))
+            recent.append((f"c_recent_{i}", f"REC{i}", _now_iso(), 1, snap))
         # 7 rows ~2 days ago (outside the 24h window).
         # Use cohort='all' so the cohort filter (post_p0_attribution)
         # does NOT additionally exclude these old rows. The range
@@ -491,7 +512,7 @@ class TestPrePR106AttributionUnavailable:
     def test_pre_pr106_counted_as_attribution_unavailable_not_unknown(self, p0_db):
         legacy = json.dumps({"schema_version": 1, "decision": {"outcome": "HOLD_INELIGIBLE"}})
         legacy_rows = [
-            (f"c_legacy_{i}", f"LEG{i}", "2026-09-30T15:00:00+00:00", 1, legacy)
+            (f"c_legacy_{i}", f"LEG{i}", _now_iso(), 1, legacy)
             for i in range(5)
         ]
         p0_db(decision_rows=legacy_rows)
@@ -526,7 +547,7 @@ class TestDetailRowsEndpoint:
                 effective_max_high_low_pct=0.9,
             )
             # Unique cycle_start per row (DECREASING so newest is first)
-            cycle_start = f"2026-09-30T15:{20 - i:02d}:00+00:00"
+            cycle_start = _now_iso(offset_seconds=-i * 60)
             rows.append((f"c_{i:03d}", f"SYM{i:03d}", cycle_start, 1, snap))
         p0_db(decision_rows_with_pipeline=rows)
         c = _client()
@@ -570,12 +591,68 @@ class TestLiveVerification:
     This test catches any divergence between the code and the
     authoritative forensic sample. It is skipped if the live DB does
     not exist (so test machines without /trading_bot.db skip cleanly).
+
+    ENG-04b: this is a LIVE-DATA test by construction — it verifies the
+    forensic sample that only exists in the production database. It now
+
+      * honours `TRADING_BOT_DASHBOARD_DB` so the live DB can be
+        pointed at explicitly (the dashboard reads it via
+        `dashboard._dashboard_db_path()`), and
+      * skips with an explicit reason when the database it finds is not
+        a usable forensic DB.
+
+    The previous behaviour was: if ANY `trading_bot.db` happened to sit
+    next to the checkout (e.g. a small leftover artifact with an empty
+    `decision_history`), the test did NOT skip — it ran and failed with
+    a misleading "analyzer_buy_count regressed: got 0" assertion. The
+    forensic sample simply is not there to regress.
+
+    To run this test against the live database:
+
+        TRADING_BOT_DASHBOARD_DB=/path/to/production/trading_bot.db \\
+            python -m pytest tests/test_dashboard_p0_buy_blockers.py -k live
     """
 
-    def test_live_summary_reproduces_verified_shape(self):
-        live_db = REPO_ROOT / "trading_bot.db"
-        if not live_db.exists():
+    def test_live_summary_reproduces_verified_shape(self, monkeypatch):
+        import os
+        import sqlite3
+
+        live_db = os.environ.get("TRADING_BOT_DASHBOARD_DB")
+        if not live_db:
+            candidate = REPO_ROOT / "trading_bot.db"
+            live_db = str(candidate) if candidate.exists() else None
+        if not live_db:
+            pytest.skip(
+                "requires a live production trading_bot.db with the P0 "
+                "forensic sample; set TRADING_BOT_DASHBOARD_DB to point at it"
+            )
+        if not Path(live_db).exists():
             pytest.skip(f"live DB not found at {live_db}")
+
+        # The verified prospective sample lives in `decision_history`
+        # rows captured after the P0 boundary. A database without them
+        # (e.g. a small scratch/artifact DB) cannot reproduce the
+        # forensic shape, so skip rather than assert a misleading
+        # "regression".
+        try:
+            conn = sqlite3.connect(f"file:{live_db}?mode=ro", uri=True)
+            try:
+                n_rows = conn.execute(
+                    "SELECT COUNT(*) FROM decision_history"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            pytest.skip(f"live DB at {live_db} is not readable as sqlite: {exc}")
+
+        if n_rows == 0:
+            pytest.skip(
+                f"live DB at {live_db} has an empty decision_history table; "
+                "it does not contain the P0 forensic sample (point "
+                "TRADING_BOT_DASHBOARD_DB at the production DB to run this)"
+            )
+
+        monkeypatch.setenv("TRADING_BOT_DASHBOARD_DB", live_db)
         c = _client()
         r = c.get("/api/buy-blockers/summary?range=7d&cohort=post_p0_attribution")
         assert r.status_code == 200, r.text

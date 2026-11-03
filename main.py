@@ -13,7 +13,14 @@ src_path = str(Path(__file__).parent / "src")
 sys.path.insert(0, src_path)
 
 # Single instance lock
-LOCK_FILE = "/tmp/trading_bot.lock"
+#
+# ENG-04b: `LOCK_FILE_OVERRIDE` lets a caller (notably the test suite)
+# relocate the single-instance lock. Without it the lock path is
+# hardcoded, so ANY process that imports main.py — even one that only
+# wants to assert the SIGTERM/SIGINT handlers are installed — collides
+# with the live paper bot's lock and exits with "Bot already running".
+# Production behaviour is unchanged when the variable is unset.
+LOCK_FILE = os.environ.get("LOCK_FILE_OVERRIDE") or "/tmp/trading_bot.lock"
 
 def check_single_instance():
     """Ensure only one instance of the bot runs at a time"""
