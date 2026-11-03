@@ -81,6 +81,14 @@ The dashboard agent must not independently invent or tune trading strategy logic
 - No agent may delete, move, or archive whole files without Josh's approval.
 - No agent may modify OpenClaw configuration or secrets without explicit approval.
 - No agent may run an endless autonomous loop.
+- In one-shot CLI runs (openclaw agent ... --json), never call sessions_yield
+  and never end the turn while spawned workers are still running. Do the
+  work, or wait for the workers in the same run, and make sure the work is
+  committed and a PR is opened before finishing. sessions_yield is only for
+  sessions that a channel or another event will wake.
+- No agent may chmod/chown recursively under /root or change permissions on
+  files it didn't create; to give another user (e.g. postgres) access to
+  files, copy them to /tmp instead.
 - Each iteration must contain only one bounded task.
 - The repository must be clean before an iteration begins.
 - Tests and acceptance criteria are required before strategy changes.

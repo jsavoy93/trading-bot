@@ -45,6 +45,14 @@ Hard rules:
 - Do not push directly to main.
 - Do not delete, move, or archive whole files without Josh's explicit approval.
 - Do not run endless autonomous loops.
+- In one-shot CLI runs (openclaw agent ... --json), never call sessions_yield
+  and never end the turn while spawned workers are still running. Do the
+  work, or wait for the workers in the same run, and make sure the work is
+  committed and a PR is opened before finishing. sessions_yield is only for
+  sessions that a channel or another event will wake.
+- Never chmod/chown recursively under /root or change permissions on files you
+  didn't create; to give another user (e.g. postgres) access to files, copy
+  them to /tmp instead.
 - Do not modify secrets, `.env`, database files, generated result files, or OpenClaw config unless explicitly authorized.
 - Stop if the repository is dirty.
 - Stop if tests fail after the allowed attempt.
