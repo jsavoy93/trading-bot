@@ -3870,3 +3870,43 @@ live ledger and stop the bot before `--apply` against the real file.
   comparing failure sets at the same wall-clock time, not by absolute counts.
 - The tranche plan lives in memory only (`self._pending_entry_tranches`): a
   restart loses the plan (SHOULD-FIX #2 from the EXEC-003 review, still open).
+
+## PR #135 round 5 — STRAT-SWING-PAPER no-stop gaps (2026-11-04, agent/swing-paper-order-tagging-20261103 @ 5f02ccc)
+
+Durable facts from the round-5 fix of the two remaining no-stop gaps:
+
+- **Live stop reconciliation runs FIRST in `run()`** (`runner.reconcile_stops`).
+  It fetches each open trade's stop order live from the broker
+  (`GET /v2/orders:by_client_order_id`). A stop that is canceled/expired/
+  rejected — or a MISSING stop order id — while shares are still held is
+  re-protected AT ONCE: a fresh GTC stop at the recorded stop price (fresh
+  deterministic id `...-stop-r<k>`), or a market sell when the price is at or
+  below the stop. An unverifiable status is logged, never blindly duplicated.
+- **The late-cancel gap (why round 4 was not enough):** `_ensure_canceled`
+  can time out (extended window = 4 + 30 polls) while the broker is still in
+  `pending_cancel`; the broker may COMPLETE the cancel afterwards. The runner
+  then believed the stop was live while the position was naked. Reconciliation
+  on the NEXT run is what closes that gap — not a longer poll window.
+- **A trade is never closed on an unconfirmed sell.** The `-stopgap` market
+  sell keeps the trade open until the sell is CONFIRMED `filled` (then the
+  reason is `stop_gap_market_sell`). Canceled/expired/rejected stopgap sells
+  — and a REJECTED SUBMISSION — re-protect the shares. A pending stopgap sell
+  blocks any second sell (`place_stops_after_fill` and the time-exit path).
+- **Alpaca `client_order_id` is unique per day:** a re-protection market sell
+  must use a FRESH label (`-stopgap-r<gen>`, `make_stopgap_replace_client_order_id`),
+  never the dead `-stopgap` id, or the broker rejects it and the shares stay
+  unprotected. `parse_label` handles `-stopgap-r<k>`.
+- **The execute gate is evidence-based, not clock-based**
+  (`runner.c4_run_finished_today`): the C4 unit's user journal
+  (`journalctl --user -u strat023-c4-shadow.service --since "<today> 21:00 UTC"`,
+  looking for `live paper run complete:` / `Finished ...`) is the PRIMARY
+  evidence because it also covers zero-signal C4 days where the DB stays
+  silent; the C4 `live_paper.db` rows for today's `ref_date` written inside
+  today's post-close window are the FALLBACK. C4 activity from earlier in the
+  day (e.g. a 02:26 manual backfill) does NOT count. Schedule RSI(2) at
+  **21:30 UTC or later** (the C4 timer fires 21:15 UTC).
+- **Pre-existing environmental test failure:** `tests/test_strat026_shadow.py::TestSystemdUnits::test_units_not_installed`
+  fails on this host because `strat026-rsi2-shadow.timer` IS installed in
+  `/root/.config/systemd/user/` while the test asserts it is not. It fails
+  identically on the unmodified base commit — verify regressions by comparing
+  failure SETS, not counts. `flake8`/`pyflakes` are NOT installed on this host.
