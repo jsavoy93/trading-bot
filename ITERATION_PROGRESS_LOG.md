@@ -5499,3 +5499,13 @@ Implementation complete; PR open and awaiting owner review.
 - Risks: bounded cancel polling (~8s) can defer a time exit to the next run by design (never naked, never double sell); the stop-replace label grows one suffix per raise; the C4 ref-date skip is weekday-based (a holiday simply does not fire the skip); the fake broker models Alpaca semantics only.
 - Companion PR (S3): research/strat-023-c4-shadow-15pct on base research/strat-023-c4-shadow — C4 SLEEVE_EQUITY_FRAC 0.30 -> 0.15, configurable via STRAT024_SLEEVE_EQUITY_FRAC (bad values fail loudly); MAX_POSITIONS=3, MAX_POSITION_PCT=0.10 and every C4 signal threshold unchanged; NOT deployed, no timer touched.
 - Next action: independent reviewer verdict (ENG-07) + Josh merge decision on PR #135 and on the new S3 PR. Josh approval required for merge.
+
+## 2026-11-04 12:35 UTC — PR-135-R3 follow-up: time-exit sell attribution
+- Backlog/objective: fix the P&L attribution of the 15-day time-exit market sell on PR #135 (found while reviewing the round-3 work).
+- Branch: agent/swing-paper-order-tagging-20261103 — commit e21d35d (pushed; PR #135 updated, NOT merged).
+- Status: DONE (implementation) — Josh approval required.
+- Files changed: experiments/swing_paper/{rules,runner}.py, tests/test_swing_paper_{rules,report,runner}.py.
+- Key decisions: the time-exit client_order_id 'rsi2-<SYM>-<YYYYMMDD>-<n>-timeexit' was rejected by parse_label() ('malformed label'), so report_pnl dropped EVERY time-exit fill and the realized P&L of a time exit silently disappeared from the per-strategy report. rules.py now has TIMEEXIT_SUFFIX + make_time_exit_client_order_id() and parse_label reports kind='timeexit'; the runner uses the helper (same label string, one source of truth). Legacy '-stop-p'/'-stop-oco' kinds and next_sequence() are unaffected.
+- Tests: swing suites 102 passed; full suite 1 failed / 2239 passed / 2 skipped — the single failure (test_strat026_shadow systemd units) is identical on origin/main (env-dependent: units installed on the host). Zero new failures.
+- Risks: attribution-only change — no order is sent differently (same label as before).
+- Next action: independent reviewer verdict (ENG-07) + Josh merge decision on PR #135. Josh approval required.
