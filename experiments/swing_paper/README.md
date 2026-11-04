@@ -17,6 +17,8 @@ placement was removed from this runner; C4 continues on the existing
 | `signals.py` | Frozen research parameters + indicators (DO NOT RELAX) |
 | `runner.py` | One-shot daily executor (exits → stops → entries) |
 | `report_pnl.py` | Per-strategy P&L report from paper orders/fills |
+| `deploy/run_daily.sh` | Daily launcher (the `swing-rsi2-paper.service` ExecStart) |
+| `deploy/README.md` | Launcher contract + how the launch flags are pinned by tests |
 | `logs/` | `state.json` + `swing_events.jsonl` (gitignored) |
 
 ## Order labels
@@ -153,6 +155,15 @@ python experiments/swing_paper/report_pnl.py [--json] [--since 2026-11-01]
 ```
 
 `KILL_SWITCH` (a file next to this README) halts the runner immediately.
+
+The **deployed daily run** is launched by
+[`deploy/run_daily.sh`](deploy/run_daily.sh) — the `ExecStart` target of the
+`swing-rsi2-paper.service` user unit (21:30 UTC daily). That launcher is
+tracked in this repository since 2026-11-04, and
+`tests/test_swing_paper_launcher.py` parses its launch command and feeds it
+to the runner's real argparse, so a missing `--symbols` (the 2026-11-04
+failure) or a changed threshold fails the suite instead of the next run.
+See [`deploy/README.md`](deploy/README.md) for the launch contract.
 
 ## P&L report facts (fix I)
 
