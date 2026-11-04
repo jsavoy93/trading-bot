@@ -5375,3 +5375,13 @@ Implementation complete; PR open and awaiting owner review.
   next-open exit fills vs backtest close (pre-existing).
 - Next: reviewer-agent verdict (ENG-07), Josh approval → merge; next runner pass auto-tracks the 3 stuck
   fills without DB surgery. Josh approval required.
+
+## 2026-11-04 12:35 UTC — STRAT-023-C4-SLEEVE-15PCT (S3, separate PR)
+- Backlog/objective: Josh decision S3 (2026-11-03) — "SEPARATE small PR into research/strat-023-c4-shadow: cap C4 sizing at a fixed 15 percent of equity (configurable) instead of 30 percent. Tests. Do not deploy."
+- Branch: research/strat-023-c4-shadow-15pct (base origin/research/strat-023-c4-shadow @ 75f45e5) — commit 2a0c7a3; PR #137 opened (base research/strat-023-c4-shadow). NOT merged, NOT deployed.
+- Status: DONE (implementation) — Josh approval required.
+- Files changed: experiments/strat_023/live_paper_runner.py, experiments/strat_023/test_live_paper_runner.py, experiments/strat_023/README.md.
+- Key decisions: SLEEVE_EQUITY_FRAC 0.30 -> 0.15, configurable via the new env var STRAT024_SLEEVE_EQUITY_FRAC; a malformed or out-of-range value fails loudly (ValueError at import) instead of silently falling back; position_qty() now bounds TOTAL C4 exposure by the 15% sleeve. MAX_POSITIONS=3, MAX_POSITION_PCT=0.10 and every C4 signal/exit threshold (ENTRY_RSI=10, ATR_MULT=3.0, TIME_STOP=10) are unchanged, as are the four safety guards. The C4 runner does not live on main, so this PR is stacked on research/strat-023-c4-shadow.
+- Tests: C4 suites 38 passed / 0 failed (incl. 5 new S3 cases); full suite 43 failed / 2052 passed / 1 skipped / 13 deselected — the failure set is byte-identical to the BASE branch (research/strat-023-c4-shadow, no S3 change): those 43 are pre-existing because that branch is behind main (missing the dashboard / settings-service / engineering-supervisor work from PRs #127-#134). Zero new failures. Note pytest.ini testpaths=tests, so experiments/ suites are run separately.
+- Risks: the fraction is read once at import (a new process is needed to change it) and the systemd unit was NOT edited (no deploy); positions opened under the old 30% sleeve can exceed the new cap — the runner then stops adding entries and never force-closes anything.
+- Next action: independent reviewer verdict (ENG-07) + Josh merge decision on PR #137. Do not merge or deploy. Josh approval required.
