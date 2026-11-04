@@ -134,3 +134,13 @@ python experiments/swing_paper/report_pnl.py [--json] [--since 2026-11-01]
 - Partially-filled then canceled orders are included (`filled_qty > 0`).
 - Open positions are attributed by LABELED fills only (net labeled
   buys−sells per strategy), never by "last buyer".
+
+## Run-order contract with C4 (round-4 fix e)
+
+The C4 same-day skip is `ref_date`-based (fix K), so it is independent of
+WHICH runner executes first — but it can only see C4 rows that already
+exist. The `strat023-c4-shadow` user timer fires at **21:15 UTC**, so the
+RSI(2) runner REFUSES an `--execute` run before **21:15 UTC**
+(`runner.RSI2_MIN_RUN_UTC`). Schedule the RSI(2) runner at/after 21:15
+UTC (the dry-run default remains usable at any time). This guarantee is
+also covered by `test_execute_refused_before_2115_utc`.

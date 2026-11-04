@@ -54,6 +54,7 @@ import requests
 import signals
 from rules import (RSI2, make_client_order_id, make_labels,
                    make_stop_replace_client_order_id,
+                   make_stopgap_client_order_id,
                    make_time_exit_client_order_id, next_sequence,
                    rsi2_slice_dollars, rsi2_skip_blocked,
                    size_rsi2_position, symbol_has_open_order)
@@ -74,6 +75,14 @@ KILL_SWITCH = HERE / "KILL_SWITCH"  # halt immediately if present
 # same-day bar may be treated as completed.
 DAILY_BAR_FINAL_UTC_HOUR = 21
 DAILY_BAR_FINAL_UTC_MINUTE = 5
+
+# Round-4 fix (e): the C4 same-day skip is ref_date-based and therefore
+# independent of WHICH order the two runners execute in — but it can
+# only see C4 rows that EXIST yet. The strat023-c4-shadow user timer
+# fires at 21:15 UTC, so RSI(2) --execute runs are REQUIRED to happen
+# at/after 21:15 UTC (and dry-run inspection runs are free to run any
+# time). This is a scheduling contract, documented here and in README.
+RSI2_MIN_RUN_UTC = (21, 15)
 
 
 def fail(msg: str, code: int = 2):
@@ -243,6 +252,21 @@ def last_bar_is_final(df_last_date, now: datetime) -> bool:
                                       DAILY_BAR_FINAL_UTC_MINUTE)
 
 
+def finished_bars_only(df, now: datetime):
+    """Round-4 fix (g): EXITS and trail raises may consume only FINISHED
+    daily bars. If the frame's last bar is today's still-open partial bar
+    (clock before 21:05 UTC), drop it — chandelier/trading-day/ATR reads
+    must never see an intraday snapshot."""
+    if df is None or len(df) == 0:
+        return df
+    last = df["date"].iloc[-1]
+    if last_bar_is_final(last, now=now):
+        return df
+    d = pd.Timestamp(last).date()
+    dates = pd.to_datetime(df["date"]).dt.date
+    return df[dates < d]
+
+
 def rsi2_open_notional(state: dict) -> float:
     return sum(t.get("entry_notional", 0.0)
                for t in state.get("open", {}).values())
@@ -384,7 +408,12 @@ def chandelier_stop(df, entry_date, atr14_now: float) -> float | None:
 # order status; pending_cancel is treated as "wait and retry". Orders we
 # cannot CONFIRM canceled stay in place (never leave a position naked)
 # and the whole time exit is retried on the next run.
+# Round-4 blocker (a): if the bounded poll times out we do NOT just
+# walk away — we KEEP polling for an extended window, because a cancel
+# that completes after the poll window would otherwise leave the
+# position naked while the runner believes the stop is still live.
 CANCEL_POLL_ATTEMPTS = 4
+CANCEL_POLL_EXTENDED_ATTEMPTS = 30  # ~60s more at 2s per poll
 CANCEL_POLL_SLEEP_S = 2.0
 # 'replaced' is terminal too: the order was superseded by a replacement
 # (the stop raise), so there is nothing left to cancel.
@@ -420,7 +449,13 @@ def _ensure_canceled(api, order_id, client_order_id=None) -> bool:
         return st in _TERMINAL_FOR_CANCEL
     if code not in (200, 204):
         return False
-    for _ in range(CANCEL_POLL_ATTEMPTS):
+    total = CANCEL_POLL_ATTEMPTS + CANCEL_POLL_EXTENDED_ATTEMPTS
+    for i in range(total):
+        if i == CANCEL_POLL_ATTEMPTS:
+            log_event({"type": "cancel_still_pending",
+                       "order_id": order_id,
+                       "note": "bounded poll timed out; extending the "
+                               "cancel-confirmation window (round-4 fix a)"})
         _sleep_s(CANCEL_POLL_SLEEP_S)
         st = _order_status(api, client_order_id)
         if st in _TERMINAL_FOR_CANCEL:
@@ -454,17 +489,24 @@ def _leftover_rsi2_sell_orders(open_orders, symbol: str) -> list:
     return out
 
 
-def process_exits(state, api, bars, positions, results, open_orders=()):
+def process_exits(state, api, bars, positions, results, open_orders=(),
+                  now=None):
     """For every open RSI(2) trade: drop dead entries, manage the single
     GTC stop, apply the 15-day time exit. Per-trade try/except; state
-    saved by caller after each mutation is done at run() level via save hook."""
+    saved by caller after each mutation is done at run() level via save hook.
+
+    `now` (round-4 fix g) is the injected clock used to decide whether
+    the last daily bar is finished; run() always passes it. When omitted
+    the real clock is consulted (legacy direct-call behavior)."""
+    if now is None:
+        now = real_clock()
     for entry_id in list(state.get("open", {}).keys()):
         try:
             t = state["open"].get(entry_id)
             if t is None:
                 continue
             sym = t["symbol"]
-            df = bars.get(sym)
+            df = finished_bars_only(bars.get(sym), now)
             if df is None or len(df) == 0:
                 continue
 
@@ -475,8 +517,38 @@ def process_exits(state, api, bars, positions, results, open_orders=()):
                     continue
                 st = o.get("status")
                 if st in ("canceled", "expired", "rejected"):
-                    _close_trade(state, entry_id, f"entry_{st}", results)
-                    continue
+                    # Round-4 blocker (c): a PARTIALLY FILLED entry that
+                    # was then canceled is NOT a dead trade. The filled
+                    # shares are a live position — keep them tracked and
+                    # put a stop on them (place_stops_after_fill, next
+                    # pass). Never drop filled shares on the floor.
+                    fq = float(o.get("filled_qty") or 0)
+                    if fq > 0:
+                        t["qty"] = int(fq) if fq == int(fq) else fq
+                        t["entry_filled"] = True
+                        t["entry_fill_px"] = float(
+                            o.get("filled_avg_price")
+                            or t.get("ref_px") or 0)
+                        t["entry_notional"] = (float(t["qty"])
+                                                * t["entry_fill_px"])
+                        fill_px = t["entry_fill_px"]
+                        atr_sig = float(t.get("atr14") or 0)
+                        if fill_px > 0 and atr_sig > 0 \
+                                and not t.get("stop_order_id"):
+                            init_stop, _ch = signals.rsi2_stops(
+                                fill_px, atr_sig)
+                            t["stop_px"] = round(init_stop, 2)
+                        filled_at = str(o.get("filled_at") or "")
+                        if filled_at:
+                            t["entry_date"] = filled_at[:10]
+                        log_event({"type": "partial_entry_kept",
+                                   "entry_id": entry_id,
+                                   "status": st,
+                                   "filled_qty": fq})
+                        # fall through to normal management below
+                    else:
+                        _close_trade(state, entry_id, f"entry_{st}", results)
+                        continue
                 if st in ("filled",):
                     t["entry_filled"] = True
                     t["entry_fill_px"] = float(
@@ -505,17 +577,26 @@ def process_exits(state, api, bars, positions, results, open_orders=()):
             # leftover rsi2 sell orders for the symbol are canceled.
             if held_qty(positions, sym) <= 0:
                 reason = "position_gone"
+                unconfirmed = []
                 for o in _leftover_rsi2_sell_orders(open_orders, sym):
                     if not _ensure_canceled(api, o.get("id"),
                                             o.get("client_order_id")):
+                        unconfirmed.append(o.get("id"))
                         log_event({"type": "exit_error",
                                    "entry_id": entry_id,
                                    "error": f"leftover sell cancel "
                                             f"unconfirmed for {o.get('id')}"})
-                        results["errors"].append(
-                            {"entry_id": entry_id,
-                             "error": "leftover sell cancel unconfirmed: "
-                                      f"{o.get('id')}"})
+                if unconfirmed:
+                    # Round-4 fix (f): an unconfirmed cleanup cancel means
+                    # we do NOT know the leftover sell is gone. Keep the
+                    # trade tracked and retry the cleanup next run — never
+                    # close the book on an order we cannot account for.
+                    results["errors"].append(
+                        {"entry_id": entry_id,
+                         "error": "leftover sell cancel unconfirmed: "
+                                  + ",".join(str(x) for x in unconfirmed)
+                                  + "; trade kept open for retry"})
+                    continue
                 scoid = t.get("stop_client_order_id")
                 if scoid:
                     so = api.get_order_by_client_id(scoid)
@@ -559,8 +640,43 @@ def process_exits(state, api, bars, positions, results, open_orders=()):
                         RSI2, sym, t["date"], t["n"]),
                 })
                 if resp.get("error"):
-                    log_event({"type": "exit_error",
-                               "entry_id": entry_id, "error": resp["error"]})
+                    # Round-4 fix (d): the stop was already CONFIRMED
+                    # canceled for this time exit — a rejected market
+                    # sell must not leave the position naked. Re-place a
+                    # fresh GTC stop at the last stop price IMMEDIATELY.
+                    gen = int(t.get("stop_gen", 1)) + 1
+                    stop_coid = make_stop_replace_client_order_id(
+                        RSI2, sym, t["date"], t["n"], gen)
+                    stop_resp = api.submit_order({
+                        "symbol": sym, "qty": sell_qty, "side": "sell",
+                        "type": "stop",
+                        "stop_price": round(float(t.get("stop_px") or 0), 2),
+                        "time_in_force": "gtc",
+                        "client_order_id": stop_coid,
+                    })
+                    log_event({"type": "time_exit_sell_error",
+                               "entry_id": entry_id,
+                               "error": resp["error"]})
+                    if stop_resp.get("error") or not stop_resp.get("id"):
+                        results["errors"].append(
+                            {"entry_id": entry_id,
+                             "error": "time_exit sell failed AND stop "
+                                      "re-place failed: POSITION "
+                                      "UNPROTECTED — manual attention: "
+                                      + str(resp["error"])[:120]})
+                    else:
+                        t["stop_order_id"] = stop_resp["id"]
+                        t["stop_client_order_id"] = stop_coid
+                        t["stop_gen"] = gen
+                        log_event({"type": "stop_replaced_after_sell_error",
+                                   "entry_id": entry_id,
+                                   "stop_order_id": stop_resp["id"],
+                                   "stop_client_order_id": stop_coid})
+                        results["errors"].append(
+                            {"entry_id": entry_id,
+                             "error": "time_exit sell failed; fresh GTC "
+                                      "stop re-placed: "
+                                      + str(resp["error"])[:120]})
                     continue
                 _close_trade(state, entry_id, "time_exit_15d", results)
                 continue
@@ -608,10 +724,30 @@ def process_exits(state, api, bars, positions, results, open_orders=()):
                                       "error": repr(exc)})
 
 
-def place_stops_after_fill(state, api, positions, open_orders, results):
+def _last_finished_close(bars, sym, now) -> float | None:
+    """Last FINISHED daily close for `sym` (round-4 fix g: today's
+    partial bar is never a pricing input)."""
+    df = finished_bars_only((bars or {}).get(sym), now)
+    if df is None or len(df) == 0:
+        return None
+    return float(df["close"].iloc[-1])
+
+
+def place_stops_after_fill(state, api, positions, open_orders, results,
+                           bars=None, now=None):
     """S1: place exactly ONE GTC stop for the FULL held qty of trades
     whose entry is confirmed filled but which have no stop yet. Total
-    open sell qty for a symbol NEVER exceeds held qty."""
+    open sell qty for a symbol NEVER exceeds held qty.
+
+    Round-4 blocker (b): a stop rejected because price gapped at/below
+    the planned stop price must never be retried at the same impossible
+    price forever, and the shares must never be left unprotected:
+      - current price <= planned stop  -> SELL AT MARKET (-stopgap label)
+      - otherwise                      -> re-price (never above plan and
+                                           never above current price) and
+                                           re-place with a fresh label"""
+    if now is None:
+        now = real_clock()
     for entry_id in list(state.get("open", {}).keys()):
         try:
             t = state.get("open", {}).get(entry_id)
@@ -628,28 +764,101 @@ def place_stops_after_fill(state, api, positions, open_orders, results):
             if stop_qty <= 0:
                 continue
             stop_coid = make_labels(RSI2, sym, t["date"], t["n"])[1]
+            planned = round(float(t["stop_px"]), 2)
             stop_resp = api.submit_order({
                 "symbol": sym, "qty": stop_qty, "side": "sell",
-                "type": "stop", "stop_price": round(float(t["stop_px"]), 2),
+                "type": "stop", "stop_price": planned,
                 "time_in_force": "gtc",
                 "client_order_id": stop_coid,
             })
             if stop_resp.get("error"):
+                # Round-4 blocker (b): rejected stop. Decide using the
+                # last FINISHED close — never retry a dead price forever.
+                cur_px = _last_finished_close(bars, sym, now)
+                if cur_px is not None and cur_px <= planned:
+                    # price gapped to/below the stop: sell at market now
+                    gap_resp = api.submit_order({
+                        "symbol": sym, "qty": stop_qty, "side": "sell",
+                        "type": "market", "time_in_force": "day",
+                        "client_order_id": make_stopgap_client_order_id(
+                            RSI2, sym, t["date"], t["n"]),
+                    })
+                    if gap_resp.get("error"):
+                        log_event({"type": "stop_error",
+                                   "entry_id": entry_id,
+                                   "error": gap_resp["error"]})
+                        results["errors"].append(
+                            {"entry_id": entry_id,
+                             "error": "stopgap sell failed: POSITION "
+                                      "UNPROTECTED — manual attention: "
+                                      + str(gap_resp["error"])[:120]})
+                    else:
+                        log_event({"type": "stop_gap_market_sell",
+                                   "entry_id": entry_id, "symbol": sym,
+                                   "qty": stop_qty,
+                                   "planned_stop": planned,
+                                   "last_close": cur_px})
+                        _close_trade(state, entry_id,
+                                     "stop_gap_market_sell", results)
+                else:
+                    # re-price: keep the plan unless it sits above the
+                    # current price, then never above (cur - 0.02)
+                    new_px = planned if cur_px is None else round(
+                        min(planned, cur_px - 0.02), 2)
+                    if new_px <= 0:
+                        results["errors"].append(
+                            {"entry_id": entry_id,
+                             "error": "stop rejected and re-price "
+                                      f"invalid ({new_px}); stop NOT "
+                                      "placed — manual attention: "
+                                      + str(stop_resp["error"])[:120]})
+                        continue
+                    gen = int(t.get("stop_gen", 1)) + 1
+                    retry_coid = make_stop_replace_client_order_id(
+                        RSI2, sym, t["date"], t["n"], gen)
+                    retry_resp = api.submit_order({
+                        "symbol": sym, "qty": stop_qty, "side": "sell",
+                        "type": "stop", "stop_price": new_px,
+                        "time_in_force": "gtc",
+                        "client_order_id": retry_coid,
+                    })
+                    if retry_resp.get("error") or not retry_resp.get("id"):
+                        log_event({"type": "stop_error",
+                                   "entry_id": entry_id,
+                                   "error": str(retry_resp.get("error")
+                                                 or "no order id")})
+                        results["errors"].append(
+                            {"entry_id": entry_id,
+                             "error": "stop rejected and re-priced retry "
+                                      "also failed: POSITION UNPROTECTED "
+                                      "— manual attention: "
+                                      + str(stop_resp["error"])[:120]})
+                    else:
+                        t["stop_order_id"] = retry_resp["id"]
+                        t["stop_client_order_id"] = retry_coid
+                        t["stop_gen"] = gen
+                        t["stop_px"] = new_px
+                        log_event({"type": "stop_replaced_after_reject",
+                                   "entry_id": entry_id, "symbol": sym,
+                                   "stop_px": new_px,
+                                   "stop_client_order_id": retry_coid})
+                        results["stops_placed"].append(
+                            {"entry_id": entry_id, "symbol": sym,
+                             "stop_qty": stop_qty, "repriced": True})
+                continue
+            if not stop_resp.get("id"):
                 log_event({"type": "stop_error",
                            "entry_id": entry_id,
-                           "error": stop_resp["error"]})
-                results["errors"].append(
-                    {"entry_id": entry_id,
-                     "error": "stop: " + str(stop_resp["error"])[:200]})
-            else:
-                t["stop_order_id"] = stop_resp.get("id")
-                t["stop_client_order_id"] = stop_coid
-                t["stop_gen"] = 1
-                open_orders = list(open_orders) + [
-                    {"symbol": sym, "side": "sell", "qty": stop_qty}]
-                log_event({"type": "stop_placed",
-                           "entry_id": entry_id, "symbol": sym,
-                           "qty": stop_qty, "dry_run": api.dry_run})
+                           "error": "stop submit returned no order id"})
+                continue
+            t["stop_order_id"] = stop_resp["id"]
+            t["stop_client_order_id"] = stop_coid
+            t["stop_gen"] = 1
+            open_orders = list(open_orders) + [
+                {"symbol": sym, "side": "sell", "qty": stop_qty}]
+            log_event({"type": "stop_placed",
+                       "entry_id": entry_id, "symbol": sym,
+                       "qty": stop_qty, "dry_run": api.dry_run})
             results["stops_placed"].append(
                 {"entry_id": entry_id, "symbol": sym, "stop_qty": stop_qty})
         except Exception as exc:
@@ -799,6 +1008,14 @@ def run(args, clock=None):
     # fix J: ONE injected clock drives every time-dependent decision.
     now = (clock or real_clock)()
 
+    # Round-4 fix (e): C4 shadow writes today's ref_date rows at 21:15
+    # UTC. Refuse an --execute run in the 21:05-21:15 window so the C4
+    # same-day skip can never miss rows that C4 has not written yet.
+    if args.execute and (now.hour, now.minute) < RSI2_MIN_RUN_UTC:
+        fail("--execute must run at/after 21:15 UTC (C4 shadow timer "
+             "fires 21:15 UTC; earlier runs could double-trade a symbol "
+             "C4 has not signaled yet — see RSI2_MIN_RUN_UTC / README)")
+
     state = load_state()
     acct = api.get_account()
     portfolio_value = float(acct["portfolio_value"])
@@ -821,12 +1038,14 @@ def run(args, clock=None):
                "dry_run": api.dry_run}
 
     # fix D: the open-order list is needed to cancel leftover rsi2 sell
-    # orders when a position is gone.
+    # orders when a position is gone. Round-4 fix (g): the injected clock
+    # reaches the exits so today's partial bar is never a decision input.
     process_exits(state, api, bars, positions, results,
-                  open_orders=open_orders)
+                  open_orders=open_orders, now=now)
     if not api.dry_run:
         save_state(state)
-    place_stops_after_fill(state, api, positions, open_orders, results)
+    place_stops_after_fill(state, api, positions, open_orders, results,
+                           bars=bars, now=now)
     if not api.dry_run:
         save_state(state)
     process_entries(state, api, bars, bars.get("SPY"), positions, open_orders,

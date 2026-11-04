@@ -15,8 +15,25 @@ Round 3 (PR #135) covers the Josh decisions of 2026-11-03:
   K   C4 skip matches ref_date of the last completed trading day
 
 The FakeBroker validates order payloads per the Alpaca v2 docs
-(order_class/type/legs/qty/side/time_in_force combinations) — malformed
-order bodies are REJECTED, not accepted silently.
+(order_class/type/qty/side/time_in_force and, for bracket/oco/oto,
+take_profit/stop_loss OBJECTS — never a `legs` array) and validates
+PATCH replace bodies — malformed requests are REJECTED, not accepted
+silently.
+
+Round 4 (PR #135) covers Josh's blockers of 2026-11-04:
+  (a) stuck pending_cancel: the cancel poll window is EXTENDED; a cancel
+      that completes after the bounded window still leads to the sell
+  (b) a stop rejected because price gapped to/below it: sell at market
+      (-stopgap) when current <= planned; otherwise re-price and re-place
+  (c) a partially filled then canceled entry keeps the FILLED shares
+      tracked and puts a stop on them
+  (d) a rejected time-exit market sell (stop already canceled) triggers
+      an immediate fresh GTC stop re-place
+  (f) an unconfirmed cleanup cancel keeps the trade tracked
+  (g) exits/trail raises consume only FINISHED daily bars
+  (h) fake broker matches the Alpaca v2 docs (take_profit/stop_loss
+      objects; PATCH replace body validation)
+  (e) --execute runs are refused before 21:15 UTC (C4 timer contract)
 """
 from __future__ import annotations
 
@@ -38,7 +55,8 @@ import runner  # noqa: E402
 import signals  # noqa: E402
 from rules import (RSI2, make_client_order_id,  # noqa: E402
                    make_stop_client_order_id,
-                   make_stop_replace_client_order_id)
+                   make_stop_replace_client_order_id,
+                   make_stopgap_client_order_id)
 
 
 # ------------------------------------------------------------ fake broker
@@ -53,9 +71,13 @@ def validate_order_body(body: dict) -> None:
 
     Alpaca order docs (docs.alpaca.markets/docs/orders-at-alpaca):
       * `order_class` is simple (default) | bracket | oco | oto.
-      * bracket/oco/oto MUST carry a non-empty `legs` array; every leg is
-        a complete order itself and must NOT carry a nested order_class;
-        type/qty live on the legs, not at the top level.
+      * bracket/oco/oto carry the top-level entry order (symbol, side,
+        qty, type, time_in_force) plus `stop_loss` and/or `take_profit`
+        OBJECTS — NOT a `legs` array (the v2 API has no legs field;
+        bracket = entry + stop_loss (+ optional take_profit);
+        oco = take_profit AND stop_loss; oto = exactly one of them).
+      * stop_loss: {"stop_price": X} (optional "limit_price" makes the
+        stop a stop-limit); take_profit: {"limit_price": Y}.
       * a simple order carries `type` (market | limit | stop | stop_limit |
         trailing_stop) plus the matching price field(s):
         market -> no price field; limit -> limit_price;
@@ -69,39 +91,15 @@ def validate_order_body(body: dict) -> None:
     oclass = body.get("order_class")
     if oclass is not None and oclass not in VALID_CLASSES:
         raise ValueError(f"bad order_class {oclass!r}")
-    if oclass in ("bracket", "oco", "oto"):
-        legs = body.get("legs")
-        if not isinstance(legs, list) or not legs:
-            raise ValueError(
-                f"order_class {oclass!r} requires a non-empty legs array")
-        if "type" in body or "qty" in body or "ratio_qty" in body:
-            raise ValueError(
-                f"order_class {oclass!r} carries type/qty on the legs, "
-                f"not at the top level")
-        for leg in legs:
-            if not isinstance(leg, dict):
-                raise ValueError(f"leg must be a dict, got {type(leg)!r}")
-            if leg.get("order_class") is not None:
-                raise ValueError("a leg must not carry its own order_class")
-            validate_order_body(leg)
-        return
     if "legs" in body:
-        raise ValueError("legs require order_class bracket|oco|oto")
+        raise ValueError("Alpaca v2 has no `legs` field: bracket/oco/oto "
+                         "orders use take_profit/stop_loss objects")
     typ = body.get("type")
     if typ not in VALID_TYPES:
         raise ValueError(f"bad order type {typ!r}")
-    if typ == "stop" and "stop_price" not in body:
-        raise ValueError("stop order missing stop_price")
-    if typ == "limit" and "limit_price" not in body:
-        raise ValueError("limit order missing limit_price")
-    if typ == "stop_limit" and not ("stop_price" in body
-                                    and "limit_price" in body):
-        raise ValueError("stop_limit needs stop_price and limit_price")
-    if typ == "trailing_stop" and not ("trail_price" in body
-                                       or "trail_percent" in body):
-        raise ValueError("trailing_stop needs trail_price/trail_percent")
     if typ == "market" and ("stop_price" in body or "limit_price" in body):
         raise ValueError("market order must not carry stop/limit price")
+    _validate_simple_price_fields(body)
     if body.get("side") not in ("buy", "sell"):
         raise ValueError(f"bad side {body.get('side')!r}")
     if "ratio_qty" in body:
@@ -114,6 +112,71 @@ def validate_order_body(body: dict) -> None:
         raise ValueError(f"bad time_in_force {tif!r}")
     if not body.get("symbol"):
         raise ValueError("symbol is required")
+    if oclass in ("bracket", "oco", "oto"):
+        tp, sl = body.get("take_profit"), body.get("stop_loss")
+        for name, obj in (("take_profit", tp), ("stop_loss", sl)):
+            if obj is None:
+                continue
+            if not isinstance(obj, dict):
+                raise ValueError(f"{name} must be an object, got {type(obj)!r}")
+            if "limit_price" in obj and float(obj["limit_price"] or 0) <= 0:
+                raise ValueError(f"{name}.limit_price must be > 0")
+            if "stop_price" in obj and float(obj["stop_price"] or 0) <= 0:
+                raise ValueError(f"{name}.stop_price must be > 0")
+            if name == "take_profit" and "limit_price" not in obj:
+                raise ValueError("take_profit requires limit_price")
+            if name == "stop_loss" and "stop_price" not in obj:
+                raise ValueError("stop_loss requires stop_price")
+        if oclass == "bracket" and sl is None:
+            raise ValueError("bracket requires a stop_loss object")
+        if oclass == "oco" and (tp is None or sl is None):
+            raise ValueError("oco requires take_profit AND stop_loss objects")
+        if oclass == "oto" and not ((tp is None) != (sl is None)):
+            raise ValueError("oto requires exactly one of take_profit / "
+                             "stop_loss")
+
+
+def _validate_simple_price_fields(body: dict) -> None:
+    typ = body.get("type")
+    if typ == "stop" and "stop_price" not in body:
+        raise ValueError("stop order missing stop_price")
+    if typ == "limit" and "limit_price" not in body:
+        raise ValueError("limit order missing limit_price")
+    if typ == "stop_limit" and not ("stop_price" in body
+                                    and "limit_price" in body):
+        raise ValueError("stop_limit needs stop_price and limit_price")
+    if typ == "trailing_stop" and not ("trail_price" in body
+                                       or "trail_percent" in body):
+        raise ValueError("trailing_stop needs trail_price/trail_percent")
+
+
+# PATCH /v2/orders/{id} replace bodies per the Alpaca v2 docs: only
+# these fields may be patched; client_order_id is additionally accepted
+# here because the runner's stop raises deliberately tag the
+# replacement with a fresh deterministic id (fix B).
+REPLACE_FIELDS = {"qty", "time_in_force", "limit_price", "stop_price",
+                  "trail_price", "trail_percent", "client_order_id"}
+
+
+def validate_replace_patch(patch: dict) -> None:
+    if not isinstance(patch, dict):
+        raise ValueError(f"replace body must be a dict, got {type(patch)!r}")
+    for k, v in patch.items():
+        if k not in REPLACE_FIELDS:
+            raise ValueError(f"field {k!r} may not be patched")
+        if k == "qty" and float(v or 0) <= 0:
+            raise ValueError("patched qty must be > 0")
+        if k in ("limit_price", "stop_price", "trail_price") \
+                and float(v or 0) <= 0:
+            raise ValueError(f"patched {k} must be > 0")
+        if k == "time_in_force" and v not in VALID_TIF:
+            raise ValueError(f"bad time_in_force {v!r}")
+        if k == "trail_percent" and not (0 < float(v) <= 100):
+            raise ValueError("trail_percent must be within (0, 100]")
+        if k == "client_order_id":
+            s = str(v)
+            if not s or len(s) > 48:
+                raise ValueError("client_order_id must be 1-48 chars")
 
 
 class FakeBroker:
@@ -122,7 +185,8 @@ class FakeBroker:
     def __init__(self, positions=None, open_orders=None, orders_by_coid=None,
                  fail_symbols=(), portfolio_value=100_000.0,
                  bars=None, fail_cancels=(), cancel_polls_until_done=0,
-                 unknown_cancel_code=404):
+                 unknown_cancel_code=404, reject_stop_above=None,
+                 fail_stop_first=0, fail_market_sells=False):
         self.positions = positions or []
         self.open_orders = open_orders or []
         self.orders_by_coid = orders_by_coid or {}
@@ -130,6 +194,9 @@ class FakeBroker:
         self.fail_cancels = set(fail_cancels)
         self.cancel_polls_until_done = cancel_polls_until_done
         self.unknown_cancel_code = unknown_cancel_code
+        self.reject_stop_above = reject_stop_above   # (b): reject stops
+        self._stop_fail_remaining = int(fail_stop_first)
+        self.fail_market_sells = fail_market_sells   # (d): reject sells
         self._pv = portfolio_value
         self.bars = bars or {}
         self.submitted = []       # list of submitted bodies
@@ -178,6 +245,18 @@ class FakeBroker:
         validate_order_body(body)  # malformed payloads are REJECTED
         if body["symbol"] in self.fail_symbols:
             return {"error": "forbidden short selling (test)"}
+        if (self.fail_market_sells and body.get("side") == "sell"
+                and body.get("type") == "market"):
+            return {"error": "market sell rejected (test)"}
+        if body.get("type") == "stop":
+            if (self.reject_stop_above is not None
+                    and float(body.get("stop_price", 0) or 0)
+                    >= self.reject_stop_above):
+                return {"error": "stop price must be below the current "
+                                "price (test gap rejection)"}
+            if self._stop_fail_remaining > 0:
+                self._stop_fail_remaining -= 1
+                return {"error": "stop rejected (transient test rejection)"}
         self.submitted.append(body)
         oid = f"ord-{len(self.submitted)}"
         self.orders_by_coid[body.get("client_order_id") or oid] = {
@@ -188,7 +267,9 @@ class FakeBroker:
 
     def replace_order(self, order_id, patch):
         # models Alpaca: a replace returns a NEW order id and the OLD
-        # order ends up 'replaced' (fix B)
+        # order ends up 'replaced' (fix B). Round-4 (h): the PATCH body
+        # is validated like the real API would.
+        validate_replace_patch(patch)
         self._rep_n += 1
         new_id = f"ord-rep-{self._rep_n}"
         self.replaced.append((order_id, dict(patch)))
@@ -463,17 +544,59 @@ def test_fake_broker_rejects_malformed_payloads():
         {"symbol": "AMD", "qty": 10, "side": "sell", "type": "quantum",
          "time_in_force": "day"},                          # bad type
         {"symbol": "AMD", "qty": 10, "side": "sell", "type": "market",
-         "time_in_force": "day", "order_class": "oco"},    # oco w/o legs
+         "time_in_force": "day", "order_class": "oco"},    # oco w/o tp/sl
         {"symbol": "AMD", "qty": 10, "side": "sell", "type": "market",
          "time_in_force": "gtc",
          "legs": [{"symbol": "AMD", "qty": 10, "side": "sell",
                    "type": "limit", "limit_price": 110,
-                   "time_in_force": "gtc"}]},               # legs w/o class
+                   "time_in_force": "gtc"}]},               # legs (v2 has none)
+        {"symbol": "AMD", "qty": 10, "side": "buy", "type": "market",
+         "time_in_force": "day", "order_class": "bracket",
+         "take_profit": {"limit_price": 110}},               # bracket w/o stop_loss
+        {"symbol": "AMD", "qty": 10, "side": "buy", "type": "market",
+         "time_in_force": "day", "order_class": "bracket",
+         "stop_loss": {"limit_price": 90}},                  # stop_loss w/o stop_price
     ]
     for body in bad:
         with pytest.raises(ValueError):
             broker.submit_order(body)
     assert broker.submitted == []
+
+
+def test_fake_broker_accepts_v2_bracket_oco_objects():
+    # round-4 (h): v2-style bracket/oco bodies (take_profit/stop_loss
+    # OBJECTS, no legs) validate cleanly.
+    broker = FakeBroker()
+    broker.submit_order({
+        "symbol": "AMD", "qty": 10, "side": "buy", "type": "market",
+        "time_in_force": "day", "order_class": "bracket",
+        "stop_loss": {"stop_price": 90},
+        "take_profit": {"limit_price": 110}})
+    broker.submit_order({
+        "symbol": "AMD", "qty": 10, "side": "sell", "type": "limit",
+        "limit_price": 110, "time_in_force": "gtc", "order_class": "oco",
+        "stop_loss": {"stop_price": 90},
+        "take_profit": {"limit_price": 110}})
+    assert len(broker.submitted) == 2
+
+
+def test_fake_broker_validates_replace_patch_bodies():
+    # round-4 (h): PATCH replace bodies are validated like the real API.
+    broker = FakeBroker()
+    with pytest.raises(ValueError):     # unknown field
+        broker.replace_order("o1", {"symbol": "AMD"})
+    with pytest.raises(ValueError):     # qty <= 0
+        broker.replace_order("o1", {"qty": 0})
+    with pytest.raises(ValueError):     # stop_price <= 0
+        broker.replace_order("o1", {"stop_price": -5})
+    with pytest.raises(ValueError):     # bad tif
+        broker.replace_order("o1", {"time_in_force": "whenever"})
+    with pytest.raises(ValueError):     # client_order_id too long
+        broker.replace_order("o1", {"client_order_id": "x" * 49})
+    assert broker.replaced == []
+    broker.replace_order("o1", {"stop_price": 95.5,
+                                 "client_order_id": "rsi2-AMD-20261103-1-stop-r2"})
+    assert len(broker.replaced) == 1
 
 
 # ------------------------------------------------------------ dry-run
@@ -1148,3 +1271,243 @@ def test_time_exit_sell_uses_a_parseable_label(frames):
     assert coid == "rsi2-AMD-20261103-1-timeexit"
     from rules import parse_label
     assert parse_label(coid)["strategy"] == RSI2
+
+
+# ------------------------------------------- round-4 fixes (a)-(g)
+def test_time_exit_cancel_completes_after_bounded_poll_window(frames):
+    # blocker (a): the cancel completes AFTER the original bounded poll
+    # window (4 attempts). The runner must KEEP polling (extended window)
+    # and, once canceled is confirmed, place the market sell — never
+    # leave a position believing a stop is live when it is not.
+    broker, bars = setup_broker(frames, cancel_polls_until_done=8)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="held")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    runner.process_exits(state, broker, bars, positions, results)
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1 and sells[0]["type"] == "market"
+    assert t["entry_id"] not in state["open"]
+    assert results["errors"] == []
+
+
+def test_time_exit_cancel_never_completes_keeps_stop(frames):
+    # blocker (a), negative case: even the extended window cannot confirm
+    # the cancel — the stop is treated as still live: NO market sell, the
+    # trade stays tracked and the time exit retries next run.
+    broker, bars = setup_broker(frames, cancel_polls_until_done=10_000)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="held")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    runner.process_exits(state, broker, bars, positions, results)
+    assert [b for b in broker.submitted if b["side"] == "sell"] == []
+    assert t["entry_id"] in state["open"]
+    assert any("unconfirmed" in e["error"] for e in results["errors"])
+
+
+def test_time_exit_sell_rejected_replaces_stop_immediately(frames):
+    # blocker (d): the stop was CONFIRMED canceled, then the time-exit
+    # market sell is rejected. A fresh GTC stop must be re-placed at once;
+    # the position is never left naked.
+    broker, bars = setup_broker(frames, fail_market_sells=True)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="held")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    runner.process_exits(state, broker, bars, positions, results)
+    assert t["entry_id"] in state["open"]      # trade NOT closed
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1                     # the re-placed GTC stop
+    assert stops[0]["time_in_force"] == "gtc"
+    assert stops[0]["qty"] == 50
+    assert stops[0]["stop_price"] == 90.0
+    assert t["stop_order_id"] == "ord-1"       # fresh id stored (the
+    # failed sell never got an id; the re-placed stop is the 1st live one)
+    assert t["stop_gen"] == 2
+    assert any("re-placed" in e["error"] or "UNPROTECTED" in e["error"]
+               for e in results["errors"])
+
+
+def test_stop_gap_below_planned_sells_at_market(frames):
+    # blocker (b): the stop is rejected because the price gapped to/below
+    # the planned stop. Current (finished) close <= planned stop -> the
+    # shares are sold at MARKET with a -stopgap label; the trade closes.
+    broker, bars = setup_broker(frames)
+    cur = float(bars["AMD"]["close"].iloc[-1])
+    broker.reject_stop_above = cur           # gap: stop above market
+    t = filled_trade(days_ago=2, stop=False)
+    t["stop_px"] = round(cur + 10.0, 2)        # planned above market -> gap
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(
+        state, broker, [{"symbol": "AMD", "qty": "50"}], [], results,
+        bars=bars, now=NOW)
+    gap = [b for b in broker.submitted if b.get("type") == "market"]
+    assert len(gap) == 1 and gap[0]["side"] == "sell"
+    assert gap[0]["client_order_id"] == "rsi2-AMD-20261103-1-stopgap"
+    assert t["entry_id"] not in state["open"]
+    assert results["closed"][0]["reason"] == "stop_gap_market_sell"
+
+
+def test_stop_rejected_with_price_above_plan_reprices(frames):
+    # blocker (b): the stop is rejected but the current finished close is
+    # still ABOVE the planned stop -> re-price (never above the plan and
+    # never above current) and re-place with a fresh deterministic label.
+    broker, bars = setup_broker(frames, fail_stop_first=1)
+    t = filled_trade(days_ago=2, stop=False)
+    t["stop_px"] = 90.0
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(
+        state, broker, [{"symbol": "AMD", "qty": "50"}], [], results,
+        bars=bars, now=NOW)
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1                     # the re-priced retry
+    assert stops[0]["stop_price"] == 90.0      # plan kept (below market)
+    assert stops[0]["client_order_id"] == \
+        "rsi2-AMD-20261103-1-stop-r2"
+    assert t["stop_order_id"] and t["stop_gen"] == 2
+    assert results["errors"] == []
+
+
+def test_partial_fill_then_canceled_keeps_filled_shares(frames):
+    # blocker (c): the entry partially filled (20 of 50) and was then
+    # canceled. The FILLED shares must stay tracked with a stop on them,
+    # not dropped.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3, stop=False)
+    t["entry_filled"] = False
+    t["qty"] = 50
+    state = {"open": {t["entry_id"]: t}}
+    broker.orders_by_coid[t["entry_id"]] = {
+        "id": "ord-1", "status": "canceled", "filled_qty": "20",
+        "filled_avg_price": "98.0", "filled_at": "2026-10-28T15:30:00Z"}
+    results = {"closed": [], "errors": []}
+    runner.process_exits(state, broker, bars, [], results)
+    assert t["entry_id"] in state["open"]      # NOT dropped
+    assert t["qty"] == 20 and t["entry_filled"] is True
+    assert t["entry_notional"] == 20 * 98.0
+    # stop on the filled shares (next pass, S1 machinery)
+    results2 = {"stops_placed": [], "errors": []}
+    runner.place_stops_after_fill(
+        state, broker, [{"symbol": "AMD", "qty": "20"}], [], results2,
+        bars=bars, now=NOW)
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1 and stops[0]["qty"] == 20
+
+
+def test_fully_unfilled_canceled_entry_still_dropped(frames):
+    # blocker (c), negative case: zero fill + cancel -> dead trade.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3, stop=False)
+    t["entry_filled"] = False
+    state = {"open": {t["entry_id"]: t}}
+    broker.orders_by_coid[t["entry_id"]] = {
+        "id": "ord-1", "status": "canceled", "filled_qty": "0"}
+    results = {"closed": [], "errors": []}
+    runner.process_exits(state, broker, bars, [], results)
+    assert t["entry_id"] not in state["open"]
+
+
+def test_leftover_cancel_unconfirmed_keeps_trade_tracked(frames):
+    # fix (f): a cleanup cancel we cannot confirm means the trade is NOT
+    # closed — the runner keeps tracking the order and retries next run.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3)
+    _register_stop(broker, t, status="canceled")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    leftover = {"id": "lo-1", "symbol": "AMD", "side": "sell", "qty": 10,
+                "client_order_id": "rsi2-AMD-20261103-1-stop-r2"}
+    broker.orders_by_coid[leftover["client_order_id"]] = {
+        "id": "lo-1", "status": "held"}
+    broker.open_orders = [leftover]
+    broker.fail_cancels = {"lo-1"}             # cancel hard-fails
+    runner.process_exits(state, broker, bars, [], results,
+                         open_orders=broker.open_orders)
+    assert t["entry_id"] in state["open"]      # kept tracked (fix f)
+    assert any("unconfirmed" in e["error"] and "kept open" in e["error"]
+               for e in results["errors"])
+
+
+def test_exits_and_trail_ignore_today_partial_bar(frames):
+    # fix (g): during market hours today's partial daily bar must NOT
+    # feed exits — the chandelier is computed from FINISHED bars only.
+    raw = uptrend_bars()
+    raw.loc[raw.index[-1], "c"] = float(raw["c"].iloc[-1]) * 1.10  # spike
+    raw.loc[raw.index[-1], "h"] = float(raw["h"].iloc[-1]) * 1.10
+    raw.loc[raw.index[-1], "l"] = float(raw["l"].iloc[-1]) * 1.10
+    raw.loc[raw.index[-1], "o"] = float(raw["o"].iloc[-1]) * 1.10
+    bars = {s: signals.add_indicators(b) for s, b in
+            (("AMD", raw), ("SPY", spy_bars()))}
+    before_close = datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc)
+    after_close = NOW
+    t = filled_trade(days_ago=1, stop=True)  # entry AFTER the drops: the
+    # finished-bars chandelier peaks at the last pre-spike close, so only
+    # today's spiked bar can lift it above the parked stop.
+    # Park the stop exactly at the FINISHED-bars chandelier: no raise
+    # while today's partial bar must be ignored...
+    dfx = runner.finished_bars_only(bars["AMD"], before_close)
+    ch = runner.chandelier_stop(dfx, t["entry_date"],
+                                float(dfx["atr14"].iloc[-1]))
+    t["stop_px"] = round(float(ch), 2)
+    _register_stop(broker := FakeBroker(), t)
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    runner.process_exits(state, broker, bars,
+                         [{"symbol": "AMD", "qty": "50"}], results,
+                         now=before_close)
+    assert broker.replaced == []               # partial bar NOT used
+    # ...but once today's bar is final (after 21:05 UTC) the spike DOES
+    # raise the stop.
+    parked = t["stop_px"]
+    _register_stop(broker, t)
+    runner.process_exits(state, broker, bars,
+                         [{"symbol": "AMD", "qty": "50"}], results,
+                         now=after_close)
+    assert len(broker.replaced) == 1
+    assert broker.replaced[0][1]["stop_price"] > parked
+
+
+def test_finished_bars_only_drops_incomplete_today_row():
+    df = pd.DataFrame({"date": pd.bdate_range(
+        end=pd.Timestamp("2026-11-03"), periods=3),
+        "close": [1.0, 2.0, 3.0]})
+    before = datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc)
+    after = datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc)
+    out = runner.finished_bars_only(df, before)
+    assert len(out) == 2 and float(out["close"].iloc[-1]) == 2.0
+    assert runner.finished_bars_only(df, after) is df
+
+
+def test_execute_refused_before_2115_utc(tmp_path, monkeypatch):
+    # fix (e): C4 writes same-day ref_date rows at 21:15 UTC. An
+    # --execute run in the 21:05-21:15 window is refused; 21:15+ passes
+    # the gate.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    monkeypatch.setenv("TRADING_BOT_PAPER_ONLY", "1")
+    with pytest.raises(SystemExit) as e:
+        runner.run(make_args(execute=True),
+                   clock=lambda: datetime(2026, 11, 3, 21, 10,
+                                          tzinfo=timezone.utc))
+    assert e.value.code == 2
+
+
+def test_stopgap_label_parses_for_attribution():
+    from rules import parse_label
+    coid = make_stopgap_client_order_id(RSI2, "AMD", "20261103", 1)
+    assert coid == "rsi2-AMD-20261103-1-stopgap"
+    parsed = parse_label(coid)
+    assert parsed["strategy"] == RSI2 and parsed["kind"] == "stopgap"

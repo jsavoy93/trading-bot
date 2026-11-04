@@ -36,6 +36,8 @@ RSI2 = "rsi2"
 ALPACA_CLIENT_ORDER_ID_MAX = 48
 STOP_SUFFIX = "-stop"
 TIMEEXIT_SUFFIX = "-timeexit"   # 15-day time-exit market sell
+STOPGAP_SUFFIX = "-stopgap"  # round-4(b): market sell when price gapped
+                              # at/below the planned stop price
 PARTIAL_SUFFIX = "-p"      # LEGACY: parsed only, never created
 OCO_STOP_SUFFIX = "-oco"   # LEGACY: parsed only, never created
 
@@ -96,6 +98,17 @@ def make_time_exit_client_order_id(strategy: str, symbol: str, ymd: str,
     return coid
 
 
+def make_stopgap_client_order_id(strategy: str, symbol: str, ymd: str,
+                                 n: int) -> str:
+    """Round-4 blocker (b): when a stop order is rejected because price
+    gapped at/below the planned stop, the held shares are sold at MARKET.
+    This labels that protective market sell so report_pnl can attribute
+    it. Label shape: entry label + '-stopgap'."""
+    coid = make_client_order_id(strategy, symbol, ymd, n) + STOPGAP_SUFFIX
+    _check_length(coid)
+    return coid
+
+
 def make_labels(strategy: str, symbol: str, ymd: str, n: int) -> tuple[str, str]:
     """(entry_client_order_id, stop_client_order_id) for one order pair."""
     return (
@@ -114,7 +127,8 @@ def next_sequence(existing_labels, strategy: str, symbol: str, ymd: str) -> int:
         s = str(label)
         if s.startswith(prefix):
             tail = s[len(prefix):]
-            m = re.match(r"^(\d+)(?:-stop(?:-p|-oco|-r\d+)?)?$", tail)
+            m = re.match(r"^(\d+)(?:-stop(?:-p|-oco|-r\d+)?|-timeexit|"
+                         r"-stopgap)?$", tail)
             if m:
                 best = max(best, int(m.group(1)))
     return best + 1
@@ -133,6 +147,9 @@ def parse_label(label: str) -> dict:
     elif s.endswith(STOP_SUFFIX + OCO_STOP_SUFFIX):
         s = s[: -len(STOP_SUFFIX + OCO_STOP_SUFFIX)]
         kind = "oco_stop"
+    elif s.endswith(STOPGAP_SUFFIX):
+        s = s[: -len(STOPGAP_SUFFIX)]
+        kind = "stopgap"
     elif s.endswith(TIMEEXIT_SUFFIX):
         s = s[: -len(TIMEEXIT_SUFFIX)]
         kind = "timeexit"
