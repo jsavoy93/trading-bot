@@ -189,6 +189,44 @@ class PaperAPI:
                 out.append(o)
         return out
 
+    def get_order_by_client_id(self, client_order_id: str) -> dict | None:
+        """GET /v2/orders:by_client_order_id — the only supported way to
+        look an order up by client_order_id (GET /v2/orders/{id} accepts
+        the Alpaca order id ONLY; passing a client_order_id there 404s,
+        which is why fills were never detected before STRAT-023-C4-FILL).
+        Returns None on 404; unexpected API errors raise loudly instead
+        of being silently mistaken for 'still pending'."""
+        r = self.sess.get(
+            self.base + "/v2/orders:by_client_order_id",
+            headers=self.headers,
+            params={"client_order_id": client_order_id}, timeout=60)
+        if r.status_code == 429:
+            time.sleep(20)
+            return self.get_order_by_client_id(client_order_id)
+        if r.status_code in (401, 403):
+            fail(f"paper API auth rejected on orders:by_client_order_id "
+                 f"(HTTP {r.status_code})")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json() if r.text else None
+
+    def get_order(self, order_id: str) -> dict | None:
+        """GET /v2/orders/{alpaca order id}. Returns None on 404; raises
+        loudly on unexpected API errors."""
+        r = self.sess.get(f"{self.base}/v2/orders/{order_id}",
+                          headers=self.headers, timeout=60)
+        if r.status_code == 429:
+            time.sleep(20)
+            return self.get_order(order_id)
+        if r.status_code in (401, 403):
+            fail(f"paper API auth rejected on /v2/orders/{order_id} "
+                 f"(HTTP {r.status_code})")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json() if r.text else None
+
     def submit(self, body: dict) -> dict:
         r = self.post("/v2/orders", body)
         if r.status_code >= 400:
@@ -246,6 +284,23 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                 (c, sym, kind, SLEEVE, side, qty, price, ref_date,
                  alpaca_id, status, run_ts.isoformat()))
 
+        def lookup_order(c: str) -> dict | None:
+            """Find one of OUR orders by client_order_id via
+            /v2/orders:by_client_order_id, falling back to the
+            alpaca_order_id stored in the local orders table. Returns
+            None ONLY when the order genuinely cannot be found on the
+            broker; unexpected API errors propagate (fail loudly)
+            rather than being mistaken for a pending order."""
+            order = api.get_order_by_client_id(c)
+            if order is not None:
+                return order
+            row = conn.execute(
+                "SELECT alpaca_order_id FROM orders"
+                " WHERE client_order_id=?", (c,)).fetchone()
+            if row and row[0]:
+                return api.get_order(row[0])
+            return None
+
         # ---- 1) track entry fills -> create positions + place ATR stop
         for row in conn.execute(
                 "SELECT symbol, signal_date, signal_atr14, entry_order_coid"
@@ -253,10 +308,7 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
             sym, sig_date, atr14, e_coid = row
             order = open_coids.get(e_coid)
             if order is None:
-                try:
-                    order = api.get(f"/v2/orders/{e_coid}")
-                except Exception:
-                    order = None
+                order = lookup_order(e_coid)
             if order is None or order.get("status") not in ("filled",):
                 continue
             fill_px = float(order.get("filled_avg_price") or 0) or None
@@ -316,7 +368,7 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
             if last_close is not None and last_sma5 is not None and last_close > last_sma5:
                 reason = "sma5"
             else:
-                e_order = api.get(f"/v2/orders/{e_coid}")
+                e_order = lookup_order(e_coid) or {}
                 e_fill = (e_order.get("filled_at") or "")[:10]
                 if e_fill and df is not None:
                     dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
@@ -331,10 +383,7 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                 s_coid = coid(sym, "s", sig_date)
                 stop = open_coids.get(s_coid)
                 if stop is None:
-                    try:
-                        stop = api.get(f"/v2/orders/{s_coid}")
-                    except Exception:
-                        stop = None
+                    stop = lookup_order(s_coid)
                 if stop and stop.get("status") in ("new", "held", "accepted",
                                                    "pending_new", "partially_filled"):
                     api.cancel(stop["id"])

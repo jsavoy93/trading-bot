@@ -61,6 +61,21 @@ class FakeAPI:
         self.order_seq = 0
 
     # -- endpoint surface used by live_paper_runner.PaperAPI
+    #
+    # Models the REAL Alpaca REST API: GET /v2/orders/{id} accepts the
+    # Alpaca order id ONLY (a client_order_id in that path 404s — the
+    # exact STRAT-023-C4-FILL bug), and client_order_id lookups must go
+    # through GET /v2/orders:by_client_order_id.
+    def get_order_by_client_id(self, coid):
+        o = self.orders.get(coid)
+        return dict(o) if o is not None else None
+
+    def get_order(self, order_id):
+        for o in self.orders.values():
+            if o["id"] == order_id:
+                return dict(o)
+        return None
+
     def account(self):
         return {"equity": str(self.equity),
                 "buying_power": str(self.buying_power)}
@@ -98,12 +113,17 @@ class FakeAPI:
                       "filled_qty": body["qty"], "filled_at": self.fill_at})
         return dict(o)
 
-    def get(self, path):
+    def get(self, path, params=None):
+        if path == "/v2/orders:by_client_order_id":
+            coid = (params or {}).get("client_order_id")
+            o = self.orders.get(coid)
+            return dict(o) if o is not None else None
         if path.startswith("/v2/orders/"):
-            coid = path.split("/", 3)[-1]
-            if coid in self.orders:
-                return dict(self.orders[coid])
-            raise RuntimeError("not found")
+            oid = path.rsplit("/", 1)[-1]
+            for o in self.orders.values():
+                if o["id"] == oid:
+                    return dict(o)
+            return None  # real API: 404 (e.g. a client_order_id here)
         if path == "/v2/account":
             return self.account()
         if path.startswith("/v2/positions/"):
@@ -349,3 +369,238 @@ def test_fixture_mode_needs_second_opt_in(monkeypatch, tmp_path):
         lpr.fixture_guard("/tmp/somefixture")
     assert e.value.code == 2
     lpr.fixture_guard(None)  # live-data mode unaffected
+
+
+# ------------------------------------------ STRAT-023-C4-FILL lookup fix
+def test_path_lookup_by_coid_fails_like_real_alpaca(tmp_path):
+    """Regression proof of the bug's root cause: on the real Alpaca API,
+    GET /v2/orders/<client_order_id> does NOT find the order."""
+    lpr, api, db = fresh(tmp_path)
+    bars = {"AAAA": make_bars()}
+    lpr.run_once(db, api, bars)
+    e_coid = [c for c, o in api.orders.items() if o["side"] == "buy"][0]
+    assert api.get(f"/v2/orders/{e_coid}") is None  # real API: 404
+    assert api.get_order_by_client_id(e_coid)["side"] == "buy"  # fixed path
+
+
+def test_fill_detected_via_client_order_id_lookup(tmp_path):
+    """(a) A pending_fill row flips to open with fill price + date via the
+    /v2/orders:by_client_order_id lookup; fills_tracked increments."""
+    lpr, api, db = fresh(tmp_path)
+    bars = {"AAAA": make_bars()}
+    api.fill_at = bars["AAAA"]["t"].iloc[-1]
+    lpr.run_once(db, api, bars)            # submit entry (fake fills it)
+    s = lpr.run_once(db, api, bars)        # fill-tracking pass
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    status, px, dt, qty = conn.execute(
+        "SELECT status, entry_price, entry_date, qty FROM positions"
+    ).fetchone()
+    assert status == "open"
+    assert px == 100.0 and dt == bars["AAAA"]["t"].iloc[-1][:10]
+    assert qty and qty > 0
+    assert s["fills_tracked"] == 1
+    assert conn.execute(
+        "SELECT status FROM orders WHERE kind='entry'").fetchone()[0] == "filled"
+
+
+def test_stop_placed_on_fill_detection_at_fill_minus_3xatr(tmp_path):
+    """(b) The same pass that detects the fill places the resting stop at
+    fill_price - 3 * ATR14."""
+    lpr, api, db = fresh(tmp_path)
+    bars = {"AAAA": make_bars()}
+    api.fill_at = bars["AAAA"]["t"].iloc[-1]
+    lpr.run_once(db, api, bars)
+    s = lpr.run_once(db, api, bars)
+    assert s["stops_placed"] == 1
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    atr = conn.execute("SELECT signal_atr14 FROM positions").fetchone()[0]
+    stop = [o for o in api.orders.values() if o["type"] == "stop"][0]
+    assert float(stop["stop_price"]) == pytest.approx(
+        round(100.0 - 3.0 * atr, 2))
+    assert stop["client_order_id"].startswith("sl_short-AAAA-s-")
+
+
+def test_exit_runs_after_fill(tmp_path):
+    """(c) After the fill is tracked, a close > SMA5 pass submits the
+    market exit (the previously-dead exit path)."""
+    lpr, api, db = fresh(tmp_path)
+    bars = {"AAAA": make_bars()}
+    api.fill_at = bars["AAAA"]["t"].iloc[-1]
+    lpr.run_once(db, api, bars)
+    lpr.run_once(db, api, bars)            # fill + stop
+    df = bars["AAAA"]
+    df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
+    df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+    s = lpr.run_once(db, api, {"AAAA": df})
+    assert s["exits_submitted"] == 1
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    reason = conn.execute("SELECT exit_reason FROM positions").fetchone()[0]
+    assert reason == "sma5"
+
+
+def test_fill_falls_back_to_stored_alpaca_order_id(tmp_path):
+    """When the by-client-order-id lookup cannot find the order (e.g.
+    broker retention), the stored alpaca_order_id still detects the fill."""
+    lpr, api, db = fresh(tmp_path)
+
+    class NoCoidLookupAPI(FakeAPI):
+        def get_order_by_client_id(self, coid):
+            return None  # force the fallback path
+
+    api = NoCoidLookupAPI()
+    bars = {"AAAA": make_bars()}
+    api.fill_at = bars["AAAA"]["t"].iloc[-1]
+    lpr.run_once(db, api, bars)
+    s = lpr.run_once(db, api, bars)
+    assert s["fills_tracked"] == 1 and s["stops_placed"] == 1
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    assert conn.execute(
+        "SELECT status FROM positions").fetchone()[0] == "open"
+
+
+def test_paper_api_lookup_raises_loudly_on_unexpected_error(tmp_path):
+    """Non-404 lookup errors must raise, never be mistaken for pending."""
+    import requests as _requests
+
+    lpr, _, _ = fresh(tmp_path)
+
+    class Resp:
+        status_code = 503
+        text = "service unavailable"
+
+        def raise_for_status(self):
+            raise _requests.HTTPError("503")
+
+    class Sess:
+        def get(self, *a, **kw):
+            return Resp()
+
+    paper = lpr.PaperAPI("key", "sec", session=Sess())
+    with pytest.raises(_requests.HTTPError):
+        paper.get_order_by_client_id("sl_short-X-e-20261102")
+    with pytest.raises(_requests.HTTPError):
+        paper.get_order("ord-1")
+
+
+def test_paper_api_lookup_returns_none_on_404(tmp_path):
+    lpr, _, _ = fresh(tmp_path)
+
+    class Resp:
+        status_code = 404
+        text = "order not found"
+
+        def raise_for_status(self):
+            raise AssertionError("must not raise on 404")
+
+    class Sess:
+        def get(self, *a, **kw):
+            return Resp()
+
+    paper = lpr.PaperAPI("key", "sec", session=Sess())
+    assert paper.get_order_by_client_id("sl_short-X-e-20261102") is None
+    assert paper.get_order("ord-1") is None
+
+
+# ------------------------------------- dry-run proof: live DB state replay
+# State observed read-only in /root/strat-swing/experiments/strat_023/
+# live_paper.db on 2026-11-03: AMD / AVTR / CRL pending_fill with these
+# exact client_order_ids and alpaca_order_ids, all filled at the Nov 3
+# open on the broker but stuck pending_fill locally.
+LIVE_FILL_STATE = [
+    # symbol, coid, alpaca_id, atr14, fill_px, fill_qty
+    ("AMD", "sl_short-AMD-e-20261102",
+     "1c2f5f29-c63d-4a65-b449-de58e959784a", 32.9896642857143,
+     467.05, 22.0),
+    ("AVTR", "sl_short-AVTR-e-20261102",
+     "35a04df6-c159-4391-9604-66ba49fea25d", 0.562321428571428,
+     15.62, 679.0),
+    ("CRL", "sl_short-CRL-e-20261102",
+     "75fcaf81-e7e5-48da-843d-6dbab6e7036f", 16.9818785714286,
+     338.54, 31.0),
+]
+FILL_TS = "2026-11-03T14:30:00Z"
+
+
+def _seed_live_state(lpr, api, db, tmp_path):
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    conn.executescript(lpr.SCHEMA)
+    now = datetime(2026, 11, 3, 21, 45, tzinfo=timezone.utc).isoformat()
+    for sym, c, aid, atr, px, qty in LIVE_FILL_STATE:
+        conn.execute(
+            "INSERT INTO orders(client_order_id, symbol, kind, sleeve,"
+            " side, qty, price, ref_date, alpaca_order_id, status,"
+            " created_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (c, sym, "entry", "short", "buy", qty, px, "2026-11-02",
+             aid, "submitted", now))
+        conn.execute(
+            "INSERT INTO positions(symbol, signal_date, signal_atr14,"
+            " entry_order_coid, status, created_ts)"
+            " VALUES (?,?,?,?, 'pending_fill', ?)",
+            (sym, "2026-11-02", atr, c, now))
+        api.orders[c] = {
+            "id": aid, "client_order_id": c, "symbol": sym,
+            "qty": str(qty), "side": "buy", "type": "market",
+            "status": "filled", "filled_avg_price": str(px),
+            "filled_qty": str(qty), "filled_at": FILL_TS}
+        api.positions[sym] = api.positions.get(sym, 0) + qty
+    conn.commit()
+    conn.close()
+
+
+def test_dryrun_live_state_three_fills_detected_stops_placed(tmp_path):
+    """One runner pass over the exact live DB state: 3 fills detected via
+    client_order_id lookup, 3 stops at fill - 3*ATR14, rows flipped open."""
+    lpr, api, db = fresh(tmp_path)
+    _seed_live_state(lpr, api, db, tmp_path)
+    s = lpr.run_once(db, api, {}, run_ts=datetime(
+        2026, 11, 3, 21, 45, tzinfo=timezone.utc))
+    assert s["fills_tracked"] == 3
+    assert s["stops_placed"] == 3
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT symbol, status, entry_price, entry_date FROM positions"
+        " ORDER BY symbol").fetchall()
+    assert rows == [
+        ("AMD", "open", 467.05, "2026-11-03"),
+        ("AVTR", "open", 15.62, "2026-11-03"),
+        ("CRL", "open", 338.54, "2026-11-03")]
+    stops = {o["symbol"]: o for o in api.orders.values()
+             if o["type"] == "stop"}
+    assert set(stops) == {"AMD", "AVTR", "CRL"}
+    for sym, c, aid, atr, px, qty in LIVE_FILL_STATE:
+        assert float(stops[sym]["stop_price"]) == pytest.approx(
+            round(px - 3.0 * atr, 2))
+        assert stops[sym]["qty"] == str(int(qty))
+    assert conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE kind='entry' AND"
+        " status='filled'").fetchone()[0] == 3
+
+
+def test_dryrun_live_state_exits_run_on_next_pass(tmp_path):
+    """Exits are live again: after the fills are tracked, an SMA5 breach
+    on the next pass submits market sells for all 3 symbols."""
+    lpr, api, db = fresh(tmp_path)
+    _seed_live_state(lpr, api, db, tmp_path)
+    ts = datetime(2026, 11, 3, 21, 45, tzinfo=timezone.utc)
+    lpr.run_once(db, api, {}, run_ts=ts)   # fills + stops
+    bars = {}
+    for sym, *_ in LIVE_FILL_STATE:
+        df = make_bars()
+        df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
+        df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+        bars[sym] = df
+    s = lpr.run_once(db, api, bars, run_ts=ts)
+    assert s["exits_submitted"] == 3
+    assert len(api.cancelled) == 3          # resting stops cancelled first

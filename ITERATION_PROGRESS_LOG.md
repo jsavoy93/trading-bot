@@ -5356,3 +5356,22 @@ Implementation complete; PR open and awaiting owner review.
 - Decisions: sleeve defaults 30%/3 positions/10% cap; exits = resting 3xATR GTC stop + cancel-and-market-sell for SMA5/time (next-open fill divergence documented); fixture+live needs STRAT024_FIXTURE_LIVE=1 second opt-in.
 - Risks: next-open exit fills vs backtest close fills; pending-entry notional uses reference price.
 - Next: Josh approves PR 119 → merge → switch timer per archived report steps. Josh approval required.
+
+## 2026-11-03T21:55Z — STRAT-023-C4-FILL — fix C4 fill-tracking order lookup
+- Objective: fills never detected because order lookups used GET /v2/orders/{client_order_id}
+  (Alpaca accepts only its own order id there → 404 → silently "pending"). AMD/AVTR/CRL
+  stuck pending_fill since 2026-11-03 open; fills_tracked=0, no stops, exits dead, buys blocked.
+- Branch/commit: fix/strat-023-c4-fill-lookup (base research/strat-023-c4-shadow @ b07f28f), commit in PR.
+- Status: DONE (awaiting reviewer verdict + Josh approval; NOT merged)
+- Files: experiments/strat_023/{live_paper_runner.py,test_live_paper_runner.py,dryrun_fill_fix.py},
+  reports/2026-11-03_215400_STRAT023-C4-FILL.md
+- Tests: venv pytest experiments/strat_023/{test_live_paper_runner,test_shadow_runner}.py → 33 passed, 0 failed.
+  Dry-run dryrun_fill_fix.py --with-exits → fills_tracked=3, stops_placed=3 (AMD 368.08 / AVTR 13.93 /
+  CRL 287.59 = fill − 3×ATR14), exits_submitted=3, PASS1/PASS2 OK.
+- Decisions: lookup via /v2/orders:by_client_order_id with stored-alpaca_order_id fallback; 404→None,
+  unexpected HTTP errors raise (fail loudly); FakeAPI now models real Alpaca path semantics.
+  No strategy/threshold changes. Live DB opened read-only only.
+- Risks: backdated fill flip on next live pass (correct — time stop counts from fill date);
+  next-open exit fills vs backtest close (pre-existing).
+- Next: reviewer-agent verdict (ENG-07), Josh approval → merge; next runner pass auto-tracks the 3 stuck
+  fills without DB surgery. Josh approval required.
