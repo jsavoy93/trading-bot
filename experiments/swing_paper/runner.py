@@ -58,6 +58,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -396,11 +397,43 @@ def c4_signaled_today(symbols, now: datetime, db_path=None) -> set:
 
 
 # ------------------------------------------------- C4 run-completion gate
+# Round-6: the gate must be anchored to the US/Eastern TRADING DATE, not
+# to the UTC calendar date. The C4 timer fires at 21:15 UTC on the
+# trading day (16:15 ET on the SAME US/Eastern calendar day). A run at
+# 6 PM CST is 00:00 UTC on the NEXT UTC day but still 7 PM ET on the
+# SAME trading day — anchoring on the UTC date pushed the evidence
+# window to the next day's 21:00 UTC and the evening run was refused
+# even though C4 had already finished for today's session.
+US_EASTERN = ZoneInfo("America/New_York")
+
+
+def us_eastern_trading_date(now: datetime):
+    """The US/Eastern calendar date of `now` (the trading session the
+    run belongs to).
+
+    Round-6: the US market session that ends at 16:00 ET belongs to
+    that ET calendar day, so an evening run (after 18:00 ET, i.e. after
+    the UTC date has rolled over) still belongs to the SAME trading
+    day. `now` is the injected UTC clock."""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.astimezone(US_EASTERN).date()
+
+
 def _c4_evidence_window_start(now: datetime) -> datetime:
-    """Start of TODAY's C4 evidence window (21:00 UTC — the C4 timer
-    fires 21:15 UTC). C4 activity from earlier today (e.g. a manual
-    02:26 backfill run) does NOT count as "today's scheduled run"."""
-    return datetime(now.year, now.month, now.day, C4_EVIDENCE_UTC[0],
+    """Start of the C4 evidence window (21:00 UTC — the C4 timer fires
+    21:15 UTC) for the US/Eastern TRADING DATE of `now`.
+
+    Round-6: the window is anchored on the US/Eastern trading date, so
+    an evening run (00:00-04:00 UTC on the next UTC day, still the same
+    ET trading day) looks at the C4 activity of the trading day it
+    actually trades — not at an empty window on the next UTC day.
+
+    C4 activity from earlier the same day (e.g. a manual 02:26 backfill
+    run) does NOT count as the scheduled run: only C4 activity at/after
+    21:00 UTC on the trading date counts."""
+    d = us_eastern_trading_date(now)
+    return datetime(d.year, d.month, d.day, C4_EVIDENCE_UTC[0],
                     C4_EVIDENCE_UTC[1], tzinfo=timezone.utc)
 
 
@@ -901,30 +934,41 @@ def _reprotect_shares(state, api, t, entry_id, positions, bars, results,
                       now, stop_qty, planned, cur_px, reason):
     """Re-protect held shares after the stop died.
 
-    - price at/below the stop price -> market sell (label -stopgap, or
-      -stopgap-r<gen> when a previous stopgap sell already used the
-      plain label and was rejected/canceled). The trade is NOT closed on
-      submit: it stays open until the sell is CONFIRMED filled.
+    - price at/below the stop price -> market sell. The label ALWAYS
+      carries the generation ('-stopgap' for the very first attempt,
+      '-stopgap-r<gen>' for every generation >= 2) and the generation
+      counter is persisted EVEN WHEN THE SUBMIT FAILS: Alpaca rejects
+      a reused client_order_id, so a later run must never re-send a
+      label that may already exist at the broker. The trade is NOT
+      closed on submit: it stays open until the sell is CONFIRMED
+      filled.
     - otherwise -> a fresh GTC stop at the current stop price with a
       fresh deterministic client_order_id."""
     sym = t["symbol"]
     if cur_px is not None and cur_px <= planned:
-        gen = int(t.get("stopgap_gen", 1)) + 1
-        if gen == 2 and t.get("stopgap_client_order_id"):
-            # the plain '-stopgap' label was already used and died; a
-            # FRESH client_order_id is mandatory (Alpaca rejects reused
-            # ids) -> '-stopgap-r2'.
-            gap_coid = make_stopgap_replace_client_order_id(
-                RSI2, sym, t["date"], t["n"], gen)
-        else:
-            gap_coid = make_stopgap_client_order_id(
-                RSI2, sym, t["date"], t["n"])
+        # Round-6: the generation is bumped and PERSISTED FIRST — a
+        # failed submit still consumed the label at the broker, so the
+        # next run must use the NEXT generation, never the same one.
+        # The plain '-stopgap' label belongs to the FIRST gap sell
+        # (place_stops_after_fill); a RE-PROTECTION sell always carries
+        # the generation, so it starts at gen >= 2.
+        gen = max(int(t.get("stopgap_gen", 0)) + 1, 2)
+        t["stopgap_gen"] = gen
+        # Round-6: gen >= 2 ALWAYS uses '-stopgap-r<gen>'. The round-5
+        # code fell back to the plain '-stopgap' label for gen >= 3,
+        # which re-sent a client_order_id the broker had already seen
+        # -> the sell was rejected and the shares stayed unprotected.
+        gap_coid = make_stopgap_replace_client_order_id(
+            RSI2, sym, t["date"], t["n"], gen)
         gap_resp = api.submit_order({
             "symbol": sym, "qty": stop_qty, "side": "sell",
             "type": "market", "time_in_force": "day",
             "client_order_id": gap_coid,
         })
         if gap_resp.get("error") or not gap_resp.get("id"):
+            # Round-6: the label is recorded as USED even though the
+            # submit failed — the broker may still have consumed it.
+            t["stopgap_client_order_id"] = gap_coid
             results["errors"].append(
                 {"entry_id": entry_id,
                  "error": "reconcile: protective market sell failed "
@@ -932,10 +976,10 @@ def _reprotect_shares(state, api, t, entry_id, positions, bars, results,
                           "attention: " + str(gap_resp.get("error"))[:120]})
             log_event({"type": "reconcile_sell_error", "entry_id": entry_id,
                        "symbol": sym, "reason": reason,
+                       "client_order_id": gap_coid,
                        "error": str(gap_resp.get("error"))[:200]})
             return False
         t["stopgap_client_order_id"] = gap_coid
-        t["stopgap_gen"] = gen
         t["stopgap_pending"] = {"client_order_id": gap_coid,
                                 "qty": stop_qty,
                                 "submitted_reason": reason}
@@ -1136,8 +1180,23 @@ def place_stops_after_fill(state, api, positions, open_orders, results,
                     # stays open until the sell is CONFIRMED filled. If
                     # the sell is canceled/rejected the next run's
                     # reconciliation protects the shares again.
-                    gap_coid = make_stopgap_client_order_id(
-                        RSI2, sym, t["date"], t["n"])
+                    # Round-6: the generation counter is BUMPED (never
+                    # reset) and persisted EVEN WHEN THE SUBMIT FAILS:
+                    # the label may already be consumed at the broker,
+                    # so the next run must use the NEXT generation (a
+                    # reused client_order_id is rejected by Alpaca and
+                    # the shares would stay unprotected).
+                    # The plain '-stopgap' label belongs to the FIRST
+                    # attempt only; every later attempt is
+                    # '-stopgap-r<gen>'.
+                    gen = int(t.get("stopgap_gen", 0)) + 1
+                    t["stopgap_gen"] = gen
+                    if gen <= 1:
+                        gap_coid = make_stopgap_client_order_id(
+                            RSI2, sym, t["date"], t["n"])
+                    else:
+                        gap_coid = make_stopgap_replace_client_order_id(
+                            RSI2, sym, t["date"], t["n"], gen)
                     gap_resp = api.submit_order({
                         "symbol": sym, "qty": stop_qty, "side": "sell",
                         "type": "market", "time_in_force": "day",
@@ -1150,6 +1209,7 @@ def place_stops_after_fill(state, api, positions, open_orders, results,
                         # reconciliation (no live stop exists).
                         log_event({"type": "stop_error",
                                    "entry_id": entry_id,
+                                   "client_order_id": gap_coid,
                                    "error": gap_resp.get("error")})
                         results["errors"].append(
                             {"entry_id": entry_id,
@@ -1158,9 +1218,11 @@ def place_stops_after_fill(state, api, positions, open_orders, results,
                                       + str(gap_resp.get("error"))[:120]})
                         _clear_stop(t)
                         t["stopgap_failed"] = True
+                        # Round-6: the label was used (or attempted) —
+                        # record it so no later run re-sends it.
+                        t["stopgap_client_order_id"] = gap_coid
                     else:
                         t["stopgap_client_order_id"] = gap_coid
-                        t["stopgap_gen"] = 1
                         t["stopgap_pending"] = {
                             "client_order_id": gap_coid, "qty": stop_qty,
                             "submitted_reason": "stop_gap_market_sell"}
@@ -1388,6 +1450,9 @@ def run(args, clock=None):
     # enough: at 21:15 UTC the C4 timer may only just have started (or
     # failed). Evidence = the C4 unit's journal (primary) or today's
     # C4 DB rows (fallback).
+    # Round-6: "today" is the US/Eastern TRADING DATE (see
+    # us_eastern_trading_date) — an evening run on the same trading day
+    # (e.g. 6 PM CST = 00:00 UTC on the next UTC day) is allowed.
     if args.execute:
         c4_db_path = getattr(args, "c4_db", None)
         if not c4_run_finished_today(now, db_path=c4_db_path):

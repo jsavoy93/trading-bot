@@ -3896,6 +3896,24 @@ Durable facts from the round-5 fix of the two remaining no-stop gaps:
   must use a FRESH label (`-stopgap-r<gen>`, `make_stopgap_replace_client_order_id`),
   never the dead `-stopgap` id, or the broker rejects it and the shares stay
   unprotected. `parse_label` handles `-stopgap-r<k>`.
+- **Round-6: the stopgap generation counter is SHARED and NEVER RESET.**
+  `place_stops_after_fill` (first gap sell, plain `-stopgap`) and
+  `_reprotect_shares` (every re-protection, always `-stopgap-r<gen>`) read
+  and write the SAME `t["stopgap_gen"]`. The counter is bumped and
+  PERSISTED **BEFORE** the submit, so a FAILED submit still consumes the
+  label at the broker and the next run uses the NEXT generation. Before
+  round-6 the code fell back to the plain `-stopgap` label for gen >= 3
+  (and reset the counter to 1 in `place_stops_after_fill`), so the 3rd and
+  later protective sells RE-SENT a `client_order_id` Alpaca had already
+  seen -> rejected -> the shares stayed unprotected.
+- **Round-6: the execute gate is anchored on the US/Eastern TRADING DATE,
+  not the UTC date.** The C4 timer fires 21:15 UTC = 16:15 ET on the SAME
+  ET calendar day. A run at 6 PM CST is 00:00 UTC on the NEXT UTC day but
+  still 7 PM ET on the SAME trading day. `us_eastern_trading_date(now)`
+  gives the ET date; `_c4_evidence_window_start(now)` = 21:00 UTC of that
+  ET date. Anchoring on the UTC date pushed the evidence window to the next
+  day's 21:00 UTC and REFUSED the evening run even though C4 had already
+  finished for the session being traded.
 - **The execute gate is evidence-based, not clock-based**
   (`runner.c4_run_finished_today`): the C4 unit's user journal
   (`journalctl --user -u strat023-c4-shadow.service --since "<today> 21:00 UTC"`,

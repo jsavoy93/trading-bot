@@ -28,9 +28,11 @@ rsi2-AMD-20261103-1-stop-r2    stop after its 1st chandelier raise
 rsi2-AMD-20261103-1-stop-r3    stop after its 2nd chandelier raise
 rsi2-AMD-20261103-1-timeexit   15-day time exit (sell, market)
 rsi2-AMD-20261103-1-stopgap    market sell when price gapped at/below stop
+                               (FIRST attempt only)
 rsi2-AMD-20261103-1-stopgap-r2 re-protection market sell after a dead
                                -stopgap sell (fresh id: Alpaca rejects
                                a reused client_order_id)
+rsi2-AMD-20261103-1-stopgap-r3 ... every further re-protection
 ```
 
 LEGACY labels (round ≤2) stay parseable for historical attribution only
@@ -74,8 +76,11 @@ Every run starts with a **live reconciliation** of the protective stops
   held means the position is unprotected → a **fresh GTC stop** is placed
   immediately at the current stop price with a FRESH deterministic
   `client_order_id` (`...-stop-r<k>`); if the price is at/below the stop
-  price the shares are sold at MARKET instead (`-stopgap`, then
-  `-stopgap-r<k>` on a re-protection — a reused id would be rejected);
+  price the shares are sold at MARKET instead (`-stopgap` for the FIRST
+  attempt, `-stopgap-r<k>` for EVERY re-protection — a reused id would
+  be rejected). The generation counter is shared by both code paths and
+  is persisted even when the submit FAILS, so no label is ever re-sent
+  (round-6);
 - a **missing stop order id** is reconciled the same way;
 - a **pending `-stopgap` market sell** is watched: when it is CONFIRMED
   filled the trade is closed (reason `stop_gap_market_sell`); when it is
@@ -167,7 +172,7 @@ python experiments/swing_paper/report_pnl.py [--json] [--since 2026-11-01]
 - Open positions are attributed by LABELED fills only (net labeled
   buys−sells per strategy), never by "last buyer".
 
-## Run-order contract with C4 (round-4 fix e / round-5)
+## Run-order contract with C4 (round-4 fix e / round-5 / round-6)
 
 The C4 same-day skip is `ref_date`-based (fix K), so it is independent of
 WHICH runner executes first — but it can only see C4 rows that already
@@ -176,13 +181,22 @@ RSI(2) runner may only `--execute` **after today's C4 run has actually
 FINISHED** (round-5). A bare clock check is not enough: at 21:15 UTC the
 C4 run may only just have started, or may have failed.
 
+**"Today" is the US/Eastern TRADING DATE (round-6), not the UTC date.**
+The C4 timer fires at 21:15 UTC = **16:15 ET on the same ET calendar
+day**. An evening run — e.g. 6 PM CST, which is 00:00 UTC on the *next*
+UTC day but still 7 PM ET on the *same* trading day — belongs to that
+trading day and is allowed once C4 has finished for it. The gate is
+anchored via `runner.us_eastern_trading_date(now)`; the evidence window
+starts at 21:00 UTC of that ET date.
+
 The gate (`runner.c4_run_finished_today`) looks for evidence that today's
 C4 run completed:
 
 1. **Primary — the C4 unit's user journal** (`strat023-c4-shadow.service`,
-   today's post-close window from 21:00 UTC): the C4 runner's
-   `live paper run complete:` line or systemd's `Finished ...` line. This
-   also covers zero-signal days, where the C4 database stays silent.
+   today's post-close window from 21:00 UTC of the ET trading date): the
+   C4 runner's `live paper run complete:` line or systemd's `Finished ...`
+   line. This also covers zero-signal days, where the C4 database stays
+   silent.
 2. **Fallback — the C4 shadow DB**: rows for today's `ref_date` written
    inside today's post-close window (`live_paper.db`).
 
@@ -191,6 +205,10 @@ code 2). Dry-run inspection runs remain usable at any time.
 
 **Schedule the RSI(2) runner at 21:30 UTC or later** (the C4 timer fires
 at 21:15 UTC; 21:30 leaves a 15-minute cushion for the C4 run to finish).
+An evening run on the same trading day (e.g. 6 PM CST) is equally fine.
 Covered by `test_execute_refused_until_c4_run_finished`,
-`test_execute_allowed_after_c4_run_finished` and
-`test_c4_run_finished_gate_uses_journal_and_db`.
+`test_execute_allowed_after_c4_run_finished`,
+`test_c4_run_finished_gate_uses_journal_and_db`,
+`test_execute_allowed_in_the_evening_after_the_utc_date_rolls_over`,
+`test_execute_refused_in_the_evening_when_the_window_is_the_next_day` and
+`test_c4_evidence_window_is_anchored_on_the_us_eastern_trading_date`.

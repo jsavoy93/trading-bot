@@ -200,6 +200,11 @@ class FakeBroker:
         self._pv = portfolio_value
         self.bars = bars or {}
         self.submitted = []       # list of submitted bodies
+        # ROUND-6: every body the runner ASKED the broker to submit,
+        # including the ones the fake rejects. A reused
+        # client_order_id is rejected by Alpaca, so the labels that were
+        # ATTEMPTED must all be unique.
+        self.submit_attempts = []
         self.replaced = []        # list of (order_id, patch)
         self.canceled = []
         self._canceled_ids = set()
@@ -243,6 +248,7 @@ class FakeBroker:
 
     def submit_order(self, body):
         validate_order_body(body)  # malformed payloads are REJECTED
+        self.submit_attempts.append(dict(body))
         if body["symbol"] in self.fail_symbols:
             return {"error": "forbidden short selling (test)"}
         if (self.fail_market_sells and body.get("side") == "sell"
@@ -1797,6 +1803,9 @@ def test_reconcile_sells_at_market_when_price_at_or_below_stop(frames):
     # round-5 item 1: the price is at/below the stop price -> the
     # shares are sold at MARKET (a stop above the market would be
     # rejected). The trade stays open until the sell is filled.
+    # ROUND-6: a RE-PROTECTION sell (from reconcile_stops) always
+    # carries the generation ('-stopgap-r2'); the plain '-stopgap'
+    # label belongs to the FIRST gap sell (place_stops_after_fill).
     broker, bars = setup_broker(frames)
     cur = float(bars["AMD"]["close"].iloc[-1])
     t = filled_trade(days_ago=3)
@@ -1809,7 +1818,7 @@ def test_reconcile_sells_at_market_when_price_at_or_below_stop(frames):
     sells = [b for b in broker.submitted if b["side"] == "sell"]
     assert len(sells) == 1
     assert sells[0]["type"] == "market"
-    assert sells[0]["client_order_id"] == "rsi2-AMD-20261103-1-stopgap"
+    assert sells[0]["client_order_id"] == "rsi2-AMD-20261103-1-stopgap-r2"
     assert t["entry_id"] in state["open"]    # not closed on submit
     assert results["closed"] == []
 
@@ -1902,3 +1911,304 @@ def test_run_reconciles_stops_before_exits(frames, tmp_path, monkeypatch):
     stops = [b for b in broker.submitted if b.get("type") == "stop"]
     assert len(stops) == 1                    # the re-placed GTC stop
     assert stops[0]["client_order_id"] == "rsi2-AMD-20261103-1-stop-r2"
+
+
+# --------------------------- round-6: unique stopgap labels (no reused id)
+def _gap_labels(broker):
+    """All market-sell client_order_ids the fake broker was ASKED for
+    (rejected ones included — a reused client_order_id is rejected by
+    Alpaca, so an attempted label counts as used)."""
+    return [b["client_order_id"] for b in broker.submit_attempts
+            if b.get("type") == "market" and b.get("side") == "sell"]
+
+
+def test_stopgap_labels_unique_after_repeated_reprotect_failures(frames):
+    # ROUND-6 (Josh, 2026-11-04): Alpaca REJECTS a reused
+    # client_order_id. The round-5 code only used the '-stopgap-r<gen>'
+    # label for gen == 2 and fell back to the plain '-stopgap' label for
+    # gen >= 3 -> the third and later protective sells re-sent a label
+    # the broker had already seen -> rejected -> the shares stayed
+    # unprotected.
+    # Here the FIRST protective sell comes from place_stops_after_fill
+    # (a gap-rejected stop), then three consecutive reconciliations
+    # fail. EVERY label must be unique.
+    broker, bars = setup_broker(frames)
+    cur = float(bars["AMD"]["close"].iloc[-1])
+    broker.reject_stop_above = cur        # the stop is rejected (gap)
+    broker.fail_market_sells = True       # every market sell is rejected
+    t = filled_trade(days_ago=2, stop=False)
+    t["stop_px"] = round(cur + 10.0, 2)   # planned above the market -> gap
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+
+    # 1) the first protective sell: place_stops_after_fill
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(state, broker, positions, [], results,
+                                  bars=bars, now=NOW)
+    assert _gap_labels(broker) == ["rsi2-AMD-20261103-1-stopgap"]
+    assert t["stopgap_gen"] == 1
+
+    # 2..4) three consecutive reconciliation attempts, every one failing
+    for _ in range(3):
+        r = {"stops_placed": [], "closed": [], "errors": []}
+        runner.reconcile_stops(state, broker, positions, bars, r, now=NOW)
+        # the trade is NEVER closed on a submit
+        assert t["entry_id"] in state["open"]
+        assert r["closed"] == []
+
+    labels = _gap_labels(broker)
+    assert len(labels) == 4, labels
+    # every label is UNIQUE (Alpaca rejects a reused client_order_id)
+    assert len(set(labels)) == len(labels), labels
+    # and the generations are strictly increasing, never the plain label
+    # again after the first attempt
+    assert labels == [
+        "rsi2-AMD-20261103-1-stopgap",
+        "rsi2-AMD-20261103-1-stopgap-r2",
+        "rsi2-AMD-20261103-1-stopgap-r3",
+        "rsi2-AMD-20261103-1-stopgap-r4",
+    ], labels
+    # the generation counter is persisted even though every submit failed
+    assert t["stopgap_gen"] == 4
+
+
+def test_stopgap_labels_unique_when_first_sell_comes_from_reconcile(frames):
+    # ROUND-6: the same uniqueness guarantee when the FIRST protective
+    # sell comes from reconcile_stops (the stop was canceled while the
+    # shares were held) — not from place_stops_after_fill.
+    broker, bars = setup_broker(frames)
+    cur = float(bars["AMD"]["close"].iloc[-1])
+    broker.fail_market_sells = True       # every market sell is rejected
+    t = filled_trade(days_ago=3)
+    t["stop_px"] = round(cur + 10.0, 2)   # planned above the market -> gap
+    _register_stop(broker, t, status="canceled")
+    state = {"open": {t["entry_id"]: t}}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+
+    # four consecutive reconciliation attempts, every one failing
+    for _ in range(4):
+        r = {"stops_placed": [], "closed": [], "errors": []}
+        runner.reconcile_stops(state, broker, positions, bars, r, now=NOW)
+        assert t["entry_id"] in state["open"]
+        assert r["closed"] == []
+
+    labels = _gap_labels(broker)
+    assert len(labels) == 4, labels
+    assert len(set(labels)) == len(labels), labels
+    assert labels == [
+        "rsi2-AMD-20261103-1-stopgap-r2",
+        "rsi2-AMD-20261103-1-stopgap-r3",
+        "rsi2-AMD-20261103-1-stopgap-r4",
+        "rsi2-AMD-20261103-1-stopgap-r5",
+    ], labels
+    assert t["stopgap_gen"] == 5
+
+
+def test_stopgap_generation_persisted_when_submit_fails(frames):
+    # ROUND-6: a FAILED submit still consumed the label at the broker.
+    # The generation counter must be persisted so the next run uses the
+    # NEXT generation and never re-sends the dead label.
+    broker, bars = setup_broker(frames)
+    cur = float(bars["AMD"]["close"].iloc[-1])
+    broker.reject_stop_above = cur          # the stop is rejected (gap)
+    broker.fail_market_sells = True
+    t = filled_trade(days_ago=2, stop=False)
+    t["stop_px"] = round(cur + 10.0, 2)
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    r = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(state, broker, positions, [], r,
+                                  bars=bars, now=NOW)
+    assert _gap_labels(broker) == ["rsi2-AMD-20261103-1-stopgap"]
+    assert t["stopgap_gen"] == 1
+    assert t["stopgap_client_order_id"] == "rsi2-AMD-20261103-1-stopgap"
+    assert t["stopgap_failed"] is True
+    # the next run must NOT re-send '-stopgap'
+    r2 = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, positions, bars, r2, now=NOW)
+    assert _gap_labels(broker) == ["rsi2-AMD-20261103-1-stopgap",
+                                   "rsi2-AMD-20261103-1-stopgap-r2"]
+
+
+def test_stopgap_replace_label_used_for_every_generation(frames):
+    # ROUND-6: '_reprotect_shares' NEVER falls back to the plain
+    # '-stopgap' label — every generation >= 2 is '-stopgap-r<gen>'.
+    for gen in range(2, 6):
+        t = filled_trade(days_ago=3)
+        t["stopgap_gen"] = gen - 1
+        t["stopgap_client_order_id"] = "rsi2-AMD-20261103-1-stopgap"
+        broker, bars = setup_broker(frames)
+        cur = float(bars["AMD"]["close"].iloc[-1])
+        t["stop_px"] = round(cur + 10.0, 2)
+        _register_stop(broker, t, status="canceled")
+        state = {"open": {t["entry_id"]: t}}
+        r = {"stops_placed": [], "closed": [], "errors": []}
+        runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                               bars, r, now=NOW)
+        labels = _gap_labels(broker)
+        assert len(labels) == 1, (gen, labels)
+        assert labels[0] == f"rsi2-AMD-20261103-1-stopgap-r{gen}", (gen, labels)
+        assert t["stopgap_gen"] == gen
+
+
+# ------------------ round-6: the execute gate uses the US/Eastern DATE
+def test_us_eastern_trading_date_is_stable_across_the_utc_rollover():
+    # ROUND-6: 6 PM CST is 00:00 UTC on the NEXT UTC day, but it is
+    # still 7 PM ET on the SAME trading day. The gate must use the
+    # US/Eastern trading date, not the UTC calendar date.
+    assert runner.us_eastern_trading_date(
+        datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 3).date()
+    assert runner.us_eastern_trading_date(
+        datetime(2026, 11, 4, 0, 0, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 3).date()
+    assert runner.us_eastern_trading_date(
+        datetime(2026, 11, 4, 1, 30, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 3).date()
+    # after the ET date rolls over it moves on
+    assert runner.us_eastern_trading_date(
+        datetime(2026, 11, 4, 21, 30, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 4).date()
+
+
+def test_c4_evidence_window_is_anchored_on_the_us_eastern_trading_date():
+    # ROUND-6: the evidence window starts at 21:00 UTC of the US/Eastern
+    # TRADING DATE. For an evening run (00:00 UTC on the next UTC day)
+    # that is the PREVIOUS day's 21:00 UTC — the window that actually
+    # contains the C4 run for the session being traded.
+    assert runner._c4_evidence_window_start(
+        datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 3, 21, 0, tzinfo=timezone.utc)
+    assert runner._c4_evidence_window_start(
+        datetime(2026, 11, 4, 0, 0, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 3, 21, 0, tzinfo=timezone.utc)
+    assert runner._c4_evidence_window_start(
+        datetime(2026, 11, 4, 21, 30, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 4, 21, 0, tzinfo=timezone.utc)
+
+
+def test_execute_allowed_in_the_evening_after_the_utc_date_rolls_over(
+        tmp_path, monkeypatch):
+    # ROUND-6 (Josh, 2026-11-04): the execute gate refused runs at
+    # 6 PM CST or later because the UTC date had already rolled over to
+    # the next day. The gate must be anchored on the US/Eastern trading
+    # date, so an evening run on the SAME trading day is allowed once
+    # C4 has finished for that session.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    monkeypatch.setenv("TRADING_BOT_PAPER_ONLY", "1")
+
+    # The C4 unit finished its run for the 2026-11-03 session at
+    # 21:16 UTC. The journal is filtered by '--since <window start>',
+    # so the fake journal only reports the completion when the window
+    # the runner asked for actually CONTAINS the 21:16 UTC entry.
+    c4_finished_at = datetime(2026, 11, 3, 21, 16, tzinfo=timezone.utc)
+
+    def fake_journal(since):
+        if since <= c4_finished_at:
+            return "live paper run complete: {'entries_submitted': 0}\n"
+        return ""
+
+    monkeypatch.setattr(runner, "_c4_journal_text", fake_journal)
+    fake = FakeBroker(bars={"AMD": uptrend_bars(), "SPY": spy_bars()})
+    monkeypatch.setattr(runner, "AlpacaPaper", lambda *a, **k: fake)
+    # 6 PM CST == 00:00 UTC on 2026-11-04 (7 PM ET on 2026-11-03)
+    runner.run(make_args(execute=False),
+               clock=lambda: datetime(2026, 11, 4, 0, 0,
+                                      tzinfo=timezone.utc))
+    # the gate sees the C4 run of the 2026-11-03 session
+    assert runner.c4_run_finished_today(
+        datetime(2026, 11, 4, 0, 0, tzinfo=timezone.utc),
+        db_path=runner.DEFAULT_C4_DB,
+        journal_text="live paper run complete: {}") is True
+    # the window the runner asked the journal for must be the one that
+    # contains the C4 run of the trading day (2026-11-03 21:16 UTC)
+    assert runner._c4_evidence_window_start(
+        datetime(2026, 11, 4, 0, 0, tzinfo=timezone.utc)) \
+        == datetime(2026, 11, 3, 21, 0, tzinfo=timezone.utc)
+
+
+def test_execute_refused_in_the_evening_when_the_window_is_the_next_day(
+        tmp_path, monkeypatch):
+    # ROUND-6 (negative): with the OLD UTC-date anchoring the window
+    # would start at 2026-11-04 21:00 UTC, which does NOT contain the
+    # C4 run of the 2026-11-03 session -> the evening run was refused.
+    # This test pins the regression: the journal is filtered by the
+    # window, and the window must contain the C4 run.
+    c4_finished_at = datetime(2026, 11, 3, 21, 16, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 4, 0, 0, tzinfo=timezone.utc)
+    win = runner._c4_evidence_window_start(now)
+    assert win <= c4_finished_at, (
+        "the evidence window must contain the C4 run of the trading day "
+        "the evening run belongs to")
+    assert win.date() == datetime(2026, 11, 3).date()
+
+
+def test_execute_gate_still_refuses_before_c4_finished_for_the_session(
+        tmp_path, monkeypatch):
+    # ROUND-6: anchoring on the US/Eastern trading date must NOT open
+    # the gate for a session whose C4 run has not happened yet (e.g.
+    # 15:00 ET on the trading day -> the C4 timer fires at 16:15 ET).
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    monkeypatch.setenv("TRADING_BOT_PAPER_ONLY", "1")
+    monkeypatch.setattr(runner, "_c4_journal_text", lambda since: "")
+    # 2026-11-03 15:00 ET == 20:00 UTC: the session has NOT closed yet
+    with pytest.raises(SystemExit) as e:
+        runner.run(make_args(execute=True),
+                   clock=lambda: datetime(2026, 11, 3, 20, 0,
+                                          tzinfo=timezone.utc))
+    assert e.value.code == 2
+
+
+def test_stopgap_generation_never_resets_between_paths(frames):
+    # ROUND-6: place_stops_after_fill and _reprotect_shares share the
+    # SAME generation counter. A re-protection (gen >= 2) must never be
+    # reset to the plain '-stopgap' label by a later
+    # place_stops_after_fill pass (the trade has no stop id after a
+    # failed re-protection, so that pass DOES run again) — a reused
+    # client_order_id is rejected by Alpaca.
+    broker, bars = setup_broker(frames)
+    cur = float(bars["AMD"]["close"].iloc[-1])
+    broker.reject_stop_above = cur          # the stop is rejected (gap)
+    broker.fail_market_sells = True         # every market sell is rejected
+    t = filled_trade(days_ago=2, stop=False)
+    t["stop_px"] = round(cur + 10.0, 2)
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+
+    # 1) the first gap sell from place_stops_after_fill -> plain label
+    r = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(state, broker, positions, [], r,
+                                  bars=bars, now=NOW)
+    assert _gap_labels(broker) == ["rsi2-AMD-20261103-1-stopgap"]
+    assert t["stopgap_gen"] == 1
+
+    # 2) the re-protection from reconcile_stops -> '-stopgap-r2'
+    r = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, positions, bars, r, now=NOW)
+    assert _gap_labels(broker)[-1] == "rsi2-AMD-20261103-1-stopgap-r2"
+    assert t["stopgap_gen"] == 2
+
+    # 3) place_stops_after_fill runs again (no stop id on the trade) —
+    #    it must NOT reset the counter to the plain label
+    r = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(state, broker, positions, [], r,
+                                  bars=bars, now=NOW)
+    labels = _gap_labels(broker)
+    assert len(set(labels)) == len(labels), labels
+    assert labels[-1] != "rsi2-AMD-20261103-1-stopgap", labels
+    assert t["stopgap_gen"] >= 3, t["stopgap_gen"]
