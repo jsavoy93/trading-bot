@@ -16,7 +16,8 @@ from rules import (ALPACA_CLIENT_ORDER_ID_MAX, RSI2,
                    RSI2_SLEEVE_PCT, apply_rsi2_daily_cap,
                    make_client_order_id, make_labels,
                    make_stop_client_order_id,
-                   make_stop_replace_client_order_id, next_sequence,
+                   make_stop_replace_client_order_id,
+                   make_time_exit_client_order_id, next_sequence,
                    parse_label, rsi2_slice_dollars, rsi2_skip_blocked,
                    size_rsi2_position, symbol_has_open_order,
                    symbol_in_positions)
@@ -44,6 +45,12 @@ class TestLabels:
             make_stop_replace_client_order_id("rsi2", "AMD", "20261103", 2, 1)
         with pytest.raises(ValueError):
             make_stop_replace_client_order_id("rsi2", "AMD", "20261103", 2, "2")
+
+    def test_time_exit_label(self):
+        assert make_time_exit_client_order_id(
+            "rsi2", "AMD", "20261103", 2) == "rsi2-AMD-20261103-2-timeexit"
+        assert len(make_time_exit_client_order_id(
+            "rsi2", "BRK.B", "20261103", 99999)) <= ALPACA_CLIENT_ORDER_ID_MAX
 
     def test_partial_and_oco_labels_are_legacy_only(self):
         # S1 removed the partial half-sell and every OCO code path: no
@@ -94,6 +101,10 @@ class TestLabels:
         assert parse_label("rsi2-NVDA-20261103-7-stop-r2") == {
             "strategy": "rsi2", "symbol": "NVDA", "ymd": "20261103",
             "n": 7, "kind": "stop_replace"}
+        # the 15-day time-exit sell must stay attributable
+        assert parse_label("rsi2-NVDA-20261103-7-timeexit") == {
+            "strategy": "rsi2", "symbol": "NVDA", "ymd": "20261103",
+            "n": 7, "kind": "timeexit"}
 
     def test_parse_rejects_unknown_strategy(self):
         with pytest.raises(ValueError):

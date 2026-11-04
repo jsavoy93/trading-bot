@@ -53,7 +53,8 @@ import requests
 
 import signals
 from rules import (RSI2, make_client_order_id, make_labels,
-                   make_stop_replace_client_order_id, next_sequence,
+                   make_stop_replace_client_order_id,
+                   make_time_exit_client_order_id, next_sequence,
                    rsi2_slice_dollars, rsi2_skip_blocked,
                    size_rsi2_position, symbol_has_open_order)
 
@@ -554,8 +555,8 @@ def process_exits(state, api, bars, positions, results, open_orders=()):
                 resp = api.submit_order({
                     "symbol": sym, "qty": sell_qty, "side": "sell",
                     "type": "market", "time_in_force": "day",
-                    "client_order_id": make_client_order_id(
-                        RSI2, sym, t["date"], t["n"]) + "-timeexit",
+                    "client_order_id": make_time_exit_client_order_id(
+                        RSI2, sym, t["date"], t["n"]),
                 })
                 if resp.get("error"):
                     log_event({"type": "exit_error",

@@ -1130,3 +1130,21 @@ def test_s1_partial_and_oco_code_is_gone_from_the_module():
     assert not hasattr(rules, "make_partial_client_order_id")
     assert not hasattr(rules, "make_oco_stop_client_order_id")
     assert not hasattr(signals, "RSI2_PARTIAL_R")
+
+
+def test_time_exit_sell_uses_a_parseable_label(frames):
+    # The time-exit market sell carries a label that report_pnl can
+    # attribute (fix I): rsi2-<SYM>-<YYYYMMDD>-<n>-timeexit
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t)
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    runner.process_exits(state, broker, bars,
+                         [{"symbol": "AMD", "qty": "50"}], results)
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1
+    coid = sells[0]["client_order_id"]
+    assert coid == "rsi2-AMD-20261103-1-timeexit"
+    from rules import parse_label
+    assert parse_label(coid)["strategy"] == RSI2

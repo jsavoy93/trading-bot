@@ -35,6 +35,7 @@ RSI2 = "rsi2"
 # 4(token)+1+8(symbol)+1+8(date)+1+5(seq)+9(-stop-r99) = 37 chars.
 ALPACA_CLIENT_ORDER_ID_MAX = 48
 STOP_SUFFIX = "-stop"
+TIMEEXIT_SUFFIX = "-timeexit"   # 15-day time-exit market sell
 PARTIAL_SUFFIX = "-p"      # LEGACY: parsed only, never created
 OCO_STOP_SUFFIX = "-oco"   # LEGACY: parsed only, never created
 
@@ -85,6 +86,16 @@ def make_stop_replace_client_order_id(strategy: str, symbol: str, ymd: str,
     return coid
 
 
+def make_time_exit_client_order_id(strategy: str, symbol: str, ymd: str,
+                                   n: int) -> str:
+    """15-day time-exit market sell label: entry label + '-timeexit'.
+    It must stay parseable so report_pnl attributes the exit fill to the
+    strategy that produced it."""
+    coid = make_client_order_id(strategy, symbol, ymd, n) + TIMEEXIT_SUFFIX
+    _check_length(coid)
+    return coid
+
+
 def make_labels(strategy: str, symbol: str, ymd: str, n: int) -> tuple[str, str]:
     """(entry_client_order_id, stop_client_order_id) for one order pair."""
     return (
@@ -111,9 +122,9 @@ def next_sequence(existing_labels, strategy: str, symbol: str, ymd: str) -> int:
 
 def parse_label(label: str) -> dict:
     """Parse a label into {strategy, symbol, ymd, n, kind} where kind is
-    'entry' | 'stop' | 'stop_replace' | 'partial' | 'oco_stop'. Raises
-    ValueError. partial/oco_stop are LEGACY kinds (round-2 labels kept
-    parseable so historical order attribution keeps working)."""
+    'entry' | 'stop' | 'stop_replace' | 'timeexit' | 'partial' | 'oco_stop'.
+    Raises ValueError. partial/oco_stop are LEGACY kinds (round-2 labels
+    kept parseable so historical order attribution keeps working)."""
     s = str(label)
     kind = "entry"
     if s.endswith(STOP_SUFFIX + PARTIAL_SUFFIX):
@@ -122,6 +133,9 @@ def parse_label(label: str) -> dict:
     elif s.endswith(STOP_SUFFIX + OCO_STOP_SUFFIX):
         s = s[: -len(STOP_SUFFIX + OCO_STOP_SUFFIX)]
         kind = "oco_stop"
+    elif s.endswith(TIMEEXIT_SUFFIX):
+        s = s[: -len(TIMEEXIT_SUFFIX)]
+        kind = "timeexit"
     else:
         m = re.search(re.escape(STOP_SUFFIX) + r"-r(\d+)$", s)
         if m and int(m.group(1)) >= 2:

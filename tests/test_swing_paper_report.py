@@ -340,3 +340,17 @@ def test_activities_pagination_terminates_without_infinite_loop(monkeypatch):
     out = report_pnl.fetch_fill_activities(None)
     assert len(calls) <= 2
     assert len(out) == 1
+
+
+def test_time_exit_sell_is_attributed_to_the_strategy(monkeypatch):
+    # The 15-day time-exit market sell must be attributed to rsi2 like
+    # every other labeled order — otherwise the realized P&L of a time
+    # exit silently disappears from the report.
+    orders = [
+        order("rsi2-AMD-20261101-1", "AMD", "buy", 100, 100, 50.0),
+        order("rsi2-AMD-20261130-1-timeexit", "AMD", "sell", 100, 100, 60.0),
+    ]
+    rep = _collect(monkeypatch, orders)
+    assert rep["realized"]["rsi2"] == 1000.0
+    assert len(rep["trades"]["rsi2"]) == 1
+    assert rep["trades"]["rsi2"][0]["sell_id"].endswith("-timeexit")
