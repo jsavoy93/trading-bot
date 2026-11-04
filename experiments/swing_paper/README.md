@@ -27,6 +27,10 @@ rsi2-AMD-20261103-1-stop       protective stop (sell, FULL held qty)
 rsi2-AMD-20261103-1-stop-r2    stop after its 1st chandelier raise
 rsi2-AMD-20261103-1-stop-r3    stop after its 2nd chandelier raise
 rsi2-AMD-20261103-1-timeexit   15-day time exit (sell, market)
+rsi2-AMD-20261103-1-stopgap    market sell when price gapped at/below stop
+rsi2-AMD-20261103-1-stopgap-r2 re-protection market sell after a dead
+                               -stopgap sell (fresh id: Alpaca rejects
+                               a reused client_order_id)
 ```
 
 LEGACY labels (round ≤2) stay parseable for historical attribution only
@@ -59,6 +63,29 @@ skipped outright.
   order for that symbol is canceled, and `stop_filled` is detected through
   the CURRENT stop client id (fix D).
 
+## Live stop reconciliation (round-5)
+
+Every run starts with a **live reconciliation** of the protective stops
+(`runner.reconcile_stops`, before any exit/entry decision):
+
+- each open trade's stop order is fetched from the broker
+  (`GET /v2/orders:by_client_order_id`);
+- a stop that is **canceled / expired / rejected** while shares are still
+  held means the position is unprotected → a **fresh GTC stop** is placed
+  immediately at the current stop price with a FRESH deterministic
+  `client_order_id` (`...-stop-r<k>`); if the price is at/below the stop
+  price the shares are sold at MARKET instead (`-stopgap`, then
+  `-stopgap-r<k>` on a re-protection — a reused id would be rejected);
+- a **missing stop order id** is reconciled the same way;
+- a **pending `-stopgap` market sell** is watched: when it is CONFIRMED
+  filled the trade is closed (reason `stop_gap_market_sell`); when it is
+  canceled/expired/rejected the shares are protected again. The trade is
+  **never closed on submit** — only on a confirmed fill (round-5);
+- this closes the gap where a cancel request could not be confirmed
+  inside the extended poll window and the broker COMPLETED the cancel
+  afterwards: the next run's reconciliation sees the dead stop and
+  re-protects the position.
+
 ## Sizing (S2 — fixed sleeve, independent of C4)
 
 - sleeve = portfolio_value × `--sleeve-pct` (default **15%**, configurable)
@@ -71,10 +98,15 @@ skipped outright.
 
 ## Run order (idempotent; safe to re-run same day)
 
+0. **Live stop reconciliation** (round-5): dead/missing stops are
+   re-placed and pending `-stopgap` sells are confirmed or re-protected —
+   BEFORE any exit or entry decision.
 1. **Exits** for open RSI(2) trades (see the exit contract above).
 2. **Stop-after-fill**: one GTC stop for the full held qty, placed only
    after a confirmed fill. Total open sell qty for a symbol NEVER exceeds
-   held qty.
+   held qty. A `-stopgap` market sell (price gapped at/below the stop)
+   does **not** close the trade on submit — the trade stays open until the
+   sell is confirmed filled (round-5).
 3. **New entries** (RSI(2) only): skip symbols held in the account, symbols
    with ANY open/pending order (any label, including `sl_short-*` C4 shadow
    orders), and symbols C4 signaled on the **last completed trading day**.
@@ -135,12 +167,30 @@ python experiments/swing_paper/report_pnl.py [--json] [--since 2026-11-01]
 - Open positions are attributed by LABELED fills only (net labeled
   buys−sells per strategy), never by "last buyer".
 
-## Run-order contract with C4 (round-4 fix e)
+## Run-order contract with C4 (round-4 fix e / round-5)
 
 The C4 same-day skip is `ref_date`-based (fix K), so it is independent of
 WHICH runner executes first — but it can only see C4 rows that already
 exist. The `strat023-c4-shadow` user timer fires at **21:15 UTC**, so the
-RSI(2) runner REFUSES an `--execute` run before **21:15 UTC**
-(`runner.RSI2_MIN_RUN_UTC`). Schedule the RSI(2) runner at/after 21:15
-UTC (the dry-run default remains usable at any time). This guarantee is
-also covered by `test_execute_refused_before_2115_utc`.
+RSI(2) runner may only `--execute` **after today's C4 run has actually
+FINISHED** (round-5). A bare clock check is not enough: at 21:15 UTC the
+C4 run may only just have started, or may have failed.
+
+The gate (`runner.c4_run_finished_today`) looks for evidence that today's
+C4 run completed:
+
+1. **Primary — the C4 unit's user journal** (`strat023-c4-shadow.service`,
+   today's post-close window from 21:00 UTC): the C4 runner's
+   `live paper run complete:` line or systemd's `Finished ...` line. This
+   also covers zero-signal days, where the C4 database stays silent.
+2. **Fallback — the C4 shadow DB**: rows for today's `ref_date` written
+   inside today's post-close window (`live_paper.db`).
+
+If neither is present the `--execute` run is REFUSED (fail loudly, exit
+code 2). Dry-run inspection runs remain usable at any time.
+
+**Schedule the RSI(2) runner at 21:30 UTC or later** (the C4 timer fires
+at 21:15 UTC; 21:30 leaves a 15-minute cushion for the C4 run to finish).
+Covered by `test_execute_refused_until_c4_run_finished`,
+`test_execute_allowed_after_c4_run_finished` and
+`test_c4_run_finished_gate_uses_journal_and_db`.

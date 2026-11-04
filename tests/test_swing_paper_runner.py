@@ -1335,7 +1335,9 @@ def test_time_exit_sell_rejected_replaces_stop_immediately(frames):
 def test_stop_gap_below_planned_sells_at_market(frames):
     # blocker (b): the stop is rejected because the price gapped to/below
     # the planned stop. Current (finished) close <= planned stop -> the
-    # shares are sold at MARKET with a -stopgap label; the trade closes.
+    # shares are sold at MARKET with a -stopgap label.
+    # ROUND-5: the trade is NOT closed on submit — it stays open until
+    # the sell is CONFIRMED filled.
     broker, bars = setup_broker(frames)
     cur = float(bars["AMD"]["close"].iloc[-1])
     broker.reject_stop_above = cur           # gap: stop above market
@@ -1350,8 +1352,120 @@ def test_stop_gap_below_planned_sells_at_market(frames):
     gap = [b for b in broker.submitted if b.get("type") == "market"]
     assert len(gap) == 1 and gap[0]["side"] == "sell"
     assert gap[0]["client_order_id"] == "rsi2-AMD-20261103-1-stopgap"
+    # round-5: the trade stays OPEN until the sell is confirmed filled
+    assert t["entry_id"] in state["open"]
+    assert results["closed"] == []
+    assert t["stopgap_pending"]["client_order_id"] == \
+        "rsi2-AMD-20261103-1-stopgap"
+
+
+def test_stopgap_sell_confirmed_filled_closes_trade(frames):
+    # round-5: the -stopgap market sell is CONFIRMED filled -> the trade
+    # is closed (reason stop_gap_market_sell) and the sleeve frees up.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=2, stop=False)
+    t["entry_filled"] = True
+    t["stopgap_client_order_id"] = "rsi2-AMD-20261103-1-stopgap"
+    t["stopgap_gen"] = 1
+    t["stopgap_pending"] = {"client_order_id": "rsi2-AMD-20261103-1-stopgap",
+                            "qty": 50, "submitted_reason": "stop_gap"}
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    broker.orders_by_coid["rsi2-AMD-20261103-1-stopgap"] = {
+        "id": "ord-gap", "status": "filled"}
+    runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                           bars, results, now=NOW)
     assert t["entry_id"] not in state["open"]
     assert results["closed"][0]["reason"] == "stop_gap_market_sell"
+
+
+def test_stopgap_sell_canceled_protects_shares_again(frames):
+    # round-5: the -stopgap market sell was CANCELED -> the shares must
+    # be protected again (fresh GTC stop), and the trade stays open.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=2, stop=False)
+    t["entry_filled"] = True
+    t["stop_px"] = 90.0
+    t["stopgap_client_order_id"] = "rsi2-AMD-20261103-1-stopgap"
+    t["stopgap_gen"] = 1
+    t["stopgap_pending"] = {"client_order_id": "rsi2-AMD-20261103-1-stopgap",
+                            "qty": 50, "submitted_reason": "stop_gap"}
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    broker.orders_by_coid["rsi2-AMD-20261103-1-stopgap"] = {
+        "id": "ord-gap", "status": "canceled"}
+    runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                           bars, results, now=NOW)
+    assert t["entry_id"] in state["open"]          # NOT closed
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1
+    assert stops[0]["time_in_force"] == "gtc"
+    assert stops[0]["qty"] == 50
+    assert stops[0]["stop_price"] == 90.0
+    assert t["stop_order_id"] == "ord-1"
+    assert not t.get("stopgap_pending")
+    assert any("re-protected" in e["error"] for e in results["errors"])
+
+
+def test_stopgap_sell_rejected_protects_shares_again(frames):
+    # round-5: a REJECTED -stopgap submission is handled like a canceled
+    # one — the trade stays open and the shares get protected again.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=2, stop=False)
+    t["entry_filled"] = True
+    t["stop_px"] = 90.0
+    t["stopgap_client_order_id"] = "rsi2-AMD-20261103-1-stopgap"
+    t["stopgap_gen"] = 1
+    t["stopgap_pending"] = {"client_order_id": "rsi2-AMD-20261103-1-stopgap",
+                            "qty": 50, "submitted_reason": "stop_gap"}
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    broker.orders_by_coid["rsi2-AMD-20261103-1-stopgap"] = {
+        "id": "ord-gap", "status": "rejected"}
+    runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                           bars, results, now=NOW)
+    assert t["entry_id"] in state["open"]
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1 and stops[0]["time_in_force"] == "gtc"
+    assert any("re-protected" in e["error"] for e in results["errors"])
+
+
+def test_stopgap_submission_rejected_keeps_trade_open(frames):
+    # round-5: the -stopgap market sell is REJECTED at submit time -> the
+    # trade must NOT be closed and the shares stay tracked for
+    # re-protection (no live stop exists).
+    broker, bars = setup_broker(frames)
+    cur = float(bars["AMD"]["close"].iloc[-1])
+    broker.reject_stop_above = cur
+    broker.fail_market_sells = True
+    t = filled_trade(days_ago=2, stop=False)
+    t["stop_px"] = round(cur + 10.0, 2)
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(
+        state, broker, [{"symbol": "AMD", "qty": "50"}], [], results,
+        bars=bars, now=NOW)
+    assert t["entry_id"] in state["open"]      # NOT closed
+    assert results["closed"] == []
+    assert results["errors"]
+    assert "stop_order_id" not in t             # no (dead) stop id kept
+
+
+def test_stopgap_pending_blocks_a_second_stop(frames):
+    # round-5: while the -stopgap market sell is pending it IS the
+    # protection — place_stops_after_fill must not add a second sell.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=2, stop=False)
+    t["entry_filled"] = True
+    t["stopgap_pending"] = {"client_order_id": "rsi2-AMD-20261103-1-stopgap",
+                            "qty": 50}
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.place_stops_after_fill(
+        state, broker, [{"symbol": "AMD", "qty": "50"}], [], results,
+        bars=bars, now=NOW)
+    assert broker.submitted == []
 
 
 def test_stop_rejected_with_price_above_plan_reprices(frames):
@@ -1486,10 +1600,9 @@ def test_finished_bars_only_drops_incomplete_today_row():
     assert runner.finished_bars_only(df, after) is df
 
 
-def test_execute_refused_before_2115_utc(tmp_path, monkeypatch):
-    # fix (e): C4 writes same-day ref_date rows at 21:15 UTC. An
-    # --execute run in the 21:05-21:15 window is refused; 21:15+ passes
-    # the gate.
+def test_execute_refused_until_c4_run_finished(tmp_path, monkeypatch):
+    # round-5: the --execute gate is no longer a bare clock check — the
+    # runner refuses until TODAY's C4 run has actually FINISHED.
     monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
     monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
@@ -1498,9 +1611,105 @@ def test_execute_refused_before_2115_utc(tmp_path, monkeypatch):
     monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
     monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
     monkeypatch.setenv("TRADING_BOT_PAPER_ONLY", "1")
+    # C4 has NOT finished (empty journal, no C4 rows) -> refuse.
+    monkeypatch.setattr(runner, "_c4_journal_text", lambda since: "")
     with pytest.raises(SystemExit) as e:
         runner.run(make_args(execute=True),
-                   clock=lambda: datetime(2026, 11, 3, 21, 10,
+                   clock=lambda: datetime(2026, 11, 3, 21, 30,
+                                          tzinfo=timezone.utc))
+    assert e.value.code == 2
+
+
+def test_execute_allowed_after_c4_run_finished(tmp_path, monkeypatch):
+    # round-5: once the C4 run has completed, the evening RSI(2) run is
+    # allowed (the gate is evidence-based, not clock-based).
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    monkeypatch.setenv("TRADING_BOT_PAPER_ONLY", "1")
+    monkeypatch.setattr(
+        runner, "_c4_journal_text",
+        lambda since: "live paper run complete: {'entries_submitted': 0}\n")
+    # a fake broker: the run must get past the gate
+    fake = FakeBroker(bars={"AMD": uptrend_bars(), "SPY": spy_bars()})
+    monkeypatch.setattr(runner, "AlpacaPaper", lambda *a, **k: fake)
+    runner.run(make_args(execute=False),
+               clock=lambda: datetime(2026, 11, 3, 21, 30,
+                                      tzinfo=timezone.utc))
+    assert runner.c4_run_finished_today(
+        datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc),
+        db_path=runner.DEFAULT_C4_DB,
+        journal_text="live paper run complete: {}") is True
+
+
+def test_c4_run_finished_gate_uses_journal_and_db(tmp_path, monkeypatch):
+    # round-5: journal is the primary evidence (it also covers
+    # zero-signal C4 days, where the DB stays silent); the DB is the
+    # fallback (rows written today for today's ref_date).
+    now = datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc)
+    db = make_c4_db(tmp_path / "c4.db")
+    # 1) no evidence at all -> not finished
+    assert runner.c4_run_finished_today(now, db_path=db,
+                                        journal_text="") is False
+    # 2) journal says the C4 run completed -> finished
+    assert runner.c4_run_finished_today(
+        now, db_path=db,
+        journal_text="live paper run complete: {'skipped': 0}") is True
+    assert runner.c4_run_finished_today(
+        now, db_path=db,
+        journal_text="Finished strat023-c4-shadow.service") is True
+    # 3) DB fallback: a row for TODAY's ref_date written in today's
+    #    post-close window -> finished
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO orders (client_order_id, symbol, kind, side, qty, "
+        "ref_date, created_ts) VALUES "
+        "('sl_short-AMD-e-1','AMD','entry','buy',10,'2026-11-03',"
+        "'2026-11-03T21:16:00+00:00')")
+    con.commit()
+    con.close()
+    assert runner.c4_run_finished_today(now, db_path=db,
+                                        journal_text="") is True
+    # 4) a row written EARLIER today (manual backfill run) does NOT
+    #    count as today's scheduled run
+    db2 = make_c4_db(tmp_path / "c4b.db")
+    con = sqlite3.connect(db2)
+    con.execute(
+        "INSERT INTO orders (client_order_id, symbol, kind, side, qty, "
+        "ref_date, created_ts) VALUES "
+        "('sl_short-AMD-e-1','AMD','entry','buy',10,'2026-11-03',"
+        "'2026-11-03T02:26:09+00:00')")
+    con.commit()
+    con.close()
+    assert runner.c4_run_finished_today(now, db_path=db2,
+                                        journal_text="") is False
+
+
+def test_c4_evidence_window_starts_at_2100_utc():
+    now = datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc)
+    win = runner._c4_evidence_window_start(now)
+    assert win == datetime(2026, 11, 3, 21, 0, tzinfo=timezone.utc)
+
+
+def test_execute_gate_refuses_when_c4_missing_and_dry_run_unaffected(
+        tmp_path, monkeypatch):
+    # round-5: a missing/unreadable C4 DB must not silently pass the
+    # execute gate; the dry-run path is unaffected.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB", tmp_path / "nope.db")
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    monkeypatch.setenv("TRADING_BOT_PAPER_ONLY", "1")
+    monkeypatch.setattr(runner, "_c4_journal_text", lambda since: "")
+    with pytest.raises(SystemExit) as e:
+        runner.run(make_args(execute=True),
+                   clock=lambda: datetime(2026, 11, 3, 21, 30,
                                           tzinfo=timezone.utc))
     assert e.value.code == 2
 
@@ -1511,3 +1720,185 @@ def test_stopgap_label_parses_for_attribution():
     assert coid == "rsi2-AMD-20261103-1-stopgap"
     parsed = parse_label(coid)
     assert parsed["strategy"] == RSI2 and parsed["kind"] == "stopgap"
+
+
+def test_stopgap_replace_label_parses_for_attribution():
+    # round-5: the re-protection label '-stopgap-r<gen>' must stay
+    # parseable so report_pnl can attribute the fill to RSI(2).
+    from rules import make_stopgap_replace_client_order_id, parse_label
+    coid = make_stopgap_replace_client_order_id(RSI2, "AMD", "20261103", 1, 2)
+    assert coid == "rsi2-AMD-20261103-1-stopgap-r2"
+    assert len(coid) <= 48
+    parsed = parse_label(coid)
+    assert parsed["strategy"] == RSI2 and parsed["kind"] == "stopgap"
+    assert parsed["symbol"] == "AMD" and parsed["n"] == 1
+
+
+# ------------------------------------------- round-5: live stop reconciliation
+def test_reconcile_replaces_canceled_stop_while_shares_held(frames):
+    # round-5 item 1: the broker CANCELED the stop while we still hold
+    # the shares -> a fresh GTC stop is placed immediately, at the
+    # current stop price, with a FRESH client_order_id.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3)
+    _register_stop(broker, t, status="canceled")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                           bars, results, now=NOW)
+    assert t["entry_id"] in state["open"]        # NOT closed
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1
+    assert stops[0]["time_in_force"] == "gtc"
+    assert stops[0]["qty"] == 50
+    assert stops[0]["stop_price"] == 90.0
+    assert stops[0]["client_order_id"] == \
+        "rsi2-AMD-20261103-1-stop-r2"
+    assert t["stop_order_id"] == "ord-1"
+    assert t["stop_gen"] == 2
+
+
+def test_reconcile_replaces_expired_and_rejected_stops(frames):
+    # round-5 item 1: expired / rejected stops are dead stops too.
+    for dead in ("expired", "rejected"):
+        broker, bars = setup_broker(frames)
+        t = filled_trade(days_ago=3)
+        _register_stop(broker, t, status=dead)
+        state = {"open": {t["entry_id"]: t}}
+        results = {"stops_placed": [], "closed": [], "errors": []}
+        runner.reconcile_stops(state, broker,
+                               [{"symbol": "AMD", "qty": "50"}], bars,
+                               results, now=NOW)
+        stops = [b for b in broker.submitted if b.get("type") == "stop"]
+        assert len(stops) == 1, dead
+        assert stops[0]["client_order_id"] == "rsi2-AMD-20261103-1-stop-r2"
+
+
+def test_reconcile_handles_missing_stop_order_id(frames):
+    # round-5 item 1: a MISSING stop order id (e.g. the stop was never
+    # placed or the state lost it) is reconciled too — a fresh GTC stop
+    # is placed while the shares are held.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3, stop=False)
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                           bars, results, now=NOW)
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1
+    assert stops[0]["time_in_force"] == "gtc"
+    assert stops[0]["qty"] == 50
+    assert stops[0]["stop_price"] == 90.0
+    assert t["stop_order_id"] == "ord-1"
+
+
+def test_reconcile_sells_at_market_when_price_at_or_below_stop(frames):
+    # round-5 item 1: the price is at/below the stop price -> the
+    # shares are sold at MARKET (a stop above the market would be
+    # rejected). The trade stays open until the sell is filled.
+    broker, bars = setup_broker(frames)
+    cur = float(bars["AMD"]["close"].iloc[-1])
+    t = filled_trade(days_ago=3)
+    t["stop_px"] = round(cur + 5.0, 2)      # stop above the market
+    _register_stop(broker, t, status="canceled")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                           bars, results, now=NOW)
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1
+    assert sells[0]["type"] == "market"
+    assert sells[0]["client_order_id"] == "rsi2-AMD-20261103-1-stopgap"
+    assert t["entry_id"] in state["open"]    # not closed on submit
+    assert results["closed"] == []
+
+
+def test_reconcile_leaves_live_stop_alone(frames):
+    # round-5 item 1: a LIVE (held) stop is never touched — no churn,
+    # no duplicate stop.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3)
+    _register_stop(broker, t, status="held")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, [{"symbol": "AMD", "qty": "50"}],
+                           bars, results, now=NOW)
+    assert broker.submitted == []
+    assert t["stop_order_id"] == "stop-1"
+
+
+def test_reconcile_ignores_trade_without_shares(frames):
+    # round-5 item 1: no shares held -> nothing to protect (the exit
+    # path closes the trade).
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3)
+    _register_stop(broker, t, status="canceled")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, [], bars, results, now=NOW)
+    assert broker.submitted == []
+    assert t["entry_id"] in state["open"]
+
+
+def test_reconcile_catches_cancel_completed_after_poll_window(frames):
+    # round-5 item 1 (THE gap): the time exit canceled the stop, the
+    # extended poll window returned False (the order was still
+    # 'pending_cancel'), the runner walked away believing the stop was
+    # live — and the broker COMPLETED the cancel afterwards. The next
+    # run's reconciliation must see the dead stop and protect the
+    # shares again.
+    broker, bars = setup_broker(frames, cancel_polls_until_done=35)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="held")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    # 1) the time exit: the cancel can NOT be confirmed inside the
+    #    extended window -> NO market sell, the trade stays tracked.
+    runner.process_exits(state, broker, bars, positions, results)
+    assert t["entry_id"] in state["open"]
+    assert [b for b in broker.submitted if b["side"] == "sell"] == []
+    assert any("unconfirmed" in e["error"] for e in results["errors"])
+    # the stop is still 'pending_cancel' when the window gave up
+    stop_order = broker.orders_by_coid[t["stop_client_order_id"]]
+    assert stop_order["status"] == "pending_cancel"
+    # 2) the broker completed the cancel AFTER the window (the fake
+    #    flips to 'canceled' on the next status lookup)
+    results2 = {"stops_placed": [], "closed": [], "errors": []}
+    runner.reconcile_stops(state, broker, positions, bars, results2,
+                           now=NOW)
+    assert stop_order["status"] == "canceled"   # the late completion
+    # the dead stop is replaced at once — the position is never left
+    # naked because the cancel completed late.
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1
+    assert stops[0]["time_in_force"] == "gtc"
+    assert stops[0]["qty"] == 50
+    assert stops[0]["stop_price"] == 90.0
+    assert stops[0]["client_order_id"] == "rsi2-AMD-20261103-1-stop-r2"
+    assert t["entry_id"] in state["open"]
+    assert t["stop_order_id"] == "ord-1"
+
+
+def test_run_reconciles_stops_before_exits(frames, tmp_path, monkeypatch):
+    # round-5 item 1 at run() level: reconciliation happens at the START
+    # of every run (before exits/entries).
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3)
+    _register_stop(broker, t, status="canceled")
+    state = {"open": {t["entry_id"]: t}}
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    broker.positions = [{"symbol": "AMD", "qty": "50"}]
+    monkeypatch.setattr(runner, "AlpacaPaper", lambda *a, **k: broker)
+    runner.run(make_args(symbols=("AMD",), execute=False), clock=lambda: NOW)
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1                    # the re-placed GTC stop
+    assert stops[0]["client_order_id"] == "rsi2-AMD-20261103-1-stop-r2"

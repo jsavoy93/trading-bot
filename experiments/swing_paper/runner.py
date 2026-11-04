@@ -10,6 +10,13 @@ SCOPE DECISION (Josh, 2026-11-03): this runner trades RSI(2) ONLY. C4 stays
 on the existing strat023-c4-shadow timer (labels sl_short-..., live_paper.db).
 
 Per-run responsibilities (idempotent; safe to re-run same day):
+  0. LIVE STOP RECONCILIATION (round-5): before anything else, every
+     open trade's stop order is fetched from the broker. A stop that is
+     canceled/expired/rejected (or a MISSING stop order id) while shares
+     are still held is re-protected at once — a fresh GTC stop at the
+     current stop price, or a market sell when the price is at/below it.
+     A pending -stopgap market sell is confirmed (filled -> close the
+     trade) or re-protected (canceled/rejected).
   1. EXITS for open RSI(2) trades: chandelier stop updates (never lower;
      each raise is a PATCH with a NEW deterministic client_order_id and
      the returned order id is stored — fix B), 15-trading-day time exit
@@ -32,6 +39,11 @@ logic-path read of the wall clock (ymd_today, last_bar_is_final, C4
 ref-date, daily-bars window) flows through it. datetime.now() appears
 only in run()'s default clock and in log_event timestamps (logging only).
 
+Execute gate (round-5): an --execute run is refused until TODAY's C4 run
+has actually FINISHED — evidence is the C4 unit's user journal (primary)
+or today's C4 DB rows (fallback). A bare clock check is not enough. See
+README "Run-order contract with C4".
+
 Never loops, never installs timers. Run once per day from a human-approved
 schedule. State: logs/state.json (gitignored).
 """
@@ -41,6 +53,7 @@ import argparse
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -55,6 +68,7 @@ import signals
 from rules import (RSI2, make_client_order_id, make_labels,
                    make_stop_replace_client_order_id,
                    make_stopgap_client_order_id,
+                   make_stopgap_replace_client_order_id,
                    make_time_exit_client_order_id, next_sequence,
                    rsi2_slice_dollars, rsi2_skip_blocked,
                    size_rsi2_position, symbol_has_open_order)
@@ -76,12 +90,27 @@ KILL_SWITCH = HERE / "KILL_SWITCH"  # halt immediately if present
 DAILY_BAR_FINAL_UTC_HOUR = 21
 DAILY_BAR_FINAL_UTC_MINUTE = 5
 
-# Round-4 fix (e): the C4 same-day skip is ref_date-based and therefore
-# independent of WHICH order the two runners execute in — but it can
-# only see C4 rows that EXIST yet. The strat023-c4-shadow user timer
-# fires at 21:15 UTC, so RSI(2) --execute runs are REQUIRED to happen
-# at/after 21:15 UTC (and dry-run inspection runs are free to run any
-# time). This is a scheduling contract, documented here and in README.
+# Round-4 fix (e) / round-5: the C4 same-day skip is ref_date-based and
+# therefore independent of WHICH order the two runners execute in — but
+# it can only see C4 rows that EXIST yet. The strat023-c4-shadow user
+# timer fires at 21:15 UTC, so RSI(2) --execute runs may only happen
+# AFTER today's C4 run has actually FINISHED (round-5: a bare clock
+# check is not enough — the C4 run may still be in flight, or may have
+# failed). Evidence, in order:
+#   1. the user journal of the C4 unit (its "live paper run complete"
+#      line / systemd's "Finished ..." line) for TODAY's post-close
+#      window — this also covers zero-signal days, where the C4 DB
+#      stays silent;
+#   2. the C4 shadow DB: rows written for TODAY's ref_date in today's
+#      post-close window.
+# Dry-run inspection runs remain free to run at any time.
+C4_SERVICE_UNIT = "strat023-c4-shadow.service"
+# Evidence window opens at 21:00 UTC (the C4 timer fires 21:15 UTC);
+# only C4 activity from this window on counts as "today's run".
+C4_EVIDENCE_UTC = (21, 0)
+# Round-5 (kept for compatibility): the earliest wall-clock time at
+# which an --execute run may even be ATTEMPTED. The hard gate is the
+# C4-completion evidence below, not this clock.
 RSI2_MIN_RUN_UTC = (21, 15)
 
 
@@ -366,6 +395,97 @@ def c4_signaled_today(symbols, now: datetime, db_path=None) -> set:
         symbols, last_completed_trading_day(now), db_path)
 
 
+# ------------------------------------------------- C4 run-completion gate
+def _c4_evidence_window_start(now: datetime) -> datetime:
+    """Start of TODAY's C4 evidence window (21:00 UTC — the C4 timer
+    fires 21:15 UTC). C4 activity from earlier today (e.g. a manual
+    02:26 backfill run) does NOT count as "today's scheduled run"."""
+    return datetime(now.year, now.month, now.day, C4_EVIDENCE_UTC[0],
+                    C4_EVIDENCE_UTC[1], tzinfo=timezone.utc)
+
+
+def _c4_journal_text(since: datetime) -> str:
+    """User-journal output of the C4 shadow unit since `since` (UTC).
+
+    Best-effort: any failure (journalctl missing, no user journal, a
+    timeout) returns an empty string — the caller then falls back to the
+    C4 DB and, if that is silent too, REFUSES the --execute run."""
+    try:
+        out = subprocess.run(
+            ["journalctl", "--user", "-u", C4_SERVICE_UNIT,
+             "--since", since.strftime("%Y-%m-%d %H:%M:%S UTC"),
+             "--no-pager", "-o", "cat"],
+            capture_output=True, text=True, timeout=30)
+    except Exception as exc:  # pragma: no cover - host dependent
+        log_event({"type": "c4_journal_error", "error": repr(exc)})
+        return ""
+    return out.stdout or ""
+
+
+def _c4_journal_says_finished(text: str) -> bool:
+    """True when the journal shows that today's C4 run COMPLETED."""
+    if not text:
+        return False
+    return ("live paper run complete" in text
+            or f"Finished {C4_SERVICE_UNIT}" in text
+            or "shadow run complete" in text)
+
+
+def _parse_c4_ts(ts: str):
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _c4_db_says_finished(now: datetime, db_path=None) -> bool:
+    """True when the C4 shadow DB contains rows written for TODAY's
+    ref_date inside today's post-close window — proof that C4 ran today.
+    A zero-signal C4 day writes no rows, so this is a FALLBACK only."""
+    ref = last_completed_trading_day(now).isoformat()
+    try:
+        con = _c4_connect(db_path)
+    except RuntimeError:
+        return False
+    try:
+        rows = con.execute(
+            "SELECT created_ts FROM orders WHERE substr(ref_date,1,10)=?",
+            (ref,)).fetchall()
+    except Exception:
+        return False
+    finally:
+        con.close()
+    win = _c4_evidence_window_start(now)
+    for (ts,) in rows:
+        dt = _parse_c4_ts(ts)
+        if dt is None:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(timezone.utc)
+        if dt >= win:
+            return True
+    return False
+
+
+def c4_run_finished_today(now: datetime, db_path=None, journal_text=None) -> bool:
+    """Round-5: has TODAY's C4 run actually finished?
+
+    Evidence 1 (primary): the user journal of the C4 unit shows a
+    completed run inside today's post-close window — this also covers
+    zero-signal days, where the DB stays silent.
+    Evidence 2 (fallback): the C4 shadow DB has rows for today's
+    ref_date written inside today's post-close window.
+
+    `journal_text` is injectable for tests; when omitted the journal is
+    read from the host."""
+    if journal_text is None:
+        journal_text = _c4_journal_text(_c4_evidence_window_start(now))
+    if _c4_journal_says_finished(journal_text):
+        return True
+    return _c4_db_says_finished(now, db_path=db_path)
+
+
 # ------------------------------------------------------- exits (each run)
 def held_qty(positions, symbol: str) -> float:
     sym = str(symbol).strip().upper()
@@ -602,12 +722,28 @@ def process_exits(state, api, bars, positions, results, open_orders=(),
                     so = api.get_order_by_client_id(scoid)
                     if so is not None and so.get("status") == "filled":
                         reason = "stop_filled"
+                # Round-5: a CONFIRMED filled -stopgap market sell is the
+                # exit for these shares (the trade is closed on the fill,
+                # never on the submit).
+                gapcoid = (t.get("stopgap_pending") or {}).get(
+                    "client_order_id") or t.get("stopgap_client_order_id")
+                if gapcoid:
+                    go = api.get_order_by_client_id(gapcoid)
+                    if go is not None and go.get("status") == "filled":
+                        reason = "stop_gap_market_sell"
                 _close_trade(state, entry_id, reason, results)
                 continue
 
             # -- time exit: 15 trading days after entry bar --
             days = trading_days_since(df, t["entry_date"])
             if days >= signals.RSI2_TIME_EXIT:
+                # Round-5: a pending -stopgap market sell is already the
+                # exit for these shares — never add a second sell.
+                if t.get("stopgap_pending"):
+                    log_event({"type": "time_exit_deferred",
+                               "entry_id": entry_id,
+                               "note": "stopgap market sell pending"})
+                    continue
                 # FIX C: confirm THE stop is actually canceled BEFORE the
                 # market sell; a failed/unconfirmed cancel must NOT be
                 # followed by a market sell (never leave a position naked,
@@ -733,6 +869,219 @@ def _last_finished_close(bars, sym, now) -> float | None:
     return float(df["close"].iloc[-1])
 
 
+# Round-5: a stop order that the BROKER killed (canceled / expired /
+# rejected) while we still hold the shares leaves the position naked.
+# The runner used to discover that only when a time exit tried to cancel
+# it — too late, and a cancel that completes AFTER the extended poll
+# window returned False was never noticed at all. Every run therefore
+# starts with a LIVE reconciliation of the stop orders.
+STOP_DEAD_STATUSES = ("canceled", "expired", "rejected")
+
+
+def _order_status_by_client_id(api, client_order_id):
+    if not client_order_id:
+        return None
+    try:
+        o = api.get_order_by_client_id(client_order_id)
+    except Exception as exc:
+        log_event({"type": "stop_status_error",
+                   "client_order_id": client_order_id, "error": repr(exc)})
+        return None
+    return str(o.get("status")) if o else None
+
+
+def _clear_stop(t: dict) -> None:
+    """Forget the (dead) stop order so the next placement/reconciliation
+    treats the trade as unprotected."""
+    t.pop("stop_order_id", None)
+    t.pop("stop_client_order_id", None)
+
+
+def _reprotect_shares(state, api, t, entry_id, positions, bars, results,
+                      now, stop_qty, planned, cur_px, reason):
+    """Re-protect held shares after the stop died.
+
+    - price at/below the stop price -> market sell (label -stopgap, or
+      -stopgap-r<gen> when a previous stopgap sell already used the
+      plain label and was rejected/canceled). The trade is NOT closed on
+      submit: it stays open until the sell is CONFIRMED filled.
+    - otherwise -> a fresh GTC stop at the current stop price with a
+      fresh deterministic client_order_id."""
+    sym = t["symbol"]
+    if cur_px is not None and cur_px <= planned:
+        gen = int(t.get("stopgap_gen", 1)) + 1
+        if gen == 2 and t.get("stopgap_client_order_id"):
+            # the plain '-stopgap' label was already used and died; a
+            # FRESH client_order_id is mandatory (Alpaca rejects reused
+            # ids) -> '-stopgap-r2'.
+            gap_coid = make_stopgap_replace_client_order_id(
+                RSI2, sym, t["date"], t["n"], gen)
+        else:
+            gap_coid = make_stopgap_client_order_id(
+                RSI2, sym, t["date"], t["n"])
+        gap_resp = api.submit_order({
+            "symbol": sym, "qty": stop_qty, "side": "sell",
+            "type": "market", "time_in_force": "day",
+            "client_order_id": gap_coid,
+        })
+        if gap_resp.get("error") or not gap_resp.get("id"):
+            results["errors"].append(
+                {"entry_id": entry_id,
+                 "error": "reconcile: protective market sell failed "
+                          f"({reason}): POSITION UNPROTECTED — manual "
+                          "attention: " + str(gap_resp.get("error"))[:120]})
+            log_event({"type": "reconcile_sell_error", "entry_id": entry_id,
+                       "symbol": sym, "reason": reason,
+                       "error": str(gap_resp.get("error"))[:200]})
+            return False
+        t["stopgap_client_order_id"] = gap_coid
+        t["stopgap_gen"] = gen
+        t["stopgap_pending"] = {"client_order_id": gap_coid,
+                                "qty": stop_qty,
+                                "submitted_reason": reason}
+        log_event({"type": "reconcile_market_sell", "entry_id": entry_id,
+                   "symbol": sym, "qty": stop_qty, "reason": reason,
+                   "planned_stop": planned, "last_close": cur_px,
+                   "client_order_id": gap_coid})
+        results["stops_placed"].append(
+            {"entry_id": entry_id, "symbol": sym, "stop_qty": stop_qty,
+             "reconciled": True, "market_sell": True, "reason": reason})
+        return True
+
+    gen = int(t.get("stop_gen", 1)) + 1
+    stop_coid = make_stop_replace_client_order_id(
+        RSI2, sym, t["date"], t["n"], gen)
+    stop_resp = api.submit_order({
+        "symbol": sym, "qty": stop_qty, "side": "sell",
+        "type": "stop", "stop_price": planned,
+        "time_in_force": "gtc",
+        "client_order_id": stop_coid,
+    })
+    if stop_resp.get("error") or not stop_resp.get("id"):
+        results["errors"].append(
+            {"entry_id": entry_id,
+             "error": f"reconcile: fresh stop failed ({reason}): POSITION "
+                      "UNPROTECTED — manual attention: "
+                      + str(stop_resp.get("error"))[:120]})
+        log_event({"type": "reconcile_stop_error", "entry_id": entry_id,
+                   "symbol": sym, "reason": reason,
+                   "error": str(stop_resp.get("error"))[:200]})
+        return False
+    t["stop_order_id"] = stop_resp["id"]
+    t["stop_client_order_id"] = (
+        stop_resp.get("client_order_id") or stop_coid)
+    t["stop_gen"] = gen
+    log_event({"type": "reconcile_stop_replaced", "entry_id": entry_id,
+               "symbol": sym, "reason": reason, "stop_px": planned,
+               "stop_order_id": t["stop_order_id"],
+               "stop_client_order_id": t["stop_client_order_id"]})
+    results["stops_placed"].append(
+        {"entry_id": entry_id, "symbol": sym, "stop_qty": stop_qty,
+         "reconciled": True, "reason": reason})
+    return True
+
+
+def reconcile_stops(state, api, positions, bars, results, open_orders=(),
+                    now=None):
+    """Round-5: LIVE stop reconciliation, run at the START of every run.
+
+    For every open RSI(2) trade:
+      * a pending -stopgap market sell is checked: when it is CONFIRMED
+        filled the trade is closed (reason stop_gap_market_sell); when
+        it was canceled/expired/rejected the shares are protected again
+        (the trade was never closed on submit);
+      * the stop order is fetched from the broker: a canceled / expired /
+        rejected stop (or a MISSING stop order id) while shares are still
+        held means the position is unprotected -> a fresh GTC stop is
+        placed at the current stop price, or the shares are sold at
+        market when the price is at/below the stop.
+
+    This also catches the case the round-4 extended cancel-poll window
+    could not: the cancel request timed out (we saw 'pending_cancel'),
+    we walked away believing the stop was live, and the broker
+    COMPLETED the cancel afterwards — the next run's reconciliation sees
+    the dead stop and re-protects the position."""
+    if now is None:
+        now = real_clock()
+    for entry_id in list(state.get("open", {}).keys()):
+        try:
+            t = state.get("open", {}).get(entry_id)
+            if t is None:
+                continue
+            sym = t["symbol"]
+            held = held_qty(positions, sym)
+
+            # -- pending -stopgap market sell --
+            pending = t.get("stopgap_pending")
+            if pending:
+                pcoid = pending.get("client_order_id")
+                pst = _order_status_by_client_id(api, pcoid)
+                if pst == "filled":
+                    log_event({"type": "stopgap_filled", "entry_id": entry_id,
+                               "symbol": sym, "client_order_id": pcoid})
+                    t.pop("stopgap_pending", None)
+                    _close_trade(state, entry_id, "stop_gap_market_sell",
+                                 results)
+                    continue
+                if pst in STOP_DEAD_STATUSES:
+                    # the protective sell died -> protect the shares again
+                    log_event({"type": "stopgap_dead", "entry_id": entry_id,
+                               "symbol": sym, "status": pst,
+                               "client_order_id": pcoid})
+                    t.pop("stopgap_pending", None)
+                    results["errors"].append(
+                        {"entry_id": entry_id,
+                         "error": "stopgap market sell "
+                                  f"{pst}: shares re-protected"})
+                else:
+                    # still working (or unverifiable) -> leave it alone
+                    continue
+
+            if not t.get("entry_filled"):
+                continue
+            if held <= 0:
+                continue  # no shares held: nothing to protect
+
+            stop_coid = t.get("stop_client_order_id")
+            stop_st = None
+            if stop_coid:
+                stop_st = _order_status_by_client_id(api, stop_coid)
+            missing_id = not t.get("stop_order_id")
+            dead = stop_st in STOP_DEAD_STATUSES
+            if not (missing_id or dead):
+                if stop_st is None and stop_coid:
+                    # status unverifiable (broker hiccup / unknown id):
+                    # do NOT create a duplicate stop, but flag it.
+                    log_event({"type": "reconcile_stop_status_unknown",
+                               "entry_id": entry_id, "symbol": sym,
+                               "client_order_id": stop_coid})
+                continue
+            reason = ("stop_missing" if missing_id
+                      else f"stop_{stop_st}")
+            already = open_sell_qty(open_orders, sym)
+            stop_qty = int(min(float(t.get("qty") or 0), held - already))
+            if stop_qty <= 0:
+                continue
+            planned = round(float(t.get("stop_px") or 0), 2)
+            if planned <= 0:
+                results["errors"].append(
+                    {"entry_id": entry_id,
+                     "error": f"reconcile: no stop price on record "
+                              f"({reason}); manual attention"})
+                continue
+            cur_px = _last_finished_close(bars, sym, now)
+            # the dead order id must not be reused: a fresh id is used
+            # for every re-placement.
+            _clear_stop(t)
+            _reprotect_shares(state, api, t, entry_id, positions, bars,
+                              results, now, stop_qty, planned, cur_px, reason)
+        except Exception as exc:  # never let one symbol kill the run
+            log_event({"type": "reconcile_symbol_error",
+                       "entry_id": entry_id, "error": repr(exc)})
+            results["errors"].append({"entry_id": entry_id,
+                                      "error": repr(exc)})
+
+
 def place_stops_after_fill(state, api, positions, open_orders, results,
                            bars=None, now=None):
     """S1: place exactly ONE GTC stop for the FULL held qty of trades
@@ -755,6 +1104,12 @@ def place_stops_after_fill(state, api, positions, open_orders, results,
                 continue
             if not t.get("entry_filled"):
                 continue
+            # Round-5: a pending -stopgap market sell IS the protection
+            # for these shares — never place a second sell on top of it
+            # (the open sell qty is already covered by the pending
+            # order). Reconciliation decides what happens next.
+            if t.get("stopgap_pending"):
+                continue
             sym = t["symbol"]
             held = held_qty(positions, sym)
             if held <= 0:
@@ -776,30 +1131,50 @@ def place_stops_after_fill(state, api, positions, open_orders, results,
                 # last FINISHED close — never retry a dead price forever.
                 cur_px = _last_finished_close(bars, sym, now)
                 if cur_px is not None and cur_px <= planned:
-                    # price gapped to/below the stop: sell at market now
+                    # price gapped to/below the stop: sell at market now.
+                    # Round-5: the trade is NOT closed on submit — it
+                    # stays open until the sell is CONFIRMED filled. If
+                    # the sell is canceled/rejected the next run's
+                    # reconciliation protects the shares again.
+                    gap_coid = make_stopgap_client_order_id(
+                        RSI2, sym, t["date"], t["n"])
                     gap_resp = api.submit_order({
                         "symbol": sym, "qty": stop_qty, "side": "sell",
                         "type": "market", "time_in_force": "day",
-                        "client_order_id": make_stopgap_client_order_id(
-                            RSI2, sym, t["date"], t["n"]),
+                        "client_order_id": gap_coid,
                     })
-                    if gap_resp.get("error"):
+                    if gap_resp.get("error") or not gap_resp.get("id"):
+                        # Round-5: a REJECTED market sell is handled like
+                        # a canceled one — the trade stays open and the
+                        # shares are protected again by the next run's
+                        # reconciliation (no live stop exists).
                         log_event({"type": "stop_error",
                                    "entry_id": entry_id,
-                                   "error": gap_resp["error"]})
+                                   "error": gap_resp.get("error")})
                         results["errors"].append(
                             {"entry_id": entry_id,
-                             "error": "stopgap sell failed: POSITION "
-                                      "UNPROTECTED — manual attention: "
-                                      + str(gap_resp["error"])[:120]})
+                             "error": "stopgap sell rejected: POSITION "
+                                      "UNPROTECTED — re-protection pending: "
+                                      + str(gap_resp.get("error"))[:120]})
+                        _clear_stop(t)
+                        t["stopgap_failed"] = True
                     else:
+                        t["stopgap_client_order_id"] = gap_coid
+                        t["stopgap_gen"] = 1
+                        t["stopgap_pending"] = {
+                            "client_order_id": gap_coid, "qty": stop_qty,
+                            "submitted_reason": "stop_gap_market_sell"}
                         log_event({"type": "stop_gap_market_sell",
                                    "entry_id": entry_id, "symbol": sym,
                                    "qty": stop_qty,
                                    "planned_stop": planned,
-                                   "last_close": cur_px})
-                        _close_trade(state, entry_id,
-                                     "stop_gap_market_sell", results)
+                                   "last_close": cur_px,
+                                   "client_order_id": gap_coid,
+                                   "note": "trade stays open until the "
+                                           "sell is confirmed filled"})
+                        results["stops_placed"].append(
+                            {"entry_id": entry_id, "symbol": sym,
+                             "stop_qty": stop_qty, "market_sell": True})
                 else:
                     # re-price: keep the plan unless it sits above the
                     # current price, then never above (cur - 0.02)
@@ -1008,13 +1383,19 @@ def run(args, clock=None):
     # fix J: ONE injected clock drives every time-dependent decision.
     now = (clock or real_clock)()
 
-    # Round-4 fix (e): C4 shadow writes today's ref_date rows at 21:15
-    # UTC. Refuse an --execute run in the 21:05-21:15 window so the C4
-    # same-day skip can never miss rows that C4 has not written yet.
-    if args.execute and (now.hour, now.minute) < RSI2_MIN_RUN_UTC:
-        fail("--execute must run at/after 21:15 UTC (C4 shadow timer "
-             "fires 21:15 UTC; earlier runs could double-trade a symbol "
-             "C4 has not signaled yet — see RSI2_MIN_RUN_UTC / README)")
+    # Round-4 fix (e) / round-5: an --execute run may only happen AFTER
+    # today's C4 run has actually FINISHED. A bare clock check is not
+    # enough: at 21:15 UTC the C4 timer may only just have started (or
+    # failed). Evidence = the C4 unit's journal (primary) or today's
+    # C4 DB rows (fallback).
+    if args.execute:
+        c4_db_path = getattr(args, "c4_db", None)
+        if not c4_run_finished_today(now, db_path=c4_db_path):
+            fail("--execute refused: today's C4 run has not finished yet "
+                 "(the strat023-c4-shadow user timer fires 21:15 UTC). "
+                 "Schedule RSI(2) at 21:30 UTC or later and re-run once "
+                 "the C4 run has completed — see README 'Run-order "
+                 "contract with C4'")
 
     state = load_state()
     acct = api.get_account()
@@ -1036,6 +1417,15 @@ def run(args, clock=None):
 
     results = {"rsi2": [], "stops_placed": [], "closed": [], "errors": [],
                "dry_run": api.dry_run}
+
+    # Round-5: LIVE stop reconciliation FIRST — before any exit/entry
+    # decision. A stop that the broker canceled/expired/rejected (or a
+    # missing stop order id) while we still hold the shares must be
+    # re-protected now, not on some later run.
+    reconcile_stops(state, api, positions, bars, results,
+                    open_orders=open_orders, now=now)
+    if not api.dry_run:
+        save_state(state)
 
     # fix D: the open-order list is needed to cancel leftover rsi2 sell
     # orders when a position is gone. Round-4 fix (g): the injected clock

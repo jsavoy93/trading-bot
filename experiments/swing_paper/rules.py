@@ -38,6 +38,10 @@ STOP_SUFFIX = "-stop"
 TIMEEXIT_SUFFIX = "-timeexit"   # 15-day time-exit market sell
 STOPGAP_SUFFIX = "-stopgap"  # round-4(b): market sell when price gapped
                               # at/below the planned stop price
+# round-5: a stopgap market sell that was canceled/rejected must be
+# re-sent under a FRESH client_order_id (Alpaca client_order_ids are
+# unique per day — reusing the dead one is rejected and the shares
+# would stay unprotected). Shape: entry label + '-stopgap-r<gen>'.
 PARTIAL_SUFFIX = "-p"      # LEGACY: parsed only, never created
 OCO_STOP_SUFFIX = "-oco"   # LEGACY: parsed only, never created
 
@@ -109,6 +113,19 @@ def make_stopgap_client_order_id(strategy: str, symbol: str, ymd: str,
     return coid
 
 
+def make_stopgap_replace_client_order_id(strategy: str, symbol: str,
+                                         ymd: str, n: int, gen: int) -> str:
+    """Round-5: re-protection market sell after a canceled/rejected
+    stopgap sell. Label shape: entry label + '-stopgap-r<gen>' (gen >= 2).
+    A FRESH id is mandatory: Alpaca rejects a reused client_order_id, so
+    re-sending the dead '-stopgap' label would leave the shares
+    unprotected."""
+    coid = (make_client_order_id(strategy, symbol, ymd, n)
+            + STOPGAP_SUFFIX + _stop_replace_suffix(gen))
+    _check_length(coid)
+    return coid
+
+
 def make_labels(strategy: str, symbol: str, ymd: str, n: int) -> tuple[str, str]:
     """(entry_client_order_id, stop_client_order_id) for one order pair."""
     return (
@@ -128,7 +145,7 @@ def next_sequence(existing_labels, strategy: str, symbol: str, ymd: str) -> int:
         if s.startswith(prefix):
             tail = s[len(prefix):]
             m = re.match(r"^(\d+)(?:-stop(?:-p|-oco|-r\d+)?|-timeexit|"
-                         r"-stopgap)?$", tail)
+                         r"-stopgap(?:-r\d+)?)?$", tail)
             if m:
                 best = max(best, int(m.group(1)))
     return best + 1
@@ -149,6 +166,11 @@ def parse_label(label: str) -> dict:
         kind = "oco_stop"
     elif s.endswith(STOPGAP_SUFFIX):
         s = s[: -len(STOPGAP_SUFFIX)]
+        kind = "stopgap"
+    elif re.search(re.escape(STOPGAP_SUFFIX) + r"-r(\d+)$", s):
+        # round-5: '-stopgap-r<gen>' (re-protection after a dead stopgap)
+        m = re.search(re.escape(STOPGAP_SUFFIX) + r"-r(\d+)$", s)
+        s = s[: m.start()]
         kind = "stopgap"
     elif s.endswith(TIMEEXIT_SUFFIX):
         s = s[: -len(TIMEEXIT_SUFFIX)]
