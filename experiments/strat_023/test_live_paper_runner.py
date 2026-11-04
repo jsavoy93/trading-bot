@@ -197,16 +197,62 @@ def test_kill_switch_blocks_all_orders(monkeypatch, tmp_path):
 def test_c4_parameters_not_relaxed(tmp_path):
     lpr, _, _ = fresh(tmp_path)
     assert sr.ENTRY_RSI == 10 and sr.ATR_MULT == 3.0 and sr.TIME_STOP == 10
-    assert lpr.SLEEVE_EQUITY_FRAC == 0.30 and lpr.MAX_POSITIONS == 3
+    # S3 (Josh 2026-11-03): the sleeve is capped DOWN to a fixed 15% of
+    # equity (was 30%). The per-position cap and max positions are
+    # unchanged; no SIGNAL parameter was touched.
+    assert lpr.SLEEVE_EQUITY_FRAC == 0.15 and lpr.MAX_POSITIONS == 3
     assert lpr.MAX_POSITION_PCT == 0.10
     assert lpr.PAPER_API_URL == "https://paper-api.alpaca.markets"
     assert lpr.COID_PREFIX == "sl_short"
 
 
+# ------------------------------------------------- S3 sleeve fraction (15%)
+def test_s3_sleeve_defaults_to_15pct(tmp_path, monkeypatch):
+    monkeypatch.delenv("STRAT024_SLEEVE_EQUITY_FRAC", raising=False)
+    lpr, _, _ = fresh(tmp_path)
+    assert lpr.DEFAULT_SLEEVE_EQUITY_FRAC == 0.15
+    assert lpr.SLEEVE_EQUITY_FRAC == 0.15
+
+
+def test_s3_sleeve_fraction_is_configurable(tmp_path, monkeypatch):
+    monkeypatch.setenv("STRAT024_SLEEVE_EQUITY_FRAC", "0.20")
+    lpr, _, _ = fresh(tmp_path)
+    assert lpr.SLEEVE_EQUITY_FRAC == 0.20
+    # 20% sleeve = 20k, but the 10% per-position cap still binds first
+    assert lpr.position_qty(100_000, 0, 0, 50.0, 100_000) == 200.0
+    # a tighter configured sleeve DOES bind
+    monkeypatch.setenv("STRAT024_SLEEVE_EQUITY_FRAC", "0.05")
+    lpr, _, _ = fresh(tmp_path)
+    assert lpr.SLEEVE_EQUITY_FRAC == 0.05
+    assert lpr.position_qty(100_000, 0, 0, 50.0, 100_000) == 100.0
+
+
+def test_s3_sleeve_fraction_rejects_bad_values(tmp_path, monkeypatch):
+    import live_paper_runner as lpr
+    for bad in ("not-a-number", "0", "1.5", "-0.1"):
+        monkeypatch.setenv("STRAT024_SLEEVE_EQUITY_FRAC", bad)
+        with pytest.raises(ValueError):
+            importlib.reload(lpr)
+    monkeypatch.delenv("STRAT024_SLEEVE_EQUITY_FRAC", raising=False)
+    importlib.reload(lpr)          # restore a clean module
+    assert lpr.SLEEVE_EQUITY_FRAC == 0.15
+
+
+def test_s3_sleeve_caps_total_c4_exposure(tmp_path, monkeypatch):
+    # The whole point of S3: C4 exposure is capped at a FIXED 15% of
+    # equity. With 14k already open, only ~1k of sleeve is left.
+    monkeypatch.delenv("STRAT024_SLEEVE_EQUITY_FRAC", raising=False)
+    lpr, _, _ = fresh(tmp_path)
+    assert lpr.position_qty(100_000, 14_000, 0, 50.0, 100_000) == 20.0
+    # ... and the sleeve is exhausted -> no new entry
+    assert lpr.position_qty(100_000, 15_000, 0, 50.0, 100_000) == 0.0
+    assert lpr.position_qty(100_000, 20_000, 0, 50.0, 100_000) == 0.0
+
+
 # -------------------------------------------------------------------- sizing
 def test_position_qty_caps():
     q = sr_position_qty(100_000, 0, 0, 50.0, 100_000)
-    # cap = min(30_000 sleeve, 10_000 max-position, BP) -> 10000/50 = 200
+    # cap = min(15_000 sleeve, 10_000 max-position, BP) -> 10000/50 = 200
     assert q == 200.0
 
 
@@ -217,9 +263,14 @@ def sr_position_qty(equity, open_notion, pending, price, bp):
 
 
 def test_position_qty_respects_open_sleeve():
-    q = sr_position_qty(100_000, 25_000, 0, 50.0, 100_000)
-    # remaining sleeve 5_000 -> 100 shares (also under 10% cap of 10_000)
-    assert q == 100.0
+    q = sr_position_qty(100_000, 12_000, 0, 50.0, 100_000)
+    # remaining sleeve 3_000 -> 60 shares (also under 10% cap of 10_000)
+    assert q == 60.0
+
+
+def test_position_qty_skips_when_sleeve_already_over_committed():
+    # 15% sleeve of 100k = 15k; 25k already open -> nothing left
+    assert sr_position_qty(100_000, 25_000, 0, 50.0, 100_000) == 0.0
 
 
 def test_position_qty_skips_when_cannot_afford_share():

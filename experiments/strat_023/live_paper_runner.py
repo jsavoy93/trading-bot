@@ -15,12 +15,19 @@ HARD GUARDS (refuse to run, exit code 2, unless ALL true):
      are placed.
 
 Sizing (conservative defaults, documented):
-  SLEEVE_EQUITY_FRAC = 0.30   short-term sleeve = 30% of account equity
+  SLEEVE_EQUITY_FRAC = 0.15   short-term sleeve = 15% of account equity
+                               (Josh, 2026-11-03: capped DOWN from 30% to a
+                               FIXED share of equity; configurable through
+                               STRAT024_SLEEVE_EQUITY_FRAC)
   MAX_POSITIONS      = 3      max concurrently open runner positions
   MAX_POSITION_PCT   = 0.10   per-position cap = 10% of account equity
   Per-position notional = min(remaining sleeve cash, equity * 10%).
   Entries are skipped when the notional cannot buy a whole share or when
   buying power is insufficient.
+
+  The sleeve fraction is a POSITION-SIZING parameter only. No entry/exit
+  threshold, no RSI/ATR/time-stop parameter and no guard is relaxed by
+  this change.
 
 Order tagging / collision safety:
   Every client_order_id starts with "sl_short-" and is recorded in the
@@ -62,8 +69,38 @@ KILL_FILE = Path(os.environ.get(
 PAPER_API_URL = "https://paper-api.alpaca.markets"
 API_BASE = os.environ.get("STRAT024_API_BASE_URL", PAPER_API_URL)
 
+# --- sleeve sizing parameter (S3, Josh 2026-11-03) ----------------------
+DEFAULT_SLEEVE_EQUITY_FRAC = 0.15
+SLEEVE_FRAC_ENV = "STRAT024_SLEEVE_EQUITY_FRAC"
+
+
+def _sleeve_equity_frac() -> float:
+    """The C4 sleeve as a FIXED share of account equity.
+
+    Default 15% (Josh, 2026-11-03 — capped down from 30%). Override with
+    STRAT024_SLEEVE_EQUITY_FRAC. A malformed or out-of-range value FAILS
+    LOUDLY (ValueError at import) rather than silently falling back to a
+    different cap."""
+    raw = os.environ.get(SLEEVE_FRAC_ENV)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_SLEEVE_EQUITY_FRAC
+    try:
+        val = float(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{SLEEVE_FRAC_ENV} must be a number, got {raw!r}")
+    if not (0.0 < val <= 1.0):
+        raise ValueError(
+            f"{SLEEVE_FRAC_ENV} must be within (0, 1], got {val!r}")
+    return val
+
+
 # --- conservative sleeve defaults (documented in module docstring) ---
-SLEEVE_EQUITY_FRAC = 0.30
+# S3 (Josh, 2026-11-03): the C4 sleeve is a FIXED 15% of account equity
+# (was 30%) and is configurable via STRAT024_SLEEVE_EQUITY_FRAC. The
+# value is read once at import time; a bad value fails loudly instead of
+# silently falling back to a different cap.
+SLEEVE_EQUITY_FRAC = _sleeve_equity_frac()
 MAX_POSITIONS = 3
 MAX_POSITION_PCT = 0.10
 COID_PREFIX = "sl_short"
