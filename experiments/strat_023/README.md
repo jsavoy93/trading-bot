@@ -111,7 +111,7 @@ only**. Josh-approved 2026-10-31 (STRAT-024).
 
 | Default | Value |
 |---|---|
-| Sleeve | **30% of account equity** (`SLEEVE_EQUITY_FRAC=0.30`) |
+| Sleeve | **15% of account equity** (`SLEEVE_EQUITY_FRAC=0.15`, configurable via `STRAT024_SLEEVE_EQUITY_FRAC`) |
 | Max open runner positions | **3** (`MAX_POSITIONS`) |
 | Max position size | **10% of account equity** (`MAX_POSITION_PCT`) |
 
@@ -119,6 +119,11 @@ Per-position notional = min(remaining sleeve cash, 10% × equity, buying
 power), whole shares only; entries are skipped when one share is not
 affordable. Sleeve cash is reduced by open runner positions AND still-open
 runner entry orders.
+
+The sleeve fraction was capped DOWN from 30% to a fixed 15% of equity
+(Josh, 2026-11-03) and is configurable through `STRAT024_SLEEVE_EQUITY_FRAC`
+(a malformed or out-of-range value fails loudly at import). It is a
+position-sizing parameter only — no entry/exit threshold is affected.
 
 ### Collision safety with the main bot
 
@@ -164,7 +169,8 @@ TRADING_BOT_PAPER_ONLY=1 TESTING=1 .venv/bin/python -m pytest \
 ```
 
 Proves: all four guards, frozen C4/sleeve parameters, sizing caps
-(30%/10%/whole-share/skip), sl_short tagging + sleeve=short record,
+(15%/10%/whole-share/skip), the configurable sleeve fraction and its
+fail-loud validation, sl_short tagging + sleeve=short record,
 main-bot-hold entry skip, max 3 positions, 3xATR stop price formula,
 SMA5 exit (market sell + stop cancelled first), time exit after 10 days,
 never-sells-more-than-own-qty, rerun idempotency, external stop-fill
