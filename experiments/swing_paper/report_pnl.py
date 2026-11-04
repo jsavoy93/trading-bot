@@ -5,11 +5,16 @@ order to a strategy by client_order_id label (rsi2-..., including -stop and
 -stop-p variants), and prints trades, open positions, realized P&L, and
 unrealized P&L per strategy.
 
-P&L facts (fixed per PR #135 review):
+P&L facts (fixed per PR #135 review, round 3 fix I):
   * Orders carry NO `trades` field on Alpaca v2. Fills are quantified via
     filled_qty / filled_avg_price on each order (and the account activities
     FILL feed is available as a cross-check via --activities).
-  * Pagination uses `after`/`until` windows (no Page-Token header).
+  * Closed orders are fetched with nested=false (we never need nested
+    leg objects; rsi2 orders are simple market/stop orders).
+  * Orders paginate with `after` windows + id de-dup; activities paginate
+    with direction=asc + `page_token` per the Alpaca docs, de-duped by
+    activity id (equal timestamps re-fetched under >= semantics are
+    collapsed by id).
   * Partially-filled then canceled orders ARE included (filled_qty > 0).
   * Open positions are attributed by LABELED fills only (net labeled
     buys-sells per symbol per strategy), never by "last buyer".
@@ -65,16 +70,16 @@ def _is_fill(order: dict) -> bool:
 
 
 def fetch_all_orders(since: str | None) -> list:
-    """Paginate closed orders with after windows (no Page-Token).
-    FIX I(1): advance the window by the FULL timestamp of the last order
-    (date-granularity windows could re-fetch/double-count a whole day or
-    loop forever) and de-duplicate by order id as a second guard."""
+    """Paginate closed orders with after windows (nested=false — fix I).
+    The window advances by the FULL timestamp of the last order; orders
+    sharing that timestamp may be re-served by the API (>= semantics) and
+    are collapsed by id de-dup, never double-counted."""
     headers = _headers()
     out, seen = [], set()
     after = since
     while True:
         params = {"status": "closed", "limit": PAGE, "direction": "asc",
-                  "nested": "true"}
+                  "nested": "false"}
         if after:
             params["after"] = after
         r = requests.get(f"{PAPER_TRADING_URL}/v2/orders", params=params,
@@ -99,33 +104,37 @@ def fetch_all_orders(since: str | None) -> list:
 
 def fetch_fill_activities(since: str | None = None) -> list:
     """Account activities FILL feed (optional cross-check). Paginated
-    with after windows; same full-timestamp + de-dup guards as
-    fetch_all_orders (FIX I(1))."""
+    per the Alpaca docs (fix I): direction=asc with `page_token` set to
+    the id of the last activity of the previous page (after only on the
+    first request). De-duped by activity id, so activities sharing an
+    equal timestamp are never counted twice."""
     headers = _headers()
     out, seen = [], set()
-    after = since
+    page_token = None
     while True:
         params = {"activity_types": "FILL", "page_size": 100,
-                  "direction": "desc"}
-        if after:
-            params["after"] = after
+                  "direction": "asc"}
+        if since and page_token is None:
+            params["after"] = since
+        if page_token is not None:
+            params["page_token"] = page_token
         r = requests.get(f"{PAPER_TRADING_URL}/v2/account/activities",
                          params=params, headers=headers, timeout=20)
         r.raise_for_status()
         batch = r.json()
         for a in batch:
-            key = (a.get("order_id"), a.get("transaction_time"),
-                   a.get("symbol"), a.get("qty"), a.get("price"))
-            if key in seen:
-                continue
-            seen.add(key)
+            aid = a.get("id")
+            if aid is not None:
+                if aid in seen:
+                    continue
+                seen.add(aid)
             out.append(a)
         if len(batch) < 100:
             break
-        last_ts = batch[-1].get("date") or batch[-1].get("transaction_time")
-        if not last_ts or last_ts == after:
-            break
-        after = last_ts
+        token = batch[-1].get("id")
+        if not token or token == page_token:
+            break  # cannot advance — terminate instead of looping
+        page_token = token
     return out
 
 

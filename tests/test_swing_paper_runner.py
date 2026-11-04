@@ -1,11 +1,22 @@
 """Runner tests for STRAT-SWING-PAPER with a FakeBroker — no network.
 
-Covers the PR #135 review items: same-stock overlap (C4 position / pending
-sl_short-* order / C4 same-day db signal), sizing caps, dry-run writes
-nothing but a log, order-error handling (no trade recorded), rerun
-idempotency, exits (chandelier raise + 15-day time exit), stop-after-fill
-(total sell qty never exceeds held qty), the TRADING_BOT_PAPER_ONLY guard,
-and the incomplete-daily-bar refusal.
+Round 3 (PR #135) covers the Josh decisions of 2026-11-03:
+  S1  one GTC stop for the FULL held qty after fill; no partial/OCO
+  S2  fixed 15% sleeve, 4 positions max, each <= 25% of the sleeve;
+      no subtract-C4 logic
+  B   stop raise = PATCH with a NEW deterministic client_order_id
+      (...-stop-r<k>); the NEW order id and client id are stored
+  C   time exit: cancel-then-poll; pending_cancel waits; 404/422 on an
+      already-canceled order is success; unconfirmed cancel keeps the
+      stop and retries next run
+  D   position gone: cancel leftover rsi2 sell orders; stop_filled
+      detected via the CURRENT stop client id
+  J   one injected clock through run()
+  K   C4 skip matches ref_date of the last completed trading day
+
+The FakeBroker validates order payloads per the Alpaca v2 docs
+(order_class/type/legs/qty/side/time_in_force combinations) — malformed
+order bodies are REJECTED, not accepted silently.
 """
 from __future__ import annotations
 
@@ -25,27 +36,108 @@ sys.path.insert(0, str(HERE))
 
 import runner  # noqa: E402
 import signals  # noqa: E402
-from rules import RSI2, make_client_order_id  # noqa: E402
+from rules import (RSI2, make_client_order_id,  # noqa: E402
+                   make_stop_client_order_id,
+                   make_stop_replace_client_order_id)
 
 
 # ------------------------------------------------------------ fake broker
+VALID_TYPES = {"market", "limit", "stop", "stop_limit", "trailing_stop"}
+VALID_CLASSES = {"simple", "bracket", "oco", "oto"}
+VALID_TIF = {"day", "gtc", "opg", "cls", "ioc", "fok"}
+TERMINAL = ("canceled", "expired", "filled")
+
+
+def validate_order_body(body: dict) -> None:
+    """Reject malformed order payloads per the Alpaca v2 order docs.
+
+    Alpaca order docs (docs.alpaca.markets/docs/orders-at-alpaca):
+      * `order_class` is simple (default) | bracket | oco | oto.
+      * bracket/oco/oto MUST carry a non-empty `legs` array; every leg is
+        a complete order itself and must NOT carry a nested order_class;
+        type/qty live on the legs, not at the top level.
+      * a simple order carries `type` (market | limit | stop | stop_limit |
+        trailing_stop) plus the matching price field(s):
+        market -> no price field; limit -> limit_price;
+        stop -> stop_price; stop_limit -> stop_price AND limit_price;
+        trailing_stop -> trail_price or trail_percent.
+      * `side` is buy|sell, `qty` (or `ratio_qty`) must be > 0,
+        `time_in_force` is day|gtc|opg|cls|ioc|fok, `symbol` is required.
+    """
+    if not isinstance(body, dict):
+        raise ValueError(f"order body must be a dict, got {type(body)!r}")
+    oclass = body.get("order_class")
+    if oclass is not None and oclass not in VALID_CLASSES:
+        raise ValueError(f"bad order_class {oclass!r}")
+    if oclass in ("bracket", "oco", "oto"):
+        legs = body.get("legs")
+        if not isinstance(legs, list) or not legs:
+            raise ValueError(
+                f"order_class {oclass!r} requires a non-empty legs array")
+        if "type" in body or "qty" in body or "ratio_qty" in body:
+            raise ValueError(
+                f"order_class {oclass!r} carries type/qty on the legs, "
+                f"not at the top level")
+        for leg in legs:
+            if not isinstance(leg, dict):
+                raise ValueError(f"leg must be a dict, got {type(leg)!r}")
+            if leg.get("order_class") is not None:
+                raise ValueError("a leg must not carry its own order_class")
+            validate_order_body(leg)
+        return
+    if "legs" in body:
+        raise ValueError("legs require order_class bracket|oco|oto")
+    typ = body.get("type")
+    if typ not in VALID_TYPES:
+        raise ValueError(f"bad order type {typ!r}")
+    if typ == "stop" and "stop_price" not in body:
+        raise ValueError("stop order missing stop_price")
+    if typ == "limit" and "limit_price" not in body:
+        raise ValueError("limit order missing limit_price")
+    if typ == "stop_limit" and not ("stop_price" in body
+                                    and "limit_price" in body):
+        raise ValueError("stop_limit needs stop_price and limit_price")
+    if typ == "trailing_stop" and not ("trail_price" in body
+                                       or "trail_percent" in body):
+        raise ValueError("trailing_stop needs trail_price/trail_percent")
+    if typ == "market" and ("stop_price" in body or "limit_price" in body):
+        raise ValueError("market order must not carry stop/limit price")
+    if body.get("side") not in ("buy", "sell"):
+        raise ValueError(f"bad side {body.get('side')!r}")
+    if "ratio_qty" in body:
+        if float(body.get("ratio_qty") or 0) <= 0:
+            raise ValueError("ratio_qty must be > 0")
+    elif float(body.get("qty", 0) or 0) <= 0:
+        raise ValueError("qty must be > 0")
+    tif = body.get("time_in_force")
+    if tif is not None and tif not in VALID_TIF:
+        raise ValueError(f"bad time_in_force {tif!r}")
+    if not body.get("symbol"):
+        raise ValueError("symbol is required")
+
+
 class FakeBroker:
     dry_run = False
 
     def __init__(self, positions=None, open_orders=None, orders_by_coid=None,
                  fail_symbols=(), portfolio_value=100_000.0,
-                 bars=None, fail_cancels=()):
+                 bars=None, fail_cancels=(), cancel_polls_until_done=0,
+                 unknown_cancel_code=404):
         self.positions = positions or []
         self.open_orders = open_orders or []
         self.orders_by_coid = orders_by_coid or {}
         self.fail_symbols = set(fail_symbols)
         self.fail_cancels = set(fail_cancels)
+        self.cancel_polls_until_done = cancel_polls_until_done
+        self.unknown_cancel_code = unknown_cancel_code
         self._pv = portfolio_value
         self.bars = bars or {}
         self.submitted = []       # list of submitted bodies
         self.replaced = []        # list of (order_id, patch)
         self.canceled = []
+        self._canceled_ids = set()
         self._rep_n = 0
+        self.daily_bars_calls = []  # (symbol, now)
 
     def get_account(self):
         return {"portfolio_value": str(self._pv)}
@@ -56,37 +148,95 @@ class FakeBroker:
     def get_orders(self, status="open", limit=500):
         return self.open_orders if status == "open" else []
 
-    def get_order_by_client_id(self, coid):
-        return self.orders_by_coid.get(coid)
+    def _by_id(self, oid):
+        for o in self.orders_by_coid.values():
+            if o.get("id") == oid:
+                return o
+        return None
 
-    def daily_bars(self, symbol):
+    def get_order_by_client_id(self, coid):
+        o = self.orders_by_coid.get(coid)
+        if o is None:
+            # synthesize a terminal status for orders the fake already
+            # canceled (mirrors "the cancel succeeded; lookup confirms")
+            if coid in {c for c, o2 in self.orders_by_coid.items()
+                        if o2.get("id") in self._canceled_ids}:
+                return {"id": None, "status": "canceled"}
+            return None
+        if o.get("status") == "pending_cancel":
+            if o.get("_polls_left", 0) > 0:
+                o["_polls_left"] -= 1
+            else:
+                o["status"] = "canceled"
+        return o
+
+    def daily_bars(self, symbol, now=None):
+        self.daily_bars_calls.append((symbol, now))
         return self.bars.get(symbol)
 
     def submit_order(self, body):
+        validate_order_body(body)  # malformed payloads are REJECTED
         if body["symbol"] in self.fail_symbols:
             return {"error": "forbidden short selling (test)"}
         self.submitted.append(body)
-        return {"id": f"ord-{len(self.submitted)}", "status": "accepted",
+        oid = f"ord-{len(self.submitted)}"
+        self.orders_by_coid[body.get("client_order_id") or oid] = {
+            "id": oid, "status": "accepted",
+            "client_order_id": body.get("client_order_id")}
+        return {"id": oid, "status": "accepted",
                 "client_order_id": body.get("client_order_id")}
 
     def replace_order(self, order_id, patch):
-        # models Alpaca: a replace returns a NEW order id (fix B)
+        # models Alpaca: a replace returns a NEW order id and the OLD
+        # order ends up 'replaced' (fix B)
         self._rep_n += 1
         new_id = f"ord-rep-{self._rep_n}"
-        self.replaced.append((order_id, patch))
-        return {"id": new_id, **patch}
+        self.replaced.append((order_id, dict(patch)))
+        old = self._by_id(order_id)
+        if old is not None:
+            old["status"] = "replaced"
+        coid = patch.get("client_order_id")
+        if coid:
+            self.orders_by_coid[coid] = {"id": new_id, "status": "accepted",
+                                         "client_order_id": coid}
+        resp = {"id": new_id, "status": "accepted"}
+        if coid:
+            resp["client_order_id"] = coid
+        resp.update(patch)
+        return resp
 
     def cancel_order(self, order_id):
         if order_id in self.fail_cancels:
-            return False
+            return 500
+        o = self._by_id(order_id)
+        if o is None:
+            return self.unknown_cancel_code  # 404/422 style
+        if o.get("status") in TERMINAL:
+            return 422  # Alpaca rejects cancel of a terminal order
         self.canceled.append(order_id)
-        return True
+        self._canceled_ids.add(order_id)
+        if self.cancel_polls_until_done > 0:
+            o["status"] = "pending_cancel"
+            o["_polls_left"] = self.cancel_polls_until_done
+        else:
+            o["status"] = "canceled"
+        self.open_orders = [x for x in self.open_orders
+                            if isinstance(x, dict) and x.get("id") != order_id]
+        return 204
 
 
 # ------------------------------------------------------------ synthetic bars
+# FIXED anchor date for every synthetic bar set (2026-11-03, a Tuesday).
+# Tests are deterministic: the injected clock (NOW) and the bars always
+# describe the same market day, whatever day the suite is run on.
+ANCHOR = datetime(2026, 11, 3).date()
+NOW = datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc)
+
+
 def _dates(n, end=None):
-    end = end or (datetime.now(timezone.utc).date() - timedelta(days=1))
+    end = end or ANCHOR
     return pd.bdate_range(end=pd.Timestamp(end), periods=n)
+
 
 def uptrend_bars(n=260, base=100.0, drop_last=2, drop_pct=0.06,
                  volume=2_000_000, end=None):
@@ -103,6 +253,7 @@ def uptrend_bars(n=260, base=100.0, drop_last=2, drop_pct=0.06,
         "o": opens, "h": closes * 1.005, "l": closes * 0.995,
         "c": closes, "v": [volume] * n,
     })
+
 
 def spy_bars(n=260, end=None):
     d = _dates(n, end)
@@ -122,8 +273,8 @@ def frames():
 
 
 def make_args(symbols=("AMD",), **kw):
-    base = dict(symbols=list(symbols), bucket_pct=0.30, rsi2_cap=4,
-                max_open=4, per_position_cap=0.10, c4_db=None)
+    base = dict(symbols=list(symbols), sleeve_pct=0.15, rsi2_cap=4,
+                max_open=4, per_position_cap=0.25, c4_db=None)
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -160,6 +311,11 @@ def _c4_db(tmp_path, monkeypatch):
     return db
 
 
+@pytest.fixture(autouse=True)
+def _fast_cancel_poll(monkeypatch):
+    monkeypatch.setattr(runner, "_sleep_s", lambda s: None)
+
+
 def setup_broker(frames, symbols=("AMD",), **kw):
     sym_df, spy_df = frames
     raw = {"AMD": uptrend_bars(), "SPY": spy_bars()}
@@ -176,22 +332,57 @@ def test_synthetic_bars_trigger_entry(frames):
     assert signals.rsi2_entry_signal(sym_df, spy_df) is True
 
 
-# ------------------------------------------------------------ entries
-def test_entries_per_position_cap_and_state(frames, tmp_path, monkeypatch):
+# ------------------------------------------------------------ entries (S2)
+def test_entries_sleeve_and_per_position_cap(frames):
     broker, bars = setup_broker(frames)
     state = {"open": {}}
     results = {"rsi2": [], "errors": []}
     runner.process_entries(state, broker, bars, bars["SPY"], [], [],
-                           [], "20261103", make_args(), 100_000.0, results)
+                           [], "20261103", make_args(), 100_000.0, results, now=NOW)
     assert len(results["rsi2"]) == 1
     t = state["open"][results["rsi2"][0]["entry_id"]]
     px = t["ref_px"]
-    # slice = 100k*0.30 = 30k; per-position cap 10% = 3k
-    assert t["qty"] * px <= 3000 + px
+    # S2: sleeve = 100k * 15% = 15k; per-position cap 25% of sleeve = 3.75k
+    assert t["qty"] * px <= 3_750 + px
     assert t["qty"] * px > 0
-    # entry market buy submitted; NO sell orders at entry time
+    assert "partial_px" not in t  # S1: no partial target anymore
     sides = [b["side"] for b in broker.submitted]
     assert sides == ["buy"]
+
+
+def test_sleeve_pct_configurable(frames):
+    broker, bars = setup_broker(frames)
+    state = {"open": {}}
+    results = {"rsi2": [], "errors": []}
+    runner.process_entries(state, broker, bars, bars["SPY"], [], [],
+                           [], "20261103", make_args(sleeve_pct=0.10),
+                           100_000.0, results, now=NOW)
+    t = state["open"][results["rsi2"][0]["entry_id"]]
+    # sleeve 10k; cap 25% of sleeve = 2.5k
+    assert t["entry_notional"] <= 2_500 + t["ref_px"]
+
+
+def test_c4_open_positions_do_not_shrink_sleeve(_c4_db, frames):
+    # S2: the subtract-C4 logic is GONE. Open C4 positions must not
+    # reduce the RSI(2) sleeve.
+    con = sqlite3.connect(_c4_db)
+    con.execute(
+        "INSERT INTO positions (symbol, signal_date, signal_atr14, "
+        "entry_order_coid, entry_date, entry_price, qty, status, created_ts) "
+        "VALUES ('QQQ','2026-11-01',1.0,'sl_short-QQQ-e-1','2026-11-01',"
+        "100.0,50,'open','2026-11-01T21:00:00Z')")
+    con.commit()
+    con.close()
+    assert not hasattr(runner, "c4_open_notional")  # removed entirely
+    broker, bars = setup_broker(frames)
+    state = {"open": {}}
+    results = {"rsi2": [], "errors": []}
+    runner.process_entries(state, broker, bars, bars["SPY"], [], [], [],
+                           "20261103", make_args(c4_db=str(_c4_db)),
+                           100_000.0, results, now=NOW)
+    t = state["open"][results["rsi2"][0]["entry_id"]]
+    # full 3.75k cap available — the 5k C4 position did not shrink it
+    assert t["entry_notional"] > 3_750 - t["ref_px"]
 
 
 def test_order_error_records_no_trade(frames):
@@ -202,7 +393,7 @@ def test_order_error_records_no_trade(frames):
     runner.process_entries(state, broker, bars, bars["SPY"], [], [],
                            [], "20261103",
                            make_args(symbols=("AMD", "NVDA")), 100_000.0,
-                           results)
+                           results, now=NOW)
     assert [r["symbol"] for r in results["rsi2"]] == ["AMD"]
     assert len(results["errors"]) == 1
     assert all(t["symbol"] == "AMD" for t in state["open"].values())
@@ -214,17 +405,16 @@ def test_rerun_idempotent_pending_order_skipped(frames):
     state = {"open": {}}
     results = {"rsi2": [], "errors": []}
     runner.process_entries(state, broker, bars, bars["SPY"], [], [],
-                           [], "20261103", make_args(), 100_000.0, results)
+                           [], "20261103", make_args(), 100_000.0, results, now=NOW)
     assert len(results["rsi2"]) == 1
     entry_id = results["rsi2"][0]["entry_id"]
-    # simulate the pending order now visible on the account
     broker.open_orders = [{"symbol": "AMD", "side": "buy",
                            "client_order_id": entry_id}]
     state2 = {"open": {}}
     results2 = {"rsi2": [], "errors": []}
     runner.process_entries(state2, broker, bars, bars["SPY"], [],
                            broker.open_orders, [entry_id], "20261103",
-                           make_args(), 100_000.0, results2)
+                           make_args(), 100_000.0, results2, now=NOW)
     assert results2["rsi2"] == []  # skipped, no duplicate order
     assert len(broker.submitted) == 1
 
@@ -239,7 +429,7 @@ def test_overlap_c4_position_and_sl_short_order(frames):
     runner.process_entries(state, broker, bars, bars["SPY"],
                            broker.positions, broker.open_orders, [],
                            "20261103", make_args(symbols=("AMD", "QQQ")),
-                           100_000.0, results)
+                           100_000.0, results, now=NOW)
     assert results["rsi2"] == []
     assert broker.submitted == []
 
@@ -251,8 +441,38 @@ def test_max_open_blocks_new_entries(frames):
     results = {"rsi2": [], "errors": []}
     runner.process_entries(state, broker, bars, bars["SPY"], [], [],
                            [], "20261103", make_args(max_open=4),
-                           100_000.0, results)
+                           100_000.0, results, now=NOW)
     assert results["rsi2"] == []
+    assert broker.submitted == []
+
+
+# ------------------------------------------------------------ fake-broker validation
+def test_fake_broker_rejects_malformed_payloads():
+    broker = FakeBroker()
+    bad = [
+        {"symbol": "AMD", "qty": 10, "side": "sell", "type": "stop",
+         "time_in_force": "gtc"},                          # no stop_price
+        {"symbol": "AMD", "qty": 10, "side": "sell", "type": "market",
+         "time_in_force": "gtc", "stop_price": 90},        # market w/ stop
+        {"symbol": "AMD", "qty": 10, "side": "short", "type": "market",
+         "time_in_force": "day"},                          # bad side
+        {"symbol": "AMD", "qty": 0, "side": "sell", "type": "market",
+         "time_in_force": "day"},                          # qty <= 0
+        {"symbol": "AMD", "qty": 10, "side": "sell", "type": "stop",
+         "stop_price": 90, "time_in_force": "whenever"},   # bad tif
+        {"symbol": "AMD", "qty": 10, "side": "sell", "type": "quantum",
+         "time_in_force": "day"},                          # bad type
+        {"symbol": "AMD", "qty": 10, "side": "sell", "type": "market",
+         "time_in_force": "day", "order_class": "oco"},    # oco w/o legs
+        {"symbol": "AMD", "qty": 10, "side": "sell", "type": "market",
+         "time_in_force": "gtc",
+         "legs": [{"symbol": "AMD", "qty": 10, "side": "sell",
+                   "type": "limit", "limit_price": 110,
+                   "time_in_force": "gtc"}]},               # legs w/o class
+    ]
+    for body in bad:
+        with pytest.raises(ValueError):
+            broker.submit_order(body)
     assert broker.submitted == []
 
 
@@ -262,7 +482,7 @@ def test_dry_run_writes_nothing_but_log(frames, tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
     monkeypatch.setattr(runner, "DEFAULT_C4_DB",
-                         make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
     monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
     monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
     monkeypatch.delenv("TRADING_BOT_PAPER_ONLY", raising=False)
@@ -273,7 +493,6 @@ def test_dry_run_writes_nothing_but_log(frames, tmp_path, monkeypatch):
     assert not (tmp_path / "state.json").exists()
     logs = [p for p in tmp_path.iterdir() if p.is_file()]
     assert all(p.name == "swing_events.jsonl" for p in logs)
-    # dry-run submit returns dry-run stub: nothing "sent"
     assert broker.submitted  # decisions still simulated
     assert all(b.get("client_order_id", "").startswith("rsi2-")
                for b in broker.submitted)
@@ -287,9 +506,8 @@ def test_execute_requires_paper_only_env(monkeypatch, tmp_path):
     assert e.value.code == 2
 
 
-# ------------------------------------------------------------ bar finality
+# ------------------------------------------------------------ bar finality (J)
 def test_incomplete_daily_bar_refused_injected_clock():
-    # FIX J: no clock-dependent skip — the clock is injected via now=.
     sig_day = datetime(2026, 11, 3, tzinfo=timezone.utc).date()
     before_close = datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc)
     after_close = datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc)
@@ -301,6 +519,41 @@ def test_incomplete_daily_bar_refused_injected_clock():
                                     now=before_close) is False
 
 
+def test_run_uses_injected_clock_for_bar_finality(frames, tmp_path, monkeypatch):
+    # J: with a fixed clock, entry decisions depend ONLY on that clock —
+    # bars ending "today" are tradeable after 21:05 UTC and not before.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    fixed_day = datetime(2026, 11, 3, tzinfo=timezone.utc).date()
+    raw = {"AMD": uptrend_bars(end=fixed_day),
+           "SPY": spy_bars(end=fixed_day)}
+    broker = FakeBroker(bars=raw)
+    monkeypatch.setattr(runner, "AlpacaPaper", lambda *a, **k: broker)
+
+    # before the close: today's bar is NOT final -> no entry
+    runner.run(make_args(execute=False),
+               clock=lambda: datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc))
+    assert broker.submitted == []
+    # after the close: today's bar IS final -> entry submitted
+    runner.run(make_args(execute=False),
+               clock=lambda: datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc))
+    assert [b["side"] for b in broker.submitted] == ["buy"]
+    # the SAME injected clock drove the daily-bars fetch window
+    assert all(n is not None for _s, n in broker.daily_bars_calls)
+    assert broker.daily_bars_calls[0][1] == datetime(
+        2026, 11, 3, 15, 0, tzinfo=timezone.utc)
+
+
+def test_ymd_comes_from_injected_clock():
+    now = datetime(2026, 11, 3, 22, 0, tzinfo=timezone.utc)
+    assert runner.ymd_today(now) == "20261103"
+
+
 # ------------------------------------------------------------ exits
 def filled_trade(sym="AMD", qty=50, days_ago=5, stop=True):
     sym_df = signals.add_indicators(uptrend_bars())
@@ -308,52 +561,81 @@ def filled_trade(sym="AMD", qty=50, days_ago=5, stop=True):
     t = {
         "strategy": RSI2, "symbol": sym, "qty": qty, "n": 1, "date": "20261103",
         "ref_px": 100.0, "entry_notional": qty * 100.0, "stop_px": 90.0,
-        "partial_px": 110.0, "entry_id": make_client_order_id(RSI2, sym, "20261103", 1),
+        "entry_id": make_client_order_id(RSI2, sym, "20261103", 1),
         "entry_order_id": "ord-1", "entry_filled": True, "entry_fill_px": 100.0,
         "signal_date": entry_date, "atr14": 2.0, "entry_date": entry_date,
     }
     if stop:
         t["stop_order_id"] = "stop-1"
-        t["stop_client_order_id"] = make_client_order_id(
-            RSI2, sym, "20261103", 1) + "-stop"
-        t["partial_order_id"] = "part-1"
-        t["partial_client_order_id"] = make_client_order_id(
-            RSI2, sym, "20261103", 1) + "-stop-p"
+        t["stop_client_order_id"] = make_stop_client_order_id(
+            RSI2, sym, "20261103", 1)
+        t["stop_gen"] = 1
     return t
 
 
-def test_time_exit_closes_trade_and_frees_slice(frames):
+def _register_stop(broker, t, status="held"):
+    broker.orders_by_coid[t["stop_client_order_id"]] = {
+        "id": t["stop_order_id"], "status": status}
+
+
+def test_time_exit_closes_trade_and_frees_sleeve(frames):
     broker, bars = setup_broker(frames)
-    sym_df = bars["AMD"]
     t = filled_trade(days_ago=30)  # > 15 trading days ago
+    _register_stop(broker, t)
     state = {"open": {t["entry_id"]: t}}
     results = {"closed": [], "errors": []}
     positions = [{"symbol": "AMD", "qty": "50"}]
     runner.process_exits(state, broker, bars, positions, results)
-    assert t["entry_id"] not in state["open"]          # slice money freed
+    assert t["entry_id"] not in state["open"]          # sleeve money freed
     sells = [b for b in broker.submitted if b["side"] == "sell"]
     assert len(sells) == 1 and sells[0]["type"] == "market"
-    assert set(broker.canceled) == {"stop-1", "part-1"}
+    assert set(broker.canceled) == {"stop-1"}  # S1: only the one stop
 
 
 def test_chandelier_raises_stop_never_lowers(frames):
     broker, bars = setup_broker(frames)
     t = filled_trade(days_ago=3, stop=True)
     t["stop_px"] = 1.0  # far below any chandelier
+    _register_stop(broker, t)
     state = {"open": {t["entry_id"]: t}}
     results = {"closed": [], "errors": []}
     positions = [{"symbol": "AMD", "qty": "50"}]
     runner.process_exits(state, broker, bars, positions, results)
     assert len(broker.replaced) == 1
-    new_px = broker.replaced[0][1]["stop_price"]
+    order_id, patch = broker.replaced[0]
+    assert order_id == "stop-1"
+    new_px = patch["stop_price"]
     assert new_px > 1.0
+    # FIX B: the PATCH carries a NEW deterministic client_order_id and the
+    # state stores the NEW order id and client id — never a stale id.
+    assert patch["client_order_id"] == make_stop_replace_client_order_id(
+        RSI2, "AMD", "20261103", 1, 2)
     assert t["stop_px"] == new_px
-    # FIX B: a replace returns a NEW order id — state must track it
-    assert t["stop_order_id"] == "ord-rep-1"
-    assert t["stop_order_id"] != "stop-1"
+    assert t["stop_order_id"] == "ord-rep-1" != "stop-1"
+    assert t["stop_client_order_id"] == "rsi2-AMD-20261103-1-stop-r2"
+    assert t["stop_gen"] == 2
     # a second pass with an already-high stop does not lower it
     runner.process_exits(state, broker, bars, positions, results)
     assert len(broker.replaced) == 1
+
+
+def test_second_raise_uses_r3_label(frames):
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=3, stop=True)
+    t["stop_px"] = 1.0
+    _register_stop(broker, t)
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    runner.process_exits(state, broker, bars,
+                         [{"symbol": "AMD", "qty": "50"}], results)
+    # after the first raise, force another by dropping stop_px again
+    t["stop_px"] = t["stop_px"] - 5
+    runner.process_exits(state, broker, bars,
+                         [{"symbol": "AMD", "qty": "50"}], results)
+    assert len(broker.replaced) == 2
+    assert broker.replaced[1][1]["client_order_id"] == \
+        "rsi2-AMD-20261103-1-stop-r3"
+    assert t["stop_gen"] == 3
 
 
 def test_pending_entry_is_not_managed_yet(frames):
@@ -382,6 +664,7 @@ def test_canceled_entry_dropped(frames):
 def test_one_bad_symbol_does_not_crash_exits(frames):
     broker, bars = setup_broker(frames)
     t = filled_trade(days_ago=3)
+    _register_stop(broker, t)
     bad = filled_trade(sym="ZZZZ", days_ago=3)  # no bars for ZZZZ
     state = {"open": {t["entry_id"]: t, bad["entry_id"]: bad}}
     results = {"closed": [], "errors": []}
@@ -390,86 +673,50 @@ def test_one_bad_symbol_does_not_crash_exits(frames):
     assert t["entry_id"] in state["open"]  # good trade still managed
 
 
-# ------------------------------------------------------------ stop-after-fill
-def _plain_stops(submitted):
-    return [b for b in submitted if b.get("type") == "stop"]
-
-
-def _ocos(submitted):
-    return [b for b in submitted if b.get("order_class") == "oco"]
-
-
-def test_stop_placed_only_after_fill_and_never_oversells():
+# ------------------------------------------------------------ stop-after-fill (S1)
+def test_single_gtc_stop_full_qty_after_fill():
+    # S1: exactly ONE plain GTC stop covering the FULL held qty; no
+    # partial half-sell, no OCO bracket, ever.
     broker = FakeBroker()
     t = filled_trade(days_ago=2, stop=False)
     t["entry_filled"] = False
     state = {"open": {t["entry_id"]: t}}
     results = {"stops_placed": [], "errors": []}
     # not filled yet: nothing placed
-    runner.place_stops_after_fill(state, broker, [{"symbol": "AMD", "qty": "50"}], [], results)
-    assert broker.submitted == []
-    # now filled, held 50, existing sell 30 -> room 20: OCO half gets 10,
-    # plain stop covers the other 10; total sells = 30+10+10 = held 50
-    t["entry_filled"] = True
-    open_orders = [{"symbol": "AMD", "side": "sell", "qty": 30}]
-    runner.place_stops_after_fill(state, broker, [{"symbol": "AMD", "qty": "50"}],
-                                  open_orders, results)
-    stops = _plain_stops(broker.submitted)
-    ocos = _ocos(broker.submitted)
-    assert len(stops) == 1 and stops[0]["qty"] == 10
-    assert len(ocos) == 1 and ocos[0]["qty"] == 10
-    assert 30 + 10 + 10 == 50  # never exceeds held
-
-
-def test_stop_plus_partial_total_never_exceeds_held():
-    broker = FakeBroker()
-    t = filled_trade(days_ago=2, stop=False)
-    t["entry_filled"] = True
-    state = {"open": {t["entry_id"]: t}}
-    results = {"stops_placed": [], "errors": []}
-    held = 50
-    runner.place_stops_after_fill(state, broker,
-                                  [{"symbol": "AMD", "qty": str(held)}], [], results)
-    stops = _plain_stops(broker.submitted)
-    ocos = _ocos(broker.submitted)
-    assert len(stops) == 1 and len(ocos) == 1  # plain stop + OCO bracket
-    total_sell = stops[0]["qty"] + ocos[0]["qty"]
-    assert total_sell <= held  # 1.5x bug fixed
-    assert stops[0]["qty"] == 25
-    assert ocos[0]["qty"] == 25  # half, within room
-    assert stops[0]["client_order_id"].endswith("-stop")
-
-
-def test_partial_half_is_oco_bracket_whole_position_protected():
-    # FIX E: the partial-exit half must be an OCO (limit + stop), never a
-    # naked limit; the remainder keeps the plain stop. Every share is
-    # behind a stop at all times.
-    broker = FakeBroker()
-    t = filled_trade(days_ago=2, stop=False)
-    t["entry_filled"] = True
-    t["stop_px"] = 90.0
-    t["partial_px"] = 110.0
-    state = {"open": {t["entry_id"]: t}}
-    results = {"stops_placed": [], "errors": []}
     runner.place_stops_after_fill(state, broker,
                                   [{"symbol": "AMD", "qty": "50"}], [], results)
-    ocos = _ocos(broker.submitted)
-    assert len(ocos) == 1
-    legs = ocos[0]["legs"]
-    limit_leg = next(l for l in legs if l["type"] == "limit")
-    stop_leg = next(l for l in legs if l["type"] == "stop")
-    assert limit_leg["limit_price"] == 110.0
-    assert stop_leg["stop_price"] == 90.0
-    assert limit_leg["qty"] == stop_leg["qty"] == 25
-    assert limit_leg["client_order_id"].endswith("-stop-p")
-    assert stop_leg["client_order_id"].endswith("-stop-oco")
-    plain = _plain_stops(broker.submitted)[0]
-    # protection covers the ENTIRE position
-    assert plain["qty"] + stop_leg["qty"] == 50
-    # state records the ids needed to cancel/replace later
+    assert broker.submitted == []
+    # filled: one stop for the full 50 shares
+    t["entry_filled"] = True
+    runner.place_stops_after_fill(state, broker,
+                                  [{"symbol": "AMD", "qty": "50"}], [], results)
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1
+    stop = sells[0]
+    assert stop["type"] == "stop"
+    assert stop["time_in_force"] == "gtc"
+    assert stop["qty"] == 50                    # full position
+    assert stop["stop_price"] == 90.0
+    assert stop["client_order_id"].endswith("-stop")
+    assert "legs" not in stop and "order_class" not in stop
     rec = state["open"][t["entry_id"]]
-    assert rec["stop_order_id"] and rec["oco_order_id"]
-    assert rec["stop_client_order_id"].endswith("-stop")
+    assert rec["stop_order_id"] and rec["stop_gen"] == 1
+
+
+def test_stop_qty_never_exceeds_room():
+    # held 50 with an existing 30-share sell -> stop covers the remaining 20
+    broker = FakeBroker()
+    t = filled_trade(days_ago=2, stop=False)
+    t["entry_filled"] = True
+    state = {"open": {t["entry_id"]: t}}
+    results = {"stops_placed": [], "errors": []}
+    open_orders = [{"symbol": "AMD", "side": "sell", "qty": 30}]
+    runner.place_stops_after_fill(state, broker,
+                                  [{"symbol": "AMD", "qty": "50"}],
+                                  open_orders, results)
+    stops = [b for b in broker.submitted if b.get("type") == "stop"]
+    assert len(stops) == 1 and stops[0]["qty"] == 20
+    assert 30 + 20 == 50  # never exceeds held
 
 
 def test_stop_submit_error_no_state_crash():
@@ -483,27 +730,52 @@ def test_stop_submit_error_no_state_crash():
     assert results["errors"]
     rec = state["open"][t["entry_id"]]
     assert "stop_order_id" not in rec
-    assert "oco_order_id" not in rec
 
 
-# ------------------------------------------------------------ C4 same-day db
-def test_c4_signaled_today_from_live_paper_db(_c4_db):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+# ------------------------------------------------------------ C4 ref-date (K)
+def test_c4_skip_matches_ref_date_of_last_completed_trading_day(_c4_db):
     con = sqlite3.connect(_c4_db)
-    con.execute(
-        "INSERT INTO orders (client_order_id, symbol, kind, side, qty, "
-        "ref_date, created_ts) VALUES (?,?,?,?,?,?,?)",
-        ("sl_short-AMD-e-20261103", "AMD", "entry", "buy", 10, today,
-         today + "T21:19:05Z"))
-    con.execute(
-        "INSERT INTO orders (client_order_id, symbol, kind, side, qty, "
-        "ref_date, created_ts) VALUES (?,?,?,?,?,?,?)",
-        ("sl_short-QQQ-e-2020", "QQQ", "entry", "buy", 10, "2020-01-01",
-         "2020-01-01T21:19:05Z"))
+    for coid, sym, ref in [
+        ("sl_short-AMD-e-1", "AMD", "2026-11-02"),
+        ("sl_short-AMD-e-2", "AMD", "2026-11-03"),
+        ("sl_short-QQQ-e-9", "QQQ", "2020-01-01"),
+    ]:
+        con.execute(
+            "INSERT INTO orders (client_order_id, symbol, kind, side, qty, "
+            "ref_date, created_ts) VALUES (?,?,?,?,?,?,?)",
+            (coid, sym, "entry", "buy", 10, ref, ref + "T21:19:05Z"))
     con.commit()
     con.close()
-    out = runner.c4_signaled_today(["AMD", "QQQ", "TSLA"])
+    # K: run BEFORE the close on Nov 3 -> last completed trading day is
+    # Nov 2 -> AMD signaled (ref_date 2026-11-02) even though C4 hasn't
+    # run yet today; run order no longer matters.
+    out = runner.c4_signaled_today(
+        ["AMD", "QQQ", "TSLA"], db_path=_c4_db,
+        now=datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc))
     assert out == {"AMD"}
+    # after the close on Nov 3 -> ref_date 2026-11-03 (still AMD)
+    out = runner.c4_signaled_today(
+        ["AMD", "QQQ", "TSLA"], db_path=_c4_db,
+        now=datetime(2026, 11, 3, 21, 30, tzinfo=timezone.utc))
+    assert out == {"AMD"}
+    # stale 2020 signal never matches
+    assert "QQQ" not in out
+
+
+def test_last_completed_trading_day_weekday_logic():
+    dt = lambda *a, **k: datetime(*a, tzinfo=timezone.utc, **k)
+    # after close on a Tuesday -> today
+    assert runner.last_completed_trading_day(dt(2026, 11, 3, 21, 30)) \
+        == dt(2026, 11, 3).date()
+    # before close on a Tuesday -> Monday
+    assert runner.last_completed_trading_day(dt(2026, 11, 3, 15, 0)) \
+        == dt(2026, 11, 2).date()
+    # Saturday -> Friday
+    assert runner.last_completed_trading_day(dt(2026, 11, 7, 12, 0)) \
+        == dt(2026, 11, 6).date()
+    # Sunday -> Friday
+    assert runner.last_completed_trading_day(dt(2026, 11, 8, 12, 0)) \
+        == dt(2026, 11, 6).date()
 
 
 def test_c4_db_missing_or_bad_fails_loudly(tmp_path, monkeypatch):
@@ -511,13 +783,11 @@ def test_c4_db_missing_or_bad_fails_loudly(tmp_path, monkeypatch):
     # behave as "no C4 signal".
     monkeypatch.setattr(runner, "DEFAULT_C4_DB", tmp_path / "nope.db")
     with pytest.raises(RuntimeError, match="C4 shadow DB not found"):
-        runner.c4_signaled_today(["AMD"])
-    with pytest.raises(RuntimeError, match="C4 shadow DB not found"):
-        runner.c4_open_notional()
+        runner.c4_signaled_today(["AMD"], now=NOW)
     bad = tmp_path / "bad.db"
     bad.write_text("not a database")
-    with pytest.raises(RuntimeError, match="C4 same-day query failed"):
-        runner.c4_signaled_today(["AMD"], db_path=bad)
+    with pytest.raises(RuntimeError, match="C4 ref-date query failed"):
+        runner.c4_signaled_today(["AMD"], now=NOW, db_path=bad)
 
 
 def test_missing_c4_db_aborts_entries(tmp_path, monkeypatch, frames):
@@ -527,7 +797,7 @@ def test_missing_c4_db_aborts_entries(tmp_path, monkeypatch, frames):
     results = {"rsi2": [], "errors": []}
     with pytest.raises(RuntimeError):
         runner.process_entries(state, broker, bars, bars["SPY"], [], [],
-                               [], "20261103", make_args(), 100_000.0, results)
+                               [], "20261103", make_args(), 100_000.0, results, now=NOW)
     assert broker.submitted == []  # nothing traded on a guessed skip set
 
 
@@ -538,64 +808,127 @@ def test_dotted_symbol_label_flow():
     assert len(make_client_order_id(RSI2, "BF.B", "20261103", 123)) <= 48
 
 
-# ------------------------------------------- round-2 fixes C, D, F, G, H
-def test_time_exit_cancel_failure_skips_market_sell(frames):
-    # FIX C: if the protective orders cannot be canceled, NO market sell
-    # is submitted (no double orders).
-    broker, bars = setup_broker(frames)
+# ------------------------------------------- round-3 fixes C, D, F, G
+def test_time_exit_pending_cancel_waits_then_sells(frames):
+    # FIX C: cancel returns 204 but the order sits in pending_cancel for a
+    # few polls; the runner must WAIT and only sell once canceled is
+    # CONFIRMED.
+    broker, bars = setup_broker(frames, cancel_polls_until_done=2)
     t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="held")
     state = {"open": {t["entry_id"]: t}}
     results = {"closed": [], "errors": []}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    runner.process_exits(state, broker, bars, positions, results)
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1 and sells[0]["type"] == "market"
+    assert t["entry_id"] not in state["open"]
+
+
+def test_time_exit_pending_cancel_never_confirmed_keeps_stop(frames):
+    # FIX C: pending_cancel that never resolves -> NO market sell; the
+    # stop stays in place and the trade retries next run.
+    broker, bars = setup_broker(frames, cancel_polls_until_done=99)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="held")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    runner.process_exits(state, broker, bars, positions, results)
+    assert [b for b in broker.submitted if b["side"] == "sell"] == []
+    assert t["entry_id"] in state["open"]
+    assert any("unconfirmed" in e["error"] for e in results["errors"])
+
+
+def test_time_exit_cancel_failure_skips_market_sell(frames):
+    # FIX C: if the stop cannot be canceled (hard failure), NO market
+    # sell is submitted (no double orders); retry next run.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t)
     broker.fail_cancels = {"stop-1"}
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
     positions = [{"symbol": "AMD", "qty": "50"}]
     runner.process_exits(state, broker, bars, positions, results)
     assert t["entry_id"] in state["open"]        # trade stays open
     assert [b for b in broker.submitted if b["side"] == "sell"] == []
-    assert any("cancel failed" in e["error"] for e in results["errors"])
+    assert results["errors"]
 
 
-def test_time_exit_cancel_unconfirmed_skips_market_sell(frames):
-    # FIX C (confirmation half): cancel returns True but the order is
-    # still live -> treat as NOT canceled, no market sell.
+def test_time_exit_already_canceled_422_is_success(frames):
+    # FIX C: the stop is ALREADY canceled — DELETE returns 422 and the
+    # status confirms terminal: that is SUCCESS, proceed to market sell.
     broker, bars = setup_broker(frames)
     t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="canceled")
     state = {"open": {t["entry_id"]: t}}
     results = {"closed": [], "errors": []}
-    broker.orders_by_coid[t["stop_client_order_id"]] = {
-        "id": "stop-1", "status": "held_open_forever"}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    runner.process_exits(state, broker, bars, positions, results)
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1
+    assert t["entry_id"] not in state["open"]
+
+
+def test_time_exit_unknown_stop_404_not_treated_as_success(frames):
+    # FIX C: a 404 with NO confirmable status is NOT success — no sell.
+    broker, bars = setup_broker(frames, unknown_cancel_code=404)
+    t = filled_trade(days_ago=30)
+    t["stop_client_order_id"] = "rsi2-AMD-20261103-1-stop-gone"  # unlookupable
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
     positions = [{"symbol": "AMD", "qty": "50"}]
     runner.process_exits(state, broker, bars, positions, results)
     assert [b for b in broker.submitted if b["side"] == "sell"] == []
     assert t["entry_id"] in state["open"]
 
 
-def test_stop_filled_closes_trade_and_frees_slot(frames):
-    # FIX D: position gone and the stop order filled -> close in DB.
+def test_stop_filled_detected_via_current_stop_id(frames):
+    # FIX D + B: after a raise, stop_filled must be detected through the
+    # CURRENT (replaced) stop client id, not the stale original one.
     broker, bars = setup_broker(frames)
     t = filled_trade(days_ago=3)
+    t["stop_order_id"] = "ord-rep-1"
+    t["stop_client_order_id"] = "rsi2-AMD-20261103-1-stop-r2"
+    t["stop_gen"] = 2
+    _register_stop(broker, t, status="filled")
     state = {"open": {t["entry_id"]: t}}
     results = {"closed": [], "errors": []}
-    broker.orders_by_coid[t["stop_client_order_id"]] = {
-        "id": "stop-1", "status": "filled"}
     runner.process_exits(state, broker, bars, [], results)  # no position
     assert t["entry_id"] not in state["open"]
     assert results["closed"][0]["reason"] == "stop_filled"
 
 
-def test_position_gone_without_stop_fill_closes_trade(frames):
-    # FIX D: position gone for any other reason -> still close + free slot
+def test_position_gone_cancels_leftover_rsi2_sells(frames):
+    # FIX D: position gone -> every leftover rsi2 sell order for the
+    # symbol is canceled (non-rsi2 orders are left alone).
     broker, bars = setup_broker(frames)
     t = filled_trade(days_ago=3)
+    _register_stop(broker, t, status="canceled")  # stop already gone
     state = {"open": {t["entry_id"]: t}}
     results = {"closed": [], "errors": []}
-    runner.process_exits(state, broker, bars, [], results)
+    leftover_1 = {"id": "lo-1", "symbol": "AMD", "side": "sell", "qty": 10,
+                  "client_order_id": "rsi2-AMD-20261103-1-stop-r2"}
+    leftover_2 = {"id": "lo-2", "symbol": "AMD", "side": "sell", "qty": 5,
+                  "client_order_id": "rsi2-AMD-20261103-1-stop"}
+    foreign = {"id": "fx-1", "symbol": "AMD", "side": "sell", "qty": 20,
+               "client_order_id": "sl_short-AMD-20261103-1"}
+    broker.orders_by_coid[leftover_1["client_order_id"]] = {
+        "id": "lo-1", "status": "held"}
+    broker.orders_by_coid[leftover_2["client_order_id"]] = {
+        "id": "lo-2", "status": "held"}
+    broker.open_orders = [leftover_1, leftover_2, foreign]
+    runner.process_exits(state, broker, bars, [], results,
+                         open_orders=broker.open_orders)
     assert t["entry_id"] not in state["open"]
+    assert set(broker.canceled) == {"lo-1", "lo-2"}  # foreign untouched
     assert results["closed"][0]["reason"] == "position_gone"
 
 
 def test_stops_reanchored_to_actual_fill_price(frames):
-    # FIX F: initial stop / partial target recompute from the ACTUAL fill
-    # price (frozen formulas, signal-day ATR14), not the signal close.
+    # FIX F: initial stop recomputes from the ACTUAL fill price (frozen
+    # formula, signal-day ATR14), not the signal close.
     broker, bars = setup_broker(frames)
     sym_df = bars["AMD"]
     entry_date = str(sym_df["date"].iloc[-6])
@@ -604,7 +937,6 @@ def test_stops_reanchored_to_actual_fill_price(frames):
     t["atr14"] = 2.0
     t["ref_px"] = 100.0            # signal close
     t["stop_px"] = 96.0            # from signal close
-    t["partial_px"] = 108.0
     t["entry_date"] = entry_date
     state = {"open": {t["entry_id"]: t}}
     results = {"closed": [], "errors": []}
@@ -613,47 +945,188 @@ def test_stops_reanchored_to_actual_fill_price(frames):
         "filled_at": "2026-11-03T15:30:00Z"}
     runner.process_exits(state, broker, bars,
                          [{"symbol": "AMD", "qty": str(t["qty"])}], results)
-    # stop = 105 - 2.0*2.0 = 101 ; partial = 105 + 2*(105-101) = 113
+    # stop = 105 - 2.0*2.0 = 101
     assert t["entry_fill_px"] == 105.0
     assert t["stop_px"] == 101.0
-    assert t["partial_px"] == 113.0
+    assert "partial_px" not in t                    # S1: no partial target
     assert t["entry_notional"] == t["qty"] * 105.0
     # FIX G: entry date is the FILL date, not the signal date
     assert t["entry_date"] == "2026-11-03"
 
 
-def test_c4_open_notional_reduces_rsi2_slice(_c4_db, frames):
-    # FIX H: C4's open positions draw from the shared 30% bucket, so the
-    # RSI(2) slice must shrink by the C4 notional.
+# ------------------------------------------- round-3: S1, S2, B, C, D, J
+def test_stale_stop_id_is_never_used_after_a_raise(frames):
+    # fix B (stale-id case): after a chandelier raise the ORIGINAL order
+    # id is dead. A later time exit must cancel the NEW id and must
+    # never touch the stale one.
     broker, bars = setup_broker(frames)
-    con = sqlite3.connect(_c4_db)
-    con.execute(
-        "INSERT INTO positions (symbol, signal_date, signal_atr14, "
-        "entry_order_coid, entry_date, entry_price, qty, status, created_ts) "
-        "VALUES ('QQQ','2026-11-01',1.0,'sl_short-QQQ-e-1','2026-11-01',"
-        "100.0,50,'open','2026-11-01T21:00:00Z')")
-    con.commit(); con.close()
+    t = filled_trade(days_ago=5)
+    _register_stop(broker, t)
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    positions = [{"symbol": "AMD", "qty": "50"}]
+    t["stop_px"] = 1.0
+    runner.process_exits(state, broker, bars, positions, results)
+    assert len(broker.replaced) == 1
+    assert t["stop_order_id"] == "ord-rep-1"
+    assert t["stop_client_order_id"] == "rsi2-AMD-20261103-1-stop-r2"
+    # the old order is dead
+    assert broker.orders_by_coid["rsi2-AMD-20261103-1-stop"]["status"] == \
+        "replaced"
+    # now force the 15-day time exit
+    t["entry_date"] = str(bars["AMD"]["date"].iloc[-31])
+    runner.process_exits(state, broker, bars, positions, results)
+    assert broker.canceled == ["ord-rep-1"]      # the NEW id only
+    assert "stop-1" not in broker.canceled       # never the stale id
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1 and sells[0]["type"] == "market"
+    assert t["entry_id"] not in state["open"]
+
+
+def test_replaced_stop_is_terminal_for_cancel(frames):
+    # fix C: a stop that was already 'replaced' needs no cancel at all —
+    # it is handled.
+    broker, bars = setup_broker(frames)
+    t = filled_trade(days_ago=30)
+    _register_stop(broker, t, status="replaced")
+    state = {"open": {t["entry_id"]: t}}
+    results = {"closed": [], "errors": []}
+    runner.process_exits(state, broker, bars,
+                         [{"symbol": "AMD", "qty": "50"}], results)
+    sells = [b for b in broker.submitted if b["side"] == "sell"]
+    assert len(sells) == 1
+    assert t["entry_id"] not in state["open"]
+
+
+def test_run_never_sends_oco_partial_or_class_orders(frames, tmp_path,
+                                                      monkeypatch):
+    # S1: no OCO bracket, no partial half-sell, no order_class — ever.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    broker, bars = setup_broker(frames)
+    monkeypatch.setattr(runner, "AlpacaPaper", lambda *a, **k: broker)
+    runner.run(make_args(execute=False), clock=lambda: NOW)
+    assert broker.submitted
+    for body in broker.submitted:
+        assert "legs" not in body
+        assert "order_class" not in body
+        assert body["type"] in ("market", "stop")
+        assert body.get("client_order_id", "").startswith("rsi2-")
+        assert "-stop-p" not in body.get("client_order_id", "")
+
+
+def test_sleeve_caps_four_positions_at_25pct_each(frames):
+    # S2: max 4 open positions, each at most 25% of the 15% sleeve; the
+    # 5th candidate is refused and the total never exceeds the sleeve.
+    syms = ("AMD", "NVDA", "TSLA", "META", "INTC")
+    broker, bars = setup_broker(frames, symbols=syms)
     state = {"open": {}}
     results = {"rsi2": [], "errors": []}
     runner.process_entries(state, broker, bars, bars["SPY"], [], [], [],
-                           "20261103", make_args(c4_db=str(_c4_db)),
-                           100_000.0, results)
-    assert len(results["rsi2"]) == 1
-    t = state["open"][results["rsi2"][0]["entry_id"]]
-    # slice = 30k - 5k C4 = 25k ; per-position cap 10% -> 2.5k
-    assert t["entry_notional"] <= 2500 + t["ref_px"]
-    # combined exposure respects the 30% bucket (5k C4 + RSI(2) slice)
-    assert 5000.0 + t["entry_notional"] <= 30_000.0 + t["ref_px"]
+                           "20261103", make_args(symbols=syms),
+                           100_000.0, results, now=NOW)
+    assert len(results["rsi2"]) == 4           # max 4 open positions
+    sleeve = 100_000.0 * 0.15
+    total = 0.0
+    for r in results["rsi2"]:
+        t = state["open"][r["entry_id"]]
+        assert t["entry_notional"] <= sleeve * 0.25 + t["ref_px"]
+        total += t["entry_notional"]
+    assert total <= sleeve + 1e-6              # never more than the sleeve
 
 
-def test_c4_open_notional_read_fail_loudly(_c4_db, frames, monkeypatch):
-    # FIX H + A: a broken C4 positions table aborts sizing (no guessing).
-    con = sqlite3.connect(_c4_db)
-    con.execute("DROP TABLE positions")
-    con.commit(); con.close()
+def test_run_cancels_leftover_rsi2_sell_orders_when_position_gone(
+        frames, tmp_path, monkeypatch):
+    # fix D at run() level: the open-order list reaches process_exits, so
+    # a leftover rsi2 sell order is canceled when the position is gone.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    broker, bars = setup_broker(frames, symbols=("AMD", "NVDA"))
+    t = filled_trade(sym="NVDA", days_ago=3)
+    _register_stop(broker, t, status="canceled")
+    leftover = {"id": "lo-9", "symbol": "NVDA", "side": "sell", "qty": 50,
+                "client_order_id": "rsi2-NVDA-20261103-1-stop-r2"}
+    broker.orders_by_coid[leftover["client_order_id"]] = {
+        "id": "lo-9", "status": "held"}
+    broker.open_orders = [leftover]
+    monkeypatch.setattr(runner, "AlpacaPaper", lambda *a, **k: broker)
+    state = {"open": {t["entry_id"]: t}}
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    runner.run(make_args(symbols=("AMD",), execute=False), clock=lambda: NOW)
+    assert "lo-9" in broker.canceled
+
+
+def test_real_clock_reads_confined_to_clock_helpers():
+    # fix J: a real wall-clock read may only happen in real_clock()
+    # (the default clock) and _log_now() (log timestamps). Every other
+    # function must take the injected clock.
+    import ast
+    tree = ast.parse((HERE / "runner.py").read_text())
+    allowed = {"real_clock", "_log_now"}
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr == "now"
+                    and isinstance(sub.func.value, ast.Name)
+                    and sub.func.value.id == "datetime"
+                    and node.name not in allowed):
+                offenders.append((node.name, sub.lineno))
+    assert offenders == []
+
+
+def test_logic_functions_require_an_injected_clock():
+    import inspect
+    for fn in (runner.ymd_today, runner.last_bar_is_final,
+               runner.process_entries, runner.c4_signaled_today):
+        param = inspect.signature(fn).parameters["now"]
+        assert param.default is inspect.Parameter.empty, fn.__name__
+    daily = inspect.signature(runner.AlpacaPaper.daily_bars).parameters["now"]
+    assert daily.default is inspect.Parameter.empty
+
+
+def test_run_with_injected_clock_never_touches_the_real_clock(
+        frames, tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "swing_events.jsonl")
+    monkeypatch.setattr(runner, "DEFAULT_C4_DB",
+                        make_c4_db(tmp_path / "c4dir" / "live_paper.db"))
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
     broker, bars = setup_broker(frames)
-    with pytest.raises(RuntimeError):
-        runner.process_entries({"open": {}}, broker, bars, bars["SPY"],
-                               [], [], [], "20261103",
-                               make_args(c4_db=str(_c4_db)), 100_000.0,
-                               {"rsi2": [], "errors": []})
+    monkeypatch.setattr(runner, "AlpacaPaper", lambda *a, **k: broker)
+
+    def boom():
+        raise AssertionError("the real clock must not be consulted")
+
+    monkeypatch.setattr(runner, "real_clock", boom)
+    runner.run(make_args(execute=False), clock=lambda: NOW)
+    assert broker.submitted  # the run still worked, on the injected clock
+
+
+def test_s1_partial_and_oco_code_is_gone_from_the_module():
+    import rules
+    import signals
+    src = (HERE / "runner.py").read_text()
+    assert "make_partial_client_order_id" not in src
+    assert "make_oco_stop_client_order_id" not in src
+    assert "partial_px" not in src
+    assert '"order_class"' not in src
+    assert '"legs"' not in src
+    assert not hasattr(rules, "make_partial_client_order_id")
+    assert not hasattr(rules, "make_oco_stop_client_order_id")
+    assert not hasattr(signals, "RSI2_PARTIAL_R")

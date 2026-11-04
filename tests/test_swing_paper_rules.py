@@ -12,11 +12,14 @@ HERE = Path(__file__).resolve().parents[1] / "experiments" / "swing_paper"
 sys.path.insert(0, str(HERE))
 
 from rules import (ALPACA_CLIENT_ORDER_ID_MAX, RSI2,
-                   apply_rsi2_daily_cap, make_client_order_id,
-                   make_labels, make_partial_client_order_id,
-                   make_stop_client_order_id, next_sequence, parse_label,
-                   rsi2_slice_dollars, rsi2_skip_blocked, size_rsi2_position,
-                   symbol_has_open_order, symbol_in_positions)
+                   RSI2_MAX_OPEN_POSITIONS, RSI2_PER_POSITION_CAP_PCT,
+                   RSI2_SLEEVE_PCT, apply_rsi2_daily_cap,
+                   make_client_order_id, make_labels,
+                   make_stop_client_order_id,
+                   make_stop_replace_client_order_id, next_sequence,
+                   parse_label, rsi2_slice_dollars, rsi2_skip_blocked,
+                   size_rsi2_position, symbol_has_open_order,
+                   symbol_in_positions)
 
 
 # ---------------------------------------------------------------- labels
@@ -29,9 +32,25 @@ class TestLabels:
         assert make_stop_client_order_id("rsi2", "AMD", "20261103", 2) == \
             "rsi2-AMD-20261103-2-stop"
 
-    def test_partial_suffix_is_stop_p(self):
-        assert make_partial_client_order_id("rsi2", "AMD", "20261103", 2) == \
-            "rsi2-AMD-20261103-2-stop-p"
+    def test_stop_replace_suffix_is_stop_rN(self):
+        # fix B: every stop raise carries a NEW deterministic client id
+        assert make_stop_replace_client_order_id(
+            "rsi2", "AMD", "20261103", 2, 2) == "rsi2-AMD-20261103-2-stop-r2"
+        assert make_stop_replace_client_order_id(
+            "rsi2", "AMD", "20261103", 2, 17) == "rsi2-AMD-20261103-2-stop-r17"
+
+    def test_stop_replace_generation_must_be_ge_2(self):
+        with pytest.raises(ValueError):
+            make_stop_replace_client_order_id("rsi2", "AMD", "20261103", 2, 1)
+        with pytest.raises(ValueError):
+            make_stop_replace_client_order_id("rsi2", "AMD", "20261103", 2, "2")
+
+    def test_partial_and_oco_labels_are_legacy_only(self):
+        # S1 removed the partial half-sell and every OCO code path: no
+        # maker function exists any more.
+        import rules
+        assert not hasattr(rules, "make_partial_client_order_id")
+        assert not hasattr(rules, "make_oco_stop_client_order_id")
 
     def test_pair(self):
         entry, stop = make_labels(RSI2, "TSLA", "20260105", 2)
@@ -47,7 +66,8 @@ class TestLabels:
             "rsi2-AMD-20261103-1"
 
     def test_length_within_alpaca_limit(self):
-        worst = make_partial_client_order_id("rsi2", "BRK.B", "20261103", 99999)
+        worst = make_stop_replace_client_order_id(
+            "rsi2", "BRK.B", "20261103", 99999, 99)
         assert len(worst) <= ALPACA_CLIENT_ORDER_ID_MAX
 
     @pytest.mark.parametrize("strategy,symbol,ymd,n", [
@@ -67,7 +87,13 @@ class TestLabels:
             "strategy": "rsi2", "symbol": "NVDA", "ymd": "20261103",
             "n": 7, "kind": "entry"}
         assert parse_label("rsi2-NVDA-20261103-7-stop")["kind"] == "stop"
+        # LEGACY labels stay parseable for historical attribution
         assert parse_label("rsi2-NVDA-20261103-7-stop-p")["kind"] == "partial"
+        assert parse_label("rsi2-NVDA-20261103-7-stop-oco")["kind"] == "oco_stop"
+        # fix B: the replace label parses as its own kind
+        assert parse_label("rsi2-NVDA-20261103-7-stop-r2") == {
+            "strategy": "rsi2", "symbol": "NVDA", "ymd": "20261103",
+            "n": 7, "kind": "stop_replace"}
 
     def test_parse_rejects_unknown_strategy(self):
         with pytest.raises(ValueError):
@@ -76,6 +102,14 @@ class TestLabels:
     def test_next_sequence_ignores_stop_and_partial_suffixes(self):
         labels = ["rsi2-AMD-20261103-1", "rsi2-AMD-20261103-1-stop",
                   "rsi2-AMD-20261103-1-stop-p", "rsi2-AMD-20261102-9"]
+        assert next_sequence(labels, "rsi2", "AMD", "20261103") == 2
+
+    def test_next_sequence_ignores_stop_replace_suffixes(self):
+        # fix B: a raised stop carries -stop-r<k>; it must not be read as
+        # a new sequence number.
+        labels = ["rsi2-AMD-20261103-1", "rsi2-AMD-20261103-1-stop",
+                  "rsi2-AMD-20261103-1-stop-r2",
+                  "rsi2-AMD-20261103-1-stop-r17"]
         assert next_sequence(labels, "rsi2", "AMD", "20261103") == 2
 
     def test_next_sequence_deterministic_same_day_rerun(self):
@@ -140,17 +174,17 @@ class TestCaps:
 # ------------------------------------------------------------- sizing
 class TestSizing:
     def test_first_pick_cannot_take_whole_slice(self):
-        # 10% per-position cap: slice $100k, price $10 -> 1000 shares
-        # whole-slice would be 10,000 shares; cap must bite first
+        # S2: 25% per-position cap of the sleeve: sleeve $100k, price $10
+        # -> 2500 shares; the whole sleeve would be 10,000 shares
         qty = size_rsi2_position(10.0, 100_000.0)
-        assert qty == 1000
+        assert qty == 2500
 
     def test_cap_configurable(self):
         assert size_rsi2_position(10.0, 100_000.0, per_position_cap_pct=0.20) == 2000
 
     def test_remaining_slice_bounds(self):
         # open notional eats the slice: $100k slice, $95k open -> $5k left,
-        # per-position cap is $10k -> remaining wins
+        # per-position cap is $25k -> remaining wins
         qty = size_rsi2_position(10.0, 100_000.0, open_notional=95_000.0)
         assert qty == 500
 
@@ -160,3 +194,22 @@ class TestSizing:
 
     def test_slice_dollars(self):
         assert rsi2_slice_dollars(200_000.0, 0.30) == 60_000.0
+
+    def test_s2_sleeve_defaults(self):
+        # S2 (Josh 2026-11-03): fixed 15% sleeve, 4 positions max, each
+        # at most 25% of the sleeve.
+        assert RSI2_SLEEVE_PCT == 0.15
+        assert RSI2_MAX_OPEN_POSITIONS == 4
+        assert RSI2_PER_POSITION_CAP_PCT == 0.25
+        assert rsi2_slice_dollars(100_000.0) == 15_000.0
+
+    def test_four_positions_exactly_fill_the_sleeve(self):
+        # 4 positions x 25% of the sleeve == the whole sleeve
+        sleeve = rsi2_slice_dollars(100_000.0)
+        per_pos = sleeve * RSI2_PER_POSITION_CAP_PCT
+        assert per_pos * 4 == pytest.approx(sleeve)
+
+    def test_sleeve_pct_configurable(self):
+        assert rsi2_slice_dollars(100_000.0, 0.10) == 10_000.0
+        with pytest.raises(ValueError):
+            rsi2_slice_dollars(100_000.0, 1.5)

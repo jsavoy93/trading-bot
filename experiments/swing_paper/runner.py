@@ -10,16 +10,27 @@ SCOPE DECISION (Josh, 2026-11-03): this runner trades RSI(2) ONLY. C4 stays
 on the existing strat023-c4-shadow timer (labels sl_short-..., live_paper.db).
 
 Per-run responsibilities (idempotent; safe to re-run same day):
-  1. EXITS for open RSI(2) trades: chandelier stop updates (never lower),
-     15-trading-day time exit. Closed trades are removed from state so the
-     slice money frees up.
-  2. STOP-AFTER-FILL: sell stops/partials are placed only AFTER a confirmed
-     entry fill; total open sell qty for a symbol never exceeds held qty.
-  3. NEW ENTRIES: skip symbols held in the account, symbols with any
-     open/pending order (any label, including sl_short-*), and symbols C4
-     signaled the same day (best-effort read from live_paper.db). Never
+  1. EXITS for open RSI(2) trades: chandelier stop updates (never lower;
+     each raise is a PATCH with a NEW deterministic client_order_id and
+     the returned order id is stored — fix B), 15-trading-day time exit
+     (cancel-confirmed-then-sell — fix C). Closed trades are removed from
+     state so the sleeve money frees up.
+  2. STOP-AFTER-FILL (S1): exactly ONE GTC stop for the full held qty is
+     placed only AFTER a confirmed entry fill. No partial half-sell, no
+     OCO brackets (removed by Josh decision S1, 2026-11-03).
+  3. NEW ENTRIES (S2): RSI(2) sizes against a FIXED 15% of equity
+     (configurable --sleeve-pct), max 4 open positions, each at most 25%
+     of the sleeve. Independent of C4 holdings. Skips symbols held in the
+     account, symbols with any open/pending order (any label, including
+     sl_short-*), and symbols C4 signaled on the last completed trading
+     day (ref_date comparison — fix K, run order doesn't matter). Never
      trades on an incomplete daily bar. Requires TRADING_BOT_PAPER_ONLY=1
      (same guard as the C4 shadow runner).
+
+Clock injection (fix J): run() takes a single `clock` callable; every
+logic-path read of the wall clock (ymd_today, last_bar_is_final, C4
+ref-date, daily-bars window) flows through it. datetime.now() appears
+only in run()'s default clock and in log_event timestamps (logging only).
 
 Never loops, never installs timers. Run once per day from a human-approved
 schedule. State: logs/state.json (gitignored).
@@ -31,7 +42,8 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -41,8 +53,8 @@ import requests
 
 import signals
 from rules import (RSI2, make_client_order_id, make_labels,
-                   make_oco_stop_client_order_id, make_partial_client_order_id,
-                   next_sequence, rsi2_slice_dollars, rsi2_skip_blocked,
+                   make_stop_replace_client_order_id, next_sequence,
+                   rsi2_slice_dollars, rsi2_skip_blocked,
                    size_rsi2_position, symbol_has_open_order)
 
 HERE = Path(__file__).resolve().parent
@@ -120,8 +132,12 @@ class AlpacaPaper:
             return None
         return r.json()
 
-    def daily_bars(self, symbol: str) -> pd.DataFrame | None:
-        end = datetime.now(timezone.utc)
+    def daily_bars(self, symbol: str, now: datetime) -> pd.DataFrame | None:
+        """Daily bars for `symbol`. `now` is the INJECTED clock (fix J):
+        the request window must never be derived from a hidden real-clock
+        read, otherwise a test (or a backfill) could silently see a
+        different market window than the one the run decided on."""
+        end = now
         start = pd.Timestamp(end) - pd.Timedelta(days=LOOKBACK_DAYS)
         r = self.session.get(
             f"{DATA_URL}/v2/stocks/{symbol}/bars",
@@ -158,12 +174,15 @@ class AlpacaPaper:
             return {"error": r.text}
         return r.json()
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, order_id: str) -> int:
+        """DELETE /v2/orders/{id}. Returns the HTTP status code so callers
+        can treat 404/422 on an already-canceled order as success (fix C).
+        Dry-run returns 204 (as-if canceled)."""
         if self.dry_run:
-            return True
+            return 204
         r = self.session.delete(f"{PAPER_TRADING_URL}/v2/orders/{order_id}",
                                 headers=self._headers(), timeout=15)
-        return r.status_code in (200, 204)
+        return r.status_code
 
 
 # ------------------------------------------------------------- state
@@ -181,25 +200,38 @@ def save_state(state: dict) -> None:
 
 
 def log_event(evt: dict) -> None:
+    """Append one event to the JSONL log. The timestamp comes from the
+    LOGGING clock (`_log_now`), never from a decision clock — log
+    timestamps are not decision inputs (fix J)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    evt = dict(evt)
+    evt.setdefault("ts", _log_now())
     with EVENTS_PATH.open("a") as f:
         f.write(json.dumps(evt, default=str) + "\n")
 
 
 # ------------------------------------------------------------- helpers
-def ymd_today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d")
-
-
-def now_utc() -> datetime:
+def real_clock() -> datetime:
+    """The DEFAULT clock: the real wall clock. It is consulted ONLY when
+    run() is called without an injected clock (fix J)."""
     return datetime.now(timezone.utc)
 
 
-def last_bar_is_final(df_last_date, now: datetime | None = None) -> bool:
+def _log_now() -> datetime:
+    """Wall clock for LOG timestamps only — never a decision input."""
+    return datetime.now(timezone.utc)
+
+
+def ymd_today(now: datetime) -> str:
+    """Today's YYYYMMDD label, derived from the INJECTED clock."""
+    return now.strftime("%Y%m%d")
+
+
+def last_bar_is_final(df_last_date, now: datetime) -> bool:
     """A daily bar is tradeable only when it is final: either it is a
     completed prior day, or it is today AND the clock is past the US
-    regular-session close (>= 21:05 UTC covers EST and DST)."""
-    now = now or now_utc()
+    regular-session close (>= 21:05 UTC covers EST and DST).
+    `now` is the INJECTED clock (fix J)."""
     d = pd.Timestamp(df_last_date).date()
     today = now.date()
     if d < today:
@@ -255,15 +287,34 @@ def _c4_connect(db_path=None):
         raise RuntimeError(f"cannot open C4 shadow DB {path} read-only: {exc!r}")
 
 
-def c4_signaled_today(symbols, db_path=None) -> set:
-    """Set of `symbols` that C4 signaled TODAY, read from the
-    strat023-c4-shadow live_paper.db (labels sl_short-*). Real schema:
-    orders(created_ts, ref_date). FAILS LOUDLY (RuntimeError) when the db
-    is missing or the query fails — never silently 'no C4 signal'."""
+def last_completed_trading_day(now: datetime) -> "datetime.date":
+    """The last completed US regular-session trading day for a run at
+    `now` (fix K): today when the clock is past 21:05 UTC on a weekday,
+    otherwise the most recent weekday strictly before today. Holidays are
+    best-effort (a holiday 'today' simply yields the prior weekday; the
+    C4 ref_date match then finds nothing for that day, which is safe)."""
+    d = now.date()
+    if (now.hour, now.minute) >= (DAILY_BAR_FINAL_UTC_HOUR,
+                                  DAILY_BAR_FINAL_UTC_MINUTE) \
+            and d.weekday() < 5:
+        return d
+    d = d - timedelta(days=1)
+    while d.weekday() >= 5:
+        d = d - timedelta(days=1)
+    return d
+
+
+def c4_signaled_for_ref_date(symbols, ref_date, db_path=None) -> set:
+    """Set of `symbols` that C4 signaled for the given ref_date, read from
+    the strat023-c4-shadow live_paper.db (labels sl_short-*). Real schema:
+    orders(ref_date). Matching on ref_date (NOT created_ts) makes the skip
+    independent of whether RSI(2) ran before or after C4 on the day (fix
+    K). FAILS LOUDLY (RuntimeError) when the db is missing or the query
+    fails — never silently 'no C4 signal'."""
     if not symbols:
         return set()
     out = set()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    ref = str(ref_date)[:10]
     wanted = {str(s).strip().upper() for s in symbols}
     try:
         con = _c4_connect(db_path)
@@ -271,39 +322,23 @@ def c4_signaled_today(symbols, db_path=None) -> set:
         raise
     try:
         rows = con.execute(
-            "SELECT DISTINCT symbol FROM orders WHERE "
-            "substr(created_ts,1,10)=? OR substr(ref_date,1,10)=?",
-            (today, today))
+            "SELECT DISTINCT symbol FROM orders WHERE substr(ref_date,1,10)=?",
+            (ref,))
         out.update(str(r[0]).strip().upper() for r in rows if r[0])
     except Exception as exc:
         raise RuntimeError(
-            f"C4 same-day query failed on {_c4_db_path(db_path)} "
-            f"(expected columns orders.created_ts / orders.ref_date): {exc!r}")
+            f"C4 ref-date query failed on {_c4_db_path(db_path)} "
+            f"(expected column orders.ref_date): {exc!r}")
     finally:
         con.close()
     return out & wanted
 
 
-def c4_open_notional(db_path=None) -> float:
-    """Dollar value of currently-open C4 positions (positions.status='open'),
-    read from the C4 shadow DB. The RSI(2) runner and C4 share the 30%
-    short-term bucket, so C4's open notional must be subtracted before
-    RSI(2) sizing (PR #135 round-2 review, fix H). FAILS LOUDLY."""
-    try:
-        con = _c4_connect(db_path)
-    except RuntimeError:
-        raise
-    try:
-        rows = con.execute(
-            "SELECT COALESCE(qty,0), COALESCE(entry_price,0) FROM positions "
-            "WHERE status='open'")
-        return sum(float(q or 0) * float(p or 0) for q, p in rows)
-    except Exception as exc:
-        raise RuntimeError(
-            f"C4 open-notional query failed on {_c4_db_path(db_path)} "
-            f"(expected positions.qty/entry_price/status): {exc!r}")
-    finally:
-        con.close()
+def c4_signaled_today(symbols, now: datetime, db_path=None) -> set:
+    """C4 symbols signaled on the LAST COMPLETED TRADING DAY relative to
+    the INJECTED clock (fix J + K)."""
+    return c4_signaled_for_ref_date(
+        symbols, last_completed_trading_day(now), db_path)
 
 
 # ------------------------------------------------------- exits (each run)
@@ -344,31 +379,84 @@ def chandelier_stop(df, entry_date, atr14_now: float) -> float | None:
     return max(closes) - signals.RSI2_TRAIL_ATR * float(atr14_now)
 
 
+# Fix C: cancel-then-poll contract. After a cancel request we poll the
+# order status; pending_cancel is treated as "wait and retry". Orders we
+# cannot CONFIRM canceled stay in place (never leave a position naked)
+# and the whole time exit is retried on the next run.
+CANCEL_POLL_ATTEMPTS = 4
+CANCEL_POLL_SLEEP_S = 2.0
+# 'replaced' is terminal too: the order was superseded by a replacement
+# (the stop raise), so there is nothing left to cancel.
+_TERMINAL_FOR_CANCEL = ("canceled", "expired", "filled", "replaced")
+
+
+def _order_status(api, client_order_id):
+    if not client_order_id:
+        return None
+    o = api.get_order_by_client_id(client_order_id)
+    return str(o.get("status")) if o else None
+
+
+def _sleep_s(seconds: float) -> None:  # monkeypatched in tests
+    time.sleep(seconds)
+
+
 def _ensure_canceled(api, order_id, client_order_id=None) -> bool:
-    """Cancel `order_id` and CONFIRM the cancellation (via the order's
-    status when a client_order_id is known). Returns False when the
-    cancel failed or the order is still live afterwards."""
-    if not api.cancel_order(order_id):
+    """Cancel `order_id` and CONFIRM the cancellation (fix C).
+    - already canceled/expired/filled  -> True (nothing to do)
+    - DELETE returns 404/422            -> True ONLY if the order status
+      confirms terminal (an already-canceled order rejecting the cancel
+      is success; anything unverifiable is NOT)
+    - DELETE 200/204                    -> poll until status is terminal;
+      pending_cancel counts as wait. Unconfirmed after the retries ->
+      False (caller must NOT market-sell; the stop stays in place)."""
+    st = _order_status(api, client_order_id)
+    if st in _TERMINAL_FOR_CANCEL:
+        return True
+    code = api.cancel_order(order_id)
+    if code in (404, 422):
+        st = _order_status(api, client_order_id)
+        return st in _TERMINAL_FOR_CANCEL
+    if code not in (200, 204):
         return False
-    if client_order_id:
-        o = api.get_order_by_client_id(client_order_id)
-        if o is not None and str(o.get("status")) not in (
-                "canceled", "expired", "filled"):
-            return False
-    return True
+    for _ in range(CANCEL_POLL_ATTEMPTS):
+        _sleep_s(CANCEL_POLL_SLEEP_S)
+        st = _order_status(api, client_order_id)
+        if st in _TERMINAL_FOR_CANCEL:
+            return True
+    return _order_status(api, client_order_id) in _TERMINAL_FOR_CANCEL
 
 
 def _close_trade(state, entry_id, reason, results):
     state["open"].pop(entry_id, None)
     results["closed"].append({"entry_id": entry_id, "reason": reason})
-    log_event({"ts": now_utc(), "type": "close", "entry_id": entry_id,
+    log_event({"type": "close", "entry_id": entry_id,
                "reason": reason})
 
 
-def process_exits(state, api, bars, positions, results):
-    """For every open RSI(2) trade: drop dead entries, manage stops,
-    apply the 15-day time exit. Per-trade try/except; state saved by
-    caller after each mutation is done at run() level via save hook."""
+def _leftover_rsi2_sell_orders(open_orders, symbol: str) -> list:
+    """Open sell orders for `symbol` placed by THIS runner (rsi2-* labels).
+    Used by fix D: when the position is gone, every leftover rsi2 sell
+    order for the symbol must be canceled so it can never fire naked."""
+    sym = str(symbol).strip().upper()
+    out = []
+    for o in open_orders or []:
+        if not isinstance(o, dict):
+            continue
+        if str(o.get("side", "")) != "sell":
+            continue
+        if str(o.get("symbol", "")).strip().upper() != sym:
+            continue
+        coid = str(o.get("client_order_id") or "")
+        if coid.startswith("rsi2-"):
+            out.append(o)
+    return out
+
+
+def process_exits(state, api, bars, positions, results, open_orders=()):
+    """For every open RSI(2) trade: drop dead entries, manage the single
+    GTC stop, apply the 15-day time exit. Per-trade try/except; state
+    saved by caller after each mutation is done at run() level via save hook."""
     for entry_id in list(state.get("open", {}).keys()):
         try:
             t = state["open"].get(entry_id)
@@ -399,10 +487,8 @@ def process_exits(state, api, bars, positions, results):
                     fill_px = t["entry_fill_px"]
                     atr_sig = float(t.get("atr14") or 0)
                     if fill_px > 0 and atr_sig > 0 and not t.get("stop_order_id"):
-                        init_stop, _ch, partial_px = signals.rsi2_stops(
-                            fill_px, atr_sig)
+                        init_stop, _ch = signals.rsi2_stops(fill_px, atr_sig)
                         t["stop_px"] = round(init_stop, 2)
-                        t["partial_px"] = round(partial_px, 2)
                         t["entry_notional"] = float(t.get("qty", 0)) * fill_px
                     # FIX G: the 15-day time exit counts from the FILL
                     # date, not the signal date.
@@ -413,8 +499,22 @@ def process_exits(state, api, bars, positions, results):
                     continue
 
             # -- FIX D: position gone / stop filled -> close, free slot --
+            # stop_filled is detected via the CURRENT stop client id (a
+            # raised stop has a new id after every PATCH — fix B), and any
+            # leftover rsi2 sell orders for the symbol are canceled.
             if held_qty(positions, sym) <= 0:
                 reason = "position_gone"
+                for o in _leftover_rsi2_sell_orders(open_orders, sym):
+                    if not _ensure_canceled(api, o.get("id"),
+                                            o.get("client_order_id")):
+                        log_event({"type": "exit_error",
+                                   "entry_id": entry_id,
+                                   "error": f"leftover sell cancel "
+                                            f"unconfirmed for {o.get('id')}"})
+                        results["errors"].append(
+                            {"entry_id": entry_id,
+                             "error": "leftover sell cancel unconfirmed: "
+                                      f"{o.get('id')}"})
                 scoid = t.get("stop_client_order_id")
                 if scoid:
                     so = api.get_order_by_client_id(scoid)
@@ -426,28 +526,26 @@ def process_exits(state, api, bars, positions, results):
             # -- time exit: 15 trading days after entry bar --
             days = trading_days_since(df, t["entry_date"])
             if days >= signals.RSI2_TIME_EXIT:
-                # FIX C: confirm every protective sell order is actually
-                # canceled BEFORE the market sell — a failed cancel must
-                # NOT be followed by a market sell (double-order risk).
-                cancels = [
-                    (t.get("stop_order_id"), t.get("stop_client_order_id")),
-                    (t.get("partial_order_id"), t.get("partial_client_order_id")),
-                    (t.get("oco_order_id"), None),
-                ]
-                cancel_ok = True
-                for oid, coid in cancels:
-                    if not oid:
-                        continue
-                    if not _ensure_canceled(api, oid, coid):
-                        cancel_ok = False
-                        log_event({"ts": now_utc(), "type": "exit_error",
-                                   "entry_id": entry_id,
-                                   "error": f"cancel failed for {oid}; "
-                                            f"market sell skipped"})
-                if not cancel_ok:
+                # FIX C: confirm THE stop is actually canceled BEFORE the
+                # market sell; a failed/unconfirmed cancel must NOT be
+                # followed by a market sell (never leave a position naked,
+                # never double-sell). Retry on the next run instead.
+                stop_ok = True
+                if t.get("stop_order_id") and not _ensure_canceled(
+                        api, t["stop_order_id"],
+                        t.get("stop_client_order_id")):
+                    stop_ok = False
+                    log_event({"type": "exit_error",
+                               "entry_id": entry_id,
+                               "error": f"cancel unconfirmed for "
+                                        f"{t.get('stop_order_id')}; "
+                                        f"market sell skipped; stop left "
+                                        f"in place"})
+                if not stop_ok:
                     results["errors"].append(
                         {"entry_id": entry_id,
-                         "error": "time_exit: cancel failed; no sell sent"})
+                         "error": "time_exit: cancel unconfirmed; no sell "
+                                  "sent; stop left in place"})
                     continue
                 sell_qty = int(min(float(t["qty"]), held_qty(positions, sym)))
                 if sell_qty <= 0:
@@ -460,7 +558,7 @@ def process_exits(state, api, bars, positions, results):
                         RSI2, sym, t["date"], t["n"]) + "-timeexit",
                 })
                 if resp.get("error"):
-                    log_event({"ts": now_utc(), "type": "exit_error",
+                    log_event({"type": "exit_error",
                                "entry_id": entry_id, "error": resp["error"]})
                     continue
                 _close_trade(state, entry_id, "time_exit_15d", results)
@@ -473,30 +571,46 @@ def process_exits(state, api, bars, positions, results):
                 cur = float(t.get("stop_px", 0) or 0)
                 if ch is not None and ch > cur + 0.01:
                     new_px = round(ch, 2)
-                    resp = api.replace_order(t["stop_order_id"],
-                                             {"stop_price": new_px})
+                    # FIX B: a stop raise is a PATCH that carries a NEW
+                    # deterministic client_order_id (...-stop-r<k>) and a
+                    # replace returns a NEW order id — store BOTH from the
+                    # response, never keep a stale id.
+                    gen = int(t.get("stop_gen", 1)) + 1
+                    new_coid = make_stop_replace_client_order_id(
+                        RSI2, sym, t["date"], t["n"], gen)
+                    resp = api.replace_order(t["stop_order_id"], {
+                        "stop_price": new_px,
+                        "client_order_id": new_coid})
                     if resp.get("error"):
-                        log_event({"ts": now_utc(), "type": "stop_update_error",
+                        log_event({"type": "stop_update_error",
                                    "entry_id": entry_id, "error": resp["error"]})
+                    elif not resp.get("id"):
+                        log_event({"type": "stop_update_error",
+                                   "entry_id": entry_id,
+                                   "error": "replace returned no order id; "
+                                            "keeping previous id/price"})
                     else:
-                        # FIX B: a replace returns a NEW order id — always
-                        # store the id from the response.
-                        t["stop_order_id"] = (resp.get("id")
-                                              or t["stop_order_id"])
+                        t["stop_order_id"] = resp["id"]
+                        t["stop_client_order_id"] = (
+                            resp.get("client_order_id") or new_coid)
+                        t["stop_gen"] = gen
                         t["stop_px"] = new_px
-                        log_event({"ts": now_utc(), "type": "stop_update",
-                                   "entry_id": entry_id, "new_stop": new_px})
+                        log_event({"type": "stop_update",
+                                   "entry_id": entry_id, "new_stop": new_px,
+                                   "stop_order_id": t["stop_order_id"],
+                                   "stop_client_order_id":
+                                       t["stop_client_order_id"]})
         except Exception as exc:  # never let one symbol kill the run
-            log_event({"ts": now_utc(), "type": "exit_symbol_error",
+            log_event({"type": "exit_symbol_error",
                        "entry_id": entry_id, "error": repr(exc)})
             results["errors"].append({"entry_id": entry_id,
                                       "error": repr(exc)})
 
 
 def place_stops_after_fill(state, api, positions, open_orders, results):
-    """Place the labeled stop (+ partial limit) for trades whose entry is
-    confirmed filled but which have no stop yet. Total open sell qty for a
-    symbol NEVER exceeds held qty."""
+    """S1: place exactly ONE GTC stop for the FULL held qty of trades
+    whose entry is confirmed filled but which have no stop yet. Total
+    open sell qty for a symbol NEVER exceeds held qty."""
     for entry_id in list(state.get("open", {}).keys()):
         try:
             t = state.get("open", {}).get(entry_id)
@@ -509,109 +623,54 @@ def place_stops_after_fill(state, api, positions, open_orders, results):
             if held <= 0:
                 continue  # position gone; exits/next pass will clean up
             already = open_sell_qty(open_orders, sym)
-            room = int(held - already)
-            if room <= 0:
-                continue
-            # FIX E: the whole position is always protected. The
-            # partial-exit half goes out as an OCO bracket (limit target +
-            # stop for the SAME half), and the remainder gets a plain
-            # stop. Total open sell qty (existing + OCO half + stop) never
-            # exceeds held qty.
-            half = int(t["qty"] // 2)
-            partial_qty = min(half, max(0, room // 2))
-            stop_qty = min(int(t["qty"]) - partial_qty, room - partial_qty)
-            if stop_qty <= 0 and partial_qty <= 0:
+            stop_qty = int(min(float(t["qty"]), held - already))
+            if stop_qty <= 0:
                 continue
             stop_coid = make_labels(RSI2, sym, t["date"], t["n"])[1]
-            partial_coid = make_partial_client_order_id(
-                RSI2, sym, t["date"], t["n"])
-            oco_stop_coid = make_oco_stop_client_order_id(
-                RSI2, sym, t["date"], t["n"])
-            stop_resp = None
-            if stop_qty >= 1:
-                stop_resp = api.submit_order({
-                    "symbol": sym, "qty": stop_qty, "side": "sell",
-                    "type": "stop", "stop_price": round(float(t["stop_px"]), 2),
-                    "time_in_force": "gtc",
-                    "client_order_id": stop_coid,
-                })
-                if stop_resp.get("error"):
-                    log_event({"ts": now_utc(), "type": "stop_error",
-                               "entry_id": entry_id,
-                               "error": stop_resp["error"]})
-                    results["errors"].append(
-                        {"entry_id": entry_id,
-                         "error": "stop: " + str(stop_resp["error"])[:200]})
-                    stop_resp = None
-                else:
-                    t["stop_order_id"] = stop_resp.get("id")
-                    t["stop_client_order_id"] = stop_coid
-                    open_orders = list(open_orders) + [
-                        {"symbol": sym, "side": "sell", "qty": stop_qty}]
-                    log_event({"ts": now_utc(), "type": "stop_placed",
-                               "entry_id": entry_id, "symbol": sym,
-                               "qty": stop_qty, "dry_run": api.dry_run})
-            if partial_qty >= 1:
-                # OCO bracket for the partial half: limit target OR stop,
-                # whichever hits first. The half is never left naked.
-                p_resp = api.submit_order({
-                    "symbol": sym, "qty": partial_qty, "side": "sell",
-                    "type": "market", "time_in_force": "gtc",
-                    "order_class": "oco",
-                    "legs": [
-                        {"symbol": sym, "qty": partial_qty, "side": "sell",
-                         "type": "limit",
-                         "limit_price": round(float(t["partial_px"]), 2),
-                         "time_in_force": "gtc",
-                         "client_order_id": partial_coid},
-                        {"symbol": sym, "qty": partial_qty, "side": "sell",
-                         "type": "stop",
-                         "stop_price": round(float(t["stop_px"]), 2),
-                         "time_in_force": "gtc",
-                         "client_order_id": oco_stop_coid},
-                    ],
-                })
-                if p_resp.get("error"):
-                    log_event({"ts": now_utc(), "type": "partial_error",
-                               "entry_id": entry_id,
-                               "error": p_resp["error"]})
-                    results["errors"].append(
-                        {"entry_id": entry_id,
-                         "error": "oco: " + str(p_resp["error"])[:200]})
-                else:
-                    t["oco_order_id"] = p_resp.get("id")
-                    t["partial_client_order_id"] = partial_coid
-                    open_orders.append({"symbol": sym, "side": "sell",
-                                        "qty": partial_qty})
-                    log_event({"ts": now_utc(), "type": "oco_placed",
-                               "entry_id": entry_id, "symbol": sym,
-                               "qty": partial_qty, "dry_run": api.dry_run})
+            stop_resp = api.submit_order({
+                "symbol": sym, "qty": stop_qty, "side": "sell",
+                "type": "stop", "stop_price": round(float(t["stop_px"]), 2),
+                "time_in_force": "gtc",
+                "client_order_id": stop_coid,
+            })
+            if stop_resp.get("error"):
+                log_event({"type": "stop_error",
+                           "entry_id": entry_id,
+                           "error": stop_resp["error"]})
+                results["errors"].append(
+                    {"entry_id": entry_id,
+                     "error": "stop: " + str(stop_resp["error"])[:200]})
+            else:
+                t["stop_order_id"] = stop_resp.get("id")
+                t["stop_client_order_id"] = stop_coid
+                t["stop_gen"] = 1
+                open_orders = list(open_orders) + [
+                    {"symbol": sym, "side": "sell", "qty": stop_qty}]
+                log_event({"type": "stop_placed",
+                           "entry_id": entry_id, "symbol": sym,
+                           "qty": stop_qty, "dry_run": api.dry_run})
             results["stops_placed"].append(
-                {"entry_id": entry_id, "symbol": sym,
-                 "stop_qty": stop_qty, "oco_qty": partial_qty})
+                {"entry_id": entry_id, "symbol": sym, "stop_qty": stop_qty})
         except Exception as exc:
-            log_event({"ts": now_utc(), "type": "stop_symbol_error",
+            log_event({"type": "stop_symbol_error",
                        "entry_id": entry_id, "error": repr(exc)})
             results["errors"].append({"entry_id": entry_id, "error": repr(exc)})
 
 
 # ------------------------------------------------------------- entries
 def process_entries(state, api, bars, spy_bars, positions, open_orders,
-                    existing_labels, ymd, args, portfolio_value, results):
-    slice_dollars = rsi2_slice_dollars(portfolio_value, args.bucket_pct)
-    # FIX H: RSI(2) and C4 share the 30% short-term bucket — subtract the
-    # value of currently-open C4 positions so combined exposure respects
-    # the bucket. Both C4 reads fail loudly (fix A).
+                    existing_labels, ymd, args, portfolio_value, results,
+                    now: datetime):
+    """now (fix J): the injected clock snapshot used for bar-finality
+    checks and the C4 ref-date (last completed trading day)."""
+    slice_dollars = rsi2_slice_dollars(portfolio_value, args.sleeve_pct)
+    # S2 (Josh, 2026-11-03): the sleeve is a FIXED share of equity.
+    # The old subtract-C4 logic was REMOVED — RSI(2) sizing depends only
+    # on its own sleeve and its own open positions.
     c4_db = getattr(args, "c4_db", None)
-    c4_held = c4_open_notional(c4_db)
-    if c4_held > 0:
-        slice_dollars = max(0.0, slice_dollars - c4_held)
-        log_event({"ts": now_utc(), "type": "c4_bucket_usage",
-                   "c4_open_notional": c4_held,
-                   "rsi2_slice_after": slice_dollars})
-    c4_today = c4_signaled_today(args.symbols, db_path=c4_db)
+    c4_today = c4_signaled_today(args.symbols, db_path=c4_db, now=now)
     if c4_today:
-        log_event({"ts": now_utc(), "type": "c4_same_day_skip",
+        log_event({"type": "c4_same_day_skip",
                    "symbols": sorted(c4_today)})
 
     candidates = []
@@ -621,26 +680,27 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
             if df is None or len(df) == 0:
                 continue
             if rsi2_skip_blocked(positions, open_orders, sym, c4_today):
-                log_event({"ts": now_utc(), "type": "skip", "strategy": RSI2,
+                log_event({"type": "skip", "strategy": RSI2,
                            "symbol": sym, "reason": "held_or_pending_or_c4"})
                 continue
-            if not last_bar_is_final(df["date"].iloc[-1]):
-                log_event({"ts": now_utc(), "type": "skip", "strategy": RSI2,
+            if not last_bar_is_final(df["date"].iloc[-1], now=now):
+                log_event({"type": "skip", "strategy": RSI2,
                            "symbol": sym, "reason": "daily_bar_not_final"})
                 continue
-            if spy_bars is None or not last_bar_is_final(spy_bars["date"].iloc[-1]):
+            if spy_bars is None or not last_bar_is_final(
+                    spy_bars["date"].iloc[-1], now=now):
                 continue
             if signals.rsi2_entry_signal(df, spy_bars):
                 candidates.append({"symbol": sym,
                                    "rsi2": float(df["rsi2"].iloc[-1])})
         except Exception as exc:
-            log_event({"ts": now_utc(), "type": "entry_symbol_error",
+            log_event({"type": "entry_symbol_error",
                        "symbol": sym, "error": repr(exc)})
             results["errors"].append({"symbol": sym, "error": repr(exc)})
 
     room = args.max_open - open_rsi2_count(state)
     if room <= 0:
-        log_event({"ts": now_utc(), "type": "skip", "reason": "max_open_reached"})
+        log_event({"type": "skip", "reason": "max_open_reached"})
         return
     cap = min(args.rsi2_cap, room)
     from rules import apply_rsi2_daily_cap
@@ -659,7 +719,7 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
                 open_positions=open_rsi2_count(state),
                 max_open_positions=args.max_open)
             if qty <= 0:
-                log_event({"ts": now_utc(), "type": "skip", "strategy": RSI2,
+                log_event({"type": "skip", "strategy": RSI2,
                            "symbol": sym, "reason": "slice_or_cap_exhausted"})
                 continue
             # idempotency re-check: symbol may have gained a pending order
@@ -669,7 +729,7 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
                 continue
             n = next_sequence(existing_labels, RSI2, sym, ymd)
             entry_id = make_client_order_id(RSI2, sym, ymd, n)
-            init_stop, _chand, partial_px = signals.rsi2_stops(
+            init_stop, _chand = signals.rsi2_stops(
                 px, float(df["atr14"].iloc[last]))
             resp = api.submit_order({
                 "symbol": sym, "qty": qty, "side": "buy", "type": "market",
@@ -678,7 +738,7 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
             existing_labels.append(entry_id)
             if resp.get("error"):
                 # order failed: record NOTHING in state, log the failure
-                log_event({"ts": now_utc(), "type": "buy_error",
+                log_event({"type": "buy_error",
                            "strategy": RSI2, "symbol": sym,
                            "client_order_id": entry_id,
                            "error": str(resp["error"])[:300]})
@@ -691,7 +751,6 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
                 "date": ymd, "ref_px": px,
                 "entry_notional": qty * px,
                 "stop_px": round(init_stop, 2),
-                "partial_px": round(partial_px, 2),
                 "entry_id": entry_id,
                 "entry_order_id": resp.get("id"),
                 "entry_filled": False,
@@ -702,9 +761,8 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
             state["open"][entry_id] = t
             results["rsi2"].append({"symbol": sym, "qty": qty,
                                     "rsi2": cand["rsi2"], "entry_id": entry_id,
-                                    "stop_px": t["stop_px"],
-                                    "partial_px": t["partial_px"]})
-            log_event({"ts": now_utc(), "type": "buy", "strategy": RSI2,
+                                    "stop_px": t["stop_px"]})
+            log_event({"type": "buy", "strategy": RSI2,
                        "symbol": sym, "qty": qty, "client_order_id": entry_id,
                        "rsi2": cand["rsi2"], "dry_run": api.dry_run})
             # persist immediately: one bad symbol must not lose earlier orders
@@ -714,13 +772,21 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
                 {"symbol": sym, "side": "buy", "qty": qty,
                  "client_order_id": entry_id}]
         except Exception as exc:
-            log_event({"ts": now_utc(), "type": "entry_symbol_error",
+            log_event({"type": "entry_symbol_error",
                        "symbol": cand.get("symbol"), "error": repr(exc)})
             results["errors"].append({"symbol": cand.get("symbol"),
                                       "error": repr(exc)})
 
 
-def run(args):
+def run(args, clock=None):
+    """One bounded daily run.
+
+    `clock` is a callable returning the current UTC datetime (fix J).
+    It is the SINGLE source of "now" for every logic decision:
+    ymd_today, last_bar_is_final, the C4 same-day ref-date check and the
+    daily-bars request window. The default clock reads the real wall
+    clock; tests inject a fixed clock. datetime.now() is otherwise used
+    only for log-event timestamps (logging, never a decision input)."""
     if KILL_SWITCH.exists():
         fail("kill switch present — halting", code=3)
     if args.execute and os.environ.get("TRADING_BOT_PAPER_ONLY") != "1":
@@ -729,35 +795,42 @@ def run(args):
     key, sec = load_credentials()
     api = AlpacaPaper(key, sec, dry_run=not args.execute)
 
+    # fix J: ONE injected clock drives every time-dependent decision.
+    now = (clock or real_clock)()
+
     state = load_state()
     acct = api.get_account()
     portfolio_value = float(acct["portfolio_value"])
     positions = api.get_positions()
     open_orders = api.get_orders(status="open")
     existing_labels = all_client_order_ids(api)
-    ymd = ymd_today()
+    ymd = ymd_today(now)
 
     bars = {}
     for sym in set(args.symbols) | {t["symbol"] for t in state["open"].values()} | {"SPY"}:
         try:
-            b = api.daily_bars(sym)
+            b = api.daily_bars(sym, now=now)
             if b is not None:
                 bars[sym] = signals.add_indicators(b)
         except Exception as exc:
-            log_event({"ts": now_utc(), "type": "bars_error", "symbol": sym,
+            log_event({"type": "bars_error", "symbol": sym,
                        "error": repr(exc)})
 
     results = {"rsi2": [], "stops_placed": [], "closed": [], "errors": [],
                "dry_run": api.dry_run}
 
-    process_exits(state, api, bars, positions, results)
+    # fix D: the open-order list is needed to cancel leftover rsi2 sell
+    # orders when a position is gone.
+    process_exits(state, api, bars, positions, results,
+                  open_orders=open_orders)
     if not api.dry_run:
         save_state(state)
     place_stops_after_fill(state, api, positions, open_orders, results)
     if not api.dry_run:
         save_state(state)
     process_entries(state, api, bars, bars.get("SPY"), positions, open_orders,
-                    existing_labels, ymd, args, portfolio_value, results)
+                    existing_labels, ymd, args, portfolio_value, results,
+                    now=now)
     # entries fill later intraday; stops are placed on the NEXT run after
     # the fill is confirmed (stop-after-fill contract, spec item 4)
 
@@ -774,20 +847,20 @@ def main(argv=None):
     p.add_argument("--execute", action="store_true",
                    help="actually submit PAPER orders (default: dry-run; "
                         "dry-run persists nothing to state.json)")
-    p.add_argument("--bucket-pct", type=float, default=0.30,
-                   help="short-term bucket share of portfolio (default 0.30)")
+    p.add_argument("--sleeve-pct", type=float, default=0.15,
+                   help="RSI(2) sleeve as a fixed share of portfolio equity "
+                   "(S2, default 0.15; independent of C4 holdings)")
     p.add_argument("--rsi2-cap", type=int, default=4,
                    help="max RSI(2) new buys per day (default 4)")
     p.add_argument("--max-open", type=int, default=4,
                    help="max open RSI(2) positions (default 4)")
-    p.add_argument("--per-position-cap", type=float, default=0.10,
-                   help="per-position cap as a share of the slice budget "
-                        "(default 0.10)")
+    p.add_argument("--per-position-cap", type=float, default=0.25,
+                   help="per-position cap as a share of the RSI(2) sleeve "
+                   "(S2, default 0.25 — 4 positions exactly fill the sleeve)")
     p.add_argument("--c4-db", default=None,
                    help="path to the C4 shadow live_paper.db used for the "
-                        "same-day skip and the 30% bucket overlap "
-                        "(default /root/strat-swing/experiments/"
-                        "strat_023/live_paper.db; fails loudly if missing)")
+                   "ref-date skip (default /root/strat-swing/experiments/"
+                   "strat_023/live_paper.db; fails loudly if missing)")
     args = p.parse_args(argv)
     run(args)
 

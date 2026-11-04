@@ -5,8 +5,10 @@ The runner (runner.py) injects Alpaca paper fetchers/submitters; this module
 decides labels, overlap/skip rules, daily caps, and budget sizing.
 
 Strategy token:
-  rsi2 — STRAT-026 rsi2_regime (RSI(2)<10, SPY>SMA200 regime, 2R partial,
-         chandelier trail, 15-day time exit)
+  rsi2 — STRAT-026 rsi2_regime (RSI(2)<10, SPY>SMA200 regime, ONE GTC stop
+         for the full held qty, chandelier trail, 15-day time exit.
+         S1, Josh 2026-11-03: the +2R partial half-sell was REMOVED and
+         every OCO code path was deleted.)
 
 SCOPE DECISION (Josh, 2026-11-03): this runner trades RSI(2) ONLY. C4 order
 placement was removed from this runner; C4 continues on the existing
@@ -17,6 +19,8 @@ BUY/entry threshold.
 """
 from __future__ import annotations
 
+import re
+
 # --- strategy tokens -------------------------------------------------------
 STRATEGY_TOKENS = ("rsi2",)
 RSI2 = "rsi2"
@@ -24,13 +28,21 @@ RSI2 = "rsi2"
 # --- label format ----------------------------------------------------------
 # <strategy>-<SYMBOL>-<YYYYMMDD>-<n>         e.g. rsi2-AMD-20261103-1
 # stop orders:   same prefix plus -stop      e.g. rsi2-AMD-20261103-1-stop
-# partial exits: stop label plus -p          e.g. rsi2-AMD-20261103-1-stop-p
+# stop replaces: stop label plus -r<k>       e.g. rsi2-AMD-20261103-1-stop-r2
+# LEGACY (round-2 and earlier, parsed for attribution only, never created):
+#   partial exits -stop-p and OCO stop legs -stop-oco.
 # Alpaca client_order_id limit is 48 chars. The longest shape is
-# 4(token)+1+8(symbol)+1+8(date)+1+5(seq)+7(-stop-p) = 35 chars.
+# 4(token)+1+8(symbol)+1+8(date)+1+5(seq)+9(-stop-r99) = 37 chars.
 ALPACA_CLIENT_ORDER_ID_MAX = 48
 STOP_SUFFIX = "-stop"
-PARTIAL_SUFFIX = "-p"
-OCO_STOP_SUFFIX = "-oco"  # stop leg inside the partial-half OCO bracket
+PARTIAL_SUFFIX = "-p"      # LEGACY: parsed only, never created
+OCO_STOP_SUFFIX = "-oco"   # LEGACY: parsed only, never created
+
+
+def _stop_replace_suffix(gen: int) -> str:
+    if not (isinstance(gen, int) and gen >= 2):
+        raise ValueError(f"replace generation must be an int >= 2, got {gen!r}")
+    return f"-r{gen}"
 
 
 def _valid_ymd(ymd: str) -> str:
@@ -61,17 +73,14 @@ def make_stop_client_order_id(strategy: str, symbol: str, ymd: str, n: int) -> s
     return coid
 
 
-def make_partial_client_order_id(strategy: str, symbol: str, ymd: str, n: int) -> str:
-    """Partial-exit limit label: stop label + '-p' (frozen shape: '-stop-p')."""
-    coid = make_stop_client_order_id(strategy, symbol, ymd, n) + PARTIAL_SUFFIX
-    _check_length(coid)
-    return coid
-
-
-def make_oco_stop_client_order_id(strategy: str, symbol: str, ymd: str,
-                                  n: int) -> str:
-    """Stop leg of the partial-half OCO bracket: stop label + '-oco'."""
-    coid = make_stop_client_order_id(strategy, symbol, ymd, n) + OCO_STOP_SUFFIX
+def make_stop_replace_client_order_id(strategy: str, symbol: str, ymd: str,
+                                      n: int, gen: int) -> str:
+    """Stop-REPLACE label (fix B): stop label + '-r<gen>' (gen >= 2).
+    Every stop-price raise via PATCH /v2/orders/{id} carries a NEW
+    deterministic client_order_id so the replacement is idempotent and
+    auditable; the runner must store the NEW order id and client id."""
+    coid = make_stop_client_order_id(strategy, symbol, ymd, n) \
+        + _stop_replace_suffix(gen)
     _check_length(coid)
     return coid
 
@@ -94,18 +103,17 @@ def next_sequence(existing_labels, strategy: str, symbol: str, ymd: str) -> int:
         s = str(label)
         if s.startswith(prefix):
             tail = s[len(prefix):]
-            for suf in (STOP_SUFFIX + PARTIAL_SUFFIX, STOP_SUFFIX + OCO_STOP_SUFFIX,
-                        STOP_SUFFIX):
-                if tail.endswith(suf):
-                    tail = tail[: -len(suf)]
-            if tail.isdigit():
-                best = max(best, int(tail))
+            m = re.match(r"^(\d+)(?:-stop(?:-p|-oco|-r\d+)?)?$", tail)
+            if m:
+                best = max(best, int(m.group(1)))
     return best + 1
 
 
 def parse_label(label: str) -> dict:
     """Parse a label into {strategy, symbol, ymd, n, kind} where kind is
-    'entry' | 'stop' | 'partial'. Raises ValueError."""
+    'entry' | 'stop' | 'stop_replace' | 'partial' | 'oco_stop'. Raises
+    ValueError. partial/oco_stop are LEGACY kinds (round-2 labels kept
+    parseable so historical order attribution keeps working)."""
     s = str(label)
     kind = "entry"
     if s.endswith(STOP_SUFFIX + PARTIAL_SUFFIX):
@@ -114,9 +122,14 @@ def parse_label(label: str) -> dict:
     elif s.endswith(STOP_SUFFIX + OCO_STOP_SUFFIX):
         s = s[: -len(STOP_SUFFIX + OCO_STOP_SUFFIX)]
         kind = "oco_stop"
-    elif s.endswith(STOP_SUFFIX):
-        s = s[: -len(STOP_SUFFIX)]
-        kind = "stop"
+    else:
+        m = re.search(re.escape(STOP_SUFFIX) + r"-r(\d+)$", s)
+        if m and int(m.group(1)) >= 2:
+            s = s[: m.start()]
+            kind = "stop_replace"
+        elif s.endswith(STOP_SUFFIX):
+            s = s[: -len(STOP_SUFFIX)]
+            kind = "stop"
     parts = s.split("-")
     if len(parts) != 4:
         raise ValueError(f"malformed label: {label!r}")
@@ -210,8 +223,8 @@ def rsi2_skip_blocked(positions, open_orders, symbol: str,
 
 # --- RSI(2) selection caps ---------------------------------------------------
 RSI2_DAILY_CAP = 4
-RSI2_MAX_OPEN_POSITIONS = 4
-RSI2_PER_POSITION_CAP_PCT = 0.10
+# RSI2_MAX_OPEN_POSITIONS / RSI2_PER_POSITION_CAP_PCT live in the
+# budget-sizing section (S2: 4 positions, each <= 25% of the sleeve).
 
 
 def apply_rsi2_daily_cap(candidates, cap: int = RSI2_DAILY_CAP) -> list:
@@ -228,16 +241,22 @@ def apply_rsi2_daily_cap(candidates, cap: int = RSI2_DAILY_CAP) -> list:
 
 
 # --- budget sizing -----------------------------------------------------------
-SHORT_TERM_BUCKET_PCT = 0.30
+# S2 (Josh, 2026-11-03): RSI(2) gets a FIXED 15% of equity (configurable),
+# independent of C4 holdings. Max 4 open positions, each at most 25% of
+# the RSI(2) sleeve. Sizing is against the sleeve minus the strategy's
+# OWN open positions only — no C4 subtraction.
+RSI2_SLEEVE_PCT = 0.15
+RSI2_MAX_OPEN_POSITIONS = 4
+RSI2_PER_POSITION_CAP_PCT = 0.25  # 25% of the RSI(2) sleeve
 
 
 def rsi2_slice_dollars(portfolio_value: float,
-                       bucket_pct: float = SHORT_TERM_BUCKET_PCT) -> float:
+                       sleeve_pct: float = RSI2_SLEEVE_PCT) -> float:
     if portfolio_value < 0:
         raise ValueError("portfolio_value must be >= 0")
-    if not (0.0 <= bucket_pct <= 1.0):
-        raise ValueError("bucket_pct must be within [0, 1]")
-    return portfolio_value * bucket_pct
+    if not (0.0 <= sleeve_pct <= 1.0):
+        raise ValueError("sleeve_pct must be within [0, 1]")
+    return portfolio_value * sleeve_pct
 
 
 def size_rsi2_position(price: float, slice_dollars: float,
@@ -248,10 +267,10 @@ def size_rsi2_position(price: float, slice_dollars: float,
                        max_open_positions: int = RSI2_MAX_OPEN_POSITIONS) -> int:
     """Whole-share qty for ONE new RSI(2) position.
 
-    Each position is capped at `per_position_cap_pct` (default 10%) of the
-    slice-scale budget, so the first pick can never take the whole slice.
-    Remaining slice (slice - open - pending notional) is the other cap.
-    Returns 0 when max_open_positions is already reached.
+    Each position is capped at `per_position_cap_pct` (default 25%) of the
+    RSI(2) sleeve, so four positions exactly fill the sleeve. Remaining
+    sleeve (sleeve - open - pending notional, RSI(2)'s OWN positions
+    only) is the other cap. Returns 0 at max_open_positions.
     """
     if price <= 0:
         raise ValueError("price must be > 0")

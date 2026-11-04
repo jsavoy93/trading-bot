@@ -7,8 +7,9 @@ Re-implements the exact entry predicates from the frozen research records:
       time exit 10 trading days.
   RSI(2) (STRAT-026 S1a rsi2_regime): RSI(2) < 10 AND vol20 >= 1M AND
       close >= 5 AND SPY close > SPY SMA200 (regime). Initial stop
-      entry - 2.0*ATR14(t); chandelier 3.0*ATR14(t); 50% partial at +2R;
-      time exit 15 trading days.
+      entry - 2.0*ATR14(t); chandelier 3.0*ATR14(t); time exit 15 trading
+      days. (S1, Josh 2026-11-03: the +2R partial half-sell was REMOVED;
+      one GTC stop covers the whole position.)
 
 NO threshold in this module may be relaxed.
 """
@@ -28,7 +29,6 @@ C4_MIN_CLOSE = 5.0
 RSI2_ENTRY_RSI = 10
 RSI2_INIT_STOP_ATR = 2.0
 RSI2_TRAIL_ATR = 3.0
-RSI2_PARTIAL_R = 2.0
 RSI2_TIME_EXIT = 15
 RSI2_MIN_VOL20 = 1_000_000
 RSI2_MIN_CLOSE = 5.0
@@ -119,15 +119,14 @@ def c4_stop_price(entry_px: float, atr14_signal_day: float) -> float:
     return float(entry_px) - C4_ATR_STOP_MULT * float(atr14_signal_day)
 
 
-def rsi2_stops(entry_px: float, atr14_signal_day: float) -> tuple[float, float, float]:
-    """RSI(2) stops (frozen): returns
-    (initial_stop, chandelier_first_stop_anchor, partial_price)
+def rsi2_stops(entry_px: float, atr14_signal_day: float) -> tuple[float, float]:
+    """RSI(2) stops (frozen; S1 removed the +2R partial target): returns
+    (initial_stop, chandelier_first_stop_anchor)
       initial_stop  = entry - 2.0*ATR14(t)
       chandelier    = max(close since entry) - 3.0*ATR14(t); at entry day the
                       anchor IS the entry-day close, so the first-day
                       trailing anchor is entry_px itself
-      partial_price = entry + 2R where R = 2.0*ATR14(t)
     """
     risk = RSI2_INIT_STOP_ATR * float(atr14_signal_day)
-    return (float(entry_px) - risk, float(entry_px) - RSI2_TRAIL_ATR * float(atr14_signal_day),
-            float(entry_px) + RSI2_PARTIAL_R * risk)
+    return (float(entry_px) - risk,
+            float(entry_px) - RSI2_TRAIL_ATR * float(atr14_signal_day))

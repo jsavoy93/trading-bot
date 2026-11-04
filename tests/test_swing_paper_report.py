@@ -241,3 +241,102 @@ def test_open_pnl_uses_labeled_qty_not_whole_account(monkeypatch):
     assert open_pos[0]["qty"] == 60          # labeled qty, not 100
     assert open_pos[0]["avg_entry"] == 50.0  # labeled avg, not 58
     assert rep["unrealized"]["rsi2"] == 60 * (60.0 - 50.0)
+
+
+# ------------------------------------------- round-3 fix I (nested=false,
+# page_token, equal-timestamp de-dup)
+def test_closed_orders_fetched_with_nested_false(monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    seen = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        seen.append(dict(params or {}))
+        return FakeResp([])
+
+    monkeypatch.setattr(report_pnl.requests, "get", fake_get)
+    report_pnl.fetch_all_orders(None)
+    assert seen
+    p = seen[0]
+    assert p["nested"] == "false"        # no nested leg objects needed
+    assert p["status"] == "closed"
+    assert p["direction"] == "asc"
+    assert p["limit"] == report_pnl.PAGE
+    assert "after" not in p
+
+
+def test_orders_with_equal_timestamps_are_deduped_by_id(monkeypatch):
+    # fix I: the API window is '>=' — a page may repeat orders that share
+    # the boundary timestamp. They must be de-duplicated by id, never
+    # counted twice.
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    calls = []
+    ts = "2026-11-03T15:00:00Z"
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(dict(params or {}))
+        if len(calls) == 1:
+            page = [{"id": f"o{i}", "submitted_at": ts, "created_at": ts}
+                    for i in range(report_pnl.PAGE)]
+        else:
+            # the server re-serves the boundary orders (>= semantics)
+            page = [{"id": f"o{i}", "submitted_at": ts, "created_at": ts}
+                    for i in range(report_pnl.PAGE - 3, report_pnl.PAGE)]
+        return FakeResp(page)
+
+    monkeypatch.setattr(report_pnl.requests, "get", fake_get)
+    out = report_pnl.fetch_all_orders(None)
+    ids = [o["id"] for o in out]
+    assert len(ids) == len(set(ids)) == report_pnl.PAGE
+    assert calls[1]["after"] == ts          # window advanced by full ts
+
+
+def test_activities_paginate_with_page_token(monkeypatch):
+    # fix I: the activities feed paginates with direction=asc and
+    # page_token (id of the last activity of the previous page);
+    # `after` only bounds the first request.
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(dict(params or {}))
+        if len(calls) == 1:
+            page = [{"id": f"a{i}", "activity_type": "FILL",
+                     "transaction_time": "2026-11-03T15:00:00Z"}
+                    for i in range(100)]
+        else:
+            # the boundary activity is re-served with an equal timestamp
+            page = [{"id": "a99", "activity_type": "FILL",
+                     "transaction_time": "2026-11-03T15:00:00Z"},
+                    {"id": "a100", "activity_type": "FILL",
+                     "transaction_time": "2026-11-03T15:00:00Z"}]
+        return FakeResp(page)
+
+    monkeypatch.setattr(report_pnl.requests, "get", fake_get)
+    out = report_pnl.fetch_fill_activities("2026-11-01T00:00:00Z")
+    ids = [a["id"] for a in out]
+    assert len(ids) == len(set(ids)) == 101
+    assert calls[0]["direction"] == "asc"
+    assert calls[0]["after"] == "2026-11-01T00:00:00Z"
+    assert "page_token" not in calls[0]
+    assert calls[1]["page_token"] == "a99"   # id of the last activity
+    assert "after" not in calls[1]
+
+
+def test_activities_pagination_terminates_without_infinite_loop(monkeypatch):
+    monkeypatch.setenv("ALPACA_API_KEY", "PKTEST")
+    monkeypatch.setenv("ALPACA_API_SECRET", "SECTEST")
+    calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(1)
+        # always a full page whose last id repeats -> cannot advance
+        return FakeResp([{"id": "same", "activity_type": "FILL"}
+                         for _ in range(100)])
+
+    monkeypatch.setattr(report_pnl.requests, "get", fake_get)
+    out = report_pnl.fetch_fill_activities(None)
+    assert len(calls) <= 2
+    assert len(out) == 1
