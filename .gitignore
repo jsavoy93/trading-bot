@@ -164,3 +164,5 @@ experiments/strat_026/data
 experiments/strat_026/results/*.csv
 experiments/strat_026/__pycache__/
 experiments/strat_026/_run_*.log
+experiments/swing_paper/logs/
+experiments/swing_paper/KILL_SWITCH
