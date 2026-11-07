@@ -1,0 +1,99 @@
+{
+  "validation_run_at": "2026-10-19T11:09:44.880974+00:00",
+  "validation_version": "STRAT-020 REMEDIATION v4 (2026-10-19; actual-bar lookup + share-class continuity + authoritative baseline)",
+  "n_recovery_rows": 19277,
+  "identity_recovery_total": 12417,
+  "formation_price_valid_total": 12342,
+  "high_without_exact_formation_session": 75,
+  "newly_recovered_total": 1102,
+  "newly_recovered_formation_price_valid": 10,
+  "newly_recovered_without_formation_price": 1092,
+  "unverified_total": 2100,
+  "rejected_total": 704,
+  "ambiguous_total": 21,
+  "not_in_data001_total": 4035,
+  "verified_same_security": 14362,
+  "unverified_continuity": 688,
+  "verified_conflicting_security": 37,
+  "ambiguous_identity": 21,
+  "checks": {
+    "1. No duplicate (formation_year, cik) mappings": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "n_rows=19277, unique_keys=19277, dup_keys=0"
+    },
+    "2. No share-class cross-match": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "high_rows=12417, security_conflict_violations=0"
+    },
+    "3. No ticker-reuse silently accepted": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "reused_rows=704, high_or_low_confidence=0"
+    },
+    "4. No ambiguous mappings silently accepted": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "ambiguous_rows=21, bad_confidence_or_unique=0"
+    },
+    "5a. TIER 1: identity validity (HIGH rows have valid identity fields)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "high_rows=12417, original_ticker_invalid=0, unique_cik_alias_invalid=0 (no_matched=0, empty_pit=0), total_invalid=0"
+    },
+    "5b. TIER 2: bar availability (HIGH rows have bar_exists=True)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "high_rows=12417, with_bars=12417, no_bars=0"
+    },
+    "5c. TIER 3: stale prior-session availability (descriptive 7-day window)": {
+      "status": "PASS",
+      "severity": "LIMITATION",
+      "detail": "high_rows=12417, exact_formation_session=12342, stale_prior_session=0 (LIMITATION: descriptive; does NOT establish eligibility)"
+    },
+    "5d. TIER 4: eligibility consistency (no AMBIGUOUS in formation_price_eligible)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "total_formation_price_eligible=12342, high_total=12417, high_no_exact=75, ambiguous_eligible=0, unverified_eligible=0, rejected_eligible=0 (all must be 0)"
+    },
+    "5e. TIER 5: alias PIT-validity at formation (UNIQUE_CIK_ALIAS HIGH)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "unique_cik_alias_high=16, alias_pit_invalid=0"
+    },
+    "5f. TIER 6: ORIGINAL_TICKER PIT-validity at formation (HIGH)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "original_ticker_high=12401, pit_invalid=0"
+    },
+    "5g. TIER 7: share-class match validity (HIGH rows; v4 security_continuity)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "high_rows=12417, not_verified_same_security=0"
+    },
+    "5h. TIER 8 (v4): exact formation-session bar (HIGH rows have actual_formation_bar_timestamp)": {
+      "status": "FAIL",
+      "severity": "LIMITATION",
+      "detail": "high_rows=12417, no_exact_formation_session=75, no_actual_formation_bar_timestamp=75 (LIMITATION: post-formation IPOs correctly excluded from formation_price_eligible)"
+    },
+    "6. Frozen membership unchanged": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "all years match"
+    },
+    "7. Authoritative source hashes MATCH (vs. independent baseline; v4)": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "all sources MATCH authoritative baseline"
+    },
+    "8. Recovered matches link to existing bars": {
+      "status": "PASS",
+      "severity": "CRITICAL",
+      "detail": "high_confidence_rows=12417, with_zero_bars=0"
+    }
+  },
+  "critical_passed": true,
+  "limitations_present": true,
+  "all_passed": false
+}
