@@ -152,6 +152,35 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
         "daily_loss_limit_pct", 5.0, "float", 0.5, 20.0, 0.5,
         "Max daily loss before stopping.", "Risk & Sizing"
     ),
+    # REBAL-60-30-10 — approved split (Josh, 2026-11-09):
+    # 60% long-term (this bot), 30% short-term (external swing runners
+    # C4 + RSI(2) sharing the same paper account), 10% cash floor.
+    "long_term_budget_pct": StrategySetting(
+        "long_term_budget_pct", 60.0, "float", 0.0, 100.0, 1.0,
+        "Main bot long-term budget as % of account equity (REBAL-60-30-10). "
+        "The bot's own positions may never exceed this budget.",
+        "Allocation Budget",
+    ),
+    "cash_floor_pct": StrategySetting(
+        "cash_floor_pct", 10.0, "float", 0.0, 50.0, 0.5,
+        "Minimum % of account equity kept in cash; main-bot BUYs never "
+        "breach this floor (REBAL-60-30-10).",
+        "Allocation Budget",
+    ),
+    "swing_order_label_prefixes": StrategySetting(
+        "swing_order_label_prefixes", '["sl_short-", "rsi2-"]', "str", None, None, None,
+        "JSON list of client_order_id prefixes that mark orders (and their "
+        "positions) as belonging to the external swing runners. The main "
+        "bot never sells, resizes, or counts these as its own.",
+        "Allocation Budget",
+    ),
+    "swing_runner_db_paths": StrategySetting(
+        "swing_runner_db_paths", "[]", "str", None, None, None,
+        "JSON list of runner SQLite DB paths with a positions(status='open') "
+        "table, used as a secondary swing-position attribution source. "
+        "Opened read-only; empty list disables DB attribution.",
+        "Allocation Budget",
+    ),
 }
 
 
