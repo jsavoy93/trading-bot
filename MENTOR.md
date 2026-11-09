@@ -3928,3 +3928,47 @@ Durable facts from the round-5 fix of the two remaining no-stop gaps:
   `/root/.config/systemd/user/` while the test asserts it is not. It fails
   identically on the unmodified base commit — verify regressions by comparing
   failure SETS, not counts. `flake8`/`pyflakes` are NOT installed on this host.
+
+## PR #139 round 2 — REBAL-60-30-10 tranche/SELL guards (2026-11-09, agent/lt-budget-60-30-10-20261109)
+
+Durable facts from round 2 of PR #139 (the two must-fix blockers):
+
+- **A tranche BUY is a BUY and must obey the SAME money rules as the
+  initial entry.** `_tranche_risk_gate()` now consults
+  `get_allocation_budget_view()` LIVE (not the cached entry-time budget —
+  the account changes between tranche 1 and tranche 3). The tranche is
+  capped by `allocation_policy.cap_quantity_for_cost()` and must satisfy
+  `allocation_policy.buy_respects_cash_floor()`.
+  **FAIL CLOSED:** an unavailable budget view (account read failed) BLOCKS
+  the tranche — a broker order is irreversible, so an unverifiable budget
+  must never authorize a BUY. `max_buy_cost` below one share also blocks.
+- **The SELL path refuses foreign or unproven positions.** The broker
+  reports ONE position per symbol across sleeves (this bot + the external
+  swing runners share the paper account), so `_is_foreign_or_unproven_position(symbol)`
+  gates the SELL: swing-attributed OR absent from this bot's own FILLED
+  ledger rows -> the SELL is REFUSED (fail closed; the bot under-trades
+  instead of selling a position it does not own).
+- **The SELL quantity is capped to the LEDGER-PROVEN own quantity**
+  (`min(broker_qty, own_qty)`), never the raw broker quantity — the
+  broker position may include shares owned by another sleeve.
+- **The main bot must never ADD to a swing-runner symbol** — the guard
+  uses `get_swing_runner_symbols()` (broker order-label prefixes + runner
+  DBs) and now covers BOTH the initial BUY and the continuation/tranche
+  BUY path. A tranche is a continuation BUY, so it obeys the same rule.
+- **Asymmetric fail modes are intentional and must not be "fixed":**
+  - swing ATTRIBUTION READ failure -> FAIL OPEN (the swing-symbol set only
+    degrades to fewer evidence sources, so a failed read must never block a
+    legitimate BUY or tranche);
+  - swing ATTRIBUTION proving ownership is missing -> FAIL CLOSED on the
+    SELL side (sell safety comes from the ledger-proven ownership gate, NOT
+    from the swing-symbol guard).
+- **OBS-001 trace:** `swing_symbol_check` is a BUY-side check inserted
+  between `position_concentration_check` and `allocation_budget_check` in
+  `OBS_001_EXECUTION_CHECK_ORDER`. `OBS_001_SELL_OWNERSHIP_CHECK =
+  "position_ownership_check"` is SELL-only and is deliberately NOT part of
+  the BUY check order (same pattern as `position_existence_check`).
+- **Stub-bot harnesses must implement the new methods.** A `SimpleNamespace`
+  test bot without `get_allocation_budget_view` now fails the tranche gate
+  with "fail-closed" — that is the fail-closed path working, not a bug.
+  When adding tranche/BUY tests, stub BOTH `get_allocation_budget_view`
+  and `get_swing_runner_symbols`.

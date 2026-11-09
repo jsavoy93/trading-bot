@@ -73,6 +73,7 @@ OBS_001_EXECUTION_CHECK_ORDER = (
     "pending_order_check",
     "cooldown_check",
     "position_concentration_check",
+    "swing_symbol_check",
     "allocation_budget_check",
     "sector_concentration_check",
     "correlation_check",
@@ -85,6 +86,14 @@ OBS_001_EXECUTION_CHECK_ORDER = (
 # Documented for snapshot fidelity; it only applies when signal == 'SELL'
 # AND the code reaches the SELL branch.
 OBS_001_SELL_ONLY_CHECK = "position_existence_check"
+
+# REBAL-60-30-10 — SELL-only ownership check. The broker reports ONE
+# position per symbol across sleeves, so a position that cannot be
+# proven to belong to THIS bot (owned by an external swing runner, or
+# without a FILLED row in this bot's own ledger) must never be sold by
+# the main bot. Like OBS_001_SELL_ONLY_CHECK it is recorded in the
+# trace but is NOT part of the BUY check order.
+OBS_001_SELL_OWNERSHIP_CHECK = "position_ownership_check"
 
 # Module-level side-channel trace collector for OBS-001 Phase A.
 # `_obs_001_active_trace` is a list of check records populated by the
@@ -182,6 +191,7 @@ def _obs_001_finalize_attempt(returned: bool) -> List[Dict]:
                 reason = "NOT RUN: cooldown_check applies to BUY only (signal=SELL)"
             elif check_name in (
                 "position_concentration_check",
+                "swing_symbol_check",
                 "allocation_budget_check",
                 "sector_concentration_check",
                 "correlation_check",
@@ -5824,8 +5834,76 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             "SELL-only check: get_open_position(symbol).qty > 0."
                         ),
                     )
+                    # ── REBAL-60-30-10: ownership gate (FAIL CLOSED) ──
+                    # The broker reports ONE position per symbol across
+                    # sleeves: this bot and the external swing runners
+                    # share the same paper account. A position that
+                    # cannot be PROVEN to belong to this bot (attributed
+                    # to a swing runner, or absent from this bot's own
+                    # FILLED ledger rows) must never be sold by it.
+                    #
+                    # Fail closed: if ownership cannot be established,
+                    # the SELL is refused (the bot under-trades instead
+                    # of selling a position it does not own).
+                    if self._is_foreign_or_unproven_position(symbol):
+                        _obs_001_trace_record(
+                            OBS_001_SELL_OWNERSHIP_CHECK,
+                            applied=True,
+                            passed=False,
+                            observed_value=None,
+                            threshold_value=None,
+                            reason=(
+                                f"Cannot SELL {symbol}: position is not "
+                                f"provably owned by this bot (swing-runner "
+                                f"attributed or absent from this bot's own "
+                                f"FILLED ledger rows)"
+                            ),
+                            gap_note=(
+                                "Real check: _is_foreign_or_unproven_position"
+                                "(symbol) - swing-runner attribution (broker "
+                                "order labels + runner DBs) and this bot's own "
+                                "FILLED ledger rows. Unproven ownership fails "
+                                "CLOSED: the SELL is refused."
+                            ),
+                        )
+                        logging.info(
+                            f"🚫 Cannot SELL {symbol}: position is not provably "
+                            f"owned by this bot (swing-owned or unproven) - "
+                            f"refusing to sell"
+                        )
+                        return False
+                    own_qty = float(
+                        self._ledger_own_net_qty().get(str(symbol).upper(), 0.0)
+                    )
+                    # The sellable amount is capped by the LEDGER-PROVEN
+                    # own quantity, never by the raw broker quantity: the
+                    # broker position may include shares owned by another
+                    # sleeve.
+                    max_sellable = int(min(float(position.qty), own_qty))
+                    _obs_001_trace_record(
+                        OBS_001_SELL_OWNERSHIP_CHECK,
+                        applied=True,
+                        passed=True,
+                        observed_value=own_qty,
+                        threshold_value=float(position.qty),
+                        reason=(
+                            f"Ledger-proven own qty {own_qty:g} for {symbol}; "
+                            f"sellable capped to {max_sellable} shares"
+                        ),
+                        gap_note=(
+                            "Real check: _is_foreign_or_unproven_position() "
+                            "passed, and the SELL quantity is capped to the "
+                            "ledger-proven own qty (own_net_qty_from_ledger_"
+                            "rows: FILLED rows only)."
+                        ),
+                    )
+                    if max_sellable <= 0:
+                        logging.info(
+                            f"🚫 Cannot SELL {symbol}: no ledger-proven "
+                            f"sellable quantity (own qty {own_qty:g})"
+                        )
+                        return False
                     # For sells, use actual position quantity (or portion of it)
-                    max_sellable = int(float(position.qty))
                     desired_quantity = int(self.trade_amount / price)
                     # Check if this is a position sell with specific quantity
                     if analysis.get('position_sell_qty'):
@@ -5906,6 +5984,70 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             " in this cycle. CURRENT BEHAVIOR GAP."
                         ),
                     )
+
+                # ── REBAL-60-30-10: swing-runner symbol guard ──
+                # The external swing runners manage their own positions.
+                # The broker reports ONE position per symbol across
+                # sleeves, so a main-bot BUY would silently change the
+                # runner's risk. The main bot must therefore never ADD
+                # to a symbol attributed to a swing runner.
+                #
+                # Attribution evidence failures are FAIL-OPEN here (the
+                # swing-symbol set degrades to fewer sources, never
+                # raises): this guard must not block a legitimate BUY
+                # because an attribution read failed. Sell-side safety
+                # does not depend on it — that is enforced separately by
+                # the ledger-proven ownership gate on the SELL path.
+                swing_symbols = set()
+                _swing_fn = getattr(self, "get_swing_runner_symbols", None)
+                if _swing_fn is not None:
+                    try:
+                        swing_symbols = {
+                            str(s).upper() for s in (_swing_fn() or ())
+                        }
+                    except Exception as e:
+                        logging.warning(
+                            f"⚠️ Swing guard: could not read swing symbols "
+                            f"for {symbol} ({e}) - not blocking the BUY"
+                        )
+                        swing_symbols = set()
+                if str(symbol).upper() in swing_symbols:
+                    _obs_001_trace_record(
+                        "swing_symbol_check",
+                        applied=True,
+                        passed=False,
+                        observed_value=1.0,
+                        threshold_value=0.0,
+                        reason=(
+                            f"{symbol} is attributed to an external swing "
+                            f"runner; the main bot must not add to it"
+                        ),
+                        gap_note=(
+                            "Real check: get_swing_runner_symbols() evidence "
+                            "(broker order labels + runner DBs). Attribution "
+                            "failures degrade to fewer evidence sources."
+                        ),
+                    )
+                    logging.info(
+                        f"🚫 Skipping {symbol}: held by an external swing "
+                        f"runner — the main bot must not add to it"
+                    )
+                    return False
+                _obs_001_trace_record(
+                    "swing_symbol_check",
+                    applied=True,
+                    passed=True,
+                    observed_value=0.0,
+                    threshold_value=0.0,
+                    reason=(
+                        f"{symbol} is not attributed to an external swing "
+                        f"runner"
+                    ),
+                    gap_note=(
+                        "Real check: get_swing_runner_symbols() evidence "
+                        "(broker order labels + runner DBs)."
+                    ),
+                )
 
                 # ── REBAL-60-30-10: allocation budget + cash-floor check ──
                 # ALLOCATION constraint only (where money may go), NOT an
@@ -6463,9 +6605,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
           1. margin      — block all buys when account cash < 0;
           2. open BUY orders for the symbol (duplicate-entry guard);
           3. position concentration (10% cap) — with quantity adjustment;
-          4. sector concentration;
-          5. correlation risk;
-          6. portfolio beta exposure.
+          4. swing-runner symbol guard (REBAL-60-30-10) — the main bot must
+             never ADD to a symbol attributed to an external swing runner
+             (same rule as the initial-BUY path);
+          5. allocation budget + cash floor (REBAL-60-30-10) — the tranche
+             BUY must fit the long-term budget headroom AND leave the cash
+             floor intact; the budget view is consulted live and an
+             unavailable view FAILS CLOSED (the tranche is blocked);
+          6. sector concentration;
+          7. correlation risk;
+          8. portfolio beta exposure.
 
         Deliberate deviations, both documented and fail-safe:
           - NO BUY cooldown: a tranche is a continuation of an entry plan
@@ -6479,6 +6628,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             excluded from the duplicate check: tranche 1 is often still
             NEW/PARTIALLY_FILLED when tranche 2 fires, and treating our own
             order as a duplicate would silently kill position scaling.
+          - The swing-symbol guard is FAIL-OPEN on an attribution READ
+            failure (exactly like the initial-BUY path): attribution
+            evidence only degrades to fewer sources, so a failed read
+            never blocks a legitimate tranche. Sell-side safety does NOT
+            depend on it — that is enforced by the ledger-proven
+            ownership gate on the SELL path.
 
         Returns ``(allowed, adjusted_quantity, reason)``. NEVER raises —
         any unexpected error fails CLOSED (the tranche is blocked), because
@@ -6563,21 +6718,111 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 )
             quantity = min(quantity, adjusted_quantity)
 
-            # 4. sector concentration.
+            # 4. REBAL-60-30-10: swing-runner symbol guard.
+            #
+            # A tranche is a continuation BUY of an entry plan, so it must
+            # obey the SAME rule as the initial BUY: the main bot must
+            # never ADD to a symbol attributed to an external swing
+            # runner (the broker reports ONE position per symbol across
+            # sleeves, so a tranche would silently change the runner's
+            # risk).
+            #
+            # FAIL-OPEN on an attribution READ failure, exactly like the
+            # initial-BUY path: the swing-symbol set only ever degrades
+            # to fewer evidence sources, so a failed read must not block
+            # a legitimate tranche. Sell-side safety does NOT depend on
+            # this guard (the ledger-proven ownership gate on the SELL
+            # path provides that).
+            _swing_fn = getattr(self, "get_swing_runner_symbols", None)
+            if _swing_fn is not None:
+                try:
+                    _swing_symbols = {
+                        str(s).upper() for s in (_swing_fn() or ())
+                    }
+                except Exception as e:
+                    logging.warning(
+                        f"⚠️ Tranche risk gate: could not read swing symbols "
+                        f"for {symbol} ({e}) - not blocking the tranche"
+                    )
+                    _swing_symbols = set()
+                if str(symbol).upper() in _swing_symbols:
+                    return False, 0, (
+                        f"swing-runner guard: {symbol} is attributed to an "
+                        f"external swing runner; the main bot must not add "
+                        f"to it"
+                    )
+
+            # 5. REBAL-60-30-10: allocation budget + cash floor.
+            #
+            # A tranche is a BUY, so it is subject to the SAME money
+            # constraints as the initial entry: the cost must fit the
+            # long-term budget headroom AND leave the cash floor intact.
+            # The budget view is consulted LIVE (not cached from the
+            # initial entry) because the account changes between
+            # tranche 1 and tranche 3.
+            #
+            # FAIL CLOSED: if the budget view is unavailable (account
+            # read failed) the tranche is blocked, exactly like the
+            # initial-BUY path. A broker order is irreversible, so an
+            # unverifiable budget must never authorize a BUY.
+            alloc_view = self.get_allocation_budget_view()
+            if alloc_view is None:
+                return False, 0, (
+                    "allocation budget unverifiable (fail-closed): "
+                    "account read failed"
+                )
+            allowed_cost = float(alloc_view.get("max_buy_cost", 0.0) or 0.0)
+            if allowed_cost < price:
+                return False, 0, (
+                    f"allocation budget: max allowed cost "
+                    f"${allowed_cost:,.2f} < one share (${price:,.2f}) "
+                    f"(budget room ${alloc_view.get('budget_room', 0.0):,.2f}, "
+                    f"cash floor ${alloc_view.get('cash_floor', 0.0):,.2f})"
+                )
+            budget_capped_qty = allocation_policy.cap_quantity_for_cost(
+                quantity, price, allowed_cost
+            )
+            if budget_capped_qty < quantity:
+                logging.info(
+                    f"⚠️ Tranche {symbol}: allocation budget cap "
+                    f"${allowed_cost:,.2f} reduces quantity "
+                    f"{quantity} → {budget_capped_qty}"
+                )
+                quantity = budget_capped_qty
+            if quantity < 1:
+                return False, 0, (
+                    f"allocation budget: quantity reduced to {quantity} "
+                    f"(< 1 share) by the ${allowed_cost:,.2f} cost cap"
+                )
+            # The cash floor is a hard constraint: cash - cost must stay
+            # at or above the floor after the tranche BUY.
+            if not allocation_policy.buy_respects_cash_floor(
+                float(alloc_view.get("cash", 0.0) or 0.0),
+                quantity * price,
+                float(alloc_view.get("equity", 0.0) or 0.0),
+                float(alloc_view.get("cash_floor_pct", 0.0) or 0.0),
+            ):
+                return False, 0, (
+                    "allocation budget: this BUY would break the cash floor "
+                    f"(cash ${alloc_view.get('cash', 0.0):,.2f}, "
+                    f"floor ${alloc_view.get('cash_floor', 0.0):,.2f})"
+                )
+
+            # 6. sector concentration.
             passes_sector, _cur, _proj, sector_reason = (
                 self.check_sector_concentration(symbol, quantity * price)
             )
             if not passes_sector:
                 return False, 0, f"sector: {sector_reason}"
 
-            # 5. correlation risk.
+            # 7. correlation risk.
             passes_corr, _max_corr, _corr_syms, corr_reason = (
                 self.check_correlation_risk(symbol)
             )
             if not passes_corr:
                 return False, 0, f"correlation: {corr_reason}"
 
-            # 6. portfolio beta exposure.
+            # 8. portfolio beta exposure.
             passes_beta, _beta, beta_reason = self.check_beta_exposure()
             if not passes_beta:
                 return False, 0, f"beta: {beta_reason}"

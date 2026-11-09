@@ -237,6 +237,7 @@ class TestSchemaConstants:
             "pending_order_check",
             "cooldown_check",
             "position_concentration_check",
+            "swing_symbol_check",
             "allocation_budget_check",
             "sector_concentration_check",
             "correlation_check",
@@ -1062,9 +1063,10 @@ class TestExecuteTradeTraceCollection:
             f"got {applied_names}"
         )
         not_run = [c for c in checks if not c.get("applied")]
-        assert len(not_run) == 9, (
-            f"expected 9 NOT RUN checks (margin already recorded; "
-            f"REBAL-60-30-10 added allocation_budget_check); "
+        assert len(not_run) == 10, (
+            f"expected 10 NOT RUN checks (margin already recorded; "
+            f"REBAL-60-30-10 added swing_symbol_check and "
+            f"allocation_budget_check); "
             f"got {len(not_run)}"
         )
         for c in not_run:

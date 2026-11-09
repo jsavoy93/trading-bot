@@ -134,6 +134,27 @@ _PASS_CHECKS = dict(
     check_correlation_risk=lambda s: (True, 0.0, [], "ok"),
     check_beta_exposure=lambda: (True, 1.0, "ok"),
     get_portfolio_total_value=lambda: 100000.0,
+    # REBAL-60-30-10: the tranche risk gate now consults the swing-runner
+    # attribution and the allocation-budget view. These stubs describe a
+    # HEALTHY, unrestricted account so the pre-existing tranche tests keep
+    # exercising their original behaviour. The gate's own budget/swing
+    # logic is covered in tests/test_rebal_60_30_10_guards.py.
+    get_swing_runner_symbols=lambda: set(),
+    get_allocation_budget_view=lambda: {
+        "equity": 100000.0,
+        "cash": 100000.0,
+        "budget_pct": 60.0,
+        "cash_floor_pct": 10.0,
+        "long_term_budget": 60000.0,
+        "cash_floor": 10000.0,
+        "long_term_book_mv": 0.0,
+        "own_mv": 0.0,
+        "swing_mv": 0.0,
+        "unattributed_mv": 0.0,
+        "budget_room": 60000.0,
+        "max_buy_cost": 60000.0,
+        "by_symbol": {},
+    },
 )
 
 

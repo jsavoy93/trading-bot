@@ -290,6 +290,10 @@ class TestSmartBotWiring:
         assert "allocation_budget_check" in OBS_001_EXECUTION_CHECK_ORDER
         assert (
             OBS_001_EXECUTION_CHECK_ORDER.index("allocation_budget_check")
+            == OBS_001_EXECUTION_CHECK_ORDER.index("swing_symbol_check") + 1
+        )
+        assert (
+            OBS_001_EXECUTION_CHECK_ORDER.index("swing_symbol_check")
             == OBS_001_EXECUTION_CHECK_ORDER.index("position_concentration_check") + 1
         )
         assert OBS_001_EXECUTION_CHECK_ORDER[-1] == "quantity_post_sizing_check"

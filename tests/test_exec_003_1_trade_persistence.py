@@ -173,6 +173,17 @@ def _bot_with_real_db(db_path: Path, *, pending_order: bool = False, position_qt
             "budget_room": 40_000.0, "max_buy_cost": 40_000.0,
             "by_symbol": {},
         }),
+        # REBAL-60-30-10: the SELL path refuses foreign/unproven
+        # positions and caps the SELL quantity to the ledger-proven own
+        # quantity. The stub bot owns the whole broker position it
+        # reports (no swing-runner attribution).
+        get_swing_runner_symbols=Mock(return_value=set()),
+        _ledger_own_net_qty=Mock(
+            return_value={"AAPL": float(position_qty)} if position_qty else {}
+        ),
+        _is_foreign_or_unproven_position=Mock(
+            side_effect=lambda symbol: not bool(position_qty)
+        ),
         send_trade_notification=Mock(),
         invalidate_sector_cache=Mock(),
         mark_recent_trade=Mock(),
