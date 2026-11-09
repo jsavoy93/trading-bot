@@ -4862,6 +4862,54 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             return True
         return self._ledger_own_net_qty().get(sym, 0.0) <= 0
 
+    def _proven_own_qty(self, symbol: str) -> float:
+        """Ledger-proven own quantity for SYMBOL (0.0 when unprovable).
+
+        Fail-closed: a failed ledger read proves NOTHING, so a caller must
+        refuse to sell rather than guess an order size.
+        """
+        try:
+            return float(
+                self._ledger_own_net_qty().get(str(symbol).upper(), 0.0) or 0.0
+            )
+        except Exception as e:
+            logging.warning(
+                f"⚠️ Allocation: ownership read failed ({e}); "
+                f"no quantity is provably own for {symbol}"
+            )
+            return 0.0
+
+    def _sell_qty_cap(self, symbol: str, broker_qty) -> int:
+        """Max sellable quantity for SYMBOL: min(broker_qty, own_qty).
+
+        The broker position may include shares owned by another sleeve (the
+        swing runners share this same paper account), so the raw broker
+        quantity is NEVER a safe order size on its own. Returns 0 when the
+        ledger-proven own quantity cannot be established — the caller
+        must then REFUSE the SELL (fail closed).
+        """
+        try:
+            broker = int(abs(float(broker_qty)))
+        except (TypeError, ValueError):
+            return 0
+        own = self._proven_own_qty(symbol)
+        if broker <= 0 or own <= 0:
+            return 0
+        return int(min(broker, int(own)))
+
+    def _broker_position_qty(self, symbol: str) -> float:
+        """Broker position quantity for SYMBOL (0.0 when unknown)."""
+        try:
+            for p in self.trading_client.get_all_positions():
+                if p.symbol == symbol:
+                    return float(p.qty)
+        except Exception as e:
+            logging.warning(
+                f"⚠️ Allocation: could not read positions for "
+                f"{symbol}: {e}"
+            )
+        return 0.0
+
     def get_position_ownership(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Classify every broker position: own / swing / unattributed."""
         swing_symbols = self.get_swing_runner_symbols(force_refresh=force_refresh)
@@ -9154,7 +9202,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                 if position_weight > 15 and position['unrealized_plpc'] > 50:
                     # Consider taking partial profits on large winning positions
-                    reduce_qty = int(abs(position['qty']) * 0.25)  # Reduce by 25%
+                    # REBAL-60-30-10: never size the reduction from the raw
+                    # broker quantity - cap it to the ledger-proven own
+                    # quantity (min(broker_qty, own_qty)).
+                    sell_cap = self._sell_qty_cap(
+                        position['symbol'], position['qty']
+                    )
+                    reduce_qty = int(
+                        min(int(abs(position['qty']) * 0.25), sell_cap)
+                    )  # Reduce by 25%, never more than provably own
 
                     if reduce_qty > 0:
                         logging.info(f"🎯 Reducing {position['symbol']} position by {reduce_qty} shares ({position_weight:.1f}% concentration, {position['unrealized_plpc']:.1f}% gain)")
@@ -9198,9 +9254,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         continue
 
                     # Place actual stop-loss order
+                    # REBAL-60-30-10: the stop may cover at most the
+                    # ledger-proven own quantity, never the raw broker
+                    # quantity (the runners share this paper account).
+                    stop_cap = self._sell_qty_cap(
+                        position['symbol'], position['qty']
+                    )
+                    if stop_cap <= 0:
+                        logging.info(
+                            f"🚫 {position['symbol']}: no "
+                            f"ledger-proven own quantity - skipping stop-loss"
+                        )
+                        continue
                     success = self._place_stop_loss_order(
                         position['symbol'],
-                        int(position['qty']),
+                        int(min(int(abs(position['qty'])), stop_cap)),
                         stop_price
                     )
 
@@ -9335,9 +9403,30 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     logging.warning(f"⚠️ {symbol}: No position found")
                     return False
 
-                qty = int(abs(float(position.qty)))
-                if qty <= 0:
+                broker_qty = int(abs(float(position.qty)))
+                if broker_qty <= 0:
                     logging.warning(f"⚠️ {symbol}: No position to set stop-loss on")
+                    return False
+
+                # REBAL-60-30-10: a stop-loss is a SELL - it may never
+                # cover more shares than this bot can prove it owns
+                # (min(broker_qty, own_qty)). Fail closed when ownership
+                # cannot be proven.
+                sell_cap = self._sell_qty_cap(symbol, broker_qty)
+                if sell_cap <= 0:
+                    logging.info(
+                        f"🚫 {symbol}: no ledger-proven own "
+                        f"quantity - refusing to place a stop-loss"
+                    )
+                    return False
+                requested = (
+                    int(quantity) if quantity and int(quantity) > 0 else broker_qty
+                )
+                qty = int(min(broker_qty, sell_cap, requested))
+                if qty <= 0:
+                    logging.warning(
+                        f"⚠️ {symbol}: No sellable quantity to stop out"
+                    )
                     return False
 
                 # Check if shares are available for trading (not held for pending orders)
@@ -9416,6 +9505,32 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """Place a portfolio management order"""
         try:
             order_side = OrderSide.SELL if side.lower() == 'sell' else OrderSide.BUY
+
+            if order_side == OrderSide.SELL:
+                # REBAL-60-30-10: a portfolio SELL may never exceed the
+                # ledger-proven own quantity, and never exceeds the broker
+                # position either. Fail closed when ownership cannot be
+                # proven.
+                own_qty = self._proven_own_qty(symbol)
+                if own_qty <= 0:
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: no ledger-proven own quantity"
+                    )
+                    return False
+                broker_qty = self._broker_position_qty(symbol)
+                if broker_qty <= 0:
+                    # No readable broker position: fall back to the
+                    # requested amount as the broker-side bound.
+                    broker_qty = float(quantity)
+                sell_cap = int(min(int(abs(broker_qty)), int(own_qty)))
+                quantity = int(min(int(quantity), sell_cap))
+                if quantity <= 0:
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: nothing sellable"
+                    )
+                    return False
 
             market_order_data = MarketOrderRequest(
                 symbol=symbol,

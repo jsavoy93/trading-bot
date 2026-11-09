@@ -322,8 +322,48 @@ def test_b2_position_limit_adjustment_reduces_tranche_qty(db):
 # --------------------------------------------------------------------------- #
 
 
+def _seed_own_position(db, symbol, qty):
+    """Prove in the LEDGER that this bot owns QTY shares of SYMBOL.
+
+    REBAL-60-30-10 (R2): a portfolio-management SELL may only dispose of
+    shares the bot can PROVE it owns. Only FILLED rows with a filled_qty
+    count prove ownership (see allocation_policy.own_net_qty_from_ledger_rows),
+    so the ledger-fidelity tests below seed a real FILLED BUY row.
+    """
+    assert db.log_trade(9, {
+        "session_id": 9, "symbol": symbol, "side": "BUY", "qty": qty,
+        "price": 90.0, "pnl": 0.0, "signal": "BUY", "rsi": None,
+        "order_time": "2026-10-28T19:00:00+00:00", "status": "FILLED",
+        "broker_order_id": "own-fill-1", "filled_qty": qty,
+        "notes": "seeded ownership",
+    }), "the seeded ownership row must be persisted"
+
+
+def _bind_ownership(bot, db):
+    """Bind the REAL ownership helpers so the bot proves ownership from its
+    own ledger (and fails closed when it cannot)."""
+    bot.db = db
+    bot._ledger_own_net_qty = (
+        lambda force_refresh=False: SmartTradingBot._ledger_own_net_qty(
+            bot, force_refresh=force_refresh
+        )
+    )
+    bot._proven_own_qty = (
+        lambda symbol: SmartTradingBot._proven_own_qty(bot, symbol)
+    )
+    bot._sell_qty_cap = (
+        lambda symbol, broker_qty: SmartTradingBot._sell_qty_cap(
+            bot, symbol, broker_qty
+        )
+    )
+    bot._broker_position_qty = (
+        lambda symbol: SmartTradingBot._broker_position_qty(bot, symbol)
+    )
+    return bot
+
+
 def _stop_loss_bot(db, client):
-    return SimpleNamespace(
+    bot = SimpleNamespace(
         db=db,
         session_id=9,
         trading_client=client,
@@ -331,6 +371,7 @@ def _stop_loss_bot(db, client):
         has_pending_orders=lambda s: False,
         send_trade_notification=lambda **kw: None,
     )
+    return _bind_ownership(bot, db)
 
 
 def test_c1_stop_loss_order_writes_ledger_row(db):
@@ -338,10 +379,15 @@ def test_c1_stop_loss_order_writes_ledger_row(db):
         positions=[SimpleNamespace(symbol="TEST", qty="10", market_value="900.0")]
     )
     bot = _stop_loss_bot(db, client)
+    # REBAL-60-30-10 (R2): the bot must PROVE it owns the shares before a
+    # stop-loss (a SELL) may cover them.
+    _seed_own_position(db, "TEST", 10)
     ok = SmartTradingBot._place_stop_loss_order(bot, "TEST", 10, 92.0)
     assert ok is True
     assert len(client.submitted) == 1
-    rows = _rows(db, "TEST")
+    # The seeded FILLED BUY row (ownership proof) also lives in `trades`;
+    # the stop-loss must leave a SELL row of its own.
+    rows = [x for x in _rows(db, "TEST") if x["side"] == "SELL"]
     assert len(rows) == 1, "a stop-loss submission MUST leave a ledger row"
     r = rows[0]
     assert r["side"] == "SELL"
@@ -358,11 +404,17 @@ def test_c2_portfolio_order_writes_ledger_row(db):
         trading_client=client,
         send_trade_notification=lambda **kw: None,
     )
+    _bind_ownership(bot, db)
+    # REBAL-60-30-10 (R2): the bot must PROVE it owns the shares before a
+    # portfolio SELL may dispose of them.
+    _seed_own_position(db, "TEST", 4)
     ok = SmartTradingBot._place_portfolio_order(
         bot, "TEST", 4, "sell", "Reduce concentration risk - 12.0% of portfolio"
     )
     assert ok is True
-    rows = _rows(db, "TEST")
+    # The seeded FILLED BUY row (ownership proof) also lives in `trades`;
+    # the portfolio order must leave a SELL row of its own.
+    rows = [x for x in _rows(db, "TEST") if x["side"] == "SELL"]
     assert len(rows) == 1, "a portfolio order MUST leave a ledger row"
     r = rows[0]
     assert r["side"] == "SELL"

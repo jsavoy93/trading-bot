@@ -19,6 +19,10 @@ Scope (PAPER ONLY, no merge/deploy without approval):
        B3. the SELL quantity is capped to the ledger-proven own quantity
            (never the raw broker quantity).
   C. The OBS-001 check order/snapshot reflects the new guards.
+  D. Portfolio-management SELL sizing (R2): the concentration-reduction
+     and stop-loss paths cap the SELL to min(broker_qty, own_qty) using the
+     ledger-proven own quantity, and fail closed when ownership cannot be
+     proven.
 
 Deterministic. Mocked broker responses only — NO Alpaca/network calls and
 no order is ever submitted to a real endpoint.
@@ -388,3 +392,223 @@ class TestInitialBuySwingGuard:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------- #
+# D. Portfolio-management SELL sizing (R2 remediation)
+#
+# R2: the two portfolio-management SELL paths (concentration reduction and
+# stop-loss) sized their orders from the RAW broker quantity. The broker
+# account is shared with the swing runners, so the raw broker quantity can
+# include shares this bot does NOT own -> the bot could sell a foreign
+# position. Both paths must now cap the SELL to min(broker_qty, own_qty)
+# where own_qty is ledger-proven, and FAIL CLOSED when ownership cannot be
+# proven.
+# --------------------------------------------------------------------------- #
+
+
+def _portfolio_bot(*, broker_qty=40.0, own_qty=0.0, swing_symbols=()):
+    """Namespace exercising the REAL portfolio-management SELL paths."""
+    trading_client = Mock()
+    trading_client.get_account.return_value = SimpleNamespace(
+        cash=50_000.0, portfolio_value=100_000.0
+    )
+    trading_client.get_orders.return_value = []
+    trading_client.submit_order.return_value = SimpleNamespace(
+        id="paper-order-1", fill_price=None
+    )
+    trading_client.get_market_data.return_value = None
+    trading_client.get_all_positions.return_value = [
+        SimpleNamespace(
+            symbol="AMD",
+            qty=str(broker_qty),
+            market_value=40_000.0,
+            avg_entry_price=100.0,
+            current_price=100.0,
+        )
+    ]
+
+    bot = SimpleNamespace(
+        trading_client=trading_client,
+        db=Mock(),
+        session_id=7,
+        use_atr_stop_loss=False,
+        stop_loss_pct=10.0,
+        atr_stop_multiplier=2.0,
+        get_allocation_budget_view=Mock(return_value=_budget_view()),
+        get_swing_runner_symbols=Mock(return_value=set(swing_symbols)),
+        _ledger_own_net_qty=Mock(
+            return_value={"AMD": own_qty} if own_qty else {}
+        ),
+        has_active_stop_order=Mock(return_value=False),
+        has_pending_orders=Mock(return_value=False),
+        send_trade_notification=Mock(),
+    )
+    bot.db.is_available.return_value = False
+
+    # Bind the REAL production methods so the test exercises them.
+    for name in (
+        "_is_foreign_or_unproven_position",
+        "_proven_own_qty",
+        "_sell_qty_cap",
+        "_broker_position_qty",
+        "_place_portfolio_order",
+        "_place_stop_loss_order",
+    ):
+        setattr(
+            bot,
+            name,
+            lambda symbol, *a, _n=name, **kw: getattr(
+                SmartTradingBot, _n
+            )(bot, symbol, *a, **kw),
+        )
+    return bot
+
+
+def _portfolio_analysis(*, qty=40.0, market_value=60_000.0, plpc=80.0):
+    return {
+        "positions": [
+            {
+                "symbol": "AMD",
+                "qty": qty,
+                "market_value": market_value,
+                "unrealized_plpc": plpc,
+                "current_price": 100.0,
+            }
+        ],
+        "total_value": 100_000.0,
+        "cash_available": 40_000.0,
+        "concentration_risk": 60.0,
+    }
+
+
+def _submitted_qty(bot):
+    return bot.trading_client.submit_order.call_args.kwargs["order_data"].qty
+
+
+class TestPortfolioManagementSellCap:
+    """R2: portfolio-management SELLs are capped to ledger-proven own qty."""
+
+    # -- concentration reduction ------------------------------------------- #
+
+    def test_d1_concentration_reduction_capped_to_ledger_proven_qty(self):
+        """Broker reports 40 shares, the ledger proves 4 -> reduce by 4.
+
+        Without the cap this would sell int(40 * 0.25) = 10 shares, i.e.
+        6 shares that this bot cannot prove it owns.
+        """
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=4.0)
+        SmartTradingBot.execute_portfolio_actions(
+            bot, _portfolio_analysis(qty=40.0)
+        )
+        bot.trading_client.submit_order.assert_called_once()
+        assert _submitted_qty(bot) == 4, (
+            "the concentration reduction must be capped to the "
+            "ledger-proven own quantity"
+        )
+
+    def test_d2_concentration_reduction_keeps_25pct_rule_when_own_is_enough(self):
+        """When the ledger proves the whole position, the existing 25% rule
+        still governs (no behaviour change for fully-owned positions)."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=40.0)
+        SmartTradingBot.execute_portfolio_actions(
+            bot, _portfolio_analysis(qty=40.0)
+        )
+        bot.trading_client.submit_order.assert_called_once()
+        assert _submitted_qty(bot) == 10  # int(40 * 0.25)
+
+    def test_d3_concentration_reduction_skipped_when_ownership_unproven(self):
+        """No ledger-proven own quantity -> no SELL at all."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=0.0)
+        SmartTradingBot.execute_portfolio_actions(
+            bot, _portfolio_analysis(qty=40.0)
+        )
+        bot.trading_client.submit_order.assert_not_called()
+
+    def test_d4_portfolio_sell_refused_without_ledger_proof(self):
+        """_place_portfolio_order fails closed when ownership is unproven."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=0.0)
+        result = SmartTradingBot._place_portfolio_order(
+            bot, "AMD", 10, "sell", "test"
+        )
+        assert result is False
+        bot.trading_client.submit_order.assert_not_called()
+
+    def test_d5_portfolio_sell_capped_to_ledger_proven_qty(self):
+        """A direct portfolio SELL is capped to min(broker_qty, own_qty)."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=4.0)
+        result = SmartTradingBot._place_portfolio_order(
+            bot, "AMD", 10, "sell", "test"
+        )
+        assert result is True
+        assert _submitted_qty(bot) == 4
+
+    def test_d6_portfolio_sell_never_exceeds_broker_qty(self):
+        """The cap is min(broker_qty, own_qty) — never more than the broker
+        reports, even if the ledger claims more."""
+        bot = _portfolio_bot(broker_qty=5.0, own_qty=25.0)
+        result = SmartTradingBot._place_portfolio_order(
+            bot, "AMD", 10, "sell", "test"
+        )
+        assert result is True
+        assert _submitted_qty(bot) == 5
+
+    # -- stop-loss ---------------------------------------------------------- #
+
+    def test_d7_stop_loss_capped_to_ledger_proven_qty(self):
+        """A stop-loss is a SELL: it may cover at most the proven own qty."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=4.0)
+        result = SmartTradingBot._place_stop_loss_order(bot, "AMD", 40, 90.0)
+        assert result is True
+        bot.trading_client.submit_order.assert_called_once()
+        assert _submitted_qty(bot) == 4
+
+    def test_d8_stop_loss_refused_without_ledger_proof(self):
+        """No ledger-proven own quantity -> refuse to place the stop."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=0.0)
+        result = SmartTradingBot._place_stop_loss_order(bot, "AMD", 40, 90.0)
+        assert result is False
+        bot.trading_client.submit_order.assert_not_called()
+
+    def test_d9_stop_loss_never_exceeds_broker_qty(self):
+        bot = _portfolio_bot(broker_qty=6.0, own_qty=25.0)
+        result = SmartTradingBot._place_stop_loss_order(bot, "AMD", 6, 90.0)
+        assert result is True
+        assert _submitted_qty(bot) == 6
+
+    def test_d10_stop_loss_from_portfolio_actions_capped(self):
+        """End-to-end through execute_portfolio_actions: the stop covers only
+        the ledger-proven quantity."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=4.0)
+        SmartTradingBot.execute_portfolio_actions(
+            bot,
+            _portfolio_analysis(qty=40.0, market_value=60_000.0, plpc=-20.0),
+        )
+        bot.trading_client.submit_order.assert_called_once()
+        assert _submitted_qty(bot) == 4
+
+    def test_d11_stop_loss_from_portfolio_actions_skipped_when_unproven(self):
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=0.0)
+        SmartTradingBot.execute_portfolio_actions(
+            bot,
+            _portfolio_analysis(qty=40.0, market_value=60_000.0, plpc=-20.0),
+        )
+        bot.trading_client.submit_order.assert_not_called()
+
+    # -- helper contract ---------------------------------------------------- #
+
+    def test_d12_sell_qty_cap_is_min_of_broker_and_own(self):
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=4.0)
+        assert bot._sell_qty_cap("AMD", 40) == 4
+        assert bot._sell_qty_cap("AMD", 2) == 2
+
+    def test_d13_sell_qty_cap_is_zero_when_ownership_unproven(self):
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=0.0)
+        assert bot._sell_qty_cap("AMD", 40) == 0
+
+    def test_d14_proven_own_qty_fails_closed_on_ledger_error(self):
+        """A failed ledger read proves nothing -> 0.0 (fail closed)."""
+        bot = _portfolio_bot(broker_qty=40.0, own_qty=4.0)
+        bot._ledger_own_net_qty = Mock(side_effect=RuntimeError("db down"))
+        assert bot._proven_own_qty("AMD") == 0.0
+        assert bot._sell_qty_cap("AMD", 40) == 0
