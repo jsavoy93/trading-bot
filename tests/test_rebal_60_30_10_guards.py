@@ -407,8 +407,15 @@ if __name__ == "__main__":
 # --------------------------------------------------------------------------- #
 
 
-def _portfolio_bot(*, broker_qty=40.0, own_qty=0.0, swing_symbols=()):
-    """Namespace exercising the REAL portfolio-management SELL paths."""
+def _portfolio_bot(*, broker_qty=40.0, own_qty=0.0, swing_symbols=(),
+                    broker_read_raises=False, broker_symbol_absent=False):
+    """Namespace exercising the REAL portfolio-management SELL paths.
+
+    `broker_read_raises` makes the broker position read raise (the broker
+    bound is unavailable). `broker_symbol_absent` makes the broker report
+    positions that do NOT include the symbol under test (also: no broker
+    bound for that symbol).
+    """
     trading_client = Mock()
     trading_client.get_account.return_value = SimpleNamespace(
         cash=50_000.0, portfolio_value=100_000.0
@@ -418,15 +425,30 @@ def _portfolio_bot(*, broker_qty=40.0, own_qty=0.0, swing_symbols=()):
         id="paper-order-1", fill_price=None
     )
     trading_client.get_market_data.return_value = None
-    trading_client.get_all_positions.return_value = [
-        SimpleNamespace(
-            symbol="AMD",
-            qty=str(broker_qty),
-            market_value=40_000.0,
-            avg_entry_price=100.0,
-            current_price=100.0,
+    if broker_read_raises:
+        trading_client.get_all_positions.side_effect = RuntimeError(
+            "alpaca positions read failed"
         )
-    ]
+    elif broker_symbol_absent:
+        trading_client.get_all_positions.return_value = [
+            SimpleNamespace(
+                symbol="MSFT",
+                qty="7",
+                market_value=7_000.0,
+                avg_entry_price=100.0,
+                current_price=100.0,
+            )
+        ]
+    else:
+        trading_client.get_all_positions.return_value = [
+            SimpleNamespace(
+                symbol="AMD",
+                qty=str(broker_qty),
+                market_value=40_000.0,
+                avg_entry_price=100.0,
+                current_price=100.0,
+            )
+        ]
 
     bot = SimpleNamespace(
         trading_client=trading_client,
@@ -612,3 +634,35 @@ class TestPortfolioManagementSellCap:
         bot._ledger_own_net_qty = Mock(side_effect=RuntimeError("db down"))
         assert bot._proven_own_qty("AMD") == 0.0
         assert bot._sell_qty_cap("AMD", 40) == 0
+
+    # -- broker bound unavailable ------------------------------------------- #
+
+    def test_d15_portfolio_sell_refused_when_broker_read_raises(self):
+        """An unreadable broker position is an UNAVAILABLE bound.
+
+        The requested amount is not a broker fact, so it must never be
+        used as the broker-side bound. The SELL is refused and NO order
+        is submitted.
+        """
+        bot = _portfolio_bot(
+            broker_qty=40.0, own_qty=4.0, broker_read_raises=True
+        )
+        result = SmartTradingBot._place_portfolio_order(
+            bot, "AMD", 10, "sell", "test"
+        )
+        assert result is False
+        bot.trading_client.submit_order.assert_not_called()
+
+    def test_d16_portfolio_sell_refused_when_symbol_absent_from_broker(self):
+        """A symbol the broker does not report has no broker-side bound.
+
+        The SELL is refused and NO order is submitted.
+        """
+        bot = _portfolio_bot(
+            broker_qty=40.0, own_qty=4.0, broker_symbol_absent=True
+        )
+        result = SmartTradingBot._place_portfolio_order(
+            bot, "AMD", 10, "sell", "test"
+        )
+        assert result is False
+        bot.trading_client.submit_order.assert_not_called()

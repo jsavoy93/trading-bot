@@ -397,7 +397,14 @@ def test_c1_stop_loss_order_writes_ledger_row(db):
 
 
 def test_c2_portfolio_order_writes_ledger_row(db):
-    client = _RecordingClient()
+    # REBAL-60-30-10 (R2, round-4 fix): a portfolio SELL needs BOTH
+    # bounds - the ledger-proven own qty AND the broker position qty.
+    # An unavailable broker bound now FAILS CLOSED (the order is refused),
+    # so the stub must report the position, exactly as the sibling
+    # stop-loss test does.
+    client = _RecordingClient(
+        positions=[SimpleNamespace(symbol="TEST", qty="10", market_value="900.0")]
+    )
     bot = SimpleNamespace(
         db=db,
         session_id=9,

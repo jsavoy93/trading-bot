@@ -4003,6 +4003,27 @@ An independent review of round 2 returned **BLOCK** on R2. Durable facts:
 - **`_place_portfolio_order()` now returns `False` (no order) when
   ownership is unproven.** It previously submitted whatever quantity it was
   handed. Its only caller is the concentration-reduction path.
+- **An UNAVAILABLE broker bound is NOT a licence to sell (round-4 fix).**
+  The round-3 review of round 3 found `_place_portfolio_order()` still
+  failing OPEN on the broker side: when `_broker_position_qty()` returned
+  `0.0` — because the position read RAISED, or because the symbol was
+  ABSENT from the broker positions — the code substituted the *requested*
+  quantity as the broker bound (`broker_qty = float(quantity)`). That
+  REMOVED the broker bound instead of failing closed, and the order was
+  still submitted. The requested amount is not a broker fact.
+  `_place_portfolio_order()` now refuses the SELL (returns `False`, submits
+  no order) whenever the broker bound is unavailable, and routes the
+  remaining bound through the single `_sell_qty_cap()` helper so one
+  definition governs every caller. `_place_stop_loss_order()` already
+  behaved this way (it refused on a failed broker read) — the portfolio
+  path now matches it.
+  Durable rule: **for a SELL, a bound that cannot be read is 0, never the
+  requested amount.** Two distinct unavailability modes (read raised vs.
+  symbol absent) must both be covered by tests.
+- **Latent hazard (not a live path): `src/analysis/smart_orders/` places
+  SELL orders with no ownership cap.** The module is not imported anywhere
+  in the repository today (dead code in this deployment), so it is not a
+  live SELL path — but it must be capped before it is ever wired in.
 - **Ownership proof = FILLED ledger rows with a `filled_qty` count.**
   `SUBMITTED` / `REJECTED` / `CANCELED` rows prove nothing
   (`allocation_policy.own_net_qty_from_ledger_rows`). A test that needs a

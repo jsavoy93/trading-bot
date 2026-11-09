@@ -9520,10 +9520,27 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     return False
                 broker_qty = self._broker_position_qty(symbol)
                 if broker_qty <= 0:
-                    # No readable broker position: fall back to the
-                    # requested amount as the broker-side bound.
-                    broker_qty = float(quantity)
-                sell_cap = int(min(int(abs(broker_qty)), int(own_qty)))
+                    # The broker bound is UNAVAILABLE (the position read
+                    # raised, or the symbol is absent from the broker
+                    # positions). An unavailable bound is NOT a licence to
+                    # sell: the requested amount is not a broker fact.
+                    # Fail closed - refuse the SELL and submit no order.
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: broker position unavailable - "
+                        f"no broker-side bound can be established"
+                    )
+                    return False
+                # Single source of truth for the bound: the helper already
+                # refuses when EITHER bound is unavailable.
+                sell_cap = self._sell_qty_cap(symbol, broker_qty)
+                if sell_cap <= 0:
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: no sellable quantity within "
+                        f"min(broker_qty, ledger-proven own_qty)"
+                    )
+                    return False
                 quantity = int(min(int(quantity), sell_cap))
                 if quantity <= 0:
                     logging.info(
