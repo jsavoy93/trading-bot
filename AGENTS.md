@@ -239,6 +239,12 @@ If an implementation task fails or stops early, the agent must still write `REPO
 
 ## Agent Message Dispatch Conventions (ENG-01 / ENG-02)
 
+> **Operator-only.** `dispatch_agent.sh`, `openclaw agent` and `oc-run` are for
+> Josh's Grok bots to start a *manager* job. Managers (engineering-manager and
+> trading-manager) never run them; the manager shell refuses them. Managers
+> start workers only with `sessions_spawn`, as the shared engineering-process
+> section at the top of this file says.
+
 - **Never inline an agent message.** Always write the message to a FILE first,
   using a quoted heredoc (`cat > /path/msg.txt <<'EOF'` — quoted so `$`, `` ` ``,
   `|`, `'` and `"` are preserved literally) or by uploading a file. Inline
@@ -252,8 +258,15 @@ If an implementation task fails or stops early, the agent must still write `REPO
   `engineering-manager`; RESEARCH work dispatches to `trading-manager`.
   The agent-id argument remains required and positional, so there is no default
   value. Canonical examples:
-  - `scripts/dispatch_agent.sh engineering-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
-  - `scripts/dispatch_agent.sh trading-manager <TASKID> minimax-portal/MiniMax-M3 /tmp/<taskid>-brief.txt`
+  - Preferred: `oc-run --agent engineering-manager --task <taskid> --brief /tmp/<taskid>-brief.txt`
+    (or `--agent trading-manager`). oc-run runs the manager on its configured
+    model plan: `openai/gpt-5.6-sol` first, then the fallbacks. It ignores
+    `--model` for managers.
+  - `scripts/dispatch_agent.sh engineering-manager <TASKID> openai/gpt-5.6-sol /tmp/<taskid>-brief.txt`
+  - `scripts/dispatch_agent.sh trading-manager <TASKID> openai/gpt-5.6-sol /tmp/<taskid>-brief.txt`
+  - `dispatch_agent.sh` passes `<model>` straight to OpenClaw and pins that
+    one model, so the fallbacks are skipped. If you use it for a manager, pass
+    the plan's primary (`openai/gpt-5.6-sol`), never a fallback model.
 - **Test with `--dry-run` / `--echo`:** this prints the exact command and the
   message verbatim WITHOUT dispatching any agent. Never dispatch real agents in
   tests.
@@ -416,7 +429,8 @@ If the platform splits a long Telegram response:
 #### 6. Evidence Discipline
 
 For every completion packet:
-- Verify branch, commit, working-tree state, PR state, and test results directly
+- Verify branch, commit, working-tree state, PR state, and test results from
+  worker/reviewer-agent evidence (exact commands and outputs), not by re-running them yourself
 - Do not trust prior prose as the sole source
 - Identify proposed details as proposals rather than verified implementation
 - Josh remains the approval authority
@@ -448,3 +462,17 @@ All future manager tasks use this format. Do not rewrite historical reports.
 
 A task is considered stale when inactive for more than 48 hours without a status
 update. The manager must report stale status to Josh before continuing a resumed task.
+
+## Manager token budget (ChatGPT)
+
+You normally run on ChatGPT (`openai/gpt-5.6-sol`), which has a small token
+budget. The fallbacks are GLM and MiniMax. Spend it on **planning and the final
+review only**. The shared engineering-process section covers what to delegate
+and the `MAP.md` rule.
+
+- Stay out of the codebase. Read only `MAP.md`, the worker's report, and the
+  diff summary: `git diff --stat` plus the hunks the worker quotes.
+- For review evidence, ask the worker (or reviewer-agent) to run the tests and
+  report the exact commands and results. Spot-check their output; don't re-run
+  the suite yourself.
+- Keep plans and reviews short: acceptance criteria, allowed files, verdict.
