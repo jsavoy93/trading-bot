@@ -4898,11 +4898,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         return int(min(broker, int(own)))
 
     def _broker_position_qty(self, symbol: str) -> float:
-        """Broker position quantity for SYMBOL (0.0 when unknown)."""
+        """Broker position quantity for SYMBOL (0.0 when unknown).
+
+        Symbol comparison is CASE-INSENSITIVE. The broker may report a
+        position symbol with different casing than the caller (e.g. the
+        broker returns 'Aaa' while the ledger/caller uses 'AAA'). A
+        case-sensitive comparison silently reported 0.0 for a position
+        that actually existed, which the fail-closed SELL path then read
+        as "broker bound unavailable" and refused a legitimate SELL.
+        """
         try:
+            wanted = str(symbol or "").strip().upper()
             for p in self.trading_client.get_all_positions():
-                if p.symbol == symbol:
-                    return float(p.qty)
+                p_symbol = str(getattr(p, "symbol", "") or "").strip().upper()
+                if p_symbol and p_symbol == wanted:
+                    return float(getattr(p, "qty", 0.0) or 0.0)
         except Exception as e:
             logging.warning(
                 f"⚠️ Allocation: could not read positions for "

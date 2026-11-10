@@ -4034,3 +4034,64 @@ An independent review of round 2 returned **BLOCK** on R2. Durable facts:
   refuses the SELL). That is the guard working, not a bug. This is why the
   EXEC-004 ledger-fidelity tests now seed an ownership row and bind the
   real helpers.
+
+## LEDGER-BACKFILL-001 (2026-11-10, agent/ledger-backfill-20261110) — PAPER-only Alpaca fill backfill + case-insensitive broker position lookup
+
+- **Broker position symbols MUST be compared case-insensitively.**
+  `_broker_position_qty()` in `src/core/smart_bot.py` now normalizes both
+  the requested symbol and the broker-reported symbol with
+  `str(... or "").strip().upper()`. The broker may report `Aaa` where the
+  ledger/caller uses `AAA`; a case-sensitive compare silently returned
+  0.0 for a position that DID exist, and the fail-closed SELL path reads
+  0.0 as "broker bound unavailable" and refuses a legitimate SELL.
+  A missing broker symbol or quantity still safely yields 0.0.
+- **`scripts/backfill_symbol_fills.py` is the PAPER-only ledger backfill
+  tool.** It reads REAL Alpaca PAPER order history and backfills
+  broker-confirmed FILLED trades that are missing from the ledger. It
+  NEVER invents a quantity or price — every inserted value comes from the
+  broker fill.
+- **Safety contract (all enforced by `tests/test_ledger_backfill_001.py`):**
+  - Dry run is the DEFAULT. A write requires BOTH `--apply` AND `--db`;
+    `--db` itself is a required argument, so there is no write path that
+    can target an implicit or production database.
+  - PAPER ONLY: `make_paper_client()` refuses any `ALPACA_BASE_URL` whose
+    host does not contain "paper". There is NO live escape flag.
+  - Broker access is READ-ONLY: only `get_orders` / `get_all_positions`.
+    No submit/cancel/replace/close call exists in the tool (a source-level
+    test asserts this).
+  - Runner DBs and the target ledger are opened with a read-only
+    `file:...?mode=ro` URI; the runner DB is foreign state.
+  - A timestamped, non-overwriting backup is taken BEFORE every write
+    (`<db>.ledger-backup-<UTC ts>.db`, with a `-N` suffix on collision).
+  - Post-write verification re-reads the ledger and proves the projected
+    net equals the expected broker qty; a mismatch returns
+    `EXIT_WRITE_FAILED`.
+- **Swing ownership is excluded fail-closed.** A fill is excluded when its
+  `client_order_id` starts with a swing label prefix
+  (`sl_short-`, `rsi2-`) OR when its order id / client order id appears
+  in a swing runner DB. `allocation_policy.DEFAULT_SWING_ORDER_LABEL_PREFIXES`
+  is the single source of truth for the prefixes;
+  `swing_runner_db_paths` DEFAULTS TO `[]`, which disables DB
+  attribution, so label attribution is the default guard.
+- **Reconciliation uses the bot's OWN ownership math.**
+  `verify_projection()` calls
+  `allocation_policy.own_net_qty_from_ledger_rows()` over
+  (existing ledger rows + planned rows). Ownership proof = FILLED rows with
+  a `filled_qty` count; SUBMITTED/REJECTED/CANCELED prove nothing.
+  Any mismatch is a DISCREPANCY: nothing is written and the tool refuses to
+  guess.
+- **The inserted row shape** (mirrors `scripts/reconcile_ledger_with_broker.py`,
+  EXEC-004): `sleeve='S'`, `status='FILLED'`, the REAL `filled_qty`,
+  the REAL `avg_fill_price`, the broker `broker_order_id`, `pnl=NULL`
+  (never fabricated), and `notes='LEDGER-BACKFILL-001: broker-authoritative
+  backfill from Alpaca paper fill history'` so a backfill row can never be
+  confused with a live submission.
+- **AAAA is RUNNER-OWNED and is excluded fail-closed.** The supplied AAAA
+  fill (broker order `692a85e1-60ef-4b6b-a7c6-7f12332ed8a1`, client order
+  `sl_short-AAAA-e-20251230`) matches the runner's OWN label contract:
+  STRAT-024 commit `86761eac34962ec8ace63d76f5fc21ba8eac9be7` asserts
+  `client_order_id.startswith("sl_short-AAAA-e-")`. The AAAA order ids are
+  absent from the inspected runner DB, which is why LABEL attribution is
+  the primary guard and DB attribution is the supplement. AAAA must never
+  be attributed to the main bot; CMA is the only supplied main-bot
+  candidate.
