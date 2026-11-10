@@ -42,6 +42,18 @@ short; link files, not paragraphs.
   HOST has no systemd units installed — fails on machines where the
   RSI(2) shadow units are deployed; pre-existing, environmental.
 
+## Ledger backfill (PAPER-only)
+- `scripts/backfill_symbol_fills.py` — LEDGER-BACKFILL-001: backs up
+  broker-confirmed FILLED trades that are missing from the ledger, using
+  REAL Alpaca PAPER order history. Dry run by default; a write needs BOTH
+  `--apply` AND `--db`. PAPER only (no live escape flag), broker access is
+  read-only, timestamped backup before every write, post-write
+  verification, and fail-closed quantity reconciliation via
+  `allocation_policy.own_net_qty_from_ledger_rows`. Swing fills (`sl_short-`,
+  `rsi2-` labels, or ids present in a runner DB) are excluded.
+- `tests/test_ledger_backfill_001.py` — regression suite for the tool plus
+  the case-insensitive `_broker_position_qty` symbol match.
+
 ## External (read-only for this bot)
 - C4 runner: /root/strat-swing (DB
   experiments/strat_023/live_paper.db, labels `sl_short-*`).
