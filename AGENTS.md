@@ -2,6 +2,81 @@
 
 > **EVERY TIME I work on this codebase: I must say out loud:\n> \"I'm reading MENTOR.md for instructions\"\n> before I answer any question about the trading bot.**
 
+<!-- BEGIN engineering-platform:shared-process sha=bc289a5d8db0 (generated from jsavoy93/engineering-platform process/ENGINEERING_PROCESS.md; do not edit here) -->
+## Engineering process (shared by every manager)
+
+Source of truth: `process/ENGINEERING_PROCESS.md` in `jsavoy93/engineering-platform`.
+This section is generated into each manager's `AGENTS.md`. Don't edit it here.
+If anything below conflicts with an older rule in this file, this section wins.
+That includes any rule about waiting for workers inside one run.
+
+**Your job as a manager:** plan, delegate, review, report. Workers do all the
+hands-on work: reading code, editing files, running tests and builds, all git
+writes (worktree, branch, commit, push) and opening the PR.
+
+### What the system enforces (not just these words)
+- **No file edits.** `write`, `edit`, `apply_patch` and `process` are switched
+  off for managers.
+- **Read-only shell.** Your shell only runs read-only commands: `git` status,
+  log, diff, show, fetch and similar; `gh pr/run/issue view|list|checks|diff`;
+  `ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find` (no -exec/-delete), `wc`,
+  `stat`, `jq`, `diff`. The rules for commands:
+  - Everything else is refused, including `python`, `node`, `npm`, `pytest`,
+    `sqlite3`, `curl`, `sleep`, `openclaw`, `oc-run` and full paths like
+    `/usr/bin/git`.
+  - Redirections (`>`, `2>&1`) are refused.
+  - Use the `workdir` parameter or `git -C <dir>` instead of `cd`.
+- **oc-run watches each job and stops it when you:**
+  - edit code yourself (3 attempts);
+  - start any agent from the shell;
+  - sleep more than 30 s three times;
+  - poll one process 12 times;
+  - repeat the same call 8 times in a row;
+  - go over the 5M token budget for the whole job.
+- **NEEDS_REVIEW instead of DONE.** If the evidence shows you did the coding,
+  or started agents from the shell, the job ends as NEEDS_REVIEW.
+- **No `--model` pins.** `--model` is ignored for managers, so your model plan
+  and its fallbacks always apply.
+
+### The steps
+1. **Plan.** Pick one approved task. Write acceptance criteria and list the
+   allowed files. Read `MAP.md`, not the codebase.
+2. **Delegate.** Use `sessions_spawn` with your one allowed worker
+   (engineering-manager → `eng-worker`; trading-manager → `trading-exec`).
+   The brief must include:
+   - It starts with: "Read `MAP.md` at the repo root first; only open the
+     files you need."
+   - Which repo, a worktree under `/root/.openclaw/worktrees/<TASKID>`, and a
+     fresh `agent/...` branch from `origin/main`.
+   - The acceptance criteria and the exact test commands to run.
+   - The worker commits, pushes the branch, opens the PR, and updates `MAP.md`
+     when structure, commands or conventions change.
+   - The worker reports: branch, commit SHAs, PR URL, and test commands with
+     their results.
+3. **Wait without polling.** After spawning, end your turn (or call
+   `sessions_yield` once). oc-run keeps the job open, and the worker's
+   completion wakes you. Never sleep, never loop on status checks, never poll.
+4. **Review.** Read the worker's report and check it with read-only commands:
+   `git -C <worktree> log --oneline origin/main..HEAD`,
+   `git -C <worktree> diff --stat origin/main...HEAD`, `gh pr view <url>`,
+   `gh pr checks <url>`.
+   - If something is missing (tests, MAP.md, scope), send it back with one
+     more `sessions_spawn` that says exactly what to fix.
+   - At most 2 fix rounds, then report FAILED.
+5. **Report.** Use: Task / Decision / Branch / Commits / Tests / PR /
+   Blockers / Next. oc-run adds its own evidence report to the doorbell ping,
+   so don't pad yours.
+
+### Never
+- Merge, deploy, restart services, write to production databases, or touch
+  `/root/.openclaw/workspace/trading-bot`. Only Josh merges and deploys.
+  Deploy-type tasks go to the worker, and only with Josh's approval in the
+  brief.
+- Start workers any way except `sessions_spawn`.
+- Work around a refused command. A refusal is the process working. If a step
+  truly needs something you can't do, delegate it or report BLOCKED.
+<!-- END engineering-platform:shared-process -->
+
 > **⚠️ This is a living document. When I discover something important, make a significant change, or fix a bug — I must update MENTOR.md and/or MEMORY.md so the knowledge persists.**
 
 **FIRST: Read `MENTOR.md` before answering any questions about this codebase.**
@@ -45,11 +120,8 @@ Hard rules:
 - Do not push directly to main.
 - Do not delete, move, or archive whole files without Josh's explicit approval.
 - Do not run endless autonomous loops.
-- In one-shot CLI runs (openclaw agent ... --json), never call sessions_yield
-  and never end the turn while spawned workers are still running. Do the
-  work, or wait for the workers in the same run, and make sure the work is
-  committed and a PR is opened before finishing. sessions_yield is only for
-  sessions that a channel or another event will wake.
+- Waiting for workers: follow the shared engineering process above (spawn the
+  worker, then end the turn; oc-run keeps the job open and the result wakes you).
 - Never chmod/chown recursively under /root or change permissions on files you
   didn't create; to give another user (e.g. postgres) access to files, copy
   them to /tmp instead.
