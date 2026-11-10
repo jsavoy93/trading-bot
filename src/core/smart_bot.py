@@ -73,6 +73,8 @@ OBS_001_EXECUTION_CHECK_ORDER = (
     "pending_order_check",
     "cooldown_check",
     "position_concentration_check",
+    "swing_symbol_check",
+    "allocation_budget_check",
     "sector_concentration_check",
     "correlation_check",
     "beta_check",
@@ -84,6 +86,14 @@ OBS_001_EXECUTION_CHECK_ORDER = (
 # Documented for snapshot fidelity; it only applies when signal == 'SELL'
 # AND the code reaches the SELL branch.
 OBS_001_SELL_ONLY_CHECK = "position_existence_check"
+
+# REBAL-60-30-10 — SELL-only ownership check. The broker reports ONE
+# position per symbol across sleeves, so a position that cannot be
+# proven to belong to THIS bot (owned by an external swing runner, or
+# without a FILLED row in this bot's own ledger) must never be sold by
+# the main bot. Like OBS_001_SELL_ONLY_CHECK it is recorded in the
+# trace but is NOT part of the BUY check order.
+OBS_001_SELL_OWNERSHIP_CHECK = "position_ownership_check"
 
 # Module-level side-channel trace collector for OBS-001 Phase A.
 # `_obs_001_active_trace` is a list of check records populated by the
@@ -181,6 +191,8 @@ def _obs_001_finalize_attempt(returned: bool) -> List[Dict]:
                 reason = "NOT RUN: cooldown_check applies to BUY only (signal=SELL)"
             elif check_name in (
                 "position_concentration_check",
+                "swing_symbol_check",
+                "allocation_budget_check",
                 "sector_concentration_check",
                 "correlation_check",
                 "beta_check",
@@ -217,6 +229,7 @@ from database.simple_rest import simple_rest
 from analysis.ai_agent import ai_agent
 from core import settings_service
 from core import order_lifecycle
+from core import allocation_policy
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +685,19 @@ class SmartTradingBot:
         self.atr_position_size_pct = 2.0  # Risk 2% of portfolio per trade (default)
         self.risk_per_trade = self.atr_position_size_pct / 100  # Decimal used by sizing math
         self.max_position_pct = 0.05  # Max 5% of portfolio in single position
+
+        # REBAL-60-30-10 — long-term allocation budget. These are CONFIG
+        # values: authoritative defaults live in settings_service's
+        # STRATEGY_SETTINGS_SCHEMA and DB overrides are applied by
+        # _load_effective_strategy_settings (constructor defaults here
+        # exist so that override mechanism can find the attributes).
+        self.long_term_budget_pct = 60.0    # % of equity: this bot's long-term budget
+        self.cash_floor_pct = 10.0          # % of equity that must stay in cash
+        self.swing_order_label_prefixes = '["sl_short-", "rsi2-"]'
+        self.swing_runner_db_paths = "[]"
+        # (symbols, monotonic_computed_at) caches — see get_swing_runner_symbols
+        self._swing_symbols_cache = (set(), 0.0)
+        self._own_net_cache = ({}, 0.0)
 
         # Max Drawdown Protection
         self.enable_drawdown_protection = True  # Enable max drawdown protection
@@ -4748,6 +4774,195 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(f"Error checking daily loss limit: {e}")
             return False, self.daily_loss_pct, self.daily_starting_value or 0.0
 
+    # ── REBAL-60-30-10: allocation budget + position attribution ─────────────
+    # Contracts live in core/allocation_policy.py: foreign swing-runner
+    # positions are NEVER sold/resized/counted as own; ownership must be
+    # ledger-proven; the cash floor is a hard BUY-side constraint; no
+    # entry rules are changed by any of the methods below.
+
+    def _swing_order_prefixes(self) -> Tuple[str, ...]:
+        """Configured swing-runner client_order_id prefixes (fail-closed)."""
+        return allocation_policy.parse_json_list(
+            getattr(self, "swing_order_label_prefixes", None),
+            allocation_policy.DEFAULT_SWING_ORDER_LABEL_PREFIXES,
+        )
+
+    def get_swing_runner_symbols(self, force_refresh: bool = False) -> set:
+        """Symbols currently owned by the EXTERNAL swing runners.
+
+        Evidence: broker order labels (the runners keep resting stop
+        orders open, e.g. sl_short-AMD-s-20261102 or
+        rsi2-AMD-20261103-1-stop-r2) plus optional runner SQLite DBs
+        (swing_runner_db_paths config, opened READ-ONLY). Cached for
+        one analysis cycle. Any failure degrades to fewer evidence
+        sources and never raises; sell-side safety does NOT depend on
+        this method (it depends on ledger-proven ownership), so an
+        attribution failure can only make the bot MORE conservative.
+        """
+        import time as _time
+        cached, computed_at = getattr(self, "_swing_symbols_cache", (set(), 0.0))
+        ttl = max(60.0, float(getattr(self, "loop_delay_seconds", 300) or 300))
+        if not force_refresh and cached and (_time.monotonic() - computed_at) < ttl:
+            return cached
+        symbols: set = set()
+        try:
+            orders = list(self.trading_client.get_orders())
+            symbols |= allocation_policy.swing_symbols_from_orders(
+                orders, self._swing_order_prefixes()
+            )
+        except Exception as e:
+            logging.warning(
+                f"⚠️ Allocation: could not read orders for swing attribution: {e}"
+            )
+        for db_path in allocation_policy.parse_json_list(
+            getattr(self, "swing_runner_db_paths", "[]"), ()
+        ):
+            symbols |= allocation_policy.swing_symbols_from_runner_db(db_path)
+        if symbols:
+            logging.info(
+                f"🧷 Swing-runner positions (never sold/resized/counted by this bot): "
+                f"{sorted(symbols)}"
+            )
+        self._swing_symbols_cache = (symbols, _time.monotonic())
+        return symbols
+
+    def _ledger_own_net_qty(self, force_refresh: bool = False) -> Dict[str, float]:
+        """Net confirmed qty per symbol from THIS bot's own trades ledger.
+
+        Cached for 60s; failures return {} (nothing is provably own —
+        fail-closed: the bot then manages no positions rather than
+        guessing).
+        """
+        import time as _time
+        cached, computed_at = getattr(self, "_own_net_cache", ({}, 0.0))
+        if not force_refresh and cached and (_time.monotonic() - computed_at) < 60.0:
+            return cached
+        net: Dict[str, float] = {}
+        try:
+            if self.db and self.db.is_available():
+                rows = self.db.get_all_trades(limit=10_000_000)
+                net = allocation_policy.own_net_qty_from_ledger_rows(rows)
+        except Exception as e:
+            logging.warning(
+                f"⚠️ Allocation: ledger read failed ({e}); no position is provably own"
+            )
+            net = {}
+        self._own_net_cache = (net, _time.monotonic())
+        return net
+
+    def _is_foreign_or_unproven_position(self, symbol: str) -> bool:
+        """True when the bot must NOT manage this broker position.
+
+        Swing-runner owned (label/DB evidence) OR not provably own via
+        the bot's own ledger — either way: never sell, never resize,
+        never stop-loss, never count as own.
+        """
+        sym = str(symbol).upper()
+        if sym in self.get_swing_runner_symbols():
+            return True
+        return self._ledger_own_net_qty().get(sym, 0.0) <= 0
+
+    def _proven_own_qty(self, symbol: str) -> float:
+        """Ledger-proven own quantity for SYMBOL (0.0 when unprovable).
+
+        Fail-closed: a failed ledger read proves NOTHING, so a caller must
+        refuse to sell rather than guess an order size.
+        """
+        try:
+            return float(
+                self._ledger_own_net_qty().get(str(symbol).upper(), 0.0) or 0.0
+            )
+        except Exception as e:
+            logging.warning(
+                f"⚠️ Allocation: ownership read failed ({e}); "
+                f"no quantity is provably own for {symbol}"
+            )
+            return 0.0
+
+    def _sell_qty_cap(self, symbol: str, broker_qty) -> int:
+        """Max sellable quantity for SYMBOL: min(broker_qty, own_qty).
+
+        The broker position may include shares owned by another sleeve (the
+        swing runners share this same paper account), so the raw broker
+        quantity is NEVER a safe order size on its own. Returns 0 when the
+        ledger-proven own quantity cannot be established — the caller
+        must then REFUSE the SELL (fail closed).
+        """
+        try:
+            broker = int(abs(float(broker_qty)))
+        except (TypeError, ValueError):
+            return 0
+        own = self._proven_own_qty(symbol)
+        if broker <= 0 or own <= 0:
+            return 0
+        return int(min(broker, int(own)))
+
+    def _broker_position_qty(self, symbol: str) -> float:
+        """Broker position quantity for SYMBOL (0.0 when unknown)."""
+        try:
+            for p in self.trading_client.get_all_positions():
+                if p.symbol == symbol:
+                    return float(p.qty)
+        except Exception as e:
+            logging.warning(
+                f"⚠️ Allocation: could not read positions for "
+                f"{symbol}: {e}"
+            )
+        return 0.0
+
+    def get_position_ownership(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """Classify every broker position: own / swing / unattributed."""
+        swing_symbols = self.get_swing_runner_symbols(force_refresh=force_refresh)
+        own_net = self._ledger_own_net_qty(force_refresh=force_refresh)
+        try:
+            positions = list(self.trading_client.get_all_positions())
+        except Exception as e:
+            logging.warning(f"⚠️ Allocation: could not read positions: {e}")
+            return {"by_symbol": {}, "own_mv": 0.0, "swing_mv": 0.0,
+                    "unattributed_mv": 0.0, "long_term_book_mv": 0.0}
+        return allocation_policy.classify_positions(positions, own_net, swing_symbols)
+
+    def get_allocation_budget_view(self) -> Optional[Dict[str, Any]]:
+        """Snapshot of the REBAL-60-30-10 budget math (read-only).
+
+        Returns None when the account cannot be read; BUY callers must
+        treat that as fail-closed (block), never fall back to a
+        fabricated equity.
+        """
+        try:
+            account = self.trading_client.get_account()
+            equity = float(account.portfolio_value)
+            cash = float(account.cash)
+        except Exception as e:
+            logging.warning(
+                f"⚠️ Allocation: account read failed ({e}); budget view unavailable"
+            )
+            return None
+        ownership = self.get_position_ownership()
+        book_mv = ownership.get("long_term_book_mv", 0.0)
+        budget = allocation_policy.long_term_budget(equity, self.long_term_budget_pct)
+        floor = allocation_policy.cash_floor_amount(equity, self.cash_floor_pct)
+        room = allocation_policy.budget_room(
+            equity, self.long_term_budget_pct, book_mv
+        )
+        return {
+            "equity": equity,
+            "cash": cash,
+            "budget_pct": float(self.long_term_budget_pct),
+            "cash_floor_pct": float(self.cash_floor_pct),
+            "long_term_budget": budget,
+            "cash_floor": floor,
+            "long_term_book_mv": book_mv,
+            "own_mv": ownership.get("own_mv", 0.0),
+            "swing_mv": ownership.get("swing_mv", 0.0),
+            "unattributed_mv": ownership.get("unattributed_mv", 0.0),
+            "budget_room": room,
+            "max_buy_cost": allocation_policy.max_buy_cost(
+                cash, equity, self.cash_floor_pct, room
+            ),
+            "by_symbol": ownership.get("by_symbol", {}),
+        }
+
     def calculate_position_size(self, symbol: str, signal_strength: str, price: float, portfolio_value: float) -> int:
         """
         Calculate position size using ATR-based volatility sizing.
@@ -5667,8 +5882,76 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             "SELL-only check: get_open_position(symbol).qty > 0."
                         ),
                     )
+                    # ── REBAL-60-30-10: ownership gate (FAIL CLOSED) ──
+                    # The broker reports ONE position per symbol across
+                    # sleeves: this bot and the external swing runners
+                    # share the same paper account. A position that
+                    # cannot be PROVEN to belong to this bot (attributed
+                    # to a swing runner, or absent from this bot's own
+                    # FILLED ledger rows) must never be sold by it.
+                    #
+                    # Fail closed: if ownership cannot be established,
+                    # the SELL is refused (the bot under-trades instead
+                    # of selling a position it does not own).
+                    if self._is_foreign_or_unproven_position(symbol):
+                        _obs_001_trace_record(
+                            OBS_001_SELL_OWNERSHIP_CHECK,
+                            applied=True,
+                            passed=False,
+                            observed_value=None,
+                            threshold_value=None,
+                            reason=(
+                                f"Cannot SELL {symbol}: position is not "
+                                f"provably owned by this bot (swing-runner "
+                                f"attributed or absent from this bot's own "
+                                f"FILLED ledger rows)"
+                            ),
+                            gap_note=(
+                                "Real check: _is_foreign_or_unproven_position"
+                                "(symbol) - swing-runner attribution (broker "
+                                "order labels + runner DBs) and this bot's own "
+                                "FILLED ledger rows. Unproven ownership fails "
+                                "CLOSED: the SELL is refused."
+                            ),
+                        )
+                        logging.info(
+                            f"🚫 Cannot SELL {symbol}: position is not provably "
+                            f"owned by this bot (swing-owned or unproven) - "
+                            f"refusing to sell"
+                        )
+                        return False
+                    own_qty = float(
+                        self._ledger_own_net_qty().get(str(symbol).upper(), 0.0)
+                    )
+                    # The sellable amount is capped by the LEDGER-PROVEN
+                    # own quantity, never by the raw broker quantity: the
+                    # broker position may include shares owned by another
+                    # sleeve.
+                    max_sellable = int(min(float(position.qty), own_qty))
+                    _obs_001_trace_record(
+                        OBS_001_SELL_OWNERSHIP_CHECK,
+                        applied=True,
+                        passed=True,
+                        observed_value=own_qty,
+                        threshold_value=float(position.qty),
+                        reason=(
+                            f"Ledger-proven own qty {own_qty:g} for {symbol}; "
+                            f"sellable capped to {max_sellable} shares"
+                        ),
+                        gap_note=(
+                            "Real check: _is_foreign_or_unproven_position() "
+                            "passed, and the SELL quantity is capped to the "
+                            "ledger-proven own qty (own_net_qty_from_ledger_"
+                            "rows: FILLED rows only)."
+                        ),
+                    )
+                    if max_sellable <= 0:
+                        logging.info(
+                            f"🚫 Cannot SELL {symbol}: no ledger-proven "
+                            f"sellable quantity (own qty {own_qty:g})"
+                        )
+                        return False
                     # For sells, use actual position quantity (or portion of it)
-                    max_sellable = int(float(position.qty))
                     desired_quantity = int(self.trade_amount / price)
                     # Check if this is a position sell with specific quantity
                     if analysis.get('position_sell_qty'):
@@ -5749,6 +6032,137 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             " in this cycle. CURRENT BEHAVIOR GAP."
                         ),
                     )
+
+                # ── REBAL-60-30-10: swing-runner symbol guard ──
+                # The external swing runners manage their own positions.
+                # The broker reports ONE position per symbol across
+                # sleeves, so a main-bot BUY would silently change the
+                # runner's risk. The main bot must therefore never ADD
+                # to a symbol attributed to a swing runner.
+                #
+                # Attribution evidence failures are FAIL-OPEN here (the
+                # swing-symbol set degrades to fewer sources, never
+                # raises): this guard must not block a legitimate BUY
+                # because an attribution read failed. Sell-side safety
+                # does not depend on it — that is enforced separately by
+                # the ledger-proven ownership gate on the SELL path.
+                swing_symbols = set()
+                _swing_fn = getattr(self, "get_swing_runner_symbols", None)
+                if _swing_fn is not None:
+                    try:
+                        swing_symbols = {
+                            str(s).upper() for s in (_swing_fn() or ())
+                        }
+                    except Exception as e:
+                        logging.warning(
+                            f"⚠️ Swing guard: could not read swing symbols "
+                            f"for {symbol} ({e}) - not blocking the BUY"
+                        )
+                        swing_symbols = set()
+                if str(symbol).upper() in swing_symbols:
+                    _obs_001_trace_record(
+                        "swing_symbol_check",
+                        applied=True,
+                        passed=False,
+                        observed_value=1.0,
+                        threshold_value=0.0,
+                        reason=(
+                            f"{symbol} is attributed to an external swing "
+                            f"runner; the main bot must not add to it"
+                        ),
+                        gap_note=(
+                            "Real check: get_swing_runner_symbols() evidence "
+                            "(broker order labels + runner DBs). Attribution "
+                            "failures degrade to fewer evidence sources."
+                        ),
+                    )
+                    logging.info(
+                        f"🚫 Skipping {symbol}: held by an external swing "
+                        f"runner — the main bot must not add to it"
+                    )
+                    return False
+                _obs_001_trace_record(
+                    "swing_symbol_check",
+                    applied=True,
+                    passed=True,
+                    observed_value=0.0,
+                    threshold_value=0.0,
+                    reason=(
+                        f"{symbol} is not attributed to an external swing "
+                        f"runner"
+                    ),
+                    gap_note=(
+                        "Real check: get_swing_runner_symbols() evidence "
+                        "(broker order labels + runner DBs)."
+                    ),
+                )
+
+                # ── REBAL-60-30-10: allocation budget + cash-floor check ──
+                # ALLOCATION constraint only (where money may go), NOT an
+                # entry-rule change: eligibility/ranking/concentration above
+                # are untouched, and this can only CAP the quantity down,
+                # never loosen any threshold.
+                alloc_view = self.get_allocation_budget_view()
+                if alloc_view is None:
+                    _obs_001_trace_record(
+                        "allocation_budget_check",
+                        applied=True,
+                        passed=False,
+                        observed_value=None,
+                        threshold_value=None,
+                        reason=(
+                            "Account unreadable; BUY blocked fail-closed "
+                            "(REBAL-60-30-10)"
+                        ),
+                        gap_note=(
+                            "Real check: get_allocation_budget_view() returned"
+                            " None (account read failed); real code blocks"
+                            " the BUY and retries next cycle."
+                        ),
+                    )
+                    logging.info(
+                        f"🚫 Skipping {symbol}: allocation budget unverifiable "
+                        f"(account read failed) — retry next cycle"
+                    )
+                    return False
+                allowed_cost = alloc_view["max_buy_cost"]
+                _obs_001_trace_record(
+                    "allocation_budget_check",
+                    applied=True,
+                    passed=(allowed_cost >= price),
+                    observed_value=round(allowed_cost, 2),
+                    threshold_value=round(price, 2),
+                    reason=(
+                        f"Max allowed BUY cost ${allowed_cost:,.2f} "
+                        f"(budget room ${alloc_view['budget_room']:,.2f}, "
+                        f"cash floor ${alloc_view['cash_floor']:,.2f}) "
+                        f"vs 1-share price ${price:,.2f}"
+                    ),
+                    gap_note=(
+                        "Real check: BUY cost must fit min(long-term budget"
+                        " headroom, cash minus cash floor); quantity is then"
+                        " capped to fit. Does NOT include pending adds from"
+                        " earlier candidates in this cycle. CURRENT"
+                        " BEHAVIOR GAP."
+                    ),
+                )
+                if allowed_cost < price:
+                    logging.info(
+                        f"🚫 Skipping {symbol}: allocation budget — max allowed "
+                        f"cost ${allowed_cost:,.2f} < one share (${price:,.2f}) "
+                        f"(budget room ${alloc_view['budget_room']:,.2f}, "
+                        f"cash floor ${alloc_view['cash_floor']:,.2f})"
+                    )
+                    return False
+                budget_capped_qty = allocation_policy.cap_quantity_for_cost(
+                    quantity, price, allowed_cost
+                )
+                if budget_capped_qty < quantity:
+                    logging.info(
+                        f"⚠️ {symbol}: allocation budget cap ${allowed_cost:,.2f} "
+                        f"reduces quantity {quantity} → {budget_capped_qty}"
+                    )
+                    quantity = budget_capped_qty
 
                 # Check sector concentration limits (Phase 3.1)
                 position_size_dollars = quantity * price
@@ -6239,9 +6653,16 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
           1. margin      — block all buys when account cash < 0;
           2. open BUY orders for the symbol (duplicate-entry guard);
           3. position concentration (10% cap) — with quantity adjustment;
-          4. sector concentration;
-          5. correlation risk;
-          6. portfolio beta exposure.
+          4. swing-runner symbol guard (REBAL-60-30-10) — the main bot must
+             never ADD to a symbol attributed to an external swing runner
+             (same rule as the initial-BUY path);
+          5. allocation budget + cash floor (REBAL-60-30-10) — the tranche
+             BUY must fit the long-term budget headroom AND leave the cash
+             floor intact; the budget view is consulted live and an
+             unavailable view FAILS CLOSED (the tranche is blocked);
+          6. sector concentration;
+          7. correlation risk;
+          8. portfolio beta exposure.
 
         Deliberate deviations, both documented and fail-safe:
           - NO BUY cooldown: a tranche is a continuation of an entry plan
@@ -6255,6 +6676,12 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             excluded from the duplicate check: tranche 1 is often still
             NEW/PARTIALLY_FILLED when tranche 2 fires, and treating our own
             order as a duplicate would silently kill position scaling.
+          - The swing-symbol guard is FAIL-OPEN on an attribution READ
+            failure (exactly like the initial-BUY path): attribution
+            evidence only degrades to fewer sources, so a failed read
+            never blocks a legitimate tranche. Sell-side safety does NOT
+            depend on it — that is enforced by the ledger-proven
+            ownership gate on the SELL path.
 
         Returns ``(allowed, adjusted_quantity, reason)``. NEVER raises —
         any unexpected error fails CLOSED (the tranche is blocked), because
@@ -6339,21 +6766,111 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 )
             quantity = min(quantity, adjusted_quantity)
 
-            # 4. sector concentration.
+            # 4. REBAL-60-30-10: swing-runner symbol guard.
+            #
+            # A tranche is a continuation BUY of an entry plan, so it must
+            # obey the SAME rule as the initial BUY: the main bot must
+            # never ADD to a symbol attributed to an external swing
+            # runner (the broker reports ONE position per symbol across
+            # sleeves, so a tranche would silently change the runner's
+            # risk).
+            #
+            # FAIL-OPEN on an attribution READ failure, exactly like the
+            # initial-BUY path: the swing-symbol set only ever degrades
+            # to fewer evidence sources, so a failed read must not block
+            # a legitimate tranche. Sell-side safety does NOT depend on
+            # this guard (the ledger-proven ownership gate on the SELL
+            # path provides that).
+            _swing_fn = getattr(self, "get_swing_runner_symbols", None)
+            if _swing_fn is not None:
+                try:
+                    _swing_symbols = {
+                        str(s).upper() for s in (_swing_fn() or ())
+                    }
+                except Exception as e:
+                    logging.warning(
+                        f"⚠️ Tranche risk gate: could not read swing symbols "
+                        f"for {symbol} ({e}) - not blocking the tranche"
+                    )
+                    _swing_symbols = set()
+                if str(symbol).upper() in _swing_symbols:
+                    return False, 0, (
+                        f"swing-runner guard: {symbol} is attributed to an "
+                        f"external swing runner; the main bot must not add "
+                        f"to it"
+                    )
+
+            # 5. REBAL-60-30-10: allocation budget + cash floor.
+            #
+            # A tranche is a BUY, so it is subject to the SAME money
+            # constraints as the initial entry: the cost must fit the
+            # long-term budget headroom AND leave the cash floor intact.
+            # The budget view is consulted LIVE (not cached from the
+            # initial entry) because the account changes between
+            # tranche 1 and tranche 3.
+            #
+            # FAIL CLOSED: if the budget view is unavailable (account
+            # read failed) the tranche is blocked, exactly like the
+            # initial-BUY path. A broker order is irreversible, so an
+            # unverifiable budget must never authorize a BUY.
+            alloc_view = self.get_allocation_budget_view()
+            if alloc_view is None:
+                return False, 0, (
+                    "allocation budget unverifiable (fail-closed): "
+                    "account read failed"
+                )
+            allowed_cost = float(alloc_view.get("max_buy_cost", 0.0) or 0.0)
+            if allowed_cost < price:
+                return False, 0, (
+                    f"allocation budget: max allowed cost "
+                    f"${allowed_cost:,.2f} < one share (${price:,.2f}) "
+                    f"(budget room ${alloc_view.get('budget_room', 0.0):,.2f}, "
+                    f"cash floor ${alloc_view.get('cash_floor', 0.0):,.2f})"
+                )
+            budget_capped_qty = allocation_policy.cap_quantity_for_cost(
+                quantity, price, allowed_cost
+            )
+            if budget_capped_qty < quantity:
+                logging.info(
+                    f"⚠️ Tranche {symbol}: allocation budget cap "
+                    f"${allowed_cost:,.2f} reduces quantity "
+                    f"{quantity} → {budget_capped_qty}"
+                )
+                quantity = budget_capped_qty
+            if quantity < 1:
+                return False, 0, (
+                    f"allocation budget: quantity reduced to {quantity} "
+                    f"(< 1 share) by the ${allowed_cost:,.2f} cost cap"
+                )
+            # The cash floor is a hard constraint: cash - cost must stay
+            # at or above the floor after the tranche BUY.
+            if not allocation_policy.buy_respects_cash_floor(
+                float(alloc_view.get("cash", 0.0) or 0.0),
+                quantity * price,
+                float(alloc_view.get("equity", 0.0) or 0.0),
+                float(alloc_view.get("cash_floor_pct", 0.0) or 0.0),
+            ):
+                return False, 0, (
+                    "allocation budget: this BUY would break the cash floor "
+                    f"(cash ${alloc_view.get('cash', 0.0):,.2f}, "
+                    f"floor ${alloc_view.get('cash_floor', 0.0):,.2f})"
+                )
+
+            # 6. sector concentration.
             passes_sector, _cur, _proj, sector_reason = (
                 self.check_sector_concentration(symbol, quantity * price)
             )
             if not passes_sector:
                 return False, 0, f"sector: {sector_reason}"
 
-            # 5. correlation risk.
+            # 7. correlation risk.
             passes_corr, _max_corr, _corr_syms, corr_reason = (
                 self.check_correlation_risk(symbol)
             )
             if not passes_corr:
                 return False, 0, f"correlation: {corr_reason}"
 
-            # 6. portfolio beta exposure.
+            # 8. portfolio beta exposure.
             passes_beta, _beta, beta_reason = self.check_beta_exposure()
             if not passes_beta:
                 return False, 0, f"beta: {beta_reason}"
@@ -6513,6 +7030,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # consumed on submit_order, unchanged); never raises into the
         # analysis cycle (worst case it logs a warning and continues).
         self.poll_order_fills()
+
+        # ── REBAL-60-30-10: refresh swing-runner attribution for the cycle.
+        # Read-only (broker orders + optional runner DBs); failures degrade
+        # to fewer evidence sources and are logged, never raised.
+        self.get_swing_runner_symbols(force_refresh=True)
 
         # ── OBS-001 Phase A: cycle bookkeeping (observability only) ─────────
         # cycle_id is used by decision_history and cycle_funnel to bind
@@ -8410,6 +8932,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             sell_candidates = []
 
+            # REBAL-60-30-10: ledger-proven ownership map — the bot only
+            # ever manages positions it can prove it bought itself.
+            own_net = self._ledger_own_net_qty()
+
             for position in positions:
                 symbol = position.symbol
                 current_qty = float(position.qty)
@@ -8420,6 +8946,31 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 # Skip positions too small to sell
                 if current_qty <= 0 or market_value < 50:
                     continue
+
+                # ── REBAL-60-30-10: ownership gate ──
+                # NEVER sell/resize positions owned by the external swing
+                # runners, and never manage positions this bot cannot prove
+                # it owns via its own ledger (fail-closed).
+                if symbol.upper() in self.get_swing_runner_symbols():
+                    logging.info(
+                        f"   🧷 {symbol}: swing-runner position — never sold or "
+                        f"resized by this bot"
+                    )
+                    continue
+                provable_qty = own_net.get(symbol.upper(), 0.0)
+                if provable_qty <= 0:
+                    logging.info(
+                        f"   🧷 {symbol}: not provably own (no ledger fill "
+                        f"history) — left untouched"
+                    )
+                    continue
+                if current_qty > provable_qty:
+                    logging.info(
+                        f"   🧷 {symbol}: broker qty {current_qty:.0f} > "
+                        f"ledger-provable {provable_qty:.0f}; sell sizing capped "
+                        f"at provable qty"
+                    )
+                    current_qty = provable_qty
 
                 # Check if this position's sell analysis is in cooldown
                 if self.is_position_sell_in_cooldown(symbol, cooldown_minutes=30):
@@ -8557,6 +9108,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if current_qty <= 0 or market_value < 50:
                     continue
 
+                # REBAL-60-30-10: rotation must never sell out of a
+                # position this bot does not provably own.
+                if self._is_foreign_or_unproven_position(symbol):
+                    continue
+
                 # Get technical analysis
                 analysis = self.analyze_symbol(symbol, use_ai=False)
                 if not analysis:
@@ -8638,11 +9194,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             # Action 1: Reduce high-concentration positions (>15% of portfolio)
             for position in portfolio_analysis['positions']:
+                # REBAL-60-30-10: never resize a position this bot does not
+                # provably own (swing runners first, then ledger proof).
+                if self._is_foreign_or_unproven_position(position['symbol']):
+                    continue
                 position_weight = abs(position['market_value']) / portfolio_analysis['total_value'] * 100
 
                 if position_weight > 15 and position['unrealized_plpc'] > 50:
                     # Consider taking partial profits on large winning positions
-                    reduce_qty = int(abs(position['qty']) * 0.25)  # Reduce by 25%
+                    # REBAL-60-30-10: never size the reduction from the raw
+                    # broker quantity - cap it to the ledger-proven own
+                    # quantity (min(broker_qty, own_qty)).
+                    sell_cap = self._sell_qty_cap(
+                        position['symbol'], position['qty']
+                    )
+                    reduce_qty = int(
+                        min(int(abs(position['qty']) * 0.25), sell_cap)
+                    )  # Reduce by 25%, never more than provably own
 
                     if reduce_qty > 0:
                         logging.info(f"🎯 Reducing {position['symbol']} position by {reduce_qty} shares ({position_weight:.1f}% concentration, {position['unrealized_plpc']:.1f}% gain)")
@@ -8652,6 +9220,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             # Action 2: Set stop losses on losing positions (>-10%)
             for position in portfolio_analysis['positions']:
+                # REBAL-60-30-10: never stop-loss a position this bot does
+                # not provably own (would fight the runners' own stops).
+                if self._is_foreign_or_unproven_position(position['symbol']):
+                    continue
                 if position['unrealized_plpc'] < -10 and abs(position['market_value']) > 100:
                     # Calculate stop loss price
                     if self.use_atr_stop_loss:
@@ -8682,9 +9254,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         continue
 
                     # Place actual stop-loss order
+                    # REBAL-60-30-10: the stop may cover at most the
+                    # ledger-proven own quantity, never the raw broker
+                    # quantity (the runners share this paper account).
+                    stop_cap = self._sell_qty_cap(
+                        position['symbol'], position['qty']
+                    )
+                    if stop_cap <= 0:
+                        logging.info(
+                            f"🚫 {position['symbol']}: no "
+                            f"ledger-proven own quantity - skipping stop-loss"
+                        )
+                        continue
                     success = self._place_stop_loss_order(
                         position['symbol'],
-                        int(position['qty']),
+                        int(min(int(abs(position['qty'])), stop_cap)),
                         stop_price
                     )
 
@@ -8692,14 +9276,43 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         stop_method = f"({self.atr_stop_multiplier}x ATR)" if stop_type == "ATR" else f"({self.stop_loss_pct}%)"
                         actions_taken.append(f"Stop loss set for {position['symbol']} at ${stop_price:.2f} {stop_method}")
 
-            # Action 3: Deploy excess cash if available
+            # Action 3: Report REBAL-60-30-10 allocation headroom.
+            # NOTE: this action never places orders. Deployment happens ONLY
+            # through the normal BUY path in run_analysis (entry rules
+            # unchanged). Previously this block logged a "considering
+            # deployment of $X" number (50% of excess cash) that no code
+            # ever acted on — replaced with the real budget math.
             cash_percentage = portfolio_analysis['cash_available'] / portfolio_analysis['total_value'] * 100
 
             if cash_percentage > 20:  # More than 20% cash
-                deployable_cash = portfolio_analysis['cash_available'] * 0.5  # Deploy 50% of excess cash
-
-                logging.info(f"💰 High cash position ({cash_percentage:.1f}%) - considering deployment of ${deployable_cash:,.2f}")
-                actions_taken.append(f"High cash position identified: ${portfolio_analysis['cash_available']:,.2f} ({cash_percentage:.1f}%)")
+                alloc_view = self.get_allocation_budget_view()
+                if alloc_view:
+                    logging.info(
+                        f"💰 High cash position ({cash_percentage:.1f}%) — "
+                        f"REBAL-60-30-10 headroom: long-term budget "
+                        f"${alloc_view['long_term_budget']:,.2f} "
+                        f"({alloc_view['budget_pct']:.0f}% of ${alloc_view['equity']:,.2f}), "
+                        f"long-term book ${alloc_view['long_term_book_mv']:,.2f}, "
+                        f"cash floor ${alloc_view['cash_floor']:,.2f}, "
+                        f"deployable via normal BUY signals: "
+                        f"${alloc_view['max_buy_cost']:,.2f}"
+                    )
+                    actions_taken.append(
+                        f"High cash position identified: "
+                        f"${portfolio_analysis['cash_available']:,.2f} "
+                        f"({cash_percentage:.1f}%); deployable within budget & "
+                        f"cash floor: ${alloc_view['max_buy_cost']:,.2f}"
+                    )
+                else:
+                    logging.info(
+                        f"💰 High cash position ({cash_percentage:.1f}%) — "
+                        f"allocation budget unavailable this cycle"
+                    )
+                    actions_taken.append(
+                        f"High cash position identified: "
+                        f"${portfolio_analysis['cash_available']:,.2f} "
+                        f"({cash_percentage:.1f}%)"
+                    )
 
             # Action 4: Diversification recommendations
             if portfolio_analysis['concentration_risk'] > 60:
@@ -8790,9 +9403,30 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     logging.warning(f"⚠️ {symbol}: No position found")
                     return False
 
-                qty = int(abs(float(position.qty)))
-                if qty <= 0:
+                broker_qty = int(abs(float(position.qty)))
+                if broker_qty <= 0:
                     logging.warning(f"⚠️ {symbol}: No position to set stop-loss on")
+                    return False
+
+                # REBAL-60-30-10: a stop-loss is a SELL - it may never
+                # cover more shares than this bot can prove it owns
+                # (min(broker_qty, own_qty)). Fail closed when ownership
+                # cannot be proven.
+                sell_cap = self._sell_qty_cap(symbol, broker_qty)
+                if sell_cap <= 0:
+                    logging.info(
+                        f"🚫 {symbol}: no ledger-proven own "
+                        f"quantity - refusing to place a stop-loss"
+                    )
+                    return False
+                requested = (
+                    int(quantity) if quantity and int(quantity) > 0 else broker_qty
+                )
+                qty = int(min(broker_qty, sell_cap, requested))
+                if qty <= 0:
+                    logging.warning(
+                        f"⚠️ {symbol}: No sellable quantity to stop out"
+                    )
                     return False
 
                 # Check if shares are available for trading (not held for pending orders)
@@ -8871,6 +9505,49 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """Place a portfolio management order"""
         try:
             order_side = OrderSide.SELL if side.lower() == 'sell' else OrderSide.BUY
+
+            if order_side == OrderSide.SELL:
+                # REBAL-60-30-10: a portfolio SELL may never exceed the
+                # ledger-proven own quantity, and never exceeds the broker
+                # position either. Fail closed when ownership cannot be
+                # proven.
+                own_qty = self._proven_own_qty(symbol)
+                if own_qty <= 0:
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: no ledger-proven own quantity"
+                    )
+                    return False
+                broker_qty = self._broker_position_qty(symbol)
+                if broker_qty <= 0:
+                    # The broker bound is UNAVAILABLE (the position read
+                    # raised, or the symbol is absent from the broker
+                    # positions). An unavailable bound is NOT a licence to
+                    # sell: the requested amount is not a broker fact.
+                    # Fail closed - refuse the SELL and submit no order.
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: broker position unavailable - "
+                        f"no broker-side bound can be established"
+                    )
+                    return False
+                # Single source of truth for the bound: the helper already
+                # refuses when EITHER bound is unavailable.
+                sell_cap = self._sell_qty_cap(symbol, broker_qty)
+                if sell_cap <= 0:
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: no sellable quantity within "
+                        f"min(broker_qty, ledger-proven own_qty)"
+                    )
+                    return False
+                quantity = int(min(int(quantity), sell_cap))
+                if quantity <= 0:
+                    logging.info(
+                        f"🚫 Refusing portfolio SELL for "
+                        f"{symbol}: nothing sellable"
+                    )
+                    return False
 
             market_order_data = MarketOrderRequest(
                 symbol=symbol,

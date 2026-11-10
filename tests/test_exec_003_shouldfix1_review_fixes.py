@@ -529,6 +529,27 @@ def test_c1_tranche_submission_is_persisted_and_reconciled_to_filled(db):
     fake.check_sector_concentration = lambda s, d: (True, 0.0, 0.0, "ok")
     fake.check_correlation_risk = lambda s: (True, 0.0, [], "ok")
     fake.check_beta_exposure = lambda: (True, 1.0, "ok")
+    # REBAL-60-30-10: the tranche risk gate now consults the swing-runner
+    # attribution and the allocation-budget view. These stubs describe a
+    # HEALTHY, unrestricted account so these submission-persistence tests
+    # keep exercising their original behaviour. The gate's own budget and
+    # swing logic is covered in tests/test_rebal_60_30_10_guards.py.
+    fake.get_swing_runner_symbols = lambda: set()
+    fake.get_allocation_budget_view = lambda: {
+        "equity": 100000.0,
+        "cash": 100000.0,
+        "budget_pct": 60.0,
+        "cash_floor_pct": 10.0,
+        "long_term_budget": 60000.0,
+        "cash_floor": 10000.0,
+        "long_term_book_mv": 0.0,
+        "own_mv": 0.0,
+        "swing_mv": 0.0,
+        "unattributed_mv": 0.0,
+        "budget_room": 60000.0,
+        "max_buy_cost": 60000.0,
+        "by_symbol": {},
+    }
     fake._tranche_risk_gate = (
         lambda s, q, pr, **kw: SmartTradingBot._tranche_risk_gate(
             fake, s, q, pr, **kw
@@ -615,6 +636,27 @@ def test_c2_tranche_plan_is_not_re_executed_after_submission(db):
     fake.check_sector_concentration = lambda s, d: (True, 0.0, 0.0, "ok")
     fake.check_correlation_risk = lambda s: (True, 0.0, [], "ok")
     fake.check_beta_exposure = lambda: (True, 1.0, "ok")
+    # REBAL-60-30-10: the tranche risk gate now consults the swing-runner
+    # attribution and the allocation-budget view. These stubs describe a
+    # HEALTHY, unrestricted account so these submission-persistence tests
+    # keep exercising their original behaviour. The gate's own budget and
+    # swing logic is covered in tests/test_rebal_60_30_10_guards.py.
+    fake.get_swing_runner_symbols = lambda: set()
+    fake.get_allocation_budget_view = lambda: {
+        "equity": 100000.0,
+        "cash": 100000.0,
+        "budget_pct": 60.0,
+        "cash_floor_pct": 10.0,
+        "long_term_budget": 60000.0,
+        "cash_floor": 10000.0,
+        "long_term_book_mv": 0.0,
+        "own_mv": 0.0,
+        "swing_mv": 0.0,
+        "unattributed_mv": 0.0,
+        "budget_room": 60000.0,
+        "max_buy_cost": 60000.0,
+        "by_symbol": {},
+    }
     fake._tranche_risk_gate = (
         lambda s, q, pr, **kw: SmartTradingBot._tranche_risk_gate(
             fake, s, q, pr, **kw

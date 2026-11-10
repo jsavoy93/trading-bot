@@ -3928,3 +3928,109 @@ Durable facts from the round-5 fix of the two remaining no-stop gaps:
   `/root/.config/systemd/user/` while the test asserts it is not. It fails
   identically on the unmodified base commit — verify regressions by comparing
   failure SETS, not counts. `flake8`/`pyflakes` are NOT installed on this host.
+
+## PR #139 round 2 — REBAL-60-30-10 tranche/SELL guards (2026-11-09, agent/lt-budget-60-30-10-20261109)
+
+Durable facts from round 2 of PR #139 (the two must-fix blockers):
+
+- **A tranche BUY is a BUY and must obey the SAME money rules as the
+  initial entry.** `_tranche_risk_gate()` now consults
+  `get_allocation_budget_view()` LIVE (not the cached entry-time budget —
+  the account changes between tranche 1 and tranche 3). The tranche is
+  capped by `allocation_policy.cap_quantity_for_cost()` and must satisfy
+  `allocation_policy.buy_respects_cash_floor()`.
+  **FAIL CLOSED:** an unavailable budget view (account read failed) BLOCKS
+  the tranche — a broker order is irreversible, so an unverifiable budget
+  must never authorize a BUY. `max_buy_cost` below one share also blocks.
+- **The SELL path refuses foreign or unproven positions.** The broker
+  reports ONE position per symbol across sleeves (this bot + the external
+  swing runners share the paper account), so `_is_foreign_or_unproven_position(symbol)`
+  gates the SELL: swing-attributed OR absent from this bot's own FILLED
+  ledger rows -> the SELL is REFUSED (fail closed; the bot under-trades
+  instead of selling a position it does not own).
+- **The SELL quantity is capped to the LEDGER-PROVEN own quantity**
+  (`min(broker_qty, own_qty)`), never the raw broker quantity — the
+  broker position may include shares owned by another sleeve.
+- **The main bot must never ADD to a swing-runner symbol** — the guard
+  uses `get_swing_runner_symbols()` (broker order-label prefixes + runner
+  DBs) and now covers BOTH the initial BUY and the continuation/tranche
+  BUY path. A tranche is a continuation BUY, so it obeys the same rule.
+- **Asymmetric fail modes are intentional and must not be "fixed":**
+  - swing ATTRIBUTION READ failure -> FAIL OPEN (the swing-symbol set only
+    degrades to fewer evidence sources, so a failed read must never block a
+    legitimate BUY or tranche);
+  - swing ATTRIBUTION proving ownership is missing -> FAIL CLOSED on the
+    SELL side (sell safety comes from the ledger-proven ownership gate, NOT
+    from the swing-symbol guard).
+- **OBS-001 trace:** `swing_symbol_check` is a BUY-side check inserted
+  between `position_concentration_check` and `allocation_budget_check` in
+  `OBS_001_EXECUTION_CHECK_ORDER`. `OBS_001_SELL_OWNERSHIP_CHECK =
+  "position_ownership_check"` is SELL-only and is deliberately NOT part of
+  the BUY check order (same pattern as `position_existence_check`).
+- **Stub-bot harnesses must implement the new methods.** A `SimpleNamespace`
+  test bot without `get_allocation_budget_view` now fails the tranche gate
+  with "fail-closed" — that is the fail-closed path working, not a bug.
+  When adding tranche/BUY tests, stub BOTH `get_allocation_budget_view`
+  and `get_swing_runner_symbols`.
+
+## PR #139 round 3 — R2: portfolio-management SELL sizing (2026-11-09, agent/lt-budget-60-30-10-20261109)
+
+An independent review of round 2 returned **BLOCK** on R2. Durable facts:
+
+- **The "cap SELLs to `min(broker_qty, own_qty)`" rule was only applied to
+  the `execute_trade` SELL path.** The broker reports ONE position per
+  symbol across sleeves (this bot + the external swing runners share the
+  same paper account), so the RAW broker quantity can be LARGER than what
+  this bot owns. Any SELL sized from the raw broker quantity can therefore
+  dispose of shares belonging to another sleeve.
+- **Two portfolio-management SELL paths were still sizing from the raw
+  broker quantity** and are now fixed:
+  - the **concentration reduction** in `execute_portfolio_actions()`
+    (`reduce_qty = int(abs(position['qty']) * 0.25)`), and
+  - the **stop-loss** in `execute_portfolio_actions()` /
+    `_place_stop_loss_order()` (`qty = int(abs(float(position.qty)))`).
+  A stop-loss is a SELL — it must obey the same cap.
+- **New shared helpers on `SmartTradingBot`** (all fail closed):
+  - `_proven_own_qty(symbol)` -> ledger-proven own quantity, `0.0` when a
+    ledger read fails (a failed read proves NOTHING);
+  - `_sell_qty_cap(symbol, broker_qty)` -> `min(broker_qty, own_qty)`, `0`
+    when ownership cannot be proven;
+  - `_broker_position_qty(symbol)` -> the broker position quantity.
+- **The cap is enforced at BOTH levels:** the caller caps the requested
+  quantity AND `_place_portfolio_order()` / `_place_stop_loss_order()` cap
+  again against a fresh broker read. Defense in depth: a path that forgets
+  the caller-side cap still cannot over-sell.
+- **`_place_portfolio_order()` now returns `False` (no order) when
+  ownership is unproven.** It previously submitted whatever quantity it was
+  handed. Its only caller is the concentration-reduction path.
+- **An UNAVAILABLE broker bound is NOT a licence to sell (round-4 fix).**
+  The round-3 review of round 3 found `_place_portfolio_order()` still
+  failing OPEN on the broker side: when `_broker_position_qty()` returned
+  `0.0` — because the position read RAISED, or because the symbol was
+  ABSENT from the broker positions — the code substituted the *requested*
+  quantity as the broker bound (`broker_qty = float(quantity)`). That
+  REMOVED the broker bound instead of failing closed, and the order was
+  still submitted. The requested amount is not a broker fact.
+  `_place_portfolio_order()` now refuses the SELL (returns `False`, submits
+  no order) whenever the broker bound is unavailable, and routes the
+  remaining bound through the single `_sell_qty_cap()` helper so one
+  definition governs every caller. `_place_stop_loss_order()` already
+  behaved this way (it refused on a failed broker read) — the portfolio
+  path now matches it.
+  Durable rule: **for a SELL, a bound that cannot be read is 0, never the
+  requested amount.** Two distinct unavailability modes (read raised vs.
+  symbol absent) must both be covered by tests.
+- **Latent hazard (not a live path): `src/analysis/smart_orders/` places
+  SELL orders with no ownership cap.** The module is not imported anywhere
+  in the repository today (dead code in this deployment), so it is not a
+  live SELL path — but it must be capped before it is ever wired in.
+- **Ownership proof = FILLED ledger rows with a `filled_qty` count.**
+  `SUBMITTED` / `REJECTED` / `CANCELED` rows prove nothing
+  (`allocation_policy.own_net_qty_from_ledger_rows`). A test that needs a
+  legitimate SELL must seed a FILLED BUY row first.
+- **Stub-bot harnesses must bind the new helpers.** A `SimpleNamespace`
+  test bot without `_ledger_own_net_qty` / `_proven_own_qty` /
+  `_sell_qty_cap` / `_broker_position_qty` fails closed (proves nothing ->
+  refuses the SELL). That is the guard working, not a bug. This is why the
+  EXEC-004 ledger-fidelity tests now seed an ownership row and bind the
+  real helpers.

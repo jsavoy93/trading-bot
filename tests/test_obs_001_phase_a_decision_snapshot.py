@@ -237,6 +237,8 @@ class TestSchemaConstants:
             "pending_order_check",
             "cooldown_check",
             "position_concentration_check",
+            "swing_symbol_check",
+            "allocation_budget_check",
             "sector_concentration_check",
             "correlation_check",
             "beta_check",
@@ -1010,6 +1012,18 @@ class TestExecuteTradeTraceCollection:
         bot.mark_recent_trade = MagicMock()
         bot.send_email = MagicMock()
         bot._current_trades_details = []
+        # REBAL-60-30-10: allocation budget view stubbed so BUY-path tests
+        # proceed past the new allocation_budget_check, and so get_account
+        # call-count assertions still reflect only the margin check.
+        bot.get_allocation_budget_view = MagicMock(return_value={
+            "equity": 100_000.0, "cash": 10_000.0,
+            "budget_pct": 60.0, "cash_floor_pct": 10.0,
+            "long_term_budget": 60_000.0, "cash_floor": 10_000.0,
+            "long_term_book_mv": 20_000.0, "own_mv": 20_000.0,
+            "swing_mv": 0.0, "unattributed_mv": 0.0,
+            "budget_room": 40_000.0, "max_buy_cost": 40_000.0,
+            "by_symbol": {},
+        })
         return bot
 
     def test_trace_no_checks_recorded_outside_attempt(self, isolated_db):
@@ -1049,8 +1063,10 @@ class TestExecuteTradeTraceCollection:
             f"got {applied_names}"
         )
         not_run = [c for c in checks if not c.get("applied")]
-        assert len(not_run) == 8, (
-            f"expected 8 NOT RUN checks (margin already recorded); "
+        assert len(not_run) == 10, (
+            f"expected 10 NOT RUN checks (margin already recorded; "
+            f"REBAL-60-30-10 added swing_symbol_check and "
+            f"allocation_budget_check); "
             f"got {len(not_run)}"
         )
         for c in not_run:

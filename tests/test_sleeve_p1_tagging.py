@@ -120,6 +120,17 @@ def _bot_with_real_db():
         check_sector_concentration=Mock(return_value=(True, 0.0, 0.2, "ok")),
         check_correlation_risk=Mock(return_value=(True, 0.0, None, "ok")),
         check_beta_exposure=Mock(return_value=(True, 1.0, "ok")),
+        # REBAL-60-30-10: execute_trade now consults the allocation
+        # budget view; stubbed here (the real method reads the account).
+        get_allocation_budget_view=Mock(return_value={
+            "equity": 100_000.0, "cash": 10_000.0,
+            "budget_pct": 60.0, "cash_floor_pct": 10.0,
+            "long_term_budget": 60_000.0, "cash_floor": 10_000.0,
+            "long_term_book_mv": 20_000.0, "own_mv": 20_000.0,
+            "swing_mv": 0.0, "unattributed_mv": 0.0,
+            "budget_room": 40_000.0, "max_buy_cost": 40_000.0,
+            "by_symbol": {},
+        }),
         send_trade_notification=Mock(),
         invalidate_sector_cache=Mock(),
         mark_recent_trade=Mock(),
