@@ -167,10 +167,25 @@ CREATE TABLE IF NOT EXISTS positions(
   qty REAL,
   status TEXT NOT NULL DEFAULT 'pending_fill', -- pending_fill|open|closed
   exit_date TEXT, exit_price REAL, exit_reason TEXT,
+  exit_time TEXT,          -- C4-FIX-001: ISO timestamp of the exit FILL
+  realized_pnl REAL,       -- C4-FIX-001: (exit_price - entry_price) * qty
   created_ts TEXT NOT NULL,
   UNIQUE(symbol, signal_date)
 );
 """
+
+# columns added after the first release; added in place so the EXISTING
+# live_paper.db keeps working.
+MIGRATION_COLUMNS = (("exit_time", "TEXT"), ("realized_pnl", "REAL"))
+
+
+def migrate_positions(conn) -> None:
+    """Safe in-place migration: add the C4-FIX-001 columns to an EXISTING
+    positions table only when they are missing (PRAGMA table_info)."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+    for name, decl in MIGRATION_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE positions ADD COLUMN {name} {decl}")
 
 
 def open_db(path: Path):
@@ -179,6 +194,8 @@ def open_db(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    migrate_positions(conn)
+    conn.commit()
     return conn
 
 
@@ -294,13 +311,122 @@ def _fmt_qty(q: float) -> str:
     return str(int(q)) if float(q).is_integer() else str(q)
 
 
+# ------------------------------------------------------- exit reconciliation
+EXIT_KINDS = ("exit_sma5", "exit_time", "stop")
+PENDING_ORDER_STATUSES = ("new", "held", "accepted", "pending_new",
+                           "partially_filled", "pending_cancel")
+
+# Terminal broker statuses for an order that will NEVER fill. For an
+# ENTRY order this used to leave the position row stuck at
+# status='pending_fill' forever, holding a slot and sleeve notional for a
+# position that does not exist (C4-FIX-002).
+TERMINAL_NOT_FILLED_STATUSES = ("canceled", "cancelled", "expired",
+                                 "rejected")
+
+
+def is_terminal_not_filled(status) -> bool:
+    """True for a broker status that can never become filled."""
+    return str(status or "").lower() in TERMINAL_NOT_FILLED_STATUSES
+
+
+def mark_entry_canceled(conn, pid, coid_: str, status, exit_date=None) -> bool:
+    """Terminal-not-filled ENTRY order: close the position row as canceled
+    with NO P&L (no exit_price, realized_pnl NULL) and mark the orders row
+    with the broker's terminal status.
+
+    Idempotent: a row that is no longer 'pending_fill' is left alone.
+    Returns True when a position row was actually closed.
+    """
+    conn.execute("UPDATE orders SET status=? WHERE client_order_id=?",
+                 (str(status or "canceled").lower(), coid_))
+    cur = conn.execute(
+        "UPDATE positions SET status='closed', exit_date=?,"
+        " exit_reason='entry_canceled', exit_price=NULL,"
+        " realized_pnl=NULL WHERE id=? AND status='pending_fill'",
+        (exit_date, pid))
+    return cur.rowcount > 0
+
+
+def reconcile_exit_orders(conn, api, lookup_order, summary) -> int:
+    """Reconcile our exit/stop orders against the broker.
+
+    For every OPEN position, look up our exit ('exit_sma5'/'exit_time')
+    and resting 'stop' orders and apply the broker truth:
+
+      * filled   -> orders row status='filled'; the position is closed
+                    with exit_price (the broker's average fill price),
+                    exit_date/exit_time from filled_at and
+                    realized_pnl = (exit_price - entry_price) * qty
+      * canceled -> orders row status='canceled' (a canceled stop must
+                    never stay 'submitted')
+      * still working / unknown -> nothing is written (we never invent a
+                    fill, and we never crash on a missing order)
+
+    Returns the number of exit/stop fills recorded in this pass.
+    """
+    fills = 0
+    positions = conn.execute(
+        "SELECT id, symbol, qty, entry_price, exit_reason FROM positions"
+        " WHERE status='open'").fetchall()
+    for pid, sym, qty, entry_price, _prev_reason in positions:
+        rows = conn.execute(
+            "SELECT client_order_id, kind FROM orders"
+            " WHERE symbol=? AND kind IN ('exit_sma5','exit_time','stop')"
+            " AND status='submitted'", (sym,)).fetchall()
+        for coid_, kind in rows:
+            try:
+                order = lookup_order(coid_)
+            except Exception:
+                continue          # broker hiccup: leave it pending
+            if not order:
+                continue          # not found on the broker: leave pending
+            status = str(order.get("status") or "").lower()
+            if status in TERMINAL_NOT_FILLED_STATUSES:
+                # canceled / cancelled / expired / rejected: the order row
+                # must carry the broker's terminal status, never stay
+                # 'submitted' forever (C4-FIX-002).
+                conn.execute("UPDATE orders SET status=? WHERE"
+                             " client_order_id=?", (status, coid_))
+                continue
+            if status != "filled":
+                continue          # still working -> leave pending
+            fill_px = float(order.get("filled_avg_price") or 0) or None
+            if not fill_px:
+                continue
+            filled_at = order.get("filled_at") or ""
+            exit_date = filled_at[:10] or None
+            exit_time = filled_at or None
+            conn.execute("UPDATE orders SET status='filled' WHERE"
+                         " client_order_id=?", (coid_,))
+            pnl = None
+            if entry_price is not None and qty is not None:
+                # C4-FIX-002: the realized P&L follows the FILLED quantity
+                # (the broker truth), not the ordered quantity.
+                fill_qty = order.get("filled_qty")
+                q = float(fill_qty) if fill_qty not in (None, "") \
+                    else float(qty)
+                pnl = (fill_px - float(entry_price)) * q
+            reason = {"exit_sma5": "sma5", "exit_time": "time",
+                      "stop": "stop"}.get(kind, "stop")
+            conn.execute(
+                "UPDATE positions SET status='closed', exit_price=?,"
+                " exit_date=COALESCE(?, exit_date), exit_time=?,"
+                " realized_pnl=?, exit_reason=COALESCE(exit_reason, ?)"
+                " WHERE id=?",
+                (fill_px, exit_date, exit_time, pnl, reason, pid))
+            fills += 1
+    summary["exit_fills"] += fills
+    return fills
+
+
 # ------------------------------------------------------------------- engine
 def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFrame],
              run_ts: datetime | None = None) -> dict:
     run_ts = run_ts or datetime.now(timezone.utc)
     conn = open_db(db_path)
     summary = {"entries_submitted": 0, "stops_placed": 0, "exits_submitted": 0,
-               "fills_tracked": 0, "skipped": 0, "symbols": len(bars_by_symbol)}
+               "fills_tracked": 0, "exit_fills": 0, "skipped": 0,
+               "entries_canceled": 0, "symbols": len(bars_by_symbol)}
     acct = api.account()
     equity = float(acct["equity"])
     buying_power = float(acct["buying_power"])
@@ -339,42 +465,83 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
             return None
 
         # ---- 1) track entry fills -> create positions + place ATR stop
+        def place_stop(sym, sig_date, fill_px, fill_qty, atr14):
+            """Resting 3xATR protective stop for the FILLED quantity only."""
+            if not (fill_px and fill_qty):
+                return
+            stop_px = round(fill_px - sr.ATR_MULT * atr14, 2)
+            s_coid = coid(sym, "s", sig_date)
+            if known(s_coid) or stop_px <= 0:
+                return
+            o = api.submit({
+                "symbol": sym, "qty": _fmt_qty(fill_qty),
+                "side": "sell", "type": "stop",
+                "stop_price": str(stop_px),
+                "time_in_force": "gtc",
+                "client_order_id": s_coid,
+            })
+            record_order(s_coid, sym, "stop", "sell", fill_qty,
+                         stop_px, sig_date, o.get("id"))
+            open_coids[s_coid] = o
+            summary["stops_placed"] += 1
+
         for row in conn.execute(
-                "SELECT symbol, signal_date, signal_atr14, entry_order_coid"
-                " FROM positions WHERE status='pending_fill'").fetchall():
-            sym, sig_date, atr14, e_coid = row
+                "SELECT id, symbol, signal_date, signal_atr14,"
+                " entry_order_coid FROM positions"
+                " WHERE status='pending_fill'").fetchall():
+            pid, sym, sig_date, atr14, e_coid = row
             order = open_coids.get(e_coid)
             if order is None:
                 order = lookup_order(e_coid)
-            if order is None or order.get("status") not in ("filled",):
+            if order is None:
+                continue
+            status = str(order.get("status") or "").lower()
+            fill_qty = float(order.get("filled_qty") or 0) or None
+            # the STRICT fill quantity: 0.0 when the broker says zero
+            # filled (it must NOT fall back to the ORDERED quantity).
+            strict_fill_qty = (0.0 if order.get("filled_qty") in (None, "")
+                               else float(order.get("filled_qty") or 0))
+            if status in TERMINAL_NOT_FILLED_STATUSES:
+                # C4-FIX-002: the entry order died on the broker
+                # (canceled / expired / rejected). A ZERO fill closes the
+                # position row as canceled (no P&L) which frees its slot
+                # and its sleeve notional; a PARTIAL fill keeps the FILLED
+                # shares only (and stops them).
+                if strict_fill_qty > 0:
+                    fill_qty = strict_fill_qty
+                    fill_px = float(order.get("filled_avg_price") or 0) or None
+                    fill_date = (order.get("filled_at") or "")[:10] or None
+                    conn.execute("UPDATE orders SET status='partially_filled'"
+                                 " WHERE client_order_id=?", (e_coid,))
+                    conn.execute(
+                        "UPDATE positions SET status='open', entry_date=?,"
+                        " entry_price=?, qty=? WHERE id=?",
+                        (fill_date, fill_px, fill_qty, pid))
+                    summary["fills_tracked"] += 1
+                    place_stop(sym, sig_date, fill_px, fill_qty, atr14)
+                else:
+                    mark_entry_canceled(conn, pid, e_coid, status,
+                                        run_ts.date().isoformat())
+                    summary["entries_canceled"] += 1
+                continue
+            if status != "filled":
                 continue
             fill_px = float(order.get("filled_avg_price") or 0) or None
-            fill_qty = float(order.get("filled_qty") or 0) or None
             fill_date = (order.get("filled_at") or "")[:10] or None
             conn.execute("UPDATE orders SET status='filled' WHERE"
                          " client_order_id=?", (e_coid,))
             conn.execute(
                 "UPDATE positions SET status='open', entry_date=?,"
-                " entry_price=?, qty=? WHERE symbol=? AND signal_date=?"
-                " AND status='pending_fill'",
-                (fill_date, fill_px, fill_qty, sym, sig_date))
+                " entry_price=?, qty=? WHERE id=?",
+                (fill_date, fill_px, fill_qty, pid))
             summary["fills_tracked"] += 1
             # resting 3xATR stop
-            if fill_px and fill_qty:
-                stop_px = round(fill_px - sr.ATR_MULT * atr14, 2)
-                s_coid = coid(sym, "s", sig_date)
-                if not known(s_coid) and stop_px > 0:
-                    o = api.submit({
-                        "symbol": sym, "qty": _fmt_qty(fill_qty),
-                        "side": "sell", "type": "stop",
-                        "stop_price": str(stop_px),
-                        "time_in_force": "gtc",
-                        "client_order_id": s_coid,
-                    })
-                    record_order(s_coid, sym, "stop", "sell", fill_qty,
-                                 stop_px, sig_date, o.get("id"))
-                    open_coids[s_coid] = o
-                    summary["stops_placed"] += 1
+            place_stop(sym, sig_date, fill_px, fill_qty, atr14)
+
+        # ---- 1b) reconcile exit/stop orders with the broker (must run
+        # BEFORE the 'broker position qty <= 0' branch so a filled stop
+        # closes the position with the REAL fill price)
+        reconcile_exit_orders(conn, api, lookup_order, summary)
 
         # ---- 2) manage open positions: SMA5 / time exits as orders
         open_pos_rows = conn.execute(
@@ -499,6 +666,11 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                     (sym, sig_date, atr14, e_coid, run_ts.isoformat()))
                 open_syms.add(sym)
                 summary["entries_submitted"] += 1
+                # C4-FIX-001: this entry consumes sleeve budget for the
+                # REST of the run, so the next candidate is sized against
+                # the remaining sleeve (never more than 15% of equity in
+                # total, and never more than 10% of equity per name).
+                pending_notional += (qty or 0) * (price or 0)
         conn.commit()
     finally:
         conn.close()

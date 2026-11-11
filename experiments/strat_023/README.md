@@ -120,6 +120,12 @@ power), whole shares only; entries are skipped when one share is not
 affordable. Sleeve cash is reduced by open runner positions AND still-open
 runner entry orders.
 
+**Same-run accounting (C4-FIX-001)**: every entry submitted during a run
+immediately consumes sleeve budget (`qty × price` is added to the run's
+pending notional), so three qualifying signals in ONE run can never
+over-commit the sleeve. Committed + pending notional in a run stays
+<= 15% of equity, and no single entry exceeds 10% of equity.
+
 The sleeve fraction was capped DOWN from 30% to a fixed 15% of equity
 (Josh, 2026-11-03) and is configurable through `STRAT024_SLEEVE_EQUITY_FRAC`
 (a malformed or out-of-range value fails loudly at import). It is a
@@ -144,6 +150,86 @@ position-sizing parameter only — no entry/exit threshold is affected.
   triggering close — known honest divergence).
 - **10 trading days held** → same cancel-stop + market-sell path.
 
+### Exit order reconciliation (C4-FIX-001)
+
+Before the "broker position is flat" branch runs, the runner reconciles
+its own exit/stop orders against the broker:
+
+- broker says **filled** → the order row becomes `filled`, the position
+  is closed with the broker's `filled_avg_price`, `exit_date` /
+  `exit_time` from `filled_at`, the retained exit reason and
+  `realized_pnl = (exit_price − entry_price) × qty`, where the quantity is
+  the order's `filled_qty` when the broker provides one;
+- broker says **canceled** / **cancelled** / **expired** / **rejected** → the
+  order row takes that terminal status (a canceled stop never stays
+  `submitted`);
+- `new` / `held` / `accepted` / `pending_new` / `partially_filled` → the
+  order stays pending and nothing is written;
+- the broker does not know the order → it stays pending; the run does not
+  crash and no fill is invented.
+
+The `positions` table gained two columns, added in place by
+`open_db()` (`PRAGMA table_info` guarded, so an existing DB keeps
+working): `exit_time TEXT` and `realized_pnl REAL`. The run summary
+reports `fills_tracked` (entry fills) and `exit_fills` (exit/stop fills).
+
+### Canceled / expired / rejected ENTRY orders (C4-FIX-002)
+
+An entry order that ends in a terminal-not-filled state
+(`canceled` / `cancelled` / `expired` / `rejected`) is no longer left in
+`pending_fill` forever:
+
+- **partial fill** (`filled_qty > 0`): the FILLED shares stay as the position
+  (`status='open'`, `qty=filled_qty`, `entry_price=filled_avg_price`,
+  `entry_date` from `filled_at`) and the normal 3xATR protective stop is
+  placed for the FILLED quantity only;
+- **zero fill**: the position row is closed as canceled with NO P&L
+  (`status='closed'`, `exit_reason='entry_canceled'`, `exit_price` NULL,
+  `realized_pnl` NULL). That frees the MAX_POSITIONS slot and the sleeve
+  notional, and the `orders` row carries the broker's terminal status.
+
+### Cleaning up stale canceled entry rows (C4-FIX-002)
+
+One-off, idempotent batch command for rows that are already stale in the
+live paper DB:
+
+```bash
+# dry run (default — writes NOTHING, DB opened read-only)
+.venv/bin/python -m experiments.strat_023.cleanup_canceled_entries --db <path>
+
+# apply (only ever against a copy, by hand)
+.venv/bin/python -m experiments.strat_023.cleanup_canceled_entries --db <path> --apply
+```
+
+`--db` is REQUIRED (no default, so a bare invocation can never touch the live
+DB). The broker side is read-only (GET): an order that cannot be found on
+the broker leaves the row untouched (no invented fill), a partially filled
+order is left to the runner, and a terminal zero-fill order is closed exactly
+like the runner does it.
+
+### Backfilling missing exit prices (C4-FIX-001)
+
+Positions closed before this fix have `exit_price = NULL`. The one-off,
+idempotent backfill reads the real Alpaca paper fills:
+
+`--db` is REQUIRED (C4-FIX-002) — there is no default path, so a bare
+invocation can never touch the live paper DB.
+
+```bash
+# dry run (default — writes NOTHING, DB opened read-only)
+.venv/bin/python -m experiments.strat_023.backfill_exit_prices     --db experiments/strat_023/live_paper.db
+
+# apply (only ever against a copy, by hand)
+.venv/bin/python -m experiments.strat_023.backfill_exit_prices     --db experiments/strat_023/live_paper.db --apply
+
+# optional symbol filter
+... --db <path> --symbols AMD,AVTR,CRL
+```
+
+Dry run opens the database with the read-only URI
+`file:<path>?mode=ro`, skips rows that already have an `exit_price`, and
+never issues a write. The broker side is read-only.
+
 ### Idempotency
 
 Deterministic `client_order_id`s (`sl_short-<SYM>-e/s/x…-<YYYYMMDD>`)
@@ -167,6 +253,23 @@ and `positions` (`pending_fill → open → closed`).
 TRADING_BOT_PAPER_ONLY=1 TESTING=1 .venv/bin/python -m pytest \
     experiments/strat_023/test_live_paper_runner.py -p no:cacheprovider -v
 ```
+
+C4-FIX-002 tests (`experiments/strat_023/test_c4_fix_002.py`) prove the
+backfill dry-run counter (would-be updates are counted), the required
+`--db` on both one-off commands, the canceled / expired / rejected entry
+handling (zero fill closes the row with no P&L and frees the slot + sleeve,
+partial fill keeps the filled shares and places the 3xATR stop for that
+quantity only), the cleanup command (dry run by default, idempotent apply,
+unknown and partially filled orders left untouched) and the terminal
+exit/stop statuses plus P&L from `filled_qty` — all with a fake broker and
+temporary paths (no network, no live DB).
+
+C4-FIX-001 tests (`experiments/strat_023/test_c4_fix_001.py`) prove the
+same-run 15%/10% sleeve cap, exit-fill bookkeeping (exit price/time/P&L,
+position closed, order `filled`), canceled-stop bookkeeping, idempotent
+reconciliation, the missing-order case, the in-place schema migration and
+the backfill dry-run (no writes, idempotent, skips already-set rows) —
+all with a fake broker and temporary paths (no network, no live DB).
 
 Proves: all four guards, frozen C4/sleeve parameters, sizing caps
 (15%/10%/whole-share/skip), the configurable sleeve fraction and its

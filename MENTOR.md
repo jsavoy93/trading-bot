@@ -3764,3 +3764,36 @@ live ledger and stop the bot before `--apply` against the real file.
   comparing failure sets at the same wall-clock time, not by absolute counts.
 - The tranche plan lives in memory only (`self._pending_entry_tranches`): a
   restart loses the plan (SHOULD-FIX #2 from the EXEC-003 review, still open).
+
+## STRAT-023 C4 paper runner — one-off maintenance commands (C4-FIX-002, PR #143)
+
+`experiments/strat_023/` is a standalone, paper-only C4 runner (no `src/`
+imports). Two one-off maintenance commands exist; BOTH take a REQUIRED
+`--db` (no default — a bare invocation can never touch the live paper DB)
+and BOTH are dry-run by default (DB opened read-only, broker side read-only):
+
+```bash
+# backfill missing exit_price from real Alpaca PAPER fills
+.venv/bin/python -m experiments.strat_023.backfill_exit_prices --db <path> [--apply]
+
+# one-off, idempotent cleanup of stale canceled/expired/rejected ENTRY rows
+.venv/bin/python -m experiments.strat_023.cleanup_canceled_entries --db <path> [--apply]
+```
+
+Footguns fixed in C4-FIX-002 (both were silent-wrong):
+
+- the backfill's update counter used to live inside `if apply:`, so a dry
+  run always printed "0 WOULD be updated". Counters must be incremented in
+  BOTH modes; the dry run reports would-be updates.
+- `--db` used to default to the live `live_paper.db`.
+
+Entry-order handling in `live_paper_runner.run_once`: a terminal-not-filled
+entry order (`canceled` / `cancelled` / `expired` / `rejected`) is handled
+instead of staying `pending_fill` forever. A PARTIAL fill keeps the filled
+shares (`qty = filled_qty`, `entry_price = filled_avg_price`) and places the
+normal 3xATR stop for the FILLED quantity only; a ZERO fill closes the
+position row as canceled with NO P&L (`exit_reason='entry_canceled'`),
+which frees the MAX_POSITIONS slot and the sleeve notional. `filled_qty=0`
+must never fall back to the ORDERED quantity. Exit/stop orders take the
+broker's terminal status, and realized P&L uses the exit order's
+`filled_qty` when present.
