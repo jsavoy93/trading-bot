@@ -2,7 +2,7 @@
 
 > **EVERY TIME I work on this codebase: I must say out loud:\n> \"I'm reading MENTOR.md for instructions\"\n> before I answer any question about the trading bot.**
 
-<!-- BEGIN engineering-platform:shared-process sha=bc289a5d8db0 (generated from jsavoy93/engineering-platform process/ENGINEERING_PROCESS.md; do not edit here) -->
+<!-- BEGIN engineering-platform:shared-process sha=59aa97ca49f8 (generated from jsavoy93/engineering-platform process/ENGINEERING_PROCESS.md; do not edit here) -->
 ## Engineering process (shared by every manager)
 
 Source of truth: `process/ENGINEERING_PROCESS.md` in `jsavoy93/engineering-platform`.
@@ -37,6 +37,18 @@ writes (worktree, branch, commit, push) and opening the PR.
   or started agents from the shell, the job ends as NEEDS_REVIEW.
 - **No `--model` pins.** `--model` is ignored for managers, so your model plan
   and its fallbacks always apply.
+- **DONE means done.** The job ends as NEEDS_REVIEW, not DONE, when your final
+  report says BLOCKED, when no worker ran and there is no PR and no tests, when
+  a worker finished and you never reviewed its result, or when the wrong worker
+  agent was used. Never kill `oc-run`; it is the job's own runner.
+- **Review budget.** Once your worker has finished, your review gets at most
+  8 model calls or 400k tokens; after a platform block (below), 3 calls or
+  150k. Over that, oc-run stops you and sends the worker's own report as
+  NEEDS_REVIEW.
+- **Platform blocks are detected.** If OpenClaw refused your worker's action
+  with a guard nothing can override (for example `sqlite3` on a database under
+  `/root/.openclaw`), the job ends NEEDS_REVIEW with BLOCKED_BY_PLATFORM and the
+  exact refusal. Anything you try after that is listed in the evidence.
 
 ### The steps
 1. **Plan.** Pick one approved task. Write acceptance criteria and list the
@@ -63,9 +75,38 @@ writes (worktree, branch, commit, push) and opening the PR.
    - If something is missing (tests, MAP.md, scope), send it back with one
      more `sessions_spawn` that says exactly what to fix.
    - At most 2 fix rounds, then report FAILED.
+   - If the worker is blocked, follow "When the worker is blocked" below.
 5. **Report.** Use: Task / Decision / Branch / Commits / Tests / PR /
    Blockers / Next. oc-run adds its own evidence report to the doorbell ping,
    so don't pad yours.
+
+### When the worker is blocked: report and stop
+If the worker reports BLOCKED, FAILED or "needs a human", or OpenClaw refused
+the action (a guard refusal such as "external sqlite3 cannot open databases
+under the active OpenClaw state directory", or "exec denied: allowlist miss"
+on the step the task needs):
+- Write a short report and end your turn. It says what was blocked, the exact
+  refusal text, the worker's evidence (what it ran, what it changed: usually
+  nothing), and what decision or change would unblock it. For example: move
+  the data outside `/root/.openclaw`, or do the step in the project's own
+  code, after Josh agrees.
+- Don't look for a way around it. No reading OpenClaw docs or code, no tool
+  searches, no second worker to try another route or to write notes. A
+  refusal is the platform working, and the decision goes back to Josh.
+- The one exception: if the worker only stalled, crashed or hit a model usage
+  limit, re-spawn it once with the same brief. If that fails too, report.
+
+### For project bots writing a brief
+- The brief must let the manager hand the work to its worker with
+  `sessions_spawn` (`eng-worker` for Simply Done, Hatchling Frontier and other
+  non-trading projects; `trading-exec` for the trading bot).
+- Never write "no sessions_spawn", "no sessions_yield" or "do all work in this
+  one run". Managers can't write code, so oc-run rejects such a brief.
+- Don't ask for anything OpenClaw always refuses. The list is
+  `oc-run/oc-run-known-blocks.json`; today it covers running `sqlite3` on a
+  database file under `/root/.openclaw`. oc-run rejects that brief before it
+  starts. Do it in the project's own code (a script or scheduled job), or move
+  the data outside `/root/.openclaw`, and ask Josh first.
 
 ### Never
 - Merge, deploy, restart services, write to production databases, or touch
@@ -73,8 +114,9 @@ writes (worktree, branch, commit, push) and opening the PR.
   Deploy-type tasks go to the worker, and only with Josh's approval in the
   brief.
 - Start workers any way except `sessions_spawn`.
-- Work around a refused command. A refusal is the process working. If a step
-  truly needs something you can't do, delegate it or report BLOCKED.
+- Work around a refused command, yours or the worker's. A refusal is the
+  process working. If a step truly needs something you can't do, delegate it
+  or report BLOCKED.
 <!-- END engineering-platform:shared-process -->
 
 > **⚠️ This is a living document. When I discover something important, make a significant change, or fix a bug — I must update MENTOR.md and/or MEMORY.md so the knowledge persists.**
