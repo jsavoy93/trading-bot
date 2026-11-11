@@ -302,10 +302,26 @@ def test_entry_skips_symbol_main_bot_holds(tmp_path):
 
 
 def test_max_three_open_positions(tmp_path):
+    """MAX_POSITIONS is still 3, but the 15% sleeve (and the 10% per-name
+    cap) now BIND inside a single run: with equity 100k only 15k may be
+    committed at once, so the third candidate is skipped instead of
+    over-committing the sleeve (C4-FIX-001)."""
     lpr, api, db = fresh(tmp_path)
+    assert lpr.MAX_POSITIONS == 3
     bars = {s: make_bars() for s in ("A1", "A2", "A3", "A4")}
     s = lpr.run_once(db, api, bars)
-    assert s["entries_submitted"] == 3  # MAX_POSITIONS
+    # 15% sleeve of 100k = 15k; the per-name cap (10k) binds first, so one
+    # full entry + one shrunk entry fit, and the rest is skipped.
+    assert s["entries_submitted"] == 2
+    assert s["skipped"] >= 1
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT qty, price FROM orders WHERE kind='entry'").fetchall()
+    total = sum(q * p for q, p in rows)
+    assert total <= 15_000 + 1e-6
+    assert all(q * p <= 10_000 + 1e-6 for q, p in rows)
 
 
 # ------------------------------------------------------- fills, stop, exits

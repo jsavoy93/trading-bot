@@ -167,10 +167,25 @@ CREATE TABLE IF NOT EXISTS positions(
   qty REAL,
   status TEXT NOT NULL DEFAULT 'pending_fill', -- pending_fill|open|closed
   exit_date TEXT, exit_price REAL, exit_reason TEXT,
+  exit_time TEXT,          -- C4-FIX-001: ISO timestamp of the exit FILL
+  realized_pnl REAL,       -- C4-FIX-001: (exit_price - entry_price) * qty
   created_ts TEXT NOT NULL,
   UNIQUE(symbol, signal_date)
 );
 """
+
+# columns added after the first release; added in place so the EXISTING
+# live_paper.db keeps working.
+MIGRATION_COLUMNS = (("exit_time", "TEXT"), ("realized_pnl", "REAL"))
+
+
+def migrate_positions(conn) -> None:
+    """Safe in-place migration: add the C4-FIX-001 columns to an EXISTING
+    positions table only when they are missing (PRAGMA table_info)."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+    for name, decl in MIGRATION_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE positions ADD COLUMN {name} {decl}")
 
 
 def open_db(path: Path):
@@ -179,6 +194,8 @@ def open_db(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    migrate_positions(conn)
+    conn.commit()
     return conn
 
 
@@ -294,13 +311,84 @@ def _fmt_qty(q: float) -> str:
     return str(int(q)) if float(q).is_integer() else str(q)
 
 
+# ------------------------------------------------------- exit reconciliation
+EXIT_KINDS = ("exit_sma5", "exit_time", "stop")
+PENDING_ORDER_STATUSES = ("new", "held", "accepted", "pending_new",
+                           "partially_filled", "pending_cancel")
+
+
+def reconcile_exit_orders(conn, api, lookup_order, summary) -> int:
+    """Reconcile our exit/stop orders against the broker.
+
+    For every OPEN position, look up our exit ('exit_sma5'/'exit_time')
+    and resting 'stop' orders and apply the broker truth:
+
+      * filled   -> orders row status='filled'; the position is closed
+                    with exit_price (the broker's average fill price),
+                    exit_date/exit_time from filled_at and
+                    realized_pnl = (exit_price - entry_price) * qty
+      * canceled -> orders row status='canceled' (a canceled stop must
+                    never stay 'submitted')
+      * still working / unknown -> nothing is written (we never invent a
+                    fill, and we never crash on a missing order)
+
+    Returns the number of exit/stop fills recorded in this pass.
+    """
+    fills = 0
+    positions = conn.execute(
+        "SELECT id, symbol, qty, entry_price, exit_reason FROM positions"
+        " WHERE status='open'").fetchall()
+    for pid, sym, qty, entry_price, _prev_reason in positions:
+        rows = conn.execute(
+            "SELECT client_order_id, kind FROM orders"
+            " WHERE symbol=? AND kind IN ('exit_sma5','exit_time','stop')"
+            " AND status='submitted'", (sym,)).fetchall()
+        for coid_, kind in rows:
+            try:
+                order = lookup_order(coid_)
+            except Exception:
+                continue          # broker hiccup: leave it pending
+            if not order:
+                continue          # not found on the broker: leave pending
+            status = str(order.get("status") or "").lower()
+            if status == "canceled":
+                conn.execute("UPDATE orders SET status='canceled' WHERE"
+                             " client_order_id=?", (coid_,))
+                continue
+            if status != "filled":
+                continue          # still working -> leave pending
+            fill_px = float(order.get("filled_avg_price") or 0) or None
+            if not fill_px:
+                continue
+            filled_at = order.get("filled_at") or ""
+            exit_date = filled_at[:10] or None
+            exit_time = filled_at or None
+            conn.execute("UPDATE orders SET status='filled' WHERE"
+                         " client_order_id=?", (coid_,))
+            pnl = None
+            if entry_price is not None and qty is not None:
+                pnl = (fill_px - float(entry_price)) * float(qty)
+            reason = {"exit_sma5": "sma5", "exit_time": "time",
+                      "stop": "stop"}.get(kind, "stop")
+            conn.execute(
+                "UPDATE positions SET status='closed', exit_price=?,"
+                " exit_date=COALESCE(?, exit_date), exit_time=?,"
+                " realized_pnl=?, exit_reason=COALESCE(exit_reason, ?)"
+                " WHERE id=?",
+                (fill_px, exit_date, exit_time, pnl, reason, pid))
+            fills += 1
+    summary["exit_fills"] += fills
+    return fills
+
+
 # ------------------------------------------------------------------- engine
 def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFrame],
              run_ts: datetime | None = None) -> dict:
     run_ts = run_ts or datetime.now(timezone.utc)
     conn = open_db(db_path)
     summary = {"entries_submitted": 0, "stops_placed": 0, "exits_submitted": 0,
-               "fills_tracked": 0, "skipped": 0, "symbols": len(bars_by_symbol)}
+               "fills_tracked": 0, "exit_fills": 0, "skipped": 0,
+               "symbols": len(bars_by_symbol)}
     acct = api.account()
     equity = float(acct["equity"])
     buying_power = float(acct["buying_power"])
@@ -375,6 +463,11 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                                  stop_px, sig_date, o.get("id"))
                     open_coids[s_coid] = o
                     summary["stops_placed"] += 1
+
+        # ---- 1b) reconcile exit/stop orders with the broker (must run
+        # BEFORE the 'broker position qty <= 0' branch so a filled stop
+        # closes the position with the REAL fill price)
+        reconcile_exit_orders(conn, api, lookup_order, summary)
 
         # ---- 2) manage open positions: SMA5 / time exits as orders
         open_pos_rows = conn.execute(
@@ -499,6 +592,11 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                     (sym, sig_date, atr14, e_coid, run_ts.isoformat()))
                 open_syms.add(sym)
                 summary["entries_submitted"] += 1
+                # C4-FIX-001: this entry consumes sleeve budget for the
+                # REST of the run, so the next candidate is sized against
+                # the remaining sleeve (never more than 15% of equity in
+                # total, and never more than 10% of equity per name).
+                pending_notional += (qty or 0) * (price or 0)
         conn.commit()
     finally:
         conn.close()
