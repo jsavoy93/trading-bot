@@ -56,7 +56,9 @@ def open_rw(path: Path) -> sqlite3.Connection:
 def scan_rows(conn, symbols=None) -> list[sqlite3.Row]:
     q = ("SELECT id, symbol, signal_date, status, entry_price, qty,"
          " exit_date, exit_price, exit_reason FROM positions"
-         " WHERE status='closed'")
+         " WHERE status='closed'"
+         # C4-FIX-002: a canceled ENTRY never had an exit fill.
+         " AND (exit_reason IS NULL OR exit_reason<>'entry_canceled')")
     params: list = []
     if symbols:
         q += " AND symbol IN (%s)" % ",".join("?" * len(symbols))
@@ -172,7 +174,11 @@ def run(db_path: Path, apply: bool = False, symbols=None,
                 if coid_:
                     conn.execute("UPDATE orders SET status='filled' WHERE"
                                  " client_order_id=?", (coid_,))
-                written += 1
+            # C4-FIX-002: count the row in BOTH modes. The counter used to
+            # live inside `if apply:`, so a dry run always printed
+            # "DRY-RUN: 0 position(s) WOULD be updated" even when it had
+            # just listed three rows it would update.
+            written += 1
         if apply:
             conn.commit()
             print(f"APPLIED: {written} position(s) updated")
@@ -186,8 +192,10 @@ def run(db_path: Path, apply: bool = False, symbols=None,
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--db", default=str(HERE / "live_paper.db"),
-                    help="path to the live_paper.db file")
+    # C4-FIX-002: --db is REQUIRED. It used to default to the live
+    # live_paper.db, so a bare invocation could touch the live database.
+    ap.add_argument("--db", required=True,
+                    help="path to the live_paper.db file (REQUIRED)")
     ap.add_argument("--apply", action="store_true",
                     help="actually write (default is a dry run)")
     ap.add_argument("--symbols", default=None,
