@@ -148,6 +148,30 @@ class FakeAPI:
             del self.positions[sym]
 
 
+def append_bar(df, close=None, days=1):
+    """Append ONE new trading session AFTER the last bar.
+
+    The frozen C4 rule evaluates the SMA5 exit ONLY on a bar strictly
+    after the entry bar (the entry day is never an exit bar), so every
+    exit test must supply a post-entry session."""
+    last = df.iloc[-1]
+    t = pd.Timestamp(last["t"]) + pd.tseries.offsets.BDay(days)
+    c = float(last["c"]) + 25.0 if close is None else float(close)
+    row = {"t": t.strftime("%Y-%m-%dT00:00:00Z"), "o": c,
+           "h": c + 0.3, "l": c - 0.3, "c": c, "v": last["v"]}
+    return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+
+def shift_dates(df, last_date):
+    """Re-date the bars so the LAST bar falls on last_date (business
+    days). Used to place a post-entry session after a fixed entry_date."""
+    n = len(df)
+    days = pd.bdate_range(end=pd.Timestamp(last_date, tz="UTC"), periods=n)
+    out = df.copy()
+    out["t"] = days.strftime("%Y-%m-%dT00:00:00Z")
+    return out
+
+
 def fresh(tmp_path, **kw):
     import live_paper_runner as lpr
 
@@ -354,11 +378,9 @@ def test_stop_order_price_is_3xatr_below_fill(tmp_path):
 def test_sma5_exit_places_market_sell_and_cancels_stop(tmp_path):
     lpr, api, db = fresh(tmp_path)
     _seed_open_position(lpr, api, db)
-    # engineer latest close above SMA5: bounce the last close hard
-    bars = {"AAAA": make_bars()}
-    df = bars["AAAA"]
-    df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
-    df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+    # the SMA5 exit is only evaluated on a POST-ENTRY session (frozen C4
+    # rule): append one new bar whose close is far above the SMA5.
+    df = append_bar(make_bars())
     s = lpr.run_once(db, api, {"AAAA": df})
     assert s["exits_submitted"] == 1
     sells = [o for o in api.orders.values()
@@ -396,10 +418,7 @@ def test_never_sells_more_than_own_qty(tmp_path):
     # main bot bought more of the same symbol after our entry
     tracked = api.positions["AAAA"]
     api.positions["AAAA"] = tracked + 400
-    bars = {"AAAA": make_bars()}
-    df = bars["AAAA"]
-    df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
-    df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+    df = append_bar(make_bars())
     lpr.run_once(db, api, {"AAAA": df})
     sell = [o for o in api.orders.values()
             if o["side"] == "sell" and o["type"] == "market"][0]
@@ -499,9 +518,7 @@ def test_exit_runs_after_fill(tmp_path):
     api.fill_at = bars["AAAA"]["t"].iloc[-1]
     lpr.run_once(db, api, bars)
     lpr.run_once(db, api, bars)            # fill + stop
-    df = bars["AAAA"]
-    df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
-    df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+    df = append_bar(bars["AAAA"])          # a POST-ENTRY session
     s = lpr.run_once(db, api, {"AAAA": df})
     assert s["exits_submitted"] == 1
     import sqlite3
@@ -664,7 +681,9 @@ def test_dryrun_live_state_exits_run_on_next_pass(tmp_path):
     lpr.run_once(db, api, {}, run_ts=ts)   # fills + stops
     bars = {}
     for sym, *_ in LIVE_FILL_STATE:
-        df = make_bars()
+        # the fills are dated 2026-11-03, so the exit session must be a
+        # LATER date (the frozen C4 rule: no SMA5 exit on the entry day)
+        df = shift_dates(make_bars(), "2026-11-04")
         df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
         df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
         bars[sym] = df

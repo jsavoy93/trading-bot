@@ -41,10 +41,30 @@ Order tagging / collision safety:
 Exits (placed as orders — C4 rules, NOT relaxed):
   - 3xATR stop: a resting sell STOP order placed immediately after the
     entry fill (stop = fill_price - 3 * ATR14 of the signal day).
-  - close > SMA5 on the latest completed close: cancel the stop, submit
+  - close > SMA5 on a HOLDING-DAY close: cancel the stop, submit
     a market sell (fills at next open — honest divergence from the
     backtest, which exits at the triggering close).
   - 10 trading days held: same as SMA5 path (cancel stop, market sell).
+
+C4-FIX-003 (2026-11-12) — entry-day SMA5 + stop restoration:
+  * The SMA5 exit is evaluated ONLY on bars strictly AFTER the entry
+    bar (the frozen C4 rule: `s > entry_i`). The entry day is derived
+    from positions.entry_date, with the entry order's filled_at DATE as
+    the fallback — NEVER the signal_date (the signal day is the day
+    BEFORE the fill). Every post-entry bar is scanned, so a missing
+    session can never suppress an SMA5 exit. The XOM incident
+    (2026-11-11 entry, entry-day close 166.71 > SMA5 165.416) replaced
+    the protective stop with an SMA5 sell on the very day of the entry.
+  * ATR protection stays a RESTING 3xATR stop; no close-based ATR
+    market exit was added.
+  * RE-PROTECT: every open position that still holds shares must have
+    a working exit order OR a working 3xATR stop. When neither exists
+    (the stop is missing at the broker, or a submitted exit was
+    canceled / expired / rejected) a NEW 3xATR stop is restored with a
+    FRESH client_order_id — a known id is NEVER reused.
+  * A canceled stop's LOCAL order row is marked status='canceled' in
+    the same pass, and a position that is still open never keeps a
+    stale exit_date / exit_reason.
 """
 from __future__ import annotations
 
@@ -139,6 +159,21 @@ def coid(symbol: str, kind: str, ref_date: str) -> str:
     if len(cid) > COID_MAX:
         cid = cid[:COID_MAX]
     return cid
+
+
+def unique_coid(symbol: str, kind: str, ref_date: str, attempt: int = 1) -> str:
+    """A client_order_id that NEVER collides with an earlier one.
+
+    Attempt 1 keeps the historical deterministic format
+    ("sl_short-<sym>-<kind>-<yyyymmdd>"). When that id is already known
+    (local DB row OR still open at the broker) a "-rN" suffix is added so
+    a replacement order never reuses an id Alpaca would reject or that
+    the local ledger would mistake for the old order (C4-FIX-003)."""
+    if attempt <= 1:
+        return coid(symbol, kind, ref_date)
+    suffix = f"-r{attempt}"
+    base = f"{COID_PREFIX}-{symbol}-{kind}-{ref_date.replace('-', '')}"
+    return (base[: max(8, COID_MAX - len(suffix))] + suffix)[:COID_MAX]
 
 
 # ------------------------------------------------------------------ database
@@ -426,7 +461,8 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
     conn = open_db(db_path)
     summary = {"entries_submitted": 0, "stops_placed": 0, "exits_submitted": 0,
                "fills_tracked": 0, "exit_fills": 0, "skipped": 0,
-               "entries_canceled": 0, "symbols": len(bars_by_symbol)}
+               "entries_canceled": 0, "stops_replaced": 0,
+               "symbols": len(bars_by_symbol)}
     acct = api.account()
     equity = float(acct["equity"])
     buying_power = float(acct["buying_power"])
@@ -465,14 +501,32 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
             return None
 
         # ---- 1) track entry fills -> create positions + place ATR stop
-        def place_stop(sym, sig_date, fill_px, fill_qty, atr14):
-            """Resting 3xATR protective stop for the FILLED quantity only."""
+        def fresh_coid(sym, kind, ref_date, max_attempts=25):
+            """The first client_order_id for (symbol, kind, date) that is
+            NOT already known locally or still open at the broker. A
+            replacement order therefore NEVER reuses a known id."""
+            for attempt in range(1, max_attempts + 1):
+                c = unique_coid(sym, kind, ref_date, attempt)
+                if not known(c):
+                    return c
+            return None
+
+        def place_stop(sym, sig_date, fill_px, fill_qty, atr14,
+                       replaced=False):
+            """Resting 3xATR protective stop for the FILLED quantity only.
+
+            The stop id is derived with fresh_coid(): the historical
+            deterministic id is used when it is still free, otherwise a
+            '-rN' variant is used so the replacement never reuses an id
+            the broker or the local DB already knows (C4-FIX-003)."""
             if not (fill_px and fill_qty):
-                return
+                return None
             stop_px = round(fill_px - sr.ATR_MULT * atr14, 2)
-            s_coid = coid(sym, "s", sig_date)
-            if known(s_coid) or stop_px <= 0:
-                return
+            if stop_px <= 0:
+                return None
+            s_coid = fresh_coid(sym, "s", sig_date)
+            if s_coid is None:
+                return None
             o = api.submit({
                 "symbol": sym, "qty": _fmt_qty(fill_qty),
                 "side": "sell", "type": "stop",
@@ -484,6 +538,9 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                          stop_px, sig_date, o.get("id"))
             open_coids[s_coid] = o
             summary["stops_placed"] += 1
+            if replaced:
+                summary["stops_replaced"] += 1
+            return s_coid
 
         for row in conn.execute(
                 "SELECT id, symbol, signal_date, signal_atr14,"
@@ -545,14 +602,43 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
 
         # ---- 2) manage open positions: SMA5 / time exits as orders
         open_pos_rows = conn.execute(
-            "SELECT id, symbol, signal_date, qty, entry_order_coid"
+            "SELECT id, symbol, signal_date, qty, entry_order_coid,"
+            " entry_date, entry_price, signal_atr14"
             " FROM positions WHERE status='open'").fetchall()
         runner_qty_by_sym = {r[1]: (r[3] or 0.0) for r in open_pos_rows}
-        for pid, sym, sig_date, tracked_qty, e_coid in open_pos_rows:
+
+        def working_order_exists(sym: str, kinds: tuple) -> bool:
+            """True when at least one of OUR orders of these kinds is still
+            WORKING at the broker.
+
+            An order the broker does not know any more (never created,
+            expired and purged, canceled and purged) is NOT working - that
+            is exactly the XOM situation (local row 'submitted', no live
+            order at the broker). A broker hiccup is treated as 'working'
+            so a transient error never places a duplicate protective stop.
+            """
+            placeholders = ",".join("?" * len(kinds))
+            rows = conn.execute(
+                "SELECT client_order_id FROM orders WHERE symbol=? AND"
+                f" kind IN ({placeholders}) AND status='submitted'",
+                (sym, *kinds)).fetchall()
+            for (c,) in rows:
+                o = open_coids.get(c)
+                if o is None:
+                    try:
+                        o = lookup_order(c)
+                    except Exception:
+                        return True          # broker hiccup -> assume alive
+                if o is None:
+                    continue                 # the broker does not know it
+                if str(o.get("status") or "").lower() in PENDING_ORDER_STATUSES:
+                    return True
+            return False
+
+        for (pid, sym, sig_date, tracked_qty, e_coid, entry_date,
+             entry_price, atr14) in open_pos_rows:
             raw = bars_by_symbol.get(sym)
             df = sr.add_indicators(raw.copy()) if raw is not None and len(raw) >= sr.WARMUP_BARS else None
-            last_close = float(df["close"].iloc[-1]) if df is not None else None
-            last_sma5 = float(df["sma5"].iloc[-1]) if df is not None else None
             last_date = (df["date"].dt.strftime("%Y-%m-%d").iloc[-1]
                          if df is not None else run_ts.date().isoformat())
 
@@ -568,32 +654,84 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                     (last_date, pid))
                 continue
 
-            reason = None
-            if last_close is not None and last_sma5 is not None and last_close > last_sma5:
-                reason = "sma5"
-            else:
+            # ---- the ENTRY DAY (frozen C4 rule): the entry bar is never
+            # an SMA5 exit bar. positions.entry_date is authoritative;
+            # the entry order's filled_at DATE is the fallback. The
+            # signal_date is NEVER used (it is the day BEFORE the fill).
+            if not entry_date:
                 e_order = lookup_order(e_coid) or {}
-                e_fill = (e_order.get("filled_at") or "")[:10]
-                if e_fill and df is not None:
-                    dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
-                    if e_fill in dates:
-                        # entry day = day 1, latest completed close is the
-                        # last bar: days_held counts bars inclusive
-                        days_held = len(dates) - dates.index(e_fill)
+                entry_date = (e_order.get("filled_at") or "")[:10] or None
+
+            reason = None
+            if df is not None and entry_date:
+                bar_dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
+                # Bars STRICTLY AFTER the entry bar are scanned: a missing
+                # session must never suppress an SMA5 exit, so EVERY
+                # post-entry bar counts (the backtest would have exited on
+                # the FIRST such breach).
+                for i, d in enumerate(bar_dates):
+                    if d <= entry_date:
+                        continue
+                    if (float(df["close"].iloc[i])
+                            > float(df["sma5"].iloc[i])):
+                        reason = "sma5"
+                        break
+                if reason is None:
+                    # Time stop: entry day = day 1 (inclusive) and the
+                    # trigger is the same session count as before
+                    # (TIME_STOP sessions AFTER the entry bar). The rule
+                    # is unchanged - only the entry-day SOURCE changed.
+                    if entry_date in bar_dates:
+                        days_held = len(bar_dates) - bar_dates.index(entry_date)
                         if days_held >= sr.TIME_STOP:
                             reason = "time"
+            if reason and working_order_exists(
+                    sym, ("exit_sma5", "exit_time")):
+                # an exit order for this position is ALREADY working: never
+                # cancel the stop again and never submit a second exit.
+                reason = None
+            if reason and conn.execute(
+                    "SELECT 1 FROM orders WHERE symbol=? AND kind IN"
+                    " ('exit_sma5','exit_time') AND ref_date=? LIMIT 1",
+                    (sym, last_date)).fetchone():
+                # an exit order for THIS session already exists (it may have
+                # been canceled / expired / rejected): never spam a second
+                # exit for the same session - the position is protected by
+                # the re-protect path below instead.
+                reason = None
             if reason:
-                # cancel the resting stop, then market-sell OUR OWN qty only
-                s_coid = coid(sym, "s", sig_date)
-                stop = open_coids.get(s_coid)
-                if stop is None:
-                    stop = lookup_order(s_coid)
-                if stop and stop.get("status") in ("new", "held", "accepted",
-                                                   "pending_new", "partially_filled"):
-                    api.cancel(stop["id"])
-                x_coid = coid(sym, f"x{reason}", last_date)
+                # cancel the resting stop(s), then market-sell OUR OWN qty
+                # only. A canceled stop's LOCAL row is marked canceled in
+                # the same pass (it must never stay 'submitted').
+                stop_rows = conn.execute(
+                    "SELECT client_order_id FROM orders WHERE symbol=?"
+                    " AND kind='stop' AND status='submitted'",
+                    (sym,)).fetchall()
+                for (s_row,) in stop_rows:
+                    stop = open_coids.get(s_row)
+                    if stop is None:
+                        try:
+                            stop = lookup_order(s_row)
+                        except Exception:
+                            continue     # broker hiccup: leave it alone
+                    if stop is None:
+                        # the broker does not know this order at all: it
+                        # cannot protect the position -> mark it canceled
+                        conn.execute("UPDATE orders SET status='canceled'"
+                                     " WHERE client_order_id=?", (s_row,))
+                        continue
+                    b_status = str(stop.get("status") or "").lower()
+                    if b_status in PENDING_ORDER_STATUSES:
+                        api.cancel(stop["id"])
+                        conn.execute("UPDATE orders SET status='canceled'"
+                                     " WHERE client_order_id=?", (s_row,))
+                    elif is_terminal_not_filled(b_status):
+                        conn.execute("UPDATE orders SET status=?"
+                                     " WHERE client_order_id=?",
+                                     (b_status, s_row))
+                x_coid = fresh_coid(sym, f"x{reason}", last_date)
                 sell_qty = min(tracked_qty or 0.0, acct_qty)
-                if sell_qty > 0 and not known(x_coid):
+                if x_coid is not None and sell_qty > 0:
                     o = api.submit({
                         "symbol": sym, "qty": _fmt_qty(sell_qty),
                         "side": "sell", "type": "market",
@@ -602,10 +740,31 @@ def run_once(db_path: Path, api: PaperAPI, bars_by_symbol: dict[str, pd.DataFram
                     })
                     record_order(x_coid, sym, f"exit_{reason}", "sell",
                                  sell_qty, None, last_date, o.get("id"))
+                    open_coids[x_coid] = o
                     conn.execute(
                         "UPDATE positions SET exit_date=?, exit_reason=?"
                         " WHERE id=?", (last_date, reason, pid))
                     summary["exits_submitted"] += 1
+
+            # ---- 2b) RE-PROTECT: an open position with shares still held
+            # MUST have a working exit OR a working 3xATR stop.
+            #  * a canceled / expired / rejected exit leaves the position
+            #    unprotected -> a NEW 3xATR stop is restored under a
+            #    FRESH client_order_id (a known id is never reused);
+            #  * a missing stop at the broker is repaired the same way;
+            #  * the stale exit markers are cleared because the position
+            #    is still open (the exit never happened).
+            has_working_exit = working_order_exists(
+                sym, ("exit_sma5", "exit_time"))
+            has_working_stop = working_order_exists(sym, ("stop",))
+            if not has_working_exit:
+                conn.execute(
+                    "UPDATE positions SET exit_date=NULL, exit_reason=NULL"
+                    " WHERE id=? AND status='open'", (pid,))
+            if not has_working_exit and not has_working_stop:
+                if entry_price and tracked_qty and atr14:
+                    place_stop(sym, sig_date, entry_price, tracked_qty,
+                               atr14, replaced=True)
 
         # ---- 3) new entries on the latest completed close
         open_syms = {r[0] for r in conn.execute(
