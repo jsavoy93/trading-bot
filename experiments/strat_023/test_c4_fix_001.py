@@ -17,7 +17,8 @@ sys.path.insert(0, str(HERE))
 
 import live_paper_runner as lpr  # noqa: E402
 import shadow_runner as sr       # noqa: E402
-from test_live_paper_runner import FakeAPI, make_bars  # noqa: E402
+from test_live_paper_runner import (FakeAPI, append_bar,  # noqa: E402
+                                    make_bars, shift_dates)
 
 import backfill_exit_prices as bep  # noqa: E402
 
@@ -102,10 +103,9 @@ def test_exit_fill_writes_exit_price_time_and_pnl(tmp_path):
     realized P&L."""
     lpr, api, db = fresh(tmp_path)
     seed_open_position(lpr, api, db)
-    # trigger the SMA5 exit -> market sell is submitted
-    df = make_bars()
-    df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
-    df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+    # trigger the SMA5 exit on a POST-ENTRY session -> market sell is
+    # submitted (the entry bar itself never triggers an SMA5 exit)
+    df = append_bar(make_bars())
     s = lpr.run_once(db, api, {"AAAA": df})
     assert s["exits_submitted"] == 1
     x_coid = [c for c, o in api.orders.items()
@@ -166,9 +166,7 @@ def test_pending_exit_order_is_left_untouched(tmp_path):
     open and the order row 'submitted'."""
     lpr, api, db = fresh(tmp_path)
     seed_open_position(lpr, api, db)
-    df = make_bars()
-    df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
-    df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+    df = append_bar(make_bars())
     lpr.run_once(db, api, {"AAAA": df})
     x_coid = [c for c, o in api.orders.items()
               if o["type"] == "market" and o["side"] == "sell"][0]
@@ -185,9 +183,7 @@ def test_reconciliation_is_idempotent(tmp_path):
     no duplicate fills."""
     lpr, api, db = fresh(tmp_path)
     seed_open_position(lpr, api, db)
-    df = make_bars()
-    df.loc[df.index[-1], "c"] = float(df["c"].iloc[-1]) + 25.0
-    df.loc[df.index[-1], "h"] = float(df["h"].iloc[-1]) + 25.0
+    df = append_bar(make_bars())
     lpr.run_once(db, api, {"AAAA": df})
     x_coid = [c for c, o in api.orders.items()
               if o["type"] == "market" and o["side"] == "sell"][0]
