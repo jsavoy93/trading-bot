@@ -88,7 +88,11 @@ short; link files, not paragraphs.
   => `archive_dir_unavailable` and no rows are deleted. The nightly cap
   is `decision_history_prune_max_rows_per_night` (default 200000, batch
   size 5000) and the prune is skipped with a warning below 2 GB free.
+  DB-GROWTH-FIX-5: that max-rows setting is the ONLY nightly limit — the
+  batch count is derived from it (`ceil(max_rows / batch_size)`); the old
+  hidden 10-batch cap stopped the prune at 50 000 rows.
 - Tests: `tests/test_db_growth_fix_acceptance.py` (8 acceptance criteria),
+  `tests/test_db_growth_fix_5.py` (no hidden batch limit, direct + bot path),
   `tests/test_db_growth_fix_hold_suppression.py`,
   `tests/test_db_growth_fix_market_calendar.py`,
   `tests/test_db_growth_fix_4.py` (calendar pin, outcome-specific

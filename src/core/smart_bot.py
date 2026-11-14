@@ -8767,14 +8767,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             summary["error"] = "db_unavailable"
             return summary
         archive_dir = self._resolve_archive_dir()
+        batch_size = int(getattr(self, "decision_history_prune_batch_size", 5000))
+        max_rows = int(
+            getattr(self, "decision_history_prune_max_rows_per_night", 200000)
+        )
+        # DB-GROWTH-FIX-5: the batch count is derived from the max-rows
+        # setting so the setting is the ONLY nightly limit. With the
+        # default batch size of 5000 and the default cap of 200000 this
+        # is 40 batches (the old hidden limit of 10 stopped the prune
+        # at 50 000 rows).
+        max_batches = max(1, -(-max_rows // max(1, batch_size)))
         try:
             result = self.db.prune_decision_history(
                 retention_days=int(summary["retention_days"]),
-                batch_size=int(getattr(self, "decision_history_prune_batch_size", 5000)),
+                batch_size=batch_size,
                 archive_dir=archive_dir or None,
-                max_rows_per_night=int(
-                    getattr(self, "decision_history_prune_max_rows_per_night", 200000)
-                ),
+                max_batches=max_batches,
+                max_rows_per_night=max_rows,
             )
         except Exception as e:
             summary["error"] = str(e)[:200]

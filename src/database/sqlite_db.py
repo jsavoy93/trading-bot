@@ -1968,7 +1968,7 @@ class SQLiteDB:
         retention_days: int,
         batch_size: int = 5000,
         archive_dir: Optional[str] = None,
-        max_batches: int = 10,
+        max_batches: Optional[int] = None,
         max_rows_per_night: int = 200000,
     ) -> Dict:
         """Delete decision_history rows older than ``retention_days``.
@@ -2004,7 +2004,14 @@ class SQLiteDB:
 
         ``max_rows_per_night`` caps the number of PARENT rows this
         call may delete (default 200000). The prune stops as soon as
-        the cap is reached.
+        the cap is reached. This cap is the ONLY nightly limit.
+
+        DB-GROWTH-FIX-5: the batch count is DERIVED from the cap
+        (``ceil(max_rows_per_night / batch_size)``). There is no
+        hidden batch-count limit any more: a cap of 200000 rows with
+        batches of 5000 runs 40 batches, not 10. ``max_batches`` may
+        still be passed explicitly by a caller that wants a smaller
+        bound, but it is never set by the nightly path.
 
         The prune NEVER touches ``trades``, ``positions``, ``orders``,
         ``order_events`` or any other trading table.
@@ -2026,6 +2033,7 @@ class SQLiteDB:
             "batches": 0,
             "archived_files": [],
             "max_rows_per_night": max_rows_per_night,
+            "max_batches": None,
             "error": None,
         }
 
@@ -2045,7 +2053,20 @@ class SQLiteDB:
             )
             return summary
 
-        for _ in range(max(1, int(max_batches))):
+        # DB-GROWTH-FIX-5: the number of batches is derived from the
+        # max-rows cap so the cap is the ONLY nightly limit. A hidden
+        # fixed batch count (10) used to stop the prune at 50 000 rows
+        # with the default batch size of 5000.
+        if max_batches is None:
+            effective_max_batches = max(
+                1,
+                -(-max_rows_per_night // batch_size),  # ceil division
+            )
+        else:
+            effective_max_batches = max(1, int(max_batches))
+        summary["max_batches"] = effective_max_batches
+
+        for _ in range(effective_max_batches):
             if summary["parents_deleted"] >= max_rows_per_night:
                 break
             remaining = max_rows_per_night - summary["parents_deleted"]
