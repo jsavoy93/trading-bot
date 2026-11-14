@@ -166,3 +166,6 @@ experiments/strat_026/__pycache__/
 experiments/strat_026/_run_*.log
 experiments/swing_paper/logs/
 experiments/swing_paper/KILL_SWITCH
+
+# DB-GROWTH-FIX-3: pruned decision_history archives (gzip JSONL) are local artifacts
+research_data/db_archive/

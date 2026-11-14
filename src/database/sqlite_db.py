@@ -2,6 +2,8 @@
 SQLite database integration - single source of truth for all bot data.
 Replaces Supabase REST API with a local SQLite database.
 """
+import base64
+import gzip
 import sqlite3
 import logging
 import json
@@ -1758,6 +1760,445 @@ class SQLiteDB:
         except Exception as e:
             logging.debug(f"Error finalizing decision_history for {cycle_id}/{symbol}: {e}")
             return False
+
+    # ── DB-GROWTH-FIX: dedupe lookup + retention pruning ──────────────────
+    # DB-GROWTH-FIX reduces decision_history growth. These helpers give the
+    # runtime path a cheap way to answer "what did we last persist for this
+    # symbol?" and to prune old rows in small batches outside market hours.
+    #
+    # FAIL-SAFE CONTRACT: every lookup helper returns None/False when the
+    # query itself fails. Callers MUST interpret that as "no prior state"
+    # and therefore write the full row. A failed lookup may never cause a
+    # decision row to be dropped.
+
+    def get_latest_decision_history(self, symbol: str) -> Optional[Dict]:
+        """Return the most recent decision_history row for ``symbol``.
+
+        Returns a dict with ``id``, ``cycle_id``, ``cycle_start`` and the
+        parsed ``decision_snapshot`` (None if it cannot be parsed), or
+        ``None`` when no row exists or the lookup failed.
+        """
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT id, cycle_id, symbol, cycle_start, decision_snapshot "
+                    "FROM decision_history WHERE symbol = ? "
+                    "ORDER BY cycle_start DESC, id DESC LIMIT 1",
+                    (symbol,),
+                ).fetchone()
+            if row is None:
+                return None
+            try:
+                snapshot = json.loads(row["decision_snapshot"])
+            except Exception:
+                snapshot = None
+            return {
+                "id": row["id"],
+                "cycle_id": row["cycle_id"],
+                "cycle_start": row["cycle_start"],
+                "decision_snapshot": snapshot,
+            }
+        except Exception as e:
+            logging.debug(
+                f"get_latest_decision_history failed for {symbol}: {e}"
+            )
+            return None
+
+    # ── DB-GROWTH-FIX-4: per-table gzip JSONL archives ───────────────────
+    # Every deleted row is archived BEFORE it is deleted, one separate
+    # gzip JSONL file PER TABLE:
+    #
+    #   decision_history_<stamp>.jsonl.gz
+    #   decision_gate_evaluations_<stamp>.jsonl.gz
+    #   decision_execution_checks_<stamp>.jsonl.gz
+    #
+    # Each file holds one JSON object per row with ALL columns of that
+    # row. BLOB values are stored base64-encoded under the
+    # ``__blob_b64__`` key so the archive stays valid JSON.
+    #
+    # The archive is written, closed, fsync'ed, read back and its JSON
+    # line count is verified BEFORE any row of that table is deleted.
+
+    ARCHIVE_BLOB_KEY = "__blob_b64__"
+
+    @staticmethod
+    def _encode_archive_value(value: Any) -> Any:
+        """Return a JSON-serializable representation of a DB value.
+
+        BLOB values (``bytes`` / ``bytearray`` / ``memoryview``) are
+        base64-encoded and wrapped in a dict under
+        :attr:`ARCHIVE_BLOB_KEY`. Everything else is returned as-is.
+        """
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return {
+                SQLiteDB.ARCHIVE_BLOB_KEY: base64.b64encode(
+                    bytes(value)
+                ).decode("ascii")
+            }
+        return value
+
+    @classmethod
+    def _archive_rows_to_gzip_jsonl(
+        cls, rows, archive_dir: str, table_name: str
+    ) -> str:
+        """Write ``rows`` to a gzip JSONL archive file and return its path.
+
+        The file is closed and fsync'ed before it is returned, so the
+        caller can verify it by reading it back. Existing files are
+        never overwritten: a numeric suffix is appended when a file of
+        the same name already exists.
+        """
+        os.makedirs(archive_dir, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = os.path.join(archive_dir, f"{table_name}_{stamp}.jsonl.gz")
+        counter = 1
+        while os.path.exists(path):
+            path = os.path.join(
+                archive_dir, f"{table_name}_{stamp}_{counter}.jsonl.gz"
+            )
+            counter += 1
+        raw = open(path, "wb")
+        try:
+            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as handle:
+                for row in rows:
+                    payload = {
+                        key: cls._encode_archive_value(value)
+                        for key, value in dict(row).items()
+                    }
+                    handle.write(
+                        (json.dumps(payload, default=str) + "\n").encode("utf-8")
+                    )
+            raw.flush()
+            os.fsync(raw.fileno())
+        except Exception:
+            # A partial archive file is never left behind: it could be
+            # mistaken for a complete archive later.
+            try:
+                raw.close()
+            except Exception:
+                pass
+            try:
+                os.remove(path)
+            except Exception as e:
+                logging.warning(
+                    f"DB-GROWTH-FIX: could not remove partial archive {path}: {e}"
+                )
+            raise
+        finally:
+            try:
+                raw.close()
+            except Exception:
+                pass
+        return path
+
+    @classmethod
+    def _archive_decision_history_rows(cls, rows, archive_dir: str) -> str:
+        """Archive ``decision_history`` rows to a gzip JSONL file.
+
+        DB-GROWTH-FIX archive format: one JSON object per line, ALL
+        columns of the row, gzip compressed, named
+        ``decision_history_<UTC timestamp>.jsonl.gz`` inside
+        ``archive_dir``. The file is CLOSED and fsync'ed before this
+        function returns so the caller can verify it by reading it back.
+
+        Returns the archive path.
+        """
+        return cls._archive_rows_to_gzip_jsonl(
+            rows, archive_dir, "decision_history"
+        )
+
+    @classmethod
+    def _archive_gate_evaluation_rows(cls, rows, archive_dir: str) -> str:
+        """Archive ``decision_gate_evaluations`` rows to their own file."""
+        return cls._archive_rows_to_gzip_jsonl(
+            rows, archive_dir, "decision_gate_evaluations"
+        )
+
+    @classmethod
+    def _archive_execution_check_rows(cls, rows, archive_dir: str) -> str:
+        """Archive ``decision_execution_checks`` rows to their own file."""
+        return cls._archive_rows_to_gzip_jsonl(
+            rows, archive_dir, "decision_execution_checks"
+        )
+
+    @staticmethod
+    def _count_archive_rows(path: str) -> int:
+        """Count the JSON lines in a gzip JSONL archive file.
+
+        Returns -1 when the file cannot be read (fail-safe: the caller
+        must then NOT delete the rows it wanted to archive).
+        """
+        try:
+            count = 0
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        count += 1
+            return count
+        except Exception as e:
+            logging.warning(f"DB-GROWTH-FIX: could not read back archive {path}: {e}")
+            return -1
+
+    @staticmethod
+    def _remove_archive_files(paths) -> None:
+        """Delete partial archive files (best effort, never raises)."""
+        for path in paths or []:
+            try:
+                os.remove(path)
+            except Exception as e:
+                logging.warning(
+                    f"DB-GROWTH-FIX: could not remove partial archive {path}: {e}"
+                )
+
+    @staticmethod
+    def _dated_archive_dir(archive_dir: str) -> str:
+        """Return the dated sub-directory used for today's archives.
+
+        The archive files live in ``<archive_dir>/<YYYY-MM-DD>/`` so
+        that separate nights never mix and an existing archive is never
+        overwritten. The directory is created when missing.
+        """
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        dated = os.path.join(archive_dir, day)
+        os.makedirs(dated, exist_ok=True)
+        return dated
+
+    def prune_decision_history(
+        self,
+        retention_days: int,
+        batch_size: int = 5000,
+        archive_dir: Optional[str] = None,
+        max_batches: Optional[int] = None,
+        max_rows_per_night: int = 200000,
+    ) -> Dict:
+        """Delete decision_history rows older than ``retention_days``.
+
+        DB-GROWTH-FIX. The rows are deleted in SMALL BATCHES so the
+        SQLite write lock is never held for long. Child rows in
+        ``decision_gate_evaluations`` and ``decision_execution_checks``
+        are deleted FIRST — they reference the parent through
+        ``decision_history_id`` (never through (cycle_id, symbol)).
+
+        ARCHIVE CONTRACT (DB-GROWTH-FIX-3 / FIX-4):
+          1. The rows that are about to be deleted are written to a
+             SEPARATE gzip JSONL archive file PER TABLE (one JSON
+             object per row, ALL columns, BLOB values base64-encoded):
+             ``decision_history_<stamp>.jsonl.gz``,
+             ``decision_gate_evaluations_<stamp>.jsonl.gz`` and
+             ``decision_execution_checks_<stamp>.jsonl.gz``.
+          2. Each archive file is written, CLOSED, fsync'ed, read back
+             and its JSON line count is verified against the number of
+             rows of that table that are about to be deleted — BEFORE
+             the rows of that table are deleted.
+          3. ONLY THEN are the rows deleted.
+          4. If the count does not match, or the archive write fails,
+             the batch is NOT deleted (keeping data beats losing it)
+             and the error is recorded in the returned summary. Partial
+             archive files are removed.
+          5. No archive directory (or an unusable one) is a hard error:
+             ``archive_dir_unavailable``. Nothing is deleted without a
+             verified archive.
+
+        The archive write happens OUTSIDE the SQLite write transaction,
+        so the write lock is never held during the gzip write.
+
+        ``max_rows_per_night`` caps the number of PARENT rows this
+        call may delete (default 200000). The prune stops as soon as
+        the cap is reached. This cap is the ONLY nightly limit.
+
+        DB-GROWTH-FIX-5: the batch count is DERIVED from the cap
+        (``ceil(max_rows_per_night / batch_size)``). There is no
+        hidden batch-count limit any more: a cap of 200000 rows with
+        batches of 5000 runs 40 batches, not 10. ``max_batches`` may
+        still be passed explicitly by a caller that wants a smaller
+        bound, but it is never set by the nightly path.
+
+        The prune NEVER touches ``trades``, ``positions``, ``orders``,
+        ``order_events`` or any other trading table.
+
+        Returns a summary dict with the counters.
+        """
+        retention_days = max(0, int(retention_days))
+        batch_size = max(1, int(batch_size))
+        max_rows_per_night = max(0, int(max_rows_per_night))
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat()
+        summary: Dict[str, Any] = {
+            "cutoff": cutoff,
+            "retention_days": retention_days,
+            "parents_deleted": 0,
+            "gate_rows_deleted": 0,
+            "check_rows_deleted": 0,
+            "batches": 0,
+            "archived_files": [],
+            "max_rows_per_night": max_rows_per_night,
+            "max_batches": None,
+            "error": None,
+        }
+
+        # ── Step 0: the archive directory must exist and be writable ──
+        if not archive_dir:
+            summary["error"] = (
+                "archive_dir_unavailable: no archive directory configured; "
+                "rows were NOT deleted"
+            )
+            return summary
+        try:
+            dated_dir = self._dated_archive_dir(str(archive_dir))
+        except Exception as e:
+            summary["error"] = (
+                f"archive_dir_unavailable: cannot create archive directory "
+                f"{archive_dir!r}: {str(e)[:160]}; rows were NOT deleted"
+            )
+            return summary
+
+        # DB-GROWTH-FIX-5: the number of batches is derived from the
+        # max-rows cap so the cap is the ONLY nightly limit. A hidden
+        # fixed batch count (10) used to stop the prune at 50 000 rows
+        # with the default batch size of 5000.
+        if max_batches is None:
+            effective_max_batches = max(
+                1,
+                -(-max_rows_per_night // batch_size),  # ceil division
+            )
+        else:
+            effective_max_batches = max(1, int(max_batches))
+        summary["max_batches"] = effective_max_batches
+
+        for _ in range(effective_max_batches):
+            if summary["parents_deleted"] >= max_rows_per_night:
+                break
+            remaining = max_rows_per_night - summary["parents_deleted"]
+            this_batch = min(batch_size, remaining)
+
+            # ── Step 1: read the candidate rows (READ transaction) ──
+            try:
+                with _get_conn() as conn:
+                    # Robust cutoff comparison: rows may carry their
+                    # cycle_start in slightly different ISO shapes
+                    # ("...+00:00" vs "...Z"). julianday() normalizes
+                    # both; the string comparison is only a fallback
+                    # for rows whose timestamp cannot be parsed at all
+                    # (a NULL julianday must not make the row immortal).
+                    rows = conn.execute(
+                        "SELECT * FROM decision_history "
+                        "WHERE (julianday(cycle_start) IS NOT NULL "
+                        "       AND julianday(cycle_start) < julianday(?)) "
+                        "   OR (julianday(cycle_start) IS NULL "
+                        "       AND cycle_start < ?) "
+                        "ORDER BY id LIMIT ?",
+                        (cutoff, cutoff, this_batch),
+                    ).fetchall()
+            except Exception as e:
+                summary["error"] = str(e)[:200]
+                break
+            if not rows:
+                break
+
+            ids = [row["id"] for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+
+            # ── Step 2: read the child rows of this batch ──
+            try:
+                with _get_conn() as conn:
+                    gate_rows = conn.execute(
+                        "SELECT * FROM decision_gate_evaluations "
+                        f"WHERE decision_history_id IN ({placeholders})",
+                        ids,
+                    ).fetchall()
+                    check_rows = conn.execute(
+                        "SELECT * FROM decision_execution_checks "
+                        f"WHERE decision_history_id IN ({placeholders})",
+                        ids,
+                    ).fetchall()
+            except Exception as e:
+                summary["error"] = str(e)[:200]
+                break
+
+            # ── Step 3: archive each table OUTSIDE the write
+            # transaction, then verify that table's archive ──
+            written: List[str] = []
+            try:
+                archive_path = self._archive_decision_history_rows(
+                    rows, dated_dir
+                )
+                written.append(archive_path)
+                archived = self._count_archive_rows(archive_path)
+                if archived != len(rows):
+                    raise RuntimeError(
+                        f"archive_row_count_mismatch: decision_history expected "
+                        f"{len(rows)}, archive contains {archived}"
+                    )
+
+                if gate_rows:
+                    gate_path = self._archive_gate_evaluation_rows(
+                        gate_rows, dated_dir
+                    )
+                    written.append(gate_path)
+                    archived = self._count_archive_rows(gate_path)
+                    if archived != len(gate_rows):
+                        raise RuntimeError(
+                            f"archive_row_count_mismatch: "
+                            f"decision_gate_evaluations expected "
+                            f"{len(gate_rows)}, archive contains {archived}"
+                        )
+
+                if check_rows:
+                    check_path = self._archive_execution_check_rows(
+                        check_rows, dated_dir
+                    )
+                    written.append(check_path)
+                    archived = self._count_archive_rows(check_path)
+                    if archived != len(check_rows):
+                        raise RuntimeError(
+                            f"archive_row_count_mismatch: "
+                            f"decision_execution_checks expected "
+                            f"{len(check_rows)}, archive contains {archived}"
+                        )
+            except Exception as e:
+                # Nothing is deleted. Partial archive files are removed.
+                self._remove_archive_files(written)
+                message = str(e)
+                if "archive_row_count_mismatch" in message:
+                    summary["error"] = (
+                        f"{message}; batch NOT deleted"
+                    )
+                else:
+                    summary["error"] = (
+                        f"archive_write_failed: {message[:180]}; "
+                        f"batch NOT deleted"
+                    )
+                break
+            summary["archived_files"].extend(written)
+
+            # ── Step 4: delete the batch (short write transaction) ──
+            try:
+                with _get_conn() as conn:
+                    gate_deleted = conn.execute(
+                        "DELETE FROM decision_gate_evaluations "
+                        f"WHERE decision_history_id IN ({placeholders})",
+                        ids,
+                    ).rowcount
+                    check_deleted = conn.execute(
+                        "DELETE FROM decision_execution_checks "
+                        f"WHERE decision_history_id IN ({placeholders})",
+                        ids,
+                    ).rowcount
+                    parent_deleted = conn.execute(
+                        f"DELETE FROM decision_history WHERE id IN ({placeholders})",
+                        ids,
+                    ).rowcount
+            except Exception as e:
+                summary["error"] = str(e)[:200]
+                break
+            summary["parents_deleted"] += max(0, parent_deleted or 0)
+            summary["gate_rows_deleted"] += max(0, gate_deleted or 0)
+            summary["check_rows_deleted"] += max(0, check_deleted or 0)
+            summary["batches"] += 1
+            if not parent_deleted:
+                break
+        return summary
 
     # ── PHASE-C14B-1: Normalized analytics persistence helpers ────────────
     # These helpers run INSIDE the finalize_decision_history transaction
