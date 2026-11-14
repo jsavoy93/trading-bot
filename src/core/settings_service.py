@@ -228,12 +228,27 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
     "decision_history_archive_dir": StrategySetting(
         "decision_history_archive_dir", "research_data/db_archive", "str",
         None, None, None,
-        "Directory for the gzip JSONL archive of pruned decision_history "
-        "rows (one JSON object per line, all columns). Relative paths are "
-        "resolved against the repository root. The archive is written, "
-        "closed and read back (line count verified) BEFORE any row is "
+        "Directory for the gzip JSONL archive of pruned rows. One SEPARATE "
+        "gzip JSONL file per table (decision_history, "
+        "decision_gate_evaluations, decision_execution_checks), one JSON "
+        "object per line, all columns, BLOB values base64-encoded. A "
+        "relative path is resolved against the directory of the resolved "
+        "database file (so the default lands in research_data/db_archive "
+        "beside the database); an absolute path is used as configured. "
+        "Archives are written into a dated sub-folder and never overwrite "
+        "an existing archive. Each archive is written, closed, fsynced and "
+        "read back (line count verified) BEFORE the rows of that table are "
         "deleted; if the write fails or the count mismatches the rows are "
         "kept and the error is recorded. Observability only.",
+        "Database Growth",
+    ),
+    "decision_history_prune_max_rows_per_night": StrategySetting(
+        "decision_history_prune_max_rows_per_night", 200000, "int", 1000,
+        10000000, 1000,
+        "Maximum number of decision_history parent rows the nightly "
+        "retention pruning job may delete per night. The job stops once "
+        "the cap is reached and continues on the next night. "
+        "Observability only.",
         "Database Growth",
     ),
 }

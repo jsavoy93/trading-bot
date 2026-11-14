@@ -3,6 +3,8 @@ Enhanced trading bot with simple REST API database integration.
 Works around package conflicts by using direct HTTP requests.
 """
 import os
+import shutil
+import importlib
 import time
 import math
 import logging
@@ -676,6 +678,9 @@ class SmartTradingBot:
         #       Batch size and master switch for the nightly pruning job.
         #   decision_history_archive_dir:
         #       Directory for the optional gzip JSONL archive of pruned rows.
+        #   decision_history_prune_max_rows_per_night:
+        #       Maximum number of parent rows the nightly pruning job may
+        #       delete per night.
         self.decision_history_market_hours_only = True
         self.decision_suppress_unchanged_holds = True
         self.decision_snapshot_score_tolerance = 1.0
@@ -683,6 +688,9 @@ class SmartTradingBot:
         self.decision_history_prune_enabled = True
         self.decision_history_prune_batch_size = 5000
         self.decision_history_archive_dir = "research_data/db_archive"
+        # DB-GROWTH-FIX-4: hard cap on the number of parent rows the
+        # nightly pruning job may delete in one night.
+        self.decision_history_prune_max_rows_per_night = 200000
         # Last NY date on which the retention pruning job ran.
         self._last_retention_prune_date = None
 
@@ -8497,21 +8505,55 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
     # skipped-invalid-data) is always persisted in full.
     DB_GROWTH_SUPPRESSIBLE_OUTCOMES = frozenset({"HOLD_INELIGIBLE"})
 
-    def _decision_history_writes_allowed(self) -> bool:
+    # Outcomes that are dropped while the market is closed.
+    #
+    # DB-GROWTH-FIX-4: the closed-market control is now OUTCOME
+    # SPECIFIC. Only the two low-information outcomes are skipped while
+    # the US equity market is closed:
+    #
+    #   * HOLD_INELIGIBLE      - a plain "no trade" decision
+    #   * SKIPPED_INVALID_DATA - a fail-closed "no usable data" decision
+    #
+    # EVERY other outcome (BUY_ORDER_SUBMITTED, BUY_ORDER_FAILED,
+    # BUY_ELIGIBLE_NOT_SELECTED, BUY_BLOCKED_DYNAMIC, SELL_* ...) is
+    # ALWAYS persisted, closed market or not. Those rows carry the
+    # trading-relevant evidence (order attempts, blocks, selections) and
+    # their gate-evaluation / execution-check children; dropping them
+    # would silently erase the audit trail of real trading decisions.
+    DB_GROWTH_CLOSED_MARKET_SKIPPABLE_OUTCOMES = frozenset(
+        {"HOLD_INELIGIBLE", "SKIPPED_INVALID_DATA"}
+    )
+
+    def _decision_history_writes_allowed(
+        self, outcome: Optional[str] = None
+    ) -> bool:
         """True when per-symbol decision_history rows may be written.
 
-        When ``decision_history_market_hours_only`` is enabled the US
-        equity market must be open. Any error while consulting the
-        calendar is treated as "allowed" (fail-safe: never lose a row
-        because the clock could not be read).
+        When ``decision_history_market_hours_only`` is enabled AND the
+        US equity market is closed, only the low-information outcomes
+        in :attr:`DB_GROWTH_CLOSED_MARKET_SKIPPABLE_OUTCOMES` are
+        skipped. Every BUY/SELL outcome is always written.
+
+        Any error while consulting the calendar is treated as "allowed"
+        (fail-safe: never lose a row because the clock could not be
+        read).
         """
         if not getattr(self, "decision_history_market_hours_only", False):
             return True
         try:
-            return market_calendar.is_market_open()
+            market_open = market_calendar.is_market_open()
         except Exception as e:
-            logging.debug(f"DB-GROWTH-FIX: market calendar lookup failed; writing row: {e}")
+            logging.debug(
+                f"DB-GROWTH-FIX: market calendar lookup failed; writing row: {e}"
+            )
             return True
+        if market_open:
+            return True
+        # Market closed.
+        if outcome is None:
+            # Unknown outcome: fail-safe, write the row.
+            return True
+        return outcome not in self.DB_GROWTH_CLOSED_MARKET_SKIPPABLE_OUTCOMES
 
     @staticmethod
     def _decision_state_fingerprint(snapshot: Optional[Dict]) -> Dict:
@@ -8622,23 +8664,79 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             )
             return False
 
+    def _resolved_database_path(self) -> Optional[str]:
+        """Return the absolute path of the database file in use.
+
+        Returns None when the database path cannot be determined (an
+        in-memory or unavailable database).
+        """
+        try:
+            raw = getattr(self.db, "db_path", None)
+            if raw is None:
+                raw = getattr(self.db, "path", None)
+            if not raw:
+                # Fall back to the module-level DB_PATH of the database
+                # implementation in use.
+                module = importlib.import_module(type(self.db).__module__)
+                raw = getattr(module, "DB_PATH", None)
+            if not raw:
+                return None
+            return str(Path(str(raw)).expanduser().resolve())
+        except Exception as e:
+            logging.debug(f"DB-GROWTH-FIX: could not resolve database path: {e}")
+            return None
+
     def _resolve_archive_dir(self) -> Optional[str]:
         """Return the absolute archive directory for pruned rows.
 
-        A relative ``decision_history_archive_dir`` is resolved against
-        the repository root so the archive always lands in the same
-        place regardless of the process working directory. An empty
-        setting disables archiving (the rows are then deleted without an
-        archive — that is only possible when the operator explicitly
-        disables it).
+        DB-GROWTH-FIX-4 resolution order:
+
+          1. An ABSOLUTE ``decision_history_archive_dir`` is used as
+             configured (explicit configuration always wins).
+          2. A RELATIVE path is resolved against the directory of the
+             RESOLVED DATABASE FILE. The default
+             ``research_data/db_archive`` therefore lands beside the
+             database, e.g. ``<db dir>/research_data/db_archive``.
+          3. When the database path cannot be resolved, the repository
+             root is used as the base.
+
+        An empty setting disables archiving (the rows are then deleted
+        without an archive — that is only possible when the operator
+        explicitly disables it).
         """
         raw = (getattr(self, "decision_history_archive_dir", "") or "").strip()
         if not raw:
             return None
         path = Path(raw).expanduser()
-        if not path.is_absolute():
-            path = Path(__file__).resolve().parents[2] / path
-        return str(path)
+        if path.is_absolute():
+            return str(path)
+        db_path = self._resolved_database_path()
+        if db_path:
+            base = Path(db_path).parent
+        else:
+            base = Path(__file__).resolve().parents[2]
+        return str(base / path)
+
+    # DB-GROWTH-FIX-4: the nightly prune is skipped when the disk has
+    # less than this much free space.
+    RETENTION_PRUNE_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
+    def _retention_prune_free_space_ok(self, path: Optional[str]) -> bool:
+        """True when the target filesystem has at least 2 GB free.
+
+        The prune is skipped (with a warning) when the disk is nearly
+        full: writing the archive on a full disk would fail halfway
+        through and the job would keep retrying all night.
+        """
+        try:
+            probe = path or str(Path(__file__).resolve().parents[2])
+            usage = shutil.disk_usage(probe)
+            return usage.free >= self.RETENTION_PRUNE_MIN_FREE_BYTES
+        except Exception as e:
+            # Cannot read the free space: do NOT block the prune on an
+            # unknown, but never crash the loop either.
+            logging.debug(f"DB-GROWTH-FIX: free space check failed: {e}")
+            return True
 
     def run_decision_history_retention_prune(self) -> Dict:
         """Prune decision_history rows older than the retention window.
@@ -8657,6 +8755,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             "check_rows_deleted": 0,
             "batches": 0,
             "archived_files": [],
+            "max_rows_per_night": int(
+                getattr(self, "decision_history_prune_max_rows_per_night", 200000)
+            ),
             "error": None,
         }
         if not summary["enabled"]:
@@ -8671,6 +8772,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 retention_days=int(summary["retention_days"]),
                 batch_size=int(getattr(self, "decision_history_prune_batch_size", 5000)),
                 archive_dir=archive_dir or None,
+                max_rows_per_night=int(
+                    getattr(self, "decision_history_prune_max_rows_per_night", 200000)
+                ),
             )
         except Exception as e:
             summary["error"] = str(e)[:200]
@@ -8711,6 +8815,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             if not getattr(self, "decision_history_prune_enabled", False):
                 return
             if market_calendar.is_market_open():
+                return
+            archive_dir = self._resolve_archive_dir()
+            if not self._retention_prune_free_space_ok(archive_dir):
+                logging.warning(
+                    "DB-GROWTH-FIX: retention prune skipped — less than 2 GB "
+                    "free disk space at %s",
+                    archive_dir,
+                )
                 return
             now_ny = market_calendar.to_ny()
             today = now_ny.date().isoformat()
@@ -8841,10 +8953,11 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # the market is closed and for unchanged HOLD rows. The
         # analyzed_stocks upsert above always happens — it represents
         # latest state, not history.
-        if not self._decision_history_writes_allowed():
+        _outcome = (snapshot.get("decision") or {}).get("outcome")
+        if not self._decision_history_writes_allowed(_outcome):
             logging.debug(
                 f"DB-GROWTH-FIX: market closed; skipping decision_history row "
-                f"for {symbol}"
+                f"for {symbol} (outcome={_outcome})"
             )
             entry["decision_snapshot"] = snapshot
             return
@@ -9074,10 +9187,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # DB-GROWTH-FIX: same growth controls as the normal persist path.
         # The analyzed_stocks upsert above already happened; only the
         # append-only history row is skipped.
-        if not self._decision_history_writes_allowed():
+        if not self._decision_history_writes_allowed(outcome):
             logging.debug(
                 f"DB-GROWTH-FIX: market closed; skipping decision_history row "
-                f"for {symbol}"
+                f"for {symbol} (outcome={outcome})"
             )
             return snapshot
         if self._should_suppress_decision_row(symbol, snapshot):

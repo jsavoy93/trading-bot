@@ -127,11 +127,12 @@ class TestEarlyClose:
     @pytest.mark.parametrize(
         "day",
         [
-            (2026, 7, 2),    # day after Independence Day
+            # DB-GROWTH-FIX-4: the NYSE calendar has NO July 2 early
+            # close (2026-07-03 is a full closure; 2027-07-03 is a
+            # Saturday).
             (2026, 11, 27),  # Friday after Thanksgiving
             (2026, 12, 24),  # Christmas Eve
-            (2027, 7, 2),
-            (2027, 11, 26),
+            (2027, 11, 26),  # Friday after Thanksgiving
         ],
     )
     def test_early_close_days_close_at_13_00(self, day):
@@ -147,9 +148,13 @@ class TestEarlyClose:
         assert mc.session_close_time(_ny(2026, 11, 10, 12, 0)).hour == 16
 
     def test_early_close_list_covers_2026_and_2027(self):
-        for year in (2026, 2027):
-            days = {d for d in mc.EARLY_CLOSE_DAYS if d.startswith(f"{year}-")}
-            assert len(days) >= 2, f"{year} early-close list too short"
+        """DB-GROWTH-FIX-4: the early-close lists are pinned exactly."""
+        assert {
+            d for d in mc.EARLY_CLOSE_DAYS if d.startswith("2026-")
+        } == {"2026-11-27", "2026-12-24"}
+        assert {
+            d for d in mc.EARLY_CLOSE_DAYS if d.startswith("2027-")
+        } == {"2027-11-26"}
 
 
 class TestTradingDateHelpers:

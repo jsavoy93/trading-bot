@@ -427,10 +427,15 @@ class TestAcceptanceClosedMarket:
         # The analyzed_stocks latest-state upsert still happens.
         assert upsert_calls == [sym]
 
-    def test_5b_closed_market_never_writes_buy_or_sell_rows(self, isolated_db,
+    def test_5b_closed_market_still_writes_buy_and_sell_rows(self,
+                                                              isolated_db,
                                                               monkeypatch):
-        """AC5b: closed-market suppression applies to BUY and SELL too —
-        the control is about storage, not about the decision."""
+        """DB-GROWTH-FIX-4: closed-market suppression is OUTCOME SPECIFIC.
+
+        Only the low-information outcomes (HOLD_INELIGIBLE and
+        SKIPPED_INVALID_DATA) are skipped while the market is closed.
+        Every BUY / SELL outcome is ALWAYS persisted, together with its
+        gate-evaluation and execution-check children."""
         import src.core.smart_bot as smart_bot_module
 
         monkeypatch.setattr(
@@ -442,7 +447,15 @@ class TestAcceptanceClosedMarket:
         _persist(bot, _sell_entry("SELLC"), "acc_closed3")
         assert _count(
             isolated_db, "SELECT COUNT(*) FROM decision_history",
-        ) == 0
+        ) == 2
+        assert _count(
+            isolated_db,
+            "SELECT COUNT(*) FROM decision_history WHERE symbol=?", ("BUYC",),
+        ) == 1
+        assert _count(
+            isolated_db,
+            "SELECT COUNT(*) FROM decision_history WHERE symbol=?", ("SELLC",),
+        ) == 1
 
     def test_5c_open_market_writes_rows(self, isolated_db, monkeypatch):
         """AC5c: with the market open the rows are written normally."""
@@ -639,11 +652,20 @@ class TestAcceptanceRetentionPrune:
         assert result["error"] is None, result["error"]
         assert result["parents_deleted"] == 3
         # The archive exists and contains one JSON object per deleted row.
-        assert len(result["archived_files"]) == 1
-        archive_path = pathlib.Path(result["archived_files"][0])
-        assert archive_path.exists()
+        # DB-GROWTH-FIX-4: one SEPARATE archive file per table.
+        assert len(result["archived_files"]) == 3
+        by_table = {}
+        for name in result["archived_files"]:
+            archive_path = pathlib.Path(name)
+            assert archive_path.exists()
+            assert archive_path.name.endswith(".jsonl.gz")
+            table = archive_path.name.split("_2026")[0].split("_2025")[0]
+            by_table.setdefault(table, []).append(archive_path)
+        assert "decision_history" in by_table
+        assert "decision_gate_evaluations" in by_table
+        assert "decision_execution_checks" in by_table
+        archive_path = by_table["decision_history"][0]
         assert archive_path.name.startswith("decision_history_")
-        assert archive_path.name.endswith(".jsonl.gz")
         with gzip.open(archive_path, "rt", encoding="utf-8") as handle:
             lines = [ln for ln in handle if ln.strip()]
         assert len(lines) == 3
@@ -924,11 +946,15 @@ class TestSettingsWiring:
         assert bot.decision_suppress_unchanged_holds is False
         assert bot.decision_history_market_hours_only is False
 
-    def test_relative_archive_dir_resolves_against_repo_root(self, isolated_db):
-        """A relative archive dir resolves against the repository root."""
+    def test_relative_archive_dir_resolves_beside_the_database(self,
+                                                              isolated_db):
+        """DB-GROWTH-FIX-4: a relative archive dir resolves against the
+        directory of the resolved database file, so the default lands in
+        ``research_data/db_archive`` beside the database."""
+        _db, _sqlite_db_module, db_path = isolated_db
         bot = _make_bot(isolated_db, archive_dir="research_data/db_archive")
         resolved = bot._resolve_archive_dir()
         assert resolved.endswith("research_data/db_archive")
         assert pathlib.Path(resolved).is_absolute()
-        repo_root = pathlib.Path(__file__).resolve().parents[1]
-        assert pathlib.Path(resolved) == repo_root / "research_data/db_archive"
+        assert pathlib.Path(resolved) == pathlib.Path(str(db_path)).parent / \
+            "research_data" / "db_archive"
