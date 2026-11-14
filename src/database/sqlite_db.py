@@ -1759,6 +1759,217 @@ class SQLiteDB:
             logging.debug(f"Error finalizing decision_history for {cycle_id}/{symbol}: {e}")
             return False
 
+    # ── DB-GROWTH-FIX: dedupe lookup + retention pruning ──────────────────
+    # DB-GROWTH-FIX reduces decision_history growth. These helpers give the
+    # runtime path a cheap way to answer "what did we last persist for this
+    # symbol?" and to prune old rows in small batches outside market hours.
+    #
+    # FAIL-SAFE CONTRACT: every lookup helper returns None/False when the
+    # query itself fails. Callers MUST interpret that as "no prior state"
+    # and therefore write the full row. A failed lookup may never cause a
+    # decision row to be dropped.
+
+    def get_latest_decision_history(self, symbol: str) -> Optional[Dict]:
+        """Return the most recent decision_history row for ``symbol``.
+
+        Returns a dict with ``id``, ``cycle_id``, ``cycle_start`` and the
+        parsed ``decision_snapshot`` (None if it cannot be parsed), or
+        ``None`` when no row exists or the lookup failed.
+        """
+        try:
+            with _get_conn() as conn:
+                row = conn.execute(
+                    "SELECT id, cycle_id, symbol, cycle_start, decision_snapshot "
+                    "FROM decision_history WHERE symbol = ? "
+                    "ORDER BY cycle_start DESC, id DESC LIMIT 1",
+                    (symbol,),
+                ).fetchone()
+            if row is None:
+                return None
+            try:
+                snapshot = json.loads(row["decision_snapshot"])
+            except Exception:
+                snapshot = None
+            return {
+                "id": row["id"],
+                "cycle_id": row["cycle_id"],
+                "cycle_start": row["cycle_start"],
+                "decision_snapshot": snapshot,
+            }
+        except Exception as e:
+            logging.debug(
+                f"get_latest_decision_history failed for {symbol}: {e}"
+            )
+            return None
+
+    @staticmethod
+    def _archive_decision_history_rows(rows, archive_dir: str) -> str:
+        """Write decision_history rows to a gzip JSONL archive file.
+
+        DB-GROWTH-FIX archive format: one JSON object per line, ALL columns
+        of the row, gzip compressed, named
+        ``decision_history_<UTC timestamp>.jsonl.gz`` inside
+        ``archive_dir``. The file is CLOSED before this function returns
+        so the caller can verify it by reading it back.
+
+        Returns the archive path.
+        """
+        import gzip
+
+        os.makedirs(archive_dir, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = os.path.join(archive_dir, f"decision_history_{stamp}.jsonl.gz")
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            for row in rows:
+                payload = dict(row)
+                handle.write(json.dumps(payload, default=str) + "\n")
+        return path
+
+    @staticmethod
+    def _count_archive_rows(path: str) -> int:
+        """Count the JSON lines in a gzip JSONL archive file.
+
+        Returns -1 when the file cannot be read (fail-safe: the caller
+        must then NOT delete the rows it wanted to archive).
+        """
+        import gzip
+
+        try:
+            count = 0
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        count += 1
+            return count
+        except Exception as e:
+            logging.warning(f"DB-GROWTH-FIX: could not read back archive {path}: {e}")
+            return -1
+
+    def prune_decision_history(
+        self,
+        retention_days: int,
+        batch_size: int = 5000,
+        archive_dir: Optional[str] = None,
+        max_batches: int = 10,
+    ) -> Dict:
+        """Delete decision_history rows older than ``retention_days``.
+
+        DB-GROWTH-FIX. The rows are deleted in SMALL BATCHES so the
+        SQLite write lock is never held for long. Child rows in
+        ``decision_gate_evaluations`` and ``decision_execution_checks``
+        are deleted FIRST — they reference the parent through
+        ``decision_history_id`` (never through (cycle_id, symbol)).
+
+        ARCHIVE CONTRACT (DB-GROWTH-FIX-3):
+          1. The rows that are about to be deleted are appended to a
+             gzip JSONL archive under ``archive_dir`` (one JSON object
+             per row, ALL columns).
+          2. The archive file is written AND CLOSED, then read back and
+             its JSON line count is verified against the number of rows
+             that are about to be deleted.
+          3. ONLY THEN are the rows deleted.
+          4. If the count does not match, or the archive write fails,
+             the batch is NOT deleted (keeping data beats losing it)
+             and the error is recorded in the returned summary.
+
+        The archive write happens OUTSIDE the SQLite write transaction,
+        so the write lock is never held during the gzip write.
+
+        The prune NEVER touches ``trades``, ``positions``, ``orders``,
+        ``order_events`` or any other trading table.
+
+        Returns a summary dict with the counters.
+        """
+        retention_days = max(0, int(retention_days))
+        batch_size = max(1, int(batch_size))
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat()
+        summary: Dict[str, Any] = {
+            "cutoff": cutoff,
+            "retention_days": retention_days,
+            "parents_deleted": 0,
+            "gate_rows_deleted": 0,
+            "check_rows_deleted": 0,
+            "batches": 0,
+            "archived_files": [],
+            "error": None,
+        }
+        for _ in range(max(1, int(max_batches))):
+            # ── Step 1: read the candidate rows (READ transaction) ──
+            try:
+                with _get_conn() as conn:
+                    # Robust cutoff comparison: rows may carry their
+                    # cycle_start in slightly different ISO shapes
+                    # ("...+00:00" vs "...Z"). julianday() normalizes
+                    # both; the string comparison is only a fallback
+                    # for rows whose timestamp cannot be parsed at all
+                    # (a NULL julianday must not make the row immortal).
+                    rows = conn.execute(
+                        "SELECT * FROM decision_history "
+                        "WHERE (julianday(cycle_start) IS NOT NULL "
+                        "       AND julianday(cycle_start) < julianday(?)) "
+                        "   OR (julianday(cycle_start) IS NULL "
+                        "       AND cycle_start < ?) "
+                        "ORDER BY id LIMIT ?",
+                        (cutoff, cutoff, batch_size),
+                    ).fetchall()
+            except Exception as e:
+                summary["error"] = str(e)[:200]
+                break
+            if not rows:
+                break
+
+            ids = [row["id"] for row in rows]
+
+            # ── Step 2: archive OUTSIDE the write transaction ──
+            if archive_dir:
+                try:
+                    archive_path = self._archive_decision_history_rows(
+                        rows, archive_dir
+                    )
+                except Exception as e:
+                    summary["error"] = f"archive_write_failed: {str(e)[:180]}"
+                    break
+                # ── Step 3: verify the archive by reading it back ──
+                archived_rows = self._count_archive_rows(archive_path)
+                if archived_rows != len(rows):
+                    summary["error"] = (
+                        f"archive_row_count_mismatch: expected {len(rows)}, "
+                        f"archive contains {archived_rows}; batch NOT deleted"
+                    )
+                    break
+                summary["archived_files"].append(archive_path)
+
+            # ── Step 4: delete the batch (short write transaction) ──
+            try:
+                with _get_conn() as conn:
+                    placeholders = ",".join("?" for _ in ids)
+                    gate_deleted = conn.execute(
+                        "DELETE FROM decision_gate_evaluations "
+                        f"WHERE decision_history_id IN ({placeholders})",
+                        ids,
+                    ).rowcount
+                    check_deleted = conn.execute(
+                        "DELETE FROM decision_execution_checks "
+                        f"WHERE decision_history_id IN ({placeholders})",
+                        ids,
+                    ).rowcount
+                    parent_deleted = conn.execute(
+                        f"DELETE FROM decision_history WHERE id IN ({placeholders})",
+                        ids,
+                    ).rowcount
+            except Exception as e:
+                summary["error"] = str(e)[:200]
+                break
+            summary["parents_deleted"] += max(0, parent_deleted or 0)
+            summary["gate_rows_deleted"] += max(0, gate_deleted or 0)
+            summary["check_rows_deleted"] += max(0, check_deleted or 0)
+            summary["batches"] += 1
+            if not parent_deleted:
+                break
+        return summary
+
     # ── PHASE-C14B-1: Normalized analytics persistence helpers ────────────
     # These helpers run INSIDE the finalize_decision_history transaction
     # (the caller passes an open sqlite3.Connection). They are

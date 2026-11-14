@@ -181,6 +181,61 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
         "Opened read-only; empty list disables DB attribution.",
         "Allocation Budget",
     ),
+    # ── DB-GROWTH-FIX: database growth controls ──────────────────────────
+    # Observability-only. These settings change how much append-only
+    # analytics history is written; they never change trading behavior.
+    "decision_history_market_hours_only": StrategySetting(
+        "decision_history_market_hours_only", True, "bool", None, None, None,
+        "Skip per-symbol decision_history / decision_gate_evaluations writes "
+        "while the US equity market is closed. analyzed_stocks and "
+        "cycle_funnel are still written. Observability only.",
+        "Database Growth",
+    ),
+    "decision_suppress_unchanged_holds": StrategySetting(
+        "decision_suppress_unchanged_holds", True, "bool", None, None, None,
+        "Skip a plain HOLD decision_history row when the observable "
+        "decision state is unchanged versus the LAST persisted row for that "
+        "symbol. BUY, SELL and every other non-HOLD outcome is always "
+        "written. There is no same-day heartbeat exception. "
+        "Observability only.",
+        "Database Growth",
+    ),
+    "decision_snapshot_score_tolerance": StrategySetting(
+        "decision_snapshot_score_tolerance", 1.0, "float", 0.0, 100.0, 0.1,
+        "Score movement (points) that still counts as an unchanged HOLD "
+        "decision. Observability only.",
+        "Database Growth",
+    ),
+    "decision_history_retention_days": StrategySetting(
+        "decision_history_retention_days", 30, "int", 1, 3650, 1,
+        "Retention window (days) for decision_history rows. Older rows are "
+        "deleted in small batches by the nightly pruning job. Observability "
+        "only.",
+        "Database Growth",
+    ),
+    "decision_history_prune_enabled": StrategySetting(
+        "decision_history_prune_enabled", True, "bool", None, None, None,
+        "Master switch for the nightly decision_history retention pruning "
+        "job. Observability only.",
+        "Database Growth",
+    ),
+    "decision_history_prune_batch_size": StrategySetting(
+        "decision_history_prune_batch_size", 5000, "int", 100, 100000, 100,
+        "Rows deleted per batch by the nightly retention pruning job. Small "
+        "batches keep the SQLite write lock short. Observability only.",
+        "Database Growth",
+    ),
+    "decision_history_archive_dir": StrategySetting(
+        "decision_history_archive_dir", "research_data/db_archive", "str",
+        None, None, None,
+        "Directory for the gzip JSONL archive of pruned decision_history "
+        "rows (one JSON object per line, all columns). Relative paths are "
+        "resolved against the repository root. The archive is written, "
+        "closed and read back (line count verified) BEFORE any row is "
+        "deleted; if the write fails or the count mismatches the rows are "
+        "kept and the error is recorded. Observability only.",
+        "Database Growth",
+    ),
 }
 
 

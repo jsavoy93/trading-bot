@@ -20,6 +20,11 @@ short; link files, not paragraphs.
   `long_term_budget_pct`, `cash_floor_pct`,
   `swing_order_label_prefixes`, `swing_runner_db_paths`);
   DB overrides applied via `load_effective_strategy_settings`.
+- `src/core/market_calendar.py` — DB-GROWTH-FIX: DST-correct
+  `America/New_York` market calendar (session 09:30–16:00 ET, 13:00 ET
+  early closes, NYSE holiday lists for 2024–2027). Pure helper:
+  `is_market_open`, `is_trading_day`, `ny_trading_date`,
+  `ny_day_bounds_utc`, `retention_cutoff`.
 - `src/core/sleeve_positions.py` — Sleeve S (short-term) vs L ledger
   tagging. Non-authoritative; ownership questions go through
   allocation_policy instead.
@@ -41,6 +46,33 @@ short; link files, not paragraphs.
 - `tests/test_strat026_shadow.py::test_units_not_installed` asserts the
   HOST has no systemd units installed — fails on machines where the
   RSI(2) shadow units are deployed; pre-existing, environmental.
+
+## Database growth controls (DB-GROWTH-FIX-3, observability-only)
+- `src/core/smart_bot.py` — `_decision_history_writes_allowed` (closed
+  market), `_should_suppress_decision_row` (unchanged HOLD),
+  `_maybe_run_retention_prune` (once per NY day, closed market only),
+  `run_decision_history_retention_prune`.
+- `src/database/sqlite_db.py` — `get_latest_decision_history`,
+  `_archive_decision_history_rows` (gzip JSONL, all columns),
+  `_count_archive_rows` (read-back verification),
+  `prune_decision_history` (small batches, children before parents,
+  archive verified BEFORE delete).
+- `src/core/settings_service.py` — `Database Growth` settings group:
+  `decision_history_market_hours_only`,
+  `decision_suppress_unchanged_holds`,
+  `decision_snapshot_score_tolerance`,
+  `decision_history_retention_days` (default 30),
+  `decision_history_prune_enabled`,
+  `decision_history_prune_batch_size`,
+  `decision_history_archive_dir` (default `research_data/db_archive`).
+- Suppression applies ONLY to the `HOLD_INELIGIBLE` outcome and only
+  against the LAST stored row for that symbol. There is NO same-day
+  heartbeat exception. BUY/SELL/other outcomes are always persisted.
+  Any lookup/calendar error falls back to writing the full row.
+- Tests: `tests/test_db_growth_fix_acceptance.py` (8 acceptance criteria),
+  `tests/test_db_growth_fix_hold_suppression.py`,
+  `tests/test_db_growth_fix_market_calendar.py`. All use temporary
+  databases; the production `trading_bot.db` is fail-closed.
 
 ## Ledger backfill (PAPER-only)
 - `scripts/backfill_symbol_fills.py` — LEDGER-BACKFILL-001: backs up

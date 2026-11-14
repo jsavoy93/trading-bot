@@ -230,6 +230,7 @@ from analysis.ai_agent import ai_agent
 from core import settings_service
 from core import order_lifecycle
 from core import allocation_policy
+from core import market_calendar
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +655,36 @@ class SmartTradingBot:
         self.trades_executed = 0
         self.symbols_processed = 0
         self.errors_count = 0
+
+        # DB-GROWTH-FIX — database growth controls. OBSERVABILITY-ONLY:
+        # these settings change how much append-only analytics history is
+        # written, never how the bot trades. They are overridable through
+        # STRATEGY_SETTINGS_SCHEMA (settings_service) exactly like the
+        # other strategy settings.
+        #
+        #   decision_history_market_hours_only:
+        #       Skip per-symbol decision_history / decision_gate_evaluations
+        #       writes while the US equity market is closed.
+        #   decision_suppress_unchanged_holds:
+        #       Skip a HOLD row whose observable state is unchanged versus
+        #       the last persisted row for that symbol.
+        #   decision_snapshot_score_tolerance:
+        #       Score delta (points) that still counts as "unchanged".
+        #   decision_history_retention_days:
+        #       Retention window for the nightly pruning job.
+        #   decision_history_prune_batch_size / _enabled:
+        #       Batch size and master switch for the nightly pruning job.
+        #   decision_history_archive_dir:
+        #       Directory for the optional gzip JSONL archive of pruned rows.
+        self.decision_history_market_hours_only = True
+        self.decision_suppress_unchanged_holds = True
+        self.decision_snapshot_score_tolerance = 1.0
+        self.decision_history_retention_days = 30
+        self.decision_history_prune_enabled = True
+        self.decision_history_prune_batch_size = 5000
+        self.decision_history_archive_dir = "research_data/db_archive"
+        # Last NY date on which the retention pruning job ran.
+        self._last_retention_prune_date = None
 
         # Per-session counter baselines. Captured at start_session() so that
         # end_session() can compute a true per-session delta even on long-lived
@@ -8436,6 +8467,260 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         except Exception as e:
             logging.debug(f"OBS-001 cycle_funnel insert failed: {e}")
 
+    # ── DB-GROWTH-FIX: database growth controls ───────────────────────────
+    # Observability-only helpers. They reduce the number of append-only
+    # decision_history / decision_gate_evaluations rows written by the
+    # continuous loop. They NEVER change trading behavior: no threshold,
+    # score, eligibility gate, ranking, sizing, slot semantic, risk rule
+    # or order handling is touched.
+    #
+    # Three independent mechanisms:
+    #   1. Closed-market skip — per-symbol decision_history rows (and
+    #      their normalized decision_gate_evaluations children) are not
+    #      written while the US equity market is closed. analyzed_stocks
+    #      and cycle_funnel keep being written as before.
+    #   2. Unchanged-HOLD suppression — a HOLD decision whose observable
+    #      state is unchanged versus the LAST persisted row for that
+    #      symbol is not written again. There is no same-day heartbeat
+    #      exception: an unchanged HOLD is skipped even when it would be
+    #      the first row of the NY trading day.
+    #   3. Nightly retention pruning — rows older than the retention
+    #      window are deleted in small batches outside market hours.
+    #
+    # FAIL-SAFE CONTRACT: every lookup or comparison error results in the
+    # FULL row being written. A failure may never cause a decision row to
+    # be dropped.
+
+    # Outcomes whose rows may be suppressed when nothing observable
+    # changed. Only true HOLD decisions qualify — every non-HOLD
+    # decision (order attempts, eligible-but-not-selected, blocked,
+    # skipped-invalid-data) is always persisted in full.
+    DB_GROWTH_SUPPRESSIBLE_OUTCOMES = frozenset({"HOLD_INELIGIBLE"})
+
+    def _decision_history_writes_allowed(self) -> bool:
+        """True when per-symbol decision_history rows may be written.
+
+        When ``decision_history_market_hours_only`` is enabled the US
+        equity market must be open. Any error while consulting the
+        calendar is treated as "allowed" (fail-safe: never lose a row
+        because the clock could not be read).
+        """
+        if not getattr(self, "decision_history_market_hours_only", False):
+            return True
+        try:
+            return market_calendar.is_market_open()
+        except Exception as e:
+            logging.debug(f"DB-GROWTH-FIX: market calendar lookup failed; writing row: {e}")
+            return True
+
+    @staticmethod
+    def _decision_state_fingerprint(snapshot: Optional[Dict]) -> Dict:
+        """Extract the comparable decision state from an OBS-001 snapshot.
+
+        The fingerprint covers exactly the facts the DB-GROWTH-FIX
+        contract says must trigger a new row: the decision outcome, the
+        signal, the strategy gates (name/applied/passed), the execution
+        checks (name/applied/passed), the first blocking check and the
+        total score.
+        """
+        snapshot = snapshot or {}
+        decision = snapshot.get("decision") or {}
+        eligibility = snapshot.get("strategy_eligibility") or {}
+        scoring = snapshot.get("scoring") or {}
+        checks = snapshot.get("execution_checks") or {}
+
+        def _rows(items):
+            out = []
+            for item in (items or []):
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name") or item.get("check_name") or item.get("gate_name")
+                out.append((
+                    str(name or ""),
+                    bool(item.get("applied")),
+                    item.get("passed"),
+                ))
+            return out
+
+        return {
+            "outcome": decision.get("outcome"),
+            "signal": eligibility.get("signal"),
+            "signal_strength": eligibility.get("signal_strength"),
+            "strategy_eligible": bool(eligibility.get("strategy_eligible")),
+            "gates": _rows(eligibility.get("gates")),
+            "checks": _rows(checks.get("checks")),
+            "first_blocking_check": checks.get("first_blocking_check"),
+            "total_score": scoring.get("total_score"),
+        }
+
+    def _decision_state_is_unchanged(
+        self, current: Optional[Dict], previous: Optional[Dict]
+    ) -> bool:
+        """True when the observable decision state did not change.
+
+        Score comparison honours ``decision_snapshot_score_tolerance``:
+        a score movement smaller than (or equal to) the tolerance still
+        counts as unchanged. A missing score on either side counts as a
+        change (fail-safe: write the row).
+        """
+        if not current or not previous:
+            return False
+        current_fp = self._decision_state_fingerprint(current)
+        previous_fp = self._decision_state_fingerprint(previous)
+        for key in (
+            "outcome",
+            "signal",
+            "signal_strength",
+            "strategy_eligible",
+            "gates",
+            "checks",
+            "first_blocking_check",
+        ):
+            if current_fp.get(key) != previous_fp.get(key):
+                return False
+        current_score = current_fp.get("total_score")
+        previous_score = previous_fp.get("total_score")
+        if current_score is None or previous_score is None:
+            return current_score is None and previous_score is None
+        try:
+            tolerance = float(getattr(self, "decision_snapshot_score_tolerance", 1.0))
+            return abs(float(current_score) - float(previous_score)) <= tolerance
+        except (TypeError, ValueError):
+            return False
+
+    def _should_suppress_decision_row(self, symbol: str, snapshot: Optional[Dict]) -> bool:
+        """True when this decision row may be skipped (unchanged HOLD).
+
+        Rules:
+          * Only plain HOLD outcomes are suppressible. BUY, SELL and
+            every other non-HOLD outcome is ALWAYS persisted.
+          * The comparison is made ONLY against the last stored
+            decision_history row for that symbol.
+          * The observable state must be unchanged versus that row.
+          * There is NO same-day heartbeat exception: an unchanged HOLD
+            is skipped even when it is the first row of the NY day.
+        Any error results in False (write the full row — fail safe).
+        """
+        try:
+            if not getattr(self, "decision_suppress_unchanged_holds", False):
+                return False
+            outcome = ((snapshot or {}).get("decision") or {}).get("outcome")
+            if outcome not in self.DB_GROWTH_SUPPRESSIBLE_OUTCOMES:
+                return False
+
+            latest = self.db.get_latest_decision_history(symbol)
+            if not latest:
+                return False
+            previous_snapshot = latest.get("decision_snapshot")
+            if not isinstance(previous_snapshot, dict):
+                return False
+            return self._decision_state_is_unchanged(snapshot, previous_snapshot)
+        except Exception as e:
+            logging.debug(
+                f"DB-GROWTH-FIX: suppression check failed for {symbol}; "
+                f"writing full row: {e}"
+            )
+            return False
+
+    def _resolve_archive_dir(self) -> Optional[str]:
+        """Return the absolute archive directory for pruned rows.
+
+        A relative ``decision_history_archive_dir`` is resolved against
+        the repository root so the archive always lands in the same
+        place regardless of the process working directory. An empty
+        setting disables archiving (the rows are then deleted without an
+        archive — that is only possible when the operator explicitly
+        disables it).
+        """
+        raw = (getattr(self, "decision_history_archive_dir", "") or "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        return str(path)
+
+    def run_decision_history_retention_prune(self) -> Dict:
+        """Prune decision_history rows older than the retention window.
+
+        DB-GROWTH-FIX. Runs in small batches. When
+        ``decision_history_archive_dir`` is set, the pruned parent rows
+        are archived to a gzip JSONL file first; if the archive write
+        fails the batch is NOT deleted (documented failure policy: keep
+        the data rather than lose it). Returns a summary dict.
+        """
+        summary: Dict[str, Any] = {
+            "enabled": bool(getattr(self, "decision_history_prune_enabled", False)),
+            "retention_days": getattr(self, "decision_history_retention_days", 30),
+            "parents_deleted": 0,
+            "gate_rows_deleted": 0,
+            "check_rows_deleted": 0,
+            "batches": 0,
+            "archived_files": [],
+            "error": None,
+        }
+        if not summary["enabled"]:
+            summary["error"] = "disabled"
+            return summary
+        if not self.db.is_available():
+            summary["error"] = "db_unavailable"
+            return summary
+        archive_dir = self._resolve_archive_dir()
+        try:
+            result = self.db.prune_decision_history(
+                retention_days=int(summary["retention_days"]),
+                batch_size=int(getattr(self, "decision_history_prune_batch_size", 5000)),
+                archive_dir=archive_dir or None,
+            )
+        except Exception as e:
+            summary["error"] = str(e)[:200]
+            return summary
+        summary.update({
+            "parents_deleted": result.get("parents_deleted", 0),
+            "gate_rows_deleted": result.get("gate_rows_deleted", 0),
+            "check_rows_deleted": result.get("check_rows_deleted", 0),
+            "batches": result.get("batches", 0),
+            "archived_files": result.get("archived_files", []),
+            "error": result.get("error"),
+        })
+        logging.info(
+            "DB-GROWTH-FIX retention prune: %s parents, %s gate rows, "
+            "%s check rows deleted in %s batch(es)",
+            summary["parents_deleted"],
+            summary["gate_rows_deleted"],
+            summary["check_rows_deleted"],
+            summary["batches"],
+        )
+        return summary
+
+    def _maybe_run_retention_prune(self) -> None:
+        """Nightly retention pruning hook (called from the continuous loop).
+
+        The job runs at most once per NY calendar day and ONLY while the
+        US equity market is closed. It is NOT tied to a narrow midnight
+        window: any closed-market cycle of the day may trigger it, so a
+        missed midnight window does not postpone the prune by a day.
+
+        It never runs during market hours and never runs inside the
+        trading path (the call site is at the end of the continuous
+        loop, outside every per-symbol decision). A prune failure is
+        logged and swallowed so the bot loop can never crash because of
+        a retention job.
+        """
+        try:
+            if not getattr(self, "decision_history_prune_enabled", False):
+                return
+            if market_calendar.is_market_open():
+                return
+            now_ny = market_calendar.to_ny()
+            today = now_ny.date().isoformat()
+            if getattr(self, "_last_retention_prune_date", None) == today:
+                return
+            self._last_retention_prune_date = today
+            self.run_decision_history_retention_prune()
+        except Exception as e:
+            logging.debug(f"DB-GROWTH-FIX retention prune hook failed: {e}")
+
     def _persist_obs_001_decision_snapshot(
         self,
         symbol: str,
@@ -8550,6 +8835,26 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             self.db.save_analysis_result(symbol, analysis)
         except Exception as e:
             logging.debug(f"OBS-001 upsert analyzed_stocks failed for {symbol}: {e}")
+
+        # DB-GROWTH-FIX: the append-only decision_history row (and its
+        # normalized decision_gate_evaluations children) is skipped while
+        # the market is closed and for unchanged HOLD rows. The
+        # analyzed_stocks upsert above always happens — it represents
+        # latest state, not history.
+        if not self._decision_history_writes_allowed():
+            logging.debug(
+                f"DB-GROWTH-FIX: market closed; skipping decision_history row "
+                f"for {symbol}"
+            )
+            entry["decision_snapshot"] = snapshot
+            return
+        if self._should_suppress_decision_row(symbol, snapshot):
+            logging.debug(
+                f"DB-GROWTH-FIX: unchanged HOLD for {symbol}; "
+                f"skipping decision_history row"
+            )
+            entry["decision_snapshot"] = snapshot
+            return
 
         # Insert EXACTLY ONE finalized decision_history row per
         # (cycle_id, symbol). UNIQUE(cycle_id, symbol) is the safety
@@ -8765,6 +9070,22 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(
                 f"OBS-002 upsert analyzed_stocks failed for {symbol}: {e}"
             )
+
+        # DB-GROWTH-FIX: same growth controls as the normal persist path.
+        # The analyzed_stocks upsert above already happened; only the
+        # append-only history row is skipped.
+        if not self._decision_history_writes_allowed():
+            logging.debug(
+                f"DB-GROWTH-FIX: market closed; skipping decision_history row "
+                f"for {symbol}"
+            )
+            return snapshot
+        if self._should_suppress_decision_row(symbol, snapshot):
+            logging.debug(
+                f"DB-GROWTH-FIX: unchanged HOLD for {symbol}; "
+                f"skipping decision_history row"
+            )
+            return snapshot
 
         # Insert EXACTLY ONE finalized decision_history row. UNIQUE
         # (cycle_id, symbol) is the safety net against duplicate calls.
@@ -9713,6 +10034,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                           + (" - sizing reduced" if vix_info['should_reduce_sizing'] else ""))
                 except Exception as e:
                     logging.debug(f"Could not display VIX: {e}")
+
+                # DB-GROWTH-FIX: nightly retention pruning (no-op outside
+                # the nightly window / while the market is open).
+                self._maybe_run_retention_prune()
 
                 try:
                     # Start session for this loop
