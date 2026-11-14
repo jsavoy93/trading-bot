@@ -25,6 +25,10 @@ short; link files, not paragraphs.
   early closes, NYSE holiday lists for 2024–2027). Pure helper:
   `is_market_open`, `is_trading_day`, `ny_trading_date`,
   `ny_day_bounds_utc`, `retention_cutoff`.
+  DB-GROWTH-FIX-4 pins the 2026/2027 sets to the official NYSE
+  calendar: 2026-11-03 is not a holiday, Good Friday 2027 is
+  2027-03-26, and there is no July 2 early close (2026-07-03 is a full
+  closure, 2027-07-03 is a Saturday).
 - `src/core/sleeve_positions.py` — Sleeve S (short-term) vs L ledger
   tagging. Non-authoritative; ownership questions go through
   allocation_policy instead.
@@ -69,10 +73,28 @@ short; link files, not paragraphs.
   against the LAST stored row for that symbol. There is NO same-day
   heartbeat exception. BUY/SELL/other outcomes are always persisted.
   Any lookup/calendar error falls back to writing the full row.
+- DB-GROWTH-FIX-4: the closed-market control is OUTCOME SPECIFIC. While
+  the market is closed only `HOLD_INELIGIBLE` and `SKIPPED_INVALID_DATA`
+  rows are skipped; every BUY/SELL outcome and its
+  `decision_gate_evaluations` / `decision_execution_checks` children are
+  always persisted.
+- DB-GROWTH-FIX-4: the retention prune writes a SEPARATE gzip JSONL
+  archive per table (`decision_history`, `decision_gate_evaluations`,
+  `decision_execution_checks`; all columns, BLOBs base64-encoded) in a
+  dated sub-folder of the archive dir (default
+  `research_data/db_archive` beside the resolved database path). Each
+  archive is written, closed, fsynced, read back and its line count
+  verified before that table's rows are deleted. No usable archive dir
+  => `archive_dir_unavailable` and no rows are deleted. The nightly cap
+  is `decision_history_prune_max_rows_per_night` (default 200000, batch
+  size 5000) and the prune is skipped with a warning below 2 GB free.
 - Tests: `tests/test_db_growth_fix_acceptance.py` (8 acceptance criteria),
   `tests/test_db_growth_fix_hold_suppression.py`,
-  `tests/test_db_growth_fix_market_calendar.py`. All use temporary
-  databases; the production `trading_bot.db` is fail-closed.
+  `tests/test_db_growth_fix_market_calendar.py`,
+  `tests/test_db_growth_fix_4.py` (calendar pin, outcome-specific
+  closed-market writes, per-table archives, prune cap, disk guard).
+  All use temporary databases; the production `trading_bot.db` is
+  fail-closed.
 
 ## Ledger backfill (PAPER-only)
 - `scripts/backfill_symbol_fills.py` — LEDGER-BACKFILL-001: backs up
