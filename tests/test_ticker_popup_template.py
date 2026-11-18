@@ -51,3 +51,9 @@ def test_popup_script_never_uses_html_assignment():
     assert "innerHTML" not in script
     assert "outerHTML" not in script
     assert "insertAdjacentHTML" not in script
+
+
+def test_company_modal_hidden_rule_present():
+    # The [hidden] attribute must win over the backdrop's display:flex,
+    # otherwise the empty modal is visible on page load and blocks the page.
+    assert ".company-modal-backdrop[hidden]{display:none" in _text()
