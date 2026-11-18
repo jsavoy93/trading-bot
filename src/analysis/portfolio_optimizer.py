@@ -172,7 +172,14 @@ class PortfolioOptimizer:
         if returns_df is None:
             return 0.0
 
-        w = np.array(weights, dtype=float)
+        # Only symbols with enough price history appear in returns_df.
+        # Align weights to those columns so a held symbol without history
+        # (new listing, data gap) cannot cause a shape mismatch.
+        weight_by_symbol = dict(zip(symbols, weights))
+        cols = list(returns_df.columns)
+        w = np.array([float(weight_by_symbol.get(c, 0.0)) for c in cols], dtype=float)
+        if w.sum() <= 0:
+            return 0.0
         w = w / w.sum()
 
         mu = returns_df.mean() * 252
