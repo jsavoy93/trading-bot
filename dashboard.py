@@ -3389,6 +3389,21 @@ def api_error_summary(hours: int = Query(24, ge=1, le=168)):
     return summarize_log_errors(BOT_LOG_PATH, hours)
 
 
+@app.get("/api/company/{symbol}")
+def api_company_info(symbol: str):
+    """Company profile + recent news for a symbol (TICKER-INFO-001A).
+
+    Never 500s on a source failure: the company_info module isolates each
+    lookup and reports problems in ``errors``.
+    """
+    from analysis.company_info import SYMBOL_RE, get_company_info
+
+    symbol = symbol.upper()
+    if not SYMBOL_RE.match(symbol):
+        raise HTTPException(status_code=400, detail="invalid symbol")
+    return get_company_info(symbol)
+
+
 @app.get("/api/db-status")
 def api_db_status():
     """Return SQLite database health — file info and per-table row counts."""
