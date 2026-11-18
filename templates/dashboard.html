@@ -886,7 +886,16 @@
                 padding: 10px !important;
             }
         }
-    </style>
+    .ticker-link{cursor:pointer;text-decoration:underline dotted;}
+.ticker-link:hover{color:#58a6ff;}
+.company-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1100;display:flex;align-items:center;justify-content:center;}
+.company-modal-panel{background:#161b22;color:#c9d1d9;border:1px solid #30363d;border-radius:8px;max-width:520px;width:92vw;max-height:85vh;overflow:auto;padding:1rem;position:relative;}
+.company-modal-panel h3{margin:0 1.5rem 0.5rem 0;}
+.company-modal-close{position:absolute;top:0.5rem;right:0.6rem;background:transparent;border:none;color:#c9d1d9;font-size:1.2rem;cursor:pointer;}
+.company-badge{display:inline-block;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:0 0.4rem;margin:0 0.25rem 0.25rem 0;font-size:0.8rem;}
+.company-news-item{margin:0.6rem 0;padding-top:0.4rem;border-top:1px solid #21262d;}
+.company-news-meta{font-size:0.8rem;color:#8b949e;}
+</style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -1033,7 +1042,7 @@
                         <tbody>
                             {% for pos in positions_list %}
                             <tr>
-                                <td class="symbol">{{ pos.symbol }}</td>
+                                <td class="symbol ticker-link" data-symbol="{{ pos.symbol }}">{{ pos.symbol }}</td>
                                 <td class="{% if pos.score >= 65 %}green{% elif pos.score <= 35 %}red{% endif %}" style="cursor: pointer;" onclick="showScoreBreakdown('{{ pos.symbol }}')">
                                     <strong>{{ pos.score }}</strong>
                                 </td>
@@ -1075,7 +1084,7 @@
                 <tbody>
                     {% for pos in positions %}
                     <tr>
-                        <td class="symbol">{{ pos.symbol }}</td>
+                        <td class="symbol ticker-link" data-symbol="{{ pos.symbol }}">{{ pos.symbol }}</td>
                         <td>{{ pos.qty }}</td>
                         <td>${{ "%.2f"|format(pos.market_value) }}</td>
                         <td class="{% if pos.unrealized_pl >= 0 %}green{% else %}red{% endif %}">
@@ -1149,7 +1158,7 @@
                     {% for order in orders %}
                     <tr>
                         <td>{{ order.date or '-' }}</td>
-                        <td class="symbol">{{ order.symbol }}</td>
+                        <td class="symbol ticker-link" data-symbol="{{ order.symbol }}">{{ order.symbol }}</td>
                         <td class="side-{{ order.side }}">{{ order.side.upper() }}</td>
                         <td>{{ order.filled_qty }}/{{ order.qty }}</td>
                         <td>${{ "%.2f"|format(order.total or 0) }}</td>
@@ -1337,7 +1346,10 @@
                         t.appendChild(hr);
                         s.open.forEach(function (p) {
                             var r = el('tr');
-                            r.appendChild(el('td', p.symbol));
+                            var td = el('td', p.symbol);
+                            td.className = 'ticker-link';
+                            td.dataset.symbol = p.symbol;
+                            r.appendChild(td);
                             r.appendChild(el('td', p.qty));
                             r.appendChild(el('td', money(p.entry_price)));
                             r.appendChild(el('td', p.current_price === null ? 'n/a' : money(p.current_price)));
@@ -4876,5 +4888,156 @@ setInterval(refreshData, 30000);
         <div id="score-modal-content" style="background: #161b22; border: 1px solid #30363d; border-radius: 8px; max-width: 500px; width: 90%; max-height: 80vh; overflow: hidden;">
         </div>
     </div>
+    <!-- Company Info Modal (TICKER-INFO-001B) -->
+    <div id="company-modal" class="company-modal-backdrop" hidden>
+        <div class="company-modal-panel" role="dialog" aria-modal="true" aria-labelledby="company-modal-title">
+            <button type="button" class="company-modal-close" id="company-modal-close" aria-label="Close">&times;</button>
+            <div id="company-modal-body"></div>
+        </div>
+    </div>
+    <script>
+    (function () {
+        var modal = document.getElementById('company-modal');
+        var body = document.getElementById('company-modal-body');
+        if (!modal || !body) return;
+
+        function openModal() { modal.hidden = false; }
+        function closeModal() { modal.hidden = true; body.textContent = ''; }
+
+        function clear() { while (body.firstChild) body.removeChild(body.firstChild); }
+
+        function line(label, value) {
+            var d = document.createElement('div');
+            d.style.fontSize = '0.9rem';
+            var strong = document.createElement('span');
+            strong.textContent = label + ': ';
+            d.appendChild(strong);
+            d.appendChild(document.createTextNode(String(value)));
+            return d;
+        }
+
+        function safeUrl(u) {
+            if (typeof u !== 'string') return null;
+            return (u.indexOf('https://') === 0 || u.indexOf('http://') === 0) ? u : null;
+        }
+
+        function render(data, sym) {
+            clear();
+            var alpaca = data.alpaca || {};
+            var sec = data.sec || {};
+            var news = data.news || [];
+            var errors = data.errors || [];
+
+            var hasContent = !!(alpaca.name || sec.sicDescription || sec.name || sec.website || news.length);
+            if (!hasContent && errors.length) {
+                var err = document.createElement('p');
+                err.textContent = "Couldn't load company info.";
+                body.appendChild(err);
+                return;
+            }
+
+            var h = document.createElement('h3');
+            h.id = 'company-modal-title';
+            h.textContent = (alpaca.name ? alpaca.name + ' (' + sym + ')' : sym);
+            body.appendChild(h);
+
+            if (alpaca.exchange) body.appendChild(line('Exchange', alpaca.exchange));
+            if (sec.sicDescription) body.appendChild(line('Industry', sec.sicDescription));
+
+            var badges = document.createElement('div');
+            badges.style.margin = '0.5rem 0';
+            [['shortable', 'Shortable'], ['fractionable', 'Fractionable'], ['tradable', 'Tradable']].forEach(function (pair) {
+                var v = alpaca[pair[0]];
+                if (v === undefined || v === null) return;
+                var b = document.createElement('span');
+                b.className = 'company-badge';
+                b.textContent = pair[1] + ': ' + (v ? 'yes' : 'no');
+                badges.appendChild(b);
+            });
+            if (badges.firstChild) body.appendChild(badges);
+
+            var web = safeUrl(sec.website);
+            if (web) {
+                var p = document.createElement('div');
+                p.style.fontSize = '0.9rem';
+                p.appendChild(document.createTextNode('Website: '));
+                var a = document.createElement('a');
+                a.href = web;
+                a.textContent = sec.website;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                p.appendChild(a);
+                body.appendChild(p);
+            }
+
+            if (news.length) {
+                var title = document.createElement('h4');
+                title.textContent = 'Latest news';
+                title.style.margin = '0.8rem 0 0.2rem';
+                body.appendChild(title);
+                news.slice(0, 5).forEach(function (item) {
+                    var div = document.createElement('div');
+                    div.className = 'company-news-item';
+                    var head = document.createElement('div');
+                    var linkUrl = safeUrl(item.url);
+                    if (linkUrl) {
+                        var na = document.createElement('a');
+                        na.href = linkUrl;
+                        na.textContent = item.headline || '';
+                        na.target = '_blank';
+                        na.rel = 'noopener noreferrer';
+                        head.appendChild(na);
+                    } else {
+                        head.textContent = item.headline || '';
+                    }
+                    div.appendChild(head);
+                    var meta = document.createElement('div');
+                    meta.className = 'company-news-meta';
+                    var when = item.created_at ? new Date(item.created_at).toLocaleString() : '';
+                    meta.textContent = [item.source, when].filter(Boolean).join(' · ');
+                    div.appendChild(meta);
+                    if (item.summary) {
+                        var sum = document.createElement('div');
+                        sum.style.fontSize = '0.85rem';
+                        sum.textContent = item.summary;
+                        div.appendChild(sum);
+                    }
+                    body.appendChild(div);
+                });
+            }
+        }
+
+        function openCompany(sym) {
+            if (!sym) return;
+            clear();
+            var loading = document.createElement('p');
+            loading.textContent = 'Loading…';
+            body.appendChild(loading);
+            openModal();
+            fetch('/api/company/' + encodeURIComponent(sym))
+                .then(function (r) { return r.json(); })
+                .then(function (data) { render(data || {}, sym); })
+                .catch(function () {
+                    clear();
+                    var err = document.createElement('p');
+                    err.textContent = "Couldn't load company info.";
+                    body.appendChild(err);
+                });
+        }
+
+        document.addEventListener('click', function (e) {
+            var t = e.target && e.target.closest ? e.target.closest('.ticker-link') : null;
+            if (t) openCompany(t.dataset.symbol);
+        });
+
+        document.getElementById('company-modal-close').addEventListener('click', closeModal);
+        modal.addEventListener('click', function (e) {
+            if (e.target === modal) closeModal();
+        });
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && !modal.hidden) closeModal();
+        });
+    })();
+    </script>
 </body>
 </html>
