@@ -3218,6 +3218,177 @@ def api_search_symbol(symbol: str):
         return {"error": str(e)}
 
 
+# ---------------------------------------------------------------------------
+# Swing sleeves (C4 + RSI(2)) and error summary — read-only panels.
+# Both swing runners keep their own ledgers outside trading_bot.db; this
+# endpoint only READS them (sqlite opened mode=ro, JSON read) and never
+# writes. Paths are overridable by environment variable.
+# ---------------------------------------------------------------------------
+SWING_C4_DB = Path(os.environ.get(
+    "DASH_SWING_C4_DB", "/root/strat-swing/experiments/strat_023/live_paper.db"))
+SWING_RSI2_LOG_DIR = Path(os.environ.get(
+    "DASH_SWING_RSI2_LOG_DIR", "/root/deploy/rsi2-swing/experiments/swing_paper/logs"))
+BOT_LOG_PATH = Path(os.environ.get(
+    "DASH_BOT_LOG", str(Path(__file__).parent / "trading_bot.log")))
+
+
+def _mtime_iso(p: Path):
+    try:
+        return datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except OSError:
+        return None
+
+
+def _alpaca_prices() -> Dict[str, float]:
+    prices: Dict[str, float] = {}
+    if not trading_client:
+        return prices
+    try:
+        for p in trading_client.get_all_positions():
+            if p.current_price:
+                prices[p.symbol] = float(p.current_price)
+    except Exception as e:  # pragma: no cover - network
+        logging.warning(f"swing-sleeves: could not read Alpaca prices: {e}")
+    return prices
+
+
+def read_c4_sleeve(db_path: Path, prices: Dict[str, float]) -> Dict:
+    out = {"name": "C4", "source": str(db_path), "available": False,
+           "open": [], "closed_count": 0, "realized_pnl": 0.0,
+           "unrealized_pnl": 0.0, "last_update": _mtime_iso(db_path)}
+    if not db_path.exists():
+        out["error"] = "ledger not found"
+        return out
+    import sqlite3 as _sq
+    conn = _sq.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+    try:
+        conn.row_factory = _sq.Row
+        for r in conn.execute(
+                "SELECT symbol, qty, entry_price, entry_date, status FROM positions "
+                "WHERE status IN ('open','pending_fill') ORDER BY id"):
+            px = prices.get(r["symbol"])
+            unreal = None
+            if px is not None and r["entry_price"] is not None and r["qty"]:
+                unreal = (px - float(r["entry_price"])) * float(r["qty"])
+                out["unrealized_pnl"] += unreal
+            out["open"].append({"symbol": r["symbol"], "qty": r["qty"],
+                                "entry_price": r["entry_price"], "entry_date": r["entry_date"],
+                                "status": r["status"], "current_price": px,
+                                "unrealized_pnl": unreal})
+        row = conn.execute("SELECT COUNT(*), COALESCE(SUM(realized_pnl),0) FROM positions "
+                           "WHERE status='closed'").fetchone()
+        out["closed_count"] = int(row[0])
+        out["realized_pnl"] = float(row[1])
+        out["available"] = True
+    finally:
+        conn.close()
+    return out
+
+
+def read_rsi2_sleeve(log_dir: Path, prices: Dict[str, float]) -> Dict:
+    state_path = log_dir / "state.json"
+    events_path = log_dir / "swing_events.jsonl"
+    out = {"name": "RSI(2)", "source": str(state_path), "available": False,
+           "open": [], "closed_count": 0, "realized_pnl": None,
+           "unrealized_pnl": 0.0, "last_update": _mtime_iso(state_path),
+           "recent_errors": 0}
+    if not state_path.exists():
+        out["error"] = "state file not found"
+        return out
+    state = json.loads(state_path.read_text())
+    for pos in (state.get("open") or {}).values():
+        sym = pos.get("symbol")
+        entry = pos.get("entry_fill_px")
+        qty = pos.get("qty")
+        px = prices.get(sym)
+        unreal = None
+        if px is not None and entry is not None and qty:
+            unreal = (px - float(entry)) * float(qty)
+            out["unrealized_pnl"] += unreal
+        out["open"].append({"symbol": sym, "qty": qty, "entry_price": entry,
+                            "entry_date": pos.get("entry_date"), "stop_price": pos.get("stop_px"),
+                            "status": "open" if pos.get("entry_filled") else "pending_fill",
+                            "current_price": px, "unrealized_pnl": unreal})
+    if events_path.exists():
+        closed_ids = set()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        with events_path.open() as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                etype = str(ev.get("type", ""))
+                if etype == "close" and ev.get("entry_id"):
+                    closed_ids.add(ev["entry_id"])
+                if "error" in etype:
+                    try:
+                        ts = datetime.fromisoformat(str(ev.get("ts")).replace("Z", "+00:00"))
+                        if ts >= cutoff:
+                            out["recent_errors"] += 1
+                    except ValueError:
+                        pass
+        out["closed_count"] = len(closed_ids)
+    out["available"] = True
+    return out
+
+
+@app.get("/api/swing-sleeves")
+def api_swing_sleeves():
+    """Read-only view of the C4 and RSI(2) swing sleeves (paper)."""
+    prices = _alpaca_prices()
+    sleeves = []
+    for reader, arg in ((read_c4_sleeve, SWING_C4_DB), (read_rsi2_sleeve, SWING_RSI2_LOG_DIR)):
+        try:
+            sleeves.append(reader(arg, prices))
+        except Exception as e:
+            logging.warning(f"swing-sleeves: {reader.__name__} failed: {e}")
+            sleeves.append({"name": reader.__name__, "available": False, "error": str(e)})
+    return {"sleeves": sleeves,
+            "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
+def summarize_log_errors(log_path: Path, hours: int = 24, max_bytes: int = 64 * 1024 * 1024) -> Dict:
+    """Count ERROR/CRITICAL lines in the last `hours` of the bot log.
+
+    Reads only the tail (max_bytes) so a large log stays cheap. Messages are
+    grouped with digits stripped so repeats of the same failure collapse.
+    """
+    import re as _re
+    out = {"log_path": str(log_path), "hours": hours, "total": 0, "top": []}
+    if not log_path.exists():
+        out["error"] = "log not found"
+        return out
+    cutoff = datetime.now() - timedelta(hours=hours)  # log uses server-local time
+    counts: Dict[str, int] = {}
+    with log_path.open("rb") as fh:
+        size = log_path.stat().st_size
+        fh.seek(max(0, size - max_bytes))
+        data = fh.read().decode("utf-8", "replace")
+    for line in data.splitlines():
+        if " - ERROR - " not in line and " - CRITICAL - " not in line:
+            continue
+        try:
+            ts = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if ts < cutoff:
+            continue
+        msg = line.split(" - ", 2)[-1]
+        key = _re.sub(r"\d+", "#", msg)[:160]
+        counts[key] = counts.get(key, 0) + 1
+    out["total"] = sum(counts.values())
+    out["top"] = [{"message": k, "count": v}
+                  for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:10]]
+    return out
+
+
+@app.get("/api/error-summary")
+def api_error_summary(hours: int = Query(24, ge=1, le=168)):
+    """Daily count of bot ERROR lines so silent failures are visible."""
+    return summarize_log_errors(BOT_LOG_PATH, hours)
+
+
 @app.get("/api/db-status")
 def api_db_status():
     """Return SQLite database health — file info and per-table row counts."""

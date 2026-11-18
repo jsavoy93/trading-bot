@@ -10276,7 +10276,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                                     f"({len(opt_result['rebalance_trades'])} suggestions)"
                                 )
                         except Exception as e:
-                            logging.debug(f"Portfolio optimisation failed in loop: {e}")
+                            logging.warning(f"Portfolio optimisation failed in loop: {e}")
 
                     # Adaptive learning (every N loops)
                     try:

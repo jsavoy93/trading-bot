@@ -1283,6 +1283,94 @@
         </div>
 
         <!-- Performance Analytics -->
+        <!-- Swing sleeves (C4 + RSI(2)) and bot error summary — read-only -->
+        <div class="card" id="swing-sleeves-card">
+            <div class="card-header">
+                <span class="card-title">🔁 Swing Strategies (C4 + RSI(2))</span>
+            </div>
+            <div id="swing-sleeves-body">Loading...</div>
+        </div>
+        <div class="card" id="error-summary-card">
+            <div class="card-header">
+                <span class="card-title">⚠️ Bot Errors (last 24h)</span>
+            </div>
+            <div id="error-summary-body">Loading...</div>
+        </div>
+        <script>
+        (function () {
+            function el(tag, text, style) {
+                var e = document.createElement(tag);
+                if (text !== undefined && text !== null) e.textContent = String(text);
+                if (style) e.setAttribute('style', style);
+                return e;
+            }
+            function money(v) {
+                if (v === null || v === undefined) return 'n/a';
+                var n = Number(v);
+                return (n < 0 ? '-$' : '$') + Math.abs(n).toFixed(2);
+            }
+            function pnlColor(v) {
+                if (v === null || v === undefined) return '';
+                return Number(v) >= 0 ? 'color:#3fb950' : 'color:#f85149';
+            }
+            function renderSleeves(data) {
+                var body = document.getElementById('swing-sleeves-body');
+                body.textContent = '';
+                (data.sleeves || []).forEach(function (s) {
+                    var box = el('div', null, 'margin-bottom:1rem');
+                    box.appendChild(el('h4', s.name, 'margin:0.25rem 0'));
+                    if (!s.available) {
+                        box.appendChild(el('div', 'Not available: ' + (s.error || 'unknown'), 'color:#f85149'));
+                        body.appendChild(box);
+                        return;
+                    }
+                    var line = 'Open: ' + s.open.length + ' · Closed: ' + s.closed_count +
+                        ' · Unrealized: ' + money(s.unrealized_pnl) +
+                        (s.realized_pnl === null ? '' : ' · Realized: ' + money(s.realized_pnl)) +
+                        ' · Last run: ' + (s.last_update ? new Date(s.last_update).toLocaleString() : 'unknown') +
+                        (s.recent_errors ? ' · Errors (7d): ' + s.recent_errors : '');
+                    box.appendChild(el('div', line, 'font-size:0.9rem;opacity:0.85'));
+                    if (s.open.length) {
+                        var t = el('table', null, 'width:100%;font-size:0.85rem;margin-top:0.25rem');
+                        var hr = el('tr');
+                        ['Symbol', 'Qty', 'Entry', 'Now', 'P&L', 'Since'].forEach(function (h) { hr.appendChild(el('th', h, 'text-align:left')); });
+                        t.appendChild(hr);
+                        s.open.forEach(function (p) {
+                            var r = el('tr');
+                            r.appendChild(el('td', p.symbol));
+                            r.appendChild(el('td', p.qty));
+                            r.appendChild(el('td', money(p.entry_price)));
+                            r.appendChild(el('td', p.current_price === null ? 'n/a' : money(p.current_price)));
+                            r.appendChild(el('td', money(p.unrealized_pnl), pnlColor(p.unrealized_pnl)));
+                            r.appendChild(el('td', p.entry_date || p.status));
+                            t.appendChild(r);
+                        });
+                        box.appendChild(t);
+                    }
+                    body.appendChild(box);
+                });
+            }
+            function renderErrors(data) {
+                var body = document.getElementById('error-summary-body');
+                body.textContent = '';
+                if (data.error) { body.appendChild(el('div', 'Not available: ' + data.error)); return; }
+                body.appendChild(el('div', data.total + ' error lines in the last ' + data.hours + 'h',
+                    data.total ? 'color:#f85149;font-weight:600' : 'color:#3fb950;font-weight:600'));
+                (data.top || []).forEach(function (row) {
+                    body.appendChild(el('div', row.count + '× ' + row.message, 'font-size:0.85rem;font-family:monospace'));
+                });
+            }
+            function loadSwingAndErrors() {
+                fetch('/api/swing-sleeves').then(function (r) { return r.json(); }).then(renderSleeves)
+                    .catch(function (e) { document.getElementById('swing-sleeves-body').textContent = 'Failed to load: ' + e; });
+                fetch('/api/error-summary').then(function (r) { return r.json(); }).then(renderErrors)
+                    .catch(function (e) { document.getElementById('error-summary-body').textContent = 'Failed to load: ' + e; });
+            }
+            document.addEventListener('DOMContentLoaded', loadSwingAndErrors);
+            setInterval(loadSwingAndErrors, 60000);
+        })();
+        </script>
+
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📈 Performance Analytics</span>
