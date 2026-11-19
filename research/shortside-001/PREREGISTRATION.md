@@ -12,7 +12,7 @@ DB override read from a copy of the deployed trading_bot.db):
   (SCORE-002 deprecates it as a gate); the mirrored system has no equivalent, so MEDIUM is the
   conservative (weaker) tier and is what this study tests: any mirrored entry needs no extra
   strength condition. Mapping: STRONG(long, urgent) -> no analog needed; MEDIUM(long, secondary)
-  -> all mirrored shorts. Stated noised raw: the mirror keeps the binding STRUCTURAL gates
+  -> all mirrored shorts. Stated caveat: the mirror keeps the binding STRUCTURAL gates
   (mean-reversion + downtrend) and drops MACD/score, because a short mirror of "hist>0" would be
   "hist<0" and that is *not* required for a MEDIUM long either (the score, not MACD alone, decides).
 Universe: the bot's (Alpaca active tradable US equities via get_all_us_symbols, smart_bot.py:1741),
