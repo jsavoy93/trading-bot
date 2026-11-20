@@ -120,3 +120,6 @@ short; link files, not paragraphs.
   trust for attribution).
 - Live log/DB/.env: /root/.openclaw/workspace/trading-bot (never
   modify; DB reads via `mode=ro` URI only).
+
+## Research holdout runs (HOLDOUT-MOM-001)
+- `scripts_holdout/` (branch `research/holdout-mom-001`, not main): `build_holdout_panel.py` (split-records panel through 2026-09-29), `run_mom_holdout.py` (single MOM 12-1 holdout eval), `diag_dev_rows.py` (DEV row-count diagnostic). Artifacts in `scripts_holdout/results_holdout/`; `*.parquet` is gitignored.

@@ -21,7 +21,6 @@ HOLD0 = pd.Timestamp("2025-01-01")
 
 df = pd.read_parquet(SRC, columns=["symbol", "date", "open", "close", "volume"])
 df["date"] = pd.to_datetime(df["date"])
-df = df[(df.date >= pd.Timestamp("2019-01-02")) & (df.date <= DEV1)].copy()
 syms = np.sort(df.symbol.unique())
 print("panel symbols", len(syms), "rows", len(df), flush=True)
 
@@ -33,7 +32,17 @@ need = []
 print("need fetch", len(need), flush=True)
 
 # ---- 2. apply splits ----
-df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+# PLUMBING FIX: tail rows must be removed BEFORE sorting (the source parquet is
+# date-major, so a post-sort mask kept ~2026 rows per symbol in order-slot 2024
+# and leaked them into the 2024-12 month). Behaviour identical to the DEV panel.
+df = df[(df.date >= pd.Timestamp("2019-01-02")) & (df.date <= DEV1)].copy()
+df = df.sort_values(["symbol", "date"], kind="mergesort").reset_index(drop=True)
+# PLUMBING FIX 2: syms must be rebuilt from the MASKED frame. Keeping the
+# pre-mask symbol list made pos[s] include symbols whose blocks are not
+# contiguous (their 2026 rows were dropped), so the +/-2 window search for
+# symbol s could read another symbol's prices (it dropped 2024-12's t-bar).
+syms = np.sort(df.symbol.unique())
+assert (df.symbol.values[:-1] <= df.symbol.values[1:]).all(), "symbols not sorted"
 applied, skipped, no_lookup, pre2021 = [], [], [], []
 pos = {s: np.flatnonzero(df.symbol.values == s) for s in syms}
 recs = []

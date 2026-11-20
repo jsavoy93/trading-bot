@@ -1,0 +1,72 @@
+{
+ "ref_splitsscreen_002_dev": {
+  "n_months": 47,
+  "mean_monthly_net": 0.017107647750535613,
+  "t_stat_excess": 2.2899200419070485,
+  "percentile_vs_random": 100.0
+ },
+ "holdout_panel_dev": {
+  "n_months": 48,
+  "mean_monthly_net": 0.015678556969094447,
+  "mean_monthly_excess": 0.021976301790386538,
+  "t_stat_excess": 2.178512492197334,
+  "percentile_vs_random": 100.0,
+  "max_drawdown": -0.2774257906660196,
+  "bars": {
+   "n_months>=24": true,
+   "mean_net>0": true,
+   "mean_excess>0": true,
+   "percentile>=97.5": true,
+   "t_stat>=2.24": false,
+   "ALL_PASS": false
+  }
+ },
+ "holdout_panel_dev_minus_2024-11": {
+  "n_months": 47,
+  "mean_monthly_net": 0.013687335440046276,
+  "mean_monthly_excess": 0.01994037103523903,
+  "t_stat_excess": 1.9785381182033432,
+  "percentile_vs_random": 100.0,
+  "max_drawdown": -0.2774257906660196,
+  "bars": {
+   "n_months>=24": true,
+   "mean_net>0": true,
+   "mean_excess>0": true,
+   "percentile>=97.5": true,
+   "t_stat>=2.24": false,
+   "ALL_PASS": false
+  }
+ },
+ "holdout_panel_dev_minus_2024-12": {
+  "n_months": 47,
+  "mean_monthly_net": 0.01708229936906453,
+  "mean_monthly_excess": 0.023393278046452092,
+  "t_stat_excess": 2.2943640317237652,
+  "percentile_vs_random": 100.0,
+  "max_drawdown": -0.2774257906660196,
+  "bars": {
+   "n_months>=24": true,
+   "mean_net>0": true,
+   "mean_excess>0": true,
+   "percentile>=97.5": true,
+   "t_stat>=2.24": true,
+   "ALL_PASS": true
+  }
+ },
+ "dev_panel_dev": {
+  "n_months": 47,
+  "mean_monthly_net": 0.017107647750535613,
+  "mean_monthly_excess": 0.023431148419182667,
+  "t_stat_excess": 2.2899200419070485,
+  "percentile_vs_random": 100.0,
+  "max_drawdown": -0.2774257906660196,
+  "bars": {
+   "n_months>=24": true,
+   "mean_net>0": true,
+   "mean_excess>0": true,
+   "percentile>=97.5": true,
+   "t_stat>=2.24": true,
+   "ALL_PASS": true
+  }
+ }
+}
