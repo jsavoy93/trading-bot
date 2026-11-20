@@ -223,9 +223,6 @@ def compute_month_data(panel: Panel, months: list[MonthRow]) -> list[MonthData]:
             last_close_idx = np.where(good, j, last_close_idx)
             held_days = np.where(good, np.maximum(j - e + 1, 0), held_days)
         # HOLDOUT-MOM-002: count exits used the last-real-close fallback
-        sb = compute_month_data.FALLBACK_STATS
-        sb["held_legs"] = sb.get("held_legs", 0) + int((np.isfinite(p0) & (p0 > 0)).sum())
-        sb["fallback_last_real_close"] = sb.get("fallback_last_real_close", 0) + int(good.sum()) if need.any() else sb.get("fallback_last_real_close", 0)
         # no data at all after entry -> flat (cash) and the name is dead
         dead = np.isfinite(p0) & (p0 > 0) & ~np.isfinite(ret)
         ret = np.where(dead, 0.0, ret)
@@ -353,6 +350,9 @@ def simulate_leg(md_list: list[MonthData], legs: list[np.ndarray], label: str = 
             "dead": sorted(dead_cur),
             "held_days": days,
         })
+        sb = compute_month_data.FALLBACK_STATS
+        sb["held_legs"] = sb.get("held_legs", 0) + len(cur_set)
+        sb["fallback_last_real_close"] = sb.get("fallback_last_real_close", 0) + len(dead_cur)
         prev_set = cur_set - dead_cur
     res.net = np.array(res.net)
     res.long_gross = np.array(res.long_gross)

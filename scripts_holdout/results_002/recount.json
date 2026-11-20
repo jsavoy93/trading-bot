@@ -1,0 +1,10 @@
+{
+ "dev": {
+  "fallback_exits": 14,
+  "held_legs": 19200
+ },
+ "hold": {
+  "fallback_exits": 0,
+  "held_legs": 11284
+ }
+}
