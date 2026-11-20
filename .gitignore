@@ -169,3 +169,7 @@ experiments/swing_paper/KILL_SWITCH
 
 # DB-GROWTH-FIX-3: pruned decision_history archives (gzip JSONL) are local artifacts
 research_data/db_archive/
+
+# HOLDOUT-MOM-001: large research artifacts
+*.parquet
+scripts_holdout/*.log
