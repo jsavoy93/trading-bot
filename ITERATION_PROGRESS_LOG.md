@@ -5544,3 +5544,10 @@ Implementation complete; PR open and awaiting owner review.
   - `python3 scripts_holdout/run_mom_holdout.py scripts_holdout/panel_holdout.parquet scripts_holdout/results_holdout > holdout_eval.log 2>&1` -> EXIT=0; DEV gate 47 months t=2.294 PASS 5/5; HOLDOUT 20 months (2025-01..2026-08) mean net 1.60%/mo, excess 2.22%/mo, percentile 100, t=1.148, maxDD -24.25%; bars n_months>=12 PASS, mean_net>0 PASS, mean_excess>0 PASS, percentile>=95.0 PASS, t_stat>=2.0000 FAIL -> ALL_PASS False.
 - Decisions/risks: no rule/cost/seed changed; holdout computed once (earlier attempts exited before the holdout because the DEV gate failed on plumbing defects). Plumbing fixes: mask-before-sort and syms rebuilt from masked frame in the builder; DEV gate on the frozen 47-month slice (exit_date <= 2024-12-31) because this panel continues past DEV. Open risk: `simulate_leg` last_close_idx + `compute_month_data` tail-of-block read on non-contiguous symbol blocks; 2026-07 (-22.6%) drives half the holdout loss -> verdict provisional.
 - Next action: fix the panel per-symbol block layout (contiguous rows after masking) and rerun once as a separate, pre-registered task before any promotion decision.
+
+## HOLDOUT-MOM-001 — round 2 (report-format fix + prereg-11 verification)
+- UTC: 2026-11-20 19:11
+- Status: `DONE` (report-only; holdout evaluation unchanged and not re-run)
+- What changed: `REPORT.md` rewritten completely (20 lines, verdict first, prereg section-9 holdout bars quoted verbatim, DEV vs HOLDOUT side-by-side, block-seam caveat, 20-row monthly table dropped); new non-result artifact `scripts_holdout/verify_prereg_section11.py` (hand recomputation of 2025-03, 2025-09, 2026-01: names, entry/exit prices, leg gross, costs, borrow, net) which reproduces the frozen engine net exactly (max |diff| 0.00e+00); new archive `reports/2026-11-20_191111_holdout-mom-001-round2.md`.
+- Not changed: no rule, cost, seed, parameter or file under `scripts_holdout/results_holdout/`; panel not rebuilt; holdout not recomputed.
+- Commit: this commit (`research/holdout-mom-001`).
