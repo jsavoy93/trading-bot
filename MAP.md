@@ -123,3 +123,11 @@ short; link files, not paragraphs.
 
 ## Research holdout runs (HOLDOUT-MOM-001)
 - `scripts_holdout/` (branch `research/holdout-mom-001`, not main): `build_holdout_panel.py` (split-records panel through 2026-09-29), `run_mom_holdout.py` (single MOM 12-1 holdout eval), `diag_dev_rows.py` (DEV row-count diagnostic). Artifacts in `scripts_holdout/results_holdout/`; `*.parquet` is gitignored.
+
+## Research scripts (DEV-only studies, no runtime effect)
+- `scripts_secfile/` — SECFILE-001: free SEC EDGAR full-index (form.idx) fetch/parse,
+  ticker->CIK map, and the frozen MOM 12-1 runner (`step1..step4_run.py`). Raw data
+  cached under `/root/research/secfile-001/data/` (738 MB, not in repo); results in
+  `scripts_secfile/results_secfile.json`. Prereg: `PREREGISTRATION_SECFILE_001.md`.
+  Repro: `python3 scripts_secfile/step1_legs.py` (fetch), then `step2_filings.py`,
+  `step3_filter.py`, `step4_run.py` (~11 min on CPU).
