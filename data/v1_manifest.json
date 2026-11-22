@@ -1,0 +1,12 @@
+{
+ "candidates": 2234,
+ "with_dates": 2094,
+ "coverage_pct": 93.7332139659803,
+ "nasdaq_days_cached": 1066,
+ "nasdaq_days_fetched_this_run": 0,
+ "requested_range": [
+  "2020-12-01",
+  "2024-12-31"
+ ],
+ "hard_cutoff": "2024-12-31 (nothing after is requested)"
+}
