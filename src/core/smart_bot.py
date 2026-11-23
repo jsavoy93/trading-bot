@@ -1830,32 +1830,121 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 return True
         return False
 
-    def _passes_universe_price_floor(self, symbol: str) -> bool:
-        """
-        Price floor for the scan universe. Fail-open: if the latest price
-        cannot be read (missing/network/data error) the symbol is kept, so a
-        data outage never silently shrinks the universe.
-        """
+    def _universe_min_price_value(self) -> float:
+        """Configured universe price floor as a float (<=0 means disabled)."""
         min_price = getattr(self, "universe_min_price", self.UNIVERSE_MIN_PRICE_DEFAULT)
         try:
-            min_price = float(min_price)
+            return float(min_price)
         except (TypeError, ValueError):
-            min_price = self.UNIVERSE_MIN_PRICE_DEFAULT
+            return float(self.UNIVERSE_MIN_PRICE_DEFAULT)
+
+    def _passes_price_floor_value(self, price) -> bool:
+        """
+        NOBUY-FIX-001 FIX 2 (rev): pure, ZERO-API price floor check.
+
+        Used ONLY where a price is already in hand (the ~30-symbol analysis
+        batch), so enforcing the floor never costs an extra market-data
+        request. Fail-open: a missing/non-finite/non-positive price passes,
+        so a data outage never silently excludes a symbol.
+        """
+        min_price = self._universe_min_price_value()
         if min_price <= 0:
             return True
         try:
-            df = self.get_market_data(symbol)
-        except Exception:
-            return True
-        if df is None or len(df) == 0:
+            value = float(price)
+        except (TypeError, ValueError):
             return True
         try:
-            price = float(df["close"].iloc[-1])
-        except Exception:
+            if pd.isna(value) or value <= 0:
+                return True
+        except (TypeError, ValueError):
             return True
-        if pd.isna(price) or price <= 0:
-            return True
-        return price >= min_price
+        return value >= min_price
+
+    def _price_floor_ineligible_result(
+        self,
+        symbol: str,
+        price,
+        latest,
+        multi_timeframe: bool = False,
+        daily_signal=None,
+        hourly_signal=None,
+    ) -> Dict:
+        """
+        NOBUY-FIX-001 FIX 2 (rev): clean, non-actionable HOLD for a symbol
+        below the universe price floor.
+
+        Built from indicators that are already loaded, so it costs ZERO
+        extra API calls. The mark ``universe_price_floor_ineligible`` is
+        read by ``_build_decision_snapshot`` so the persisted OBS-001 /
+        OBS-002 decision row says "ineligible on the universe price
+        floor" instead of a generic "no actionable signal". No scoring or
+        BUY/SELL evaluation runs for such a symbol.
+        """
+        min_price = self._universe_min_price_value()
+
+        def _safe(col, fallback=None):
+            try:
+                value = latest.get(col, fallback)
+            except Exception:
+                return fallback
+            try:
+                if value is None or pd.isna(value):
+                    return fallback
+            except (TypeError, ValueError):
+                return fallback
+            return value
+
+        try:
+            price_value = float(price)
+        except (TypeError, ValueError):
+            price_value = price
+
+        result = {
+            'symbol': symbol,
+            'price': price_value,
+            'sma_fast': _safe(f'SMA_{getattr(self, "sma_fast", 10)}'),
+            'sma_slow': _safe(f'SMA_{getattr(self, "sma_slow", 30)}'),
+            'rsi': _safe('RSI'),
+            'signal': 'HOLD',
+            'signal_strength': 'WEAK',
+            'buy_criteria': [],
+            'passes_all_buy_criteria': False,
+            'filter_results': {},
+            'blocked_by': None,
+            'blocked_count': 0,
+            'timestamp': _safe('timestamp', datetime.now(timezone.utc)),
+            'universe_price_floor_ineligible': True,
+            'universe_min_price': min_price,
+        }
+        if multi_timeframe:
+            # MTF BUY OBSERVABILITY: keep the same stamped contract as a
+            # normal MTF result so the snapshot's multi_timeframe block is
+            # populated from decision-time facts only.
+            self._last_mtf_outcome = None
+            self._last_mtf_reason = None
+            self._last_mtf_daily_signal = daily_signal
+            self._last_mtf_hourly_signal = hourly_signal
+            self._last_mtf_hourly_data_available = (
+                hourly_signal is not None
+            )
+            result['multi_timeframe'] = True
+            result['daily_signal'] = daily_signal
+            result['hourly_signal'] = hourly_signal
+            result['mtf_outcome'] = None
+            result['mtf_reason'] = None
+            result['mtf_hourly_data_available'] = (
+                self._last_mtf_hourly_data_available
+            )
+        logging.debug(
+            f"⏭️ {symbol}: below universe price floor "
+            f"(${min_price:.2f}); HOLD without scoring"
+        )
+        try:
+            self.mark_recent_research(symbol)
+        except Exception as _e:
+            logging.debug(f"price-floor research mark failed for {symbol}: {_e}")
+        return result
 
     def get_all_us_symbols(self) -> List[str]:
         """
@@ -1877,7 +1966,6 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # volume gate).
             symbols = []
             junk_skipped = 0
-            price_skipped = 0
             for asset in assets:
                 try:
                     # Unchanged eligibility comparison (pinned by
@@ -1898,17 +1986,17 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if self.is_junk_security(candidate, asset_name):
                     junk_skipped += 1
                     continue
-                if not self._passes_universe_price_floor(candidate):
-                    price_skipped += 1
-                    continue
+                # NOBUY-FIX-001 FIX 2 (rev): NO price check here. This loop
+                # runs over every active US equity (~10k+) twice per cycle,
+                # so any per-symbol get_market_data() call would mean
+                # thousands of Alpaca requests per cycle. The $5 floor is
+                # enforced later, at analysis time, from the daily bar that
+                # is already fetched for the small (~30 symbol) batch.
                 symbols.append(candidate)
-            if junk_skipped or price_skipped:
+            if junk_skipped:
                 logging.info(
-                    "Universe filter: skipped %d warrant/right/unit and %d "
-                    "sub-$%.2f symbols",
+                    "Universe filter: skipped %d warrant/right/unit symbols",
                     junk_skipped,
-                    price_skipped,
-                    float(getattr(self, "universe_min_price", self.UNIVERSE_MIN_PRICE_DEFAULT)),
                 )
             if not symbols and assets:
                 logging.warning(
@@ -2130,6 +2218,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         signal = analysis.get("signal", "HOLD")
         signal_strength = analysis.get("signal_strength", "WEAK")
         strategy_eligible = signal in ("BUY", "SELL")
+        # NOBUY-FIX-001 FIX 2 (rev): a symbol below the universe price
+        # floor is HOLD before any gate is evaluated, so it must never be
+        # reported as strategy-eligible and its reason must name the floor
+        # rather than a generic "no actionable signal".
+        _price_floor_ineligible = bool(
+            analysis.get("universe_price_floor_ineligible")
+        )
+        if _price_floor_ineligible:
+            strategy_eligible = False
 
         gates: List[Dict] = []
         rsi = analysis.get("rsi")
@@ -2189,7 +2286,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             )
 
         strategy_reason = None
-        if not strategy_eligible:
+        if _price_floor_ineligible:
+            _floor = analysis.get("universe_min_price")
+            strategy_reason = (
+                "Strategy ineligible: below universe price floor "
+                f"(${float(_floor):.2f})" if isinstance(_floor, (int, float))
+                else "Strategy ineligible: below universe price floor"
+            )
+        elif not strategy_eligible:
             failed = [g["name"] for g in gates if g.get("passed") is False]
             if failed:
                 strategy_reason = f"Strategy ineligible: failed gates: {', '.join(failed)}"
@@ -3310,6 +3414,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     elif sma_fast_hourly < sma_slow_hourly and rsi_hourly > self.rsi_sell_threshold:
                         hourly_signal = "SELL"
 
+
+            # NOBUY-FIX-001 FIX 2 (rev): universe price floor, enforced
+            # here because the daily bar is ALREADY loaded (zero extra API
+            # calls). The scan universe no longer price-checks symbols, so
+            # a sub-$min_price name gets this clean HOLD instead of a BUY.
+            if not self._passes_price_floor_value(price):
+                return self._price_floor_ineligible_result(
+                    symbol, price, latest,
+                    multi_timeframe=True,
+                    daily_signal=daily_signal,
+                    hourly_signal=hourly_signal,
+                )
+
             # Multi-timeframe signal generation
             # Require BOTH daily AND hourly to agree (weighted: daily 70%, hourly 30%)
             signal = None
@@ -4176,6 +4293,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             sma_slow = latest[f'SMA_{self.sma_slow}']
             rsi = latest['RSI']
             price = latest['close']
+
+            # NOBUY-FIX-001 FIX 2 (rev): universe price floor from the
+            # already-loaded daily bar (zero extra API calls).
+            if not self._passes_price_floor_value(price):
+                return self._price_floor_ineligible_result(
+                    symbol, price, latest, multi_timeframe=False,
+                )
 
             signal = None
             signal_strength = "WEAK"

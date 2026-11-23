@@ -53,10 +53,20 @@ short; link files, not paragraphs.
 
 ## NOBUY-FIX-001 (no-buy hygiene)
 - `src/core/smart_bot.py` — `check_liquidity` uses the real bid/ask spread
-  (Fix 1); `is_junk_security` + `_passes_universe_price_floor` +
-  `universe_min_price` (default `UNIVERSE_MIN_PRICE_DEFAULT` = $5, tunable
-  via `universe_min_price` in `STRATEGY_SETTINGS_SCHEMA`) drop
-  warrants/rights/units and sub-$5 names from the universe (Fix 2);
+  (Fix 1). Fix 2 is TWO ZERO-API stages:
+  (a) `get_all_us_symbols()` drops only warrants/rights/units via the pure
+  O(1) `is_junk_security` string match — it makes NO `get_market_data()`
+  calls, so it stays safe over the ~10k-symbol universe;
+  (b) the `universe_min_price` floor (default `UNIVERSE_MIN_PRICE_DEFAULT`
+  = $5, tunable via `universe_min_price` in `STRATEGY_SETTINGS_SCHEMA`) is
+  enforced in `analyze_multi_timeframe()` / `analyze_symbol()` right after
+  `price = latest['close']`, via the pure `_passes_price_floor_value(price)`
+  (fail-open on missing/non-finite price). A sub-floor symbol returns
+  `_price_floor_ineligible_result()`: HOLD, no scoring, flagged
+  `universe_price_floor_ineligible` so `_build_decision_snapshot()` records
+  `strategy_eligible=False` with reason "below universe price floor"
+  (outcome `HOLD_INELIGIBLE`). Never add a per-symbol price fetch to the
+  universe scan.
   `_format_hold_log_line`, `_safe_float`, `_bollinger_position_pct`,
   `_volatility_tier_from_atr_pct` back both HOLD/WEAK log paths, and the
   MTF/single-timeframe `analysis_result` now carries
