@@ -169,7 +169,3 @@ experiments/swing_paper/KILL_SWITCH
 
 # DB-GROWTH-FIX-3: pruned decision_history archives (gzip JSONL) are local artifacts
 research_data/db_archive/
-
-# BLEND-001 local run outputs
-research/blend-001/results.json
-research/blend-001/results.md

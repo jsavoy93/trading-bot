@@ -75,16 +75,18 @@ def test_valid_trades_drops_zero_holding_period():
     assert rb.valid_trades(same) == []
 
 
-def test_monthly_series_respects_cap_divisor_and_cash():
+def test_monthly_series_matches_documented_aggregation():
+    """Pins erratum E1: cash, and the TRAILING expanding-p95 denominator."""
     gi = pd.bdate_range("2021-01-04", "2021-03-31")
     keys = ["2021-01", "2021-02", "2021-03"]
     # one trade, entry session 0, exit session 2, +1% then -2%
     tr = [{"entry_date": gi[0], "exit_date": gi[2],
            "daily_ret": [0.01, -0.02]}]
-    rb.CAP_DIVISOR = 2.0
     out = rb.monthly_swing_series(tr, keys, gi)
-    assert out[0] == pytest.approx((0.01 - 0.02 - 2 * rb.C4_COST_PER_SIDE) / 2.0)
-    assert out[1] == 0.0 and out[2] == 0.0     # cash, not renormalized
+    d = rb.trailing_denominator(rb._open_counts(tr, gi))
+    assert d[0] == 1.0 and d[1] == 1.0 and d[2] == 1.0    # trailing, 1 position
+    assert out[0] == pytest.approx(0.01 - 0.02 - 2 * rb.C4_COST_PER_SIDE)
+    assert out[1] == 0.0 and out[2] == 0.0                 # cash, not renormalised
 
 
 def test_monthly_series_costs_split_by_session():
@@ -94,18 +96,49 @@ def test_monthly_series_costs_split_by_session():
     jan_last = [i for i, d in enumerate(gi) if d < pd.Timestamp("2021-02-01")][-1]
     tr = [{"entry_date": gi[jan_last - 1], "exit_date": gi[jan_last + 1],
            "daily_ret": [0.001, 0.002]}]
-    rb.CAP_DIVISOR = 1.0
     out = rb.monthly_swing_series(tr, keys, gi)
     assert out[0] == pytest.approx(0.001 - rb.C4_COST_PER_SIDE)
     assert out[1] == pytest.approx(0.002 - rb.C4_COST_PER_SIDE)
 
 
-def test_cap_divisor_is_p95_open_count():
+def test_cap_divisor_is_trailing_only():
+    """The denominator on session i must not depend on sessions after i."""
+    gi = pd.bdate_range("2021-01-04", "2021-01-22")
+    n = len(gi)
+    cnt = np.ones(n)
+    cnt[-3:] = 9.0                      # a busy patch at the very end
+    d = rb.trailing_denominator(cnt)
+    # a longer busy patch lets the expanding p95 settle at 9 after the patch ends
+    patch = np.ones(40); patch[10:13] = 9.0
+    d3 = rb.trailing_denominator(patch)
+    d4 = rb.trailing_denominator(np.ones(40))
+    assert np.array_equal(d3[:10], d4[:10]) and d3[-1] == 9.0
+    assert d[0] == 1.0 and d[11] == 1.0         # patch at 12..14 not yet known
+    # exact series under the documented method: two 2-session trades
+    n = len(gi)
+    tr = [{"entry_date": gi[0], "exit_date": gi[2], "daily_ret": [0.01, 0.02]},
+          {"entry_date": gi[1], "exit_date": gi[3], "daily_ret": [0.03, 0.04]}]
+    d = rb.trailing_denominator(rb._open_counts(tr, gi))   # [1,1,1,1,...]
+    out = rb.monthly_swing_series(tr, ["2021-01"], gi)
+    open_rets = np.zeros(n)
+    fees = np.zeros(n)
+    open_rets[1] += 0.01; open_rets[2] += 0.02 + 0.03; open_rets[3] += 0.04
+    for s in (0, 1, 2, 3):
+        fees[s] += rb.C4_COST_PER_SIDE
+    expect = np.sum(open_rets / d) - np.sum(fees / d)
+    assert out[0] == pytest.approx(expect)
+    # ...and it differs from the whole-window p95 scaling (look-ahead)
+    ref = rb.monthly_swing_series(
+        tr, ["2021-01"], gi, denom=np.full(n, rb.cap_divisor(tr, gi)))
+    assert out[0] != pytest.approx(ref[0])
+
+
+def test_cap_divisor_matches_whole_window_p95_reference():
     gi = pd.bdate_range("2021-01-04", "2021-01-15")
     tr = [{"entry_date": gi[0], "exit_date": gi[-1]},
           {"entry_date": gi[1], "exit_date": gi[2]}]
-    counts = np.ones(len(gi)); counts[:3] += 1        # 3 sessions with 2 open, rest 1
-    assert rb.cap_divisor(tr, gi) == pytest.approx(np.percentile(counts, 95))
+    counts = rb._open_counts(tr, gi)
+    assert rb.cap_divisor(tr, gi) == pytest.approx(np.percentile(counts[counts > 0], 95))
 
 
 def test_bar_report_bars_are_all_required():

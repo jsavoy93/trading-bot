@@ -106,6 +106,25 @@ Two fixed-weight capacity splits of MOM and C4 (any cash left idle earns 0%):
 - **B1 — 50/50**: `w_MOM = 0.50`, `w_C4 = 0.50`.
 - **B2 — MOM-weighted 70/30**: `w_MOM = 0.70`, `w_C4 = 0.30`.
 
+Rationale frozen before data: MOM's monthly SD is far larger than C4's; a 50/50
+dollar split still lets the swing sleeve contribute meaningfully without turning
+the blend into a swing strategy, and 70/30 is the conservative comparison that
+keeps MOM dominant. No other weights; no risk-parity variant (it would need a
+second, redundant bar family).
+
+- **Monthly rebalance of weights: NOT APPLICABLE, and that is deliberate.** Both
+  components are monthly-frequency spreads that already rebalance monthly at the
+  start of each MOM month (C4 trades are aggregated into the month in which they
+  exit). Rebalancing the two by month is the same as resampling both on the same
+  grid, which §4 does. There is no drift to correct inside a month.
+- Non-overlapping implementation: each C4 trade's net return is assigned to the
+  MOM month `k` containing its EXIT date and weighted by its notional; the C4
+  monthly series is rescaled to a constant 1.0 unit of deployed capital (sum of
+  notional-weighted returns / mean daily deployed notional over the month), so
+  a month with few open trades holds cash rather than being treated as
+  100% invested. Exact formula frozen: `s_t = sum_i n_i * r_i,net /
+  mean_over_month_days(max(deployed_capital, 1 unit))` where deployed capital is
+  the sum of open notionals on that day; a day with nothing open has 0 return.
 
 ## 6. Pass bars (verbatim; a variant PASSES only if ALL of (a)-(e) hold)
 
@@ -115,10 +134,7 @@ Two fixed-weight capacity splits of MOM and C4 (any cash left idle earns 0%):
 (d) **Risk-adjusted improvement over MOM alone**: mean(d_t) > 0 AND paired
     t(d_t) >= 2.24 on `d_t = b_t/sigma_M - m_t` (§4).
 (e) **Beats random**: percentile of mean(b) vs random-blend draws >= 98.75
-    (Bonferroni, k=2: one-sided alpha 0.05/2 = 0.025 -> percentile bar 97.5%.
-  The brief fixes the working bar at **98.75**; the stricter of the two is the
-  brief's 98.75, which is what the code evaluates. k=3 would give 99.17; it is
-  not used because the study registers only k=2 variants.)
+    (Bonferroni, k=2: 1 - 0.05/2 = 97.5% one-sided -> 98.75 two-sided-adjusted).
 
 Supplementary (reported, NOT a pass condition): blend Sharpe > MOM Sharpe
 (0.846); blend max drawdown and worst 3 months reported without a numeric bar

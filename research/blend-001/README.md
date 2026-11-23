@@ -24,7 +24,11 @@ number was computed).
 
 Flags: `--panel PATH` (default `/tmp/panel_dev.parquet`), `--swing-data DIR`
 (default `/tmp/rebal_red/experiments/strat_022/data`), `--n-random N`,
-`--out-dir DIR`. `--full` writes `results.json` / `results.md` here (git-excluded).
+`--out-dir DIR`. `--full` writes `results.json` / `results.md` to `--out-dir`
+(default: next to the script; pass `--out-dir /tmp/blend-001` in step 2 to
+keep results out of the repo). C4 aggregation follows
+`PREREGISTRATION_ERRATUM.md` E1 (1 unit per open position, cash elsewhere,
+**trailing** expanding-p95 denominator).
 
 Runtime: self-test ~90 s, smoke ~45 s, full run mostly memory-bound on the
 panel load (~1 GB RSS).

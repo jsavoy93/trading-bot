@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """BLEND-001 -- blend MOM 12-1 long-short with the C4 RSI(2) swing rule.
 
-Implements the FROZEN preregistration research/blend-001/PREREGISTRATION.md:
+Implements the FROZEN preregistration research/blend-001/PREREGISTRATION.md
+(§5 aggregation formula superseded per research/blend-001/PREREGISTRATION_ERRATUM.md
+E1: 1 unit per open position, cash elsewhere, trailing expanding-p95 denominator):
   * MOM leg   : research/volsize-001/engine_fixed.py (imported, never modified)
   * swing leg : STRAT-022 C4 rebuilt verbatim from experiments/strat_022
                 (rule source: PREREGISTRATION.md, frozen; code: run_backtest.py)
@@ -77,7 +79,7 @@ REF_T_EXCESS = 2.294
 REF_T_EXCESS_TOL = 1e-2
 
 SMA200_WARM = 200
-CAP_DIVISOR = 1.0                  # set from DEV p95 open-position count (one number)
+CAP_DIVISOR = 1.0                  # monitor: whole-window p95 open count (not used for scaling)
 
 # ---------------------------------------------------------------- swing data
 def load_swing_bars(data_dir: Path = SWING_DATA, allow_fallback: bool = False) -> dict:
@@ -212,27 +214,64 @@ def dropped_count(trades):
 
 
 # ---------------------------------------------------------------- monthly agg
-def monthly_swing_series(trades: list[dict], month_keys: list[str],
-                         dates_index: pd.DatetimeIndex) -> np.ndarray:
-    """Aggregate swing trades into the MOM month grid (prereg section 5).
+# Aggregation method: research/blend-001/PREREGISTRATION_ERRATUM.md (E1).
+# 1 unit of capital per open position, cash (0%) elsewhere, denominator =
+# TRAILING expanding-window p95 of the daily open-position count (D_i on
+# session i uses sessions [0..i] only -> no look-ahead).
 
-    The swing sleeve deploys 1 unit of capital per open position and holds cash
-    otherwise. Each session, the sleeve's return is
-        sum over open trades of r_i,day  /  D
-    where r_i,day is the trade's close-to-close return for that session and
-    D = the 95th percentile of the sleeve's daily open-position count over the
-    whole DEV window (ONE fixed number, no lookahead, no per-month rescaling) =
-    CAP_DIVISOR units of capital. Days the sleeve trades nothing earn 0. Entry
-    fees are charged on the entry session, exit fees on the exit session (both
-    divided by CAP_DIVISOR); both sessions are assigned by the session's month
-    while the holding period runs the exit date-session inclusive. A trade whose
-    exit date is not a session of the MOM grid is booked on the last grid
-    session on or before its exit date.
+
+def _open_counts(trades: list[dict], dates_index: pd.DatetimeIndex) -> np.ndarray:
+    """Daily open-position count on the MOM session grid."""
+    gi = pd.DatetimeIndex(dates_index)
+    sess_pos = pd.Series(np.arange(len(gi)), index=gi)
+    open_cnt = np.zeros(len(gi))
+    for tr in trades:
+        e = int(sess_pos.asof(tr["entry_date"]))
+        x = int(sess_pos.asof(tr["exit_date"]))
+        open_cnt[e:x + 1] += 1.0
+    return open_cnt
+
+
+def trailing_denominator(open_cnt: np.ndarray) -> np.ndarray:
+    """D_i = max(p95(open_cnt[0..i] over sessions with >=1 open), 1).
+
+    Expanding window: the value used on session i depends only on sessions
+    up to and including i. Before the first open position D = 1 (no scaling).
+    """
+    out = np.ones(len(open_cnt))
+    seen = []
+    for i, c in enumerate(open_cnt):
+        if c > 0:
+            seen.append(c)
+            out[i] = max(float(np.percentile(seen, 95)), 1.0)
+    return out
+
+
+def cap_divisor(trades: list[dict], dates_index: pd.DatetimeIndex) -> float:
+    """Reference only (monitor): whole-window p95 open count. NOT used to
+    scale the series -- that would be look-ahead (see erratum E1)."""
+    cnt = _open_counts(trades, dates_index)
+    return max(float(np.percentile(cnt[cnt > 0], 95)), 1.0) if (cnt > 0).any() else 1.0
+
+
+def monthly_swing_series(trades: list[dict], month_keys: list[str],
+                         dates_index: pd.DatetimeIndex,
+                         denom: np.ndarray | None = None) -> np.ndarray:
+    """Aggregate swing trades into the MOM month grid (erratum E1).
+
+    The sleeve deploys 1 unit per open position and holds cash otherwise.
+    Session i net contribution = sum over open trades of r_i_day / D_i, minus
+    entry/exit fees / D_i, where D_i is the TRAILING expanding p95 of the open
+    count (``trailing_denominator``). Nothing open -> 0 (cash). A trade whose
+    exit date is not a MOM grid session is booked on the last grid session on
+    or before its exit date.
     """
     gi = pd.DatetimeIndex(dates_index)
     sess_pos = pd.Series(np.arange(len(gi)), index=gi)
     month_of = pd.Series([k.strftime("%Y-%m") for k in gi], index=gi)
     key_i = {k: i for i, k in enumerate(month_keys)}
+    if denom is None:
+        denom = trailing_denominator(_open_counts(trades, gi))
     out = np.zeros(len(month_keys))
     for tr in trades:
         assert tr["exit_date"] <= DEV_END, "swing trade after DEV_END"
@@ -241,32 +280,18 @@ def monthly_swing_series(trades: list[dict], month_keys: list[str],
         x = int(sess_pos.asof(tr["exit_date"]))
         if x <= e:
             continue
-        # per-session close-to-close returns inside the trade
         rets = tr["daily_ret"]
         for j, day_i in enumerate(range(e + 1, x + 1)):
             k = month_of.iloc[day_i] if day_i < len(month_of) else month_of.iloc[-1]
             if k in key_i:
-                out[key_i[k]] += rets[j] / CAP_DIVISOR
+                out[key_i[k]] += rets[j] / denom[day_i]
         km = month_of.iloc[e]
         if km in key_i:
-            out[key_i[km]] -= C4_COST_PER_SIDE / CAP_DIVISOR
+            out[key_i[km]] -= C4_COST_PER_SIDE / denom[e]
         kx = month_of.iloc[x]
         if kx in key_i:
-            out[key_i[kx]] -= C4_COST_PER_SIDE / CAP_DIVISOR
+            out[key_i[kx]] -= C4_COST_PER_SIDE / denom[x]
     return out
-
-
-def cap_divisor(trades: list[dict], dates_index: pd.DatetimeIndex) -> float:
-    """D = p95 of the sleeve's daily open-position count over the DEV window."""
-    gi = pd.DatetimeIndex(dates_index)
-    sess_pos = pd.Series(np.arange(len(gi)), index=gi)
-    open_cnt = np.zeros(len(gi))
-    for tr in trades:
-        e = int(sess_pos.asof(tr["entry_date"]))
-        x = int(sess_pos.asof(tr["exit_date"]))
-        open_cnt[e:x + 1] += 1.0
-    d = float(np.percentile(open_cnt[open_cnt > 0], 95)) if (open_cnt > 0).any() else 1.0
-    return max(d, 1.0)
 
 
 def with_daily_returns(df: pd.DataFrame, trades: list[dict]) -> list[dict]:
@@ -293,7 +318,7 @@ def build_swing(bars: dict, month_keys: list[str], dates_index: pd.DatetimeIndex
         elig[sym] = e
         trades.extend(with_daily_returns(df, valid_trades(run_trades(df, sym, s))))
     global CAP_DIVISOR
-    CAP_DIVISOR = cap_divisor(trades, dates_index)
+    CAP_DIVISOR = cap_divisor(trades, dates_index)      # monitor only
     return monthly_swing_series(trades, month_keys, dates_index), sig, elig, trades
 
 
