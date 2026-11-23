@@ -18,9 +18,9 @@ python3 research/insider-001/run_insider.py
 ```
 Defaults: 1000 random draws per variant, all 47 DEV months (2021-01..2024-11),
 panel `/tmp/panel_dev.parquet` (DEV rows only, row-filtered by date and asserted
-after read — no price row after 2024-12-31 is ever loaded). Smoke (~14 s)
-returns in a fraction of a minute; the full 47-month x 1000-draw run is well under
-20 minutes (measured: V2 draw pass 0.2 s, V1 0.9 s, panel load 15 s).
+after read — no price row after 2024-12-31 is ever loaded). The full 47-month x
+1000-draw run is well under 20 minutes (measured: V2 draw pass 0.2 s, V1 draw pass
+0.9 s, panel load 15 s).
 Options: `--n-random N`, `--panel PATH`, `--insider PATH`, `--out-dir DIR`.
 
 ## Smoke / self-test
