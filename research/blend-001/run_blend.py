@@ -523,8 +523,26 @@ def main(argv=None) -> int:
     out_dir = Path(args.out_dir) if args.out_dir else HERE
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "results.json").write_text(json.dumps(res, indent=2, default=float))
-    print(f"wrote {out_dir/'results.json'} ({res['meta']['runtime_sec']}s)")
+    (out_dir / "results.md").write_text(_markdown(res))
+    print(f"wrote {out_dir/'results.json'} and results.md ({res['meta']['runtime_sec']}s)")
     return 0
+
+
+def _markdown(res: dict) -> str:
+    lines = [f"# BLEND-001 results ({res['meta']['mode']}, {res['meta']['window']}, "
+             f"{res['meta']['n_months']} months, {res['meta']['n_random']} draws)", "",
+             f"corr(C4, MOM) = {res['corr_c4_mom']:+.3f}", "",
+             "| variant | w_MOM | mean/mo | t | paired mean | paired t | pct | maxDD | worst3 | Sharpe | PASS |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for name, r in res["variants"].items():
+        s_ = r["summary"]
+        lines.append(
+            f"| {name} | {r['weights']['mom']:.2f} | {r['mean_net']*100:+.3f}% | {r['t_net']:+.2f} | "
+            f"{r['paired_mean']*100:+.3f}% | {r['paired_t']:+.2f} | {r['percentile']:.1f} | "
+            f"{s_['max_drawdown']*100:+.1f}% | {', '.join(f'{x*100:+.1f}%' for x in s_['worst3'])} | "
+            f"{s_['sharpe']:.3f} | {r['PASS']} |")
+    lines += ["", f"sha256(mom_net||c4_net) = `{res['sha']}`", ""]
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
