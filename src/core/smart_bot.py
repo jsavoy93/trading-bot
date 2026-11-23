@@ -599,6 +599,52 @@ def trading_bot_paper_only_guard() -> None:
         )
 
 
+def _format_hold_log_line(symbol, analysis):
+    """
+    NOBUY-FIX-001 FIX 3: HOLD/WEAK log line built from real analysis values.
+
+    Before the fix the callers hardcoded ``bb_pos = 50`` and defaulted the
+    missing keys to 0/'mid', so almost every line printed
+    "MACD:+0.00 | BB:50% | VWAP:+0.0% | Vol:mid(0.0%)". Missing or
+    non-finite values now render as 'n/a'; 50 is used for BB only when the
+    bands are missing/degenerate.
+    """
+    def _num(key):
+        return SmartTradingBot._safe_float(analysis.get(key, None))
+
+    def _fmt(value, spec):
+        return spec.format(value) if value is not None else "n/a"
+
+    price = _num('price')
+    rsi = _num('rsi')
+    score = _num('total_score')
+    macd = _num('macd')
+    bb_pos = _num('bb_pos')
+    if bb_pos is None:
+        bb_pos = SmartTradingBot._bollinger_position_pct(
+            analysis.get('price'),
+            analysis.get('bb_upper'),
+            analysis.get('bb_lower'),
+        )
+    if bb_pos is None:
+        bb_pos = 50.0
+    vwap_dist = _num('vwap_distance')
+    atr = _num('atr_pct')
+    vol_tier = analysis.get('volatility_tier') or 'mid'
+    cat_score = _num('catalyst_score')
+
+    return (
+        f"   \U0001F4CA {symbol}: ${_fmt(price, '{:.2f}')} | "
+        f"RSI:{_fmt(rsi, '{:.0f}')} | "
+        f"MACD:{_fmt(macd, '{:+.2f}')} | "
+        f"BB:{_fmt(bb_pos, '{:.0f}')}% | "
+        f"VWAP:{_fmt(vwap_dist, '{:+.1f}')}% | "
+        f"Score:{_fmt(score, '{:.0f}')}/100 | "
+        f"Vol:{vol_tier}({_fmt(atr, '{:.1f}')}%) "
+        f"Cat:+{_fmt(cat_score, '{:.0f}')}"
+    )
+
+
 class SmartTradingBot:
     def __init__(self):
         """Initialize the smart trading bot"""
@@ -3150,6 +3196,47 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(f"Hourly data fetch failed for {symbol}: {e}")
             return None
 
+    @staticmethod
+    def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+        """float(value) or default when missing/NaN/inf/unparseable."""
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return default
+        if math.isnan(out) or math.isinf(out):
+            return default
+        return out
+
+    @classmethod
+    def _bollinger_position_pct(
+        cls, close: Any, bb_upper: Any, bb_lower: Any,
+    ) -> Optional[float]:
+        """
+        Position of close inside the Bollinger bands as 0-100%.
+
+        NOBUY-FIX-001: returns None when the bands are missing or degenerate
+        (so callers can render a real fallback instead of a hardcoded 50).
+        """
+        c = cls._safe_float(close)
+        upper = cls._safe_float(bb_upper)
+        lower = cls._safe_float(bb_lower)
+        if c is None or upper is None or lower is None:
+            return None
+        if upper <= lower or upper <= 0:
+            return None
+        return ((c - lower) / (upper - lower)) * 100.0
+
+    def _volatility_tier_from_atr_pct(self, atr_pct: Any) -> str:
+        """Same thresholds as get_volatility_tier(), from an ATR% value."""
+        val = self._safe_float(atr_pct)
+        if val is None or val <= 0:
+            return 'mid'
+        if val < 2.0:
+            return 'low'
+        if val > 5.0:
+            return 'high'
+        return 'mid'
+
     def analyze_multi_timeframe(self, symbol: str, use_ai: bool = False) -> Optional[Dict]:
         """Analyze symbol using multiple timeframes (daily + hourly)"""
         # SCORE-002 observability: clear the scratch reason field at the
@@ -3405,6 +3492,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 self._last_score_error_reason = rsi_clamp_reason
                 return None
             macd_hist = latest_daily.get('MACD_histogram', None)
+            # NOBUY-FIX-001 FIX 3: real indicator display values. Before this
+            # the HOLD/WEAK log line had no data to read and printed
+            # "MACD:+0.00 | BB:50% | VWAP:+0.0% | Vol:mid(0.0%)" for ~98% of
+            # symbols. Values are computed once here from the daily bar.
+            _disp_macd = self._safe_float(latest_daily.get('MACD', None))
+            _disp_bb_pos = self._bollinger_position_pct(
+                price,
+                latest_daily.get('BB_upper', None),
+                latest_daily.get('BB_lower', None),
+            )
+            _disp_vwap_distance = self._safe_float(
+                latest_daily.get('vwap_distance', None),
+            )
+            _disp_atr_pct = self._safe_float(latest_daily.get('ATR_pct', None))
+            _disp_volatility_tier = self._volatility_tier_from_atr_pct(
+                _disp_atr_pct,
+            )
             # Total score: 0..100 bounded, centered at 50.
             total_score, total_clamp_reason = self._clamp_total_score_with_reason(
                 50.0 + _rsi_score_daily + _sma_score_daily + _macd_score_daily + _bb_score_daily
@@ -3491,7 +3595,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
                 'multi_timeframe': True,
                 'volume_confirmed': volume_confirmed,
-                'volume_ratio': volume_ratio
+                'volume_ratio': volume_ratio,
+                # NOBUY-FIX-001 FIX 3: real display values (see log paths).
+                # macd is None only when the column is missing/non-finite;
+                # bb_pos is None only when the bands are missing/degenerate;
+                # vwap_distance is a percent; atr_pct is a percent.
+                'macd': _disp_macd,
+                'macd_histogram': (
+                    self._safe_float(macd_hist) if macd_hist is not None else None
+                ),
+                'bb_upper': self._safe_float(latest_daily.get('BB_upper', None)),
+                'bb_lower': self._safe_float(latest_daily.get('BB_lower', None)),
+                'bb_pos': _disp_bb_pos,
+                'vwap_distance': _disp_vwap_distance,
+                'volatility_tier': _disp_volatility_tier,
+                'atr_pct': _disp_atr_pct,
             }
 
             # Add hourly data to result if available
@@ -4658,6 +4776,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'bb_upper': latest.get('BB_upper', 0),
                 'bb_middle': latest.get('BB_middle', 0),
                 'bb_lower': latest.get('BB_lower', 0),
+                # NOBUY-FIX-001 FIX 3: display values for the HOLD/WEAK log.
+                'bb_pos': self._bollinger_position_pct(
+                    price,
+                    latest.get('BB_upper', None),
+                    latest.get('BB_lower', None),
+                ),
+                'vwap_distance': self._safe_float(
+                    latest.get('vwap_distance', None),
+                ),
                 'signal': signal,
                 'signal_strength': signal_strength,
                 'total_score': total_score,
@@ -8007,14 +8134,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     # Check if we should skip due to weak signals
                     if analysis['signal_strength'] == "WEAK":
                         no_trade_reasons['weak_signal'] += 1
-                        score = analysis.get('total_score', 50)
-                        rsi = analysis.get('rsi', 50)
-                        macd = analysis.get('macd', 0)
-                        price = analysis.get('price', 0)
-                        bb_pos = 50
-                        vwap_dist = analysis.get('vwap_distance', 0)
-                        if pd.isna(vwap_dist): vwap_dist = 0
-                        logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | ⚠️ WEAK")
+                        logging.info(
+                            "%s | ⚠️ WEAK",
+                            _format_hold_log_line(symbol, analysis),
+                        )
                         # OBS-002: signal passed non-score gates but
                         # signal_strength is WEAK, so the symbol is NOT
                         # actionable for execution. Persist a
@@ -8214,19 +8337,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                 elif analysis:
                     # Has analysis but no actionable signal (HOLD)
-                    score = analysis.get('total_score', 50)
-                    rsi = analysis.get('rsi', 50)
-                    macd = analysis.get('macd', 0)
-                    price = analysis.get('price', 0)
-                    bb_pos = 50
-                    vwap_dist = analysis.get('vwap_distance', 0)
-                    if pd.isna(vwap_dist): vwap_dist = 0
-
-                    # Add new Phase 2 metrics to log
-                    vol_tier = analysis.get('volatility_tier', 'mid')
-                    atr = analysis.get('atr_pct', 0)
-                    cat_score = analysis.get('catalyst_score', 0)
-                    logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | Vol:{vol_tier}({atr:.1f}%) Cat:+{cat_score}")
+                    # NOBUY-FIX-001 FIX 3: single formatter reads the real
+                    # macd/bb_pos/vwap_distance/volatility_tier/atr_pct from
+                    # the analysis result (no hardcoded bb_pos = 50).
+                    logging.info(_format_hold_log_line(symbol, analysis))
 
                     # OBS-001 Phase A: persist HOLD outcome immediately.
                     # The terminal outcome (HOLD_INELIGIBLE) is known now;
