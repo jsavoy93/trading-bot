@@ -51,6 +51,23 @@ short; link files, not paragraphs.
   HOST has no systemd units installed — fails on machines where the
   RSI(2) shadow units are deployed; pre-existing, environmental.
 
+## NOBUY-FIX-001 (no-buy hygiene)
+- `src/core/smart_bot.py` — `check_liquidity` uses the real bid/ask spread
+  (Fix 1); `is_junk_security` + `_passes_universe_price_floor` +
+  `universe_min_price` (default `UNIVERSE_MIN_PRICE_DEFAULT` = $5, tunable
+  via `universe_min_price` in `STRATEGY_SETTINGS_SCHEMA`) drop
+  warrants/rights/units and sub-$5 names from the universe (Fix 2);
+  `_format_hold_log_line`, `_safe_float`, `_bollinger_position_pct`,
+  `_volatility_tier_from_atr_pct` back both HOLD/WEAK log paths, and the
+  MTF/single-timeframe `analysis_result` now carries
+  `macd`/`bb_upper`/`bb_lower`/`bb_pos`/`vwap_distance`/`volatility_tier`/
+  `atr_pct` (Fix 3); `_maybe_cleanup_cooldowns` gates cooldown cleanup on
+  100 research writes or an hourly floor (Fix 4).
+- `src/database/sqlite_db.py` — `cleanup_old_cooldowns` returns the number
+  of deleted rows and logs INFO only when rows were removed (Fix 4).
+- Tests: `tests/test_nobuy_fix_001_{liquidity,universe,hold_log,cooldown_cleanup}.py`.
+- `src/brokerage/mock.py` — `MockAsset(name=...)` for the junk-filter tests.
+
 ## Database growth controls (DB-GROWTH-FIX-3, observability-only)
 - `src/core/smart_bot.py` — `_decision_history_writes_allowed` (closed
   market), `_should_suppress_decision_row` (unchanged HOLD),
