@@ -2731,9 +2731,71 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         analysis["_p0_pre_signal_strength"] = pre_signal_strength
         return
 
+    # NOBUY-FIX-001: a daily high/low range is NOT a spread. Only a truly
+    # broken/extreme intraday range (>= this percent of price) is treated as
+    # a data-quality problem when no real quote is available.
+    MAX_INTRADAY_RANGE_PCT = 20.0
+
+    def _get_bid_ask_spread_pct(self, symbol: str, price: float) -> Optional[float]:
+        """
+        Return the real bid/ask spread as a percent of price, or None.
+
+        Reuses the quote-client pattern from
+        src/analysis/smart_orders/smart_orders.py: StockLatestQuoteRequest
+        via the historical data client this bot already holds. Never raises;
+        any missing client / SDK problem / empty or stale quote returns None
+        so callers can fall back to a non-rejecting path.
+        """
+        client = getattr(self, "data_client", None)
+        if client is None or price is None or price <= 0:
+            return None
+        try:
+            from alpaca.data.requests import StockLatestQuoteRequest
+        except Exception:
+            try:
+                from alpaca.data import StockLatestQuoteRequest  # older SDK
+            except Exception:
+                return None
+        try:
+            request = StockLatestQuoteRequest(symbol_or_symbols=[symbol])
+            response = client.get_stock_latest_quote(request)
+        except Exception as e:
+            logging.debug(f"Latest quote unavailable for {symbol}: {e}")
+            return None
+
+        quote = None
+        try:
+            data = getattr(response, "data", None)
+            if data:
+                quote = data.get(symbol) if hasattr(data, "get") else data[symbol]
+        except Exception:
+            quote = None
+        if quote is None:
+            return None
+
+        try:
+            bid = float(quote.bid_price or 0)
+            ask = float(quote.ask_price or 0)
+        except Exception:
+            return None
+        # Require a sane, two-sided, non-crossed quote.
+        if bid <= 0 or ask <= bid:
+            return None
+        return ((ask - bid) / price) * 100
+
     def check_liquidity(self, symbol: str, min_volume: int = 1000000, max_spread_pct: float = 0.3) -> tuple:
         """
         Check if stock meets liquidity criteria.
+
+        NOBUY-FIX-001: the spread check no longer uses the daily high/low
+        range as a proxy (a 4.3% high-low day is completely normal for a
+        23M-volume large cap and used to reject it as "Spread too wide").
+
+        - During market hours with a real two-sided quote, the actual
+          bid/ask spread must be <= max_spread_pct.
+        - Without a usable quote (missing/zero/stale/off-hours) the spread
+          check is skipped, except for a truly broken daily range
+          (> MAX_INTRADAY_RANGE_PCT, labeled "Intraday range", not "Spread").
 
         Args:
             symbol: Stock symbol
@@ -2742,6 +2804,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
         Returns:
             (passes: bool, avg_volume: float, spread_pct: float, reason: str)
+            spread_pct is the observed bid/ask spread when a quote was used,
+            otherwise the daily high-low percent (observability only).
         """
         try:
             # Get recent data for volume calculation
@@ -2752,27 +2816,44 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # Calculate average daily volume (last 20 days)
             avg_volume = df['volume'].tail(20).mean()
 
-            # Get latest quote for spread calculation
-            # Note: Alpaca basic data doesn't include bid/ask, so we estimate spread using high-low
-            # Real implementation would need premium data or another source
             latest = df.iloc[-1]
             price = latest['close']
 
             if price <= 0:
                 return (True, 0, 0, "Invalid price - skipping liquidity check")
 
-            # Estimate spread using high-low as proxy (wider = more volatile/less liquid)
-            high_low_spread = ((latest['high'] - latest['low']) / price) * 100
+            # Intraday high-low range, used only as a data-quality guard and
+            # for observability; it is NOT a spread.
+            high_low_range_pct = ((latest['high'] - latest['low']) / price) * 100
 
-            # Check volume requirement
+            # Check volume requirement (unchanged)
             if avg_volume < min_volume:
-                return (False, avg_volume, high_low_spread, f"Volume {avg_volume/1e6:.1f}M < {min_volume/1e6:.0f}M minimum")
+                return (False, avg_volume, high_low_range_pct, f"Volume {avg_volume/1e6:.1f}M < {min_volume/1e6:.0f}M minimum")
 
-            # Check spread requirement (using high-low as proxy)
-            if high_low_spread > max_spread_pct * 3:  # Multiply since high-low is typically larger than bid-ask
-                return (False, avg_volume, high_low_spread, f"Spread {high_low_spread:.1f}% too wide")
+            # Market hours gate for the real-quote path.
+            market_open = True
+            try:
+                market_open = market_calendar.is_market_open()
+            except Exception:
+                market_open = False
 
-            return (True, avg_volume, high_low_spread, "Passes liquidity check")
+            if market_open:
+                bid_ask_pct = self._get_bid_ask_spread_pct(symbol, float(price))
+                if bid_ask_pct is not None:
+                    if bid_ask_pct > max_spread_pct:
+                        return (False, avg_volume, bid_ask_pct, f"Spread {bid_ask_pct:.2f}% too wide")
+                    return (True, avg_volume, bid_ask_pct, "Passes liquidity check")
+
+            # No usable quote: do not reject liquid stocks for normal daily
+            # high-low movement. Only guard truly extreme/broken ranges.
+            if high_low_range_pct > self.MAX_INTRADAY_RANGE_PCT:
+                return (
+                    False, avg_volume, high_low_range_pct,
+                    f"Intraday range {high_low_range_pct:.1f}% > "
+                    f"{self.MAX_INTRADAY_RANGE_PCT:.0f}% (possible bad data)"
+                )
+
+            return (True, avg_volume, high_low_range_pct, "Passes liquidity check")
 
         except Exception as e:
             logging.debug(f"Liquidity check failed for {symbol}: {e}")
