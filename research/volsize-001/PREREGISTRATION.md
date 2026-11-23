@@ -15,8 +15,15 @@ RESEARCH ONLY, DEV window only. No code, no tests, no bot changes.
 - Not retested here: CRASHFILTER-001, EVENTNEWS-001, SECFILE-001, REGIMESECTOR-001.
 
 ## 2. Data
-- Panel: `/root/research/holdout-mom-001/scripts_holdout/panel_holdout.parquet`
-  sha256 `4387206b0c4b1ad396596b6f84874b0ad44901237c5ae30adc530e1b8ae5c071` (code asserts prefix/suffix).
+- Panel (as actually run, step 2): `/tmp/panel_dev.parquet`, sha256
+  `cf70f94c31fcec21350ab1aa60a8a599f6bf88f8f344aa283ebc764b23b861f1`, dates
+  2019-01-02 .. 2024-12-31 only.
+  - **Correction notice (step 2, 2026-11-23):** the pin originally written here pointed at
+    `/root/research/holdout-mom-001/scripts_holdout/panel_holdout.parquet`
+    (sha256 `4387206b0c4b1ad396596b6f84874b0ad44901237c5ae30adc530e1b8ae5c071`), which contains
+    holdout dates up to 2026-09-29. The script filters it to `date <= 2024-12-31` at read time, but
+    step 2 pinned the DEV-only artifact instead so the docs name the file that actually ran. The
+    frozen baseline numbers and bars are unchanged by this correction.
 - Loaded with a parquet row filter `date <= 2024-12-31` and additionally restricted to
   `date >= 2018-01-01` (the earliest date any DEV momentum window reads). The 2025-01..
   2026-08 holdout rows are never read into memory.
