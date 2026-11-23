@@ -599,6 +599,52 @@ def trading_bot_paper_only_guard() -> None:
         )
 
 
+def _format_hold_log_line(symbol, analysis):
+    """
+    NOBUY-FIX-001 FIX 3: HOLD/WEAK log line built from real analysis values.
+
+    Before the fix the callers hardcoded ``bb_pos = 50`` and defaulted the
+    missing keys to 0/'mid', so almost every line printed
+    "MACD:+0.00 | BB:50% | VWAP:+0.0% | Vol:mid(0.0%)". Missing or
+    non-finite values now render as 'n/a'; 50 is used for BB only when the
+    bands are missing/degenerate.
+    """
+    def _num(key):
+        return SmartTradingBot._safe_float(analysis.get(key, None))
+
+    def _fmt(value, spec):
+        return spec.format(value) if value is not None else "n/a"
+
+    price = _num('price')
+    rsi = _num('rsi')
+    score = _num('total_score')
+    macd = _num('macd')
+    bb_pos = _num('bb_pos')
+    if bb_pos is None:
+        bb_pos = SmartTradingBot._bollinger_position_pct(
+            analysis.get('price'),
+            analysis.get('bb_upper'),
+            analysis.get('bb_lower'),
+        )
+    if bb_pos is None:
+        bb_pos = 50.0
+    vwap_dist = _num('vwap_distance')
+    atr = _num('atr_pct')
+    vol_tier = analysis.get('volatility_tier') or 'mid'
+    cat_score = _num('catalyst_score')
+
+    return (
+        f"   \U0001F4CA {symbol}: ${_fmt(price, '{:.2f}')} | "
+        f"RSI:{_fmt(rsi, '{:.0f}')} | "
+        f"MACD:{_fmt(macd, '{:+.2f}')} | "
+        f"BB:{_fmt(bb_pos, '{:.0f}')}% | "
+        f"VWAP:{_fmt(vwap_dist, '{:+.1f}')}% | "
+        f"Score:{_fmt(score, '{:.0f}')}/100 | "
+        f"Vol:{vol_tier}({_fmt(atr, '{:.1f}')}%) "
+        f"Cat:+{_fmt(cat_score, '{:.0f}')}"
+    )
+
+
 class SmartTradingBot:
     def __init__(self):
         """Initialize the smart trading bot"""
@@ -810,6 +856,12 @@ class SmartTradingBot:
         # defaults. Persisted on the snapshot for observability only.
         self.max_spread_pct = 0.3  # Mirror of check_liquidity default
 
+        # NOBUY-FIX-001 FIX 2: universe price floor. Symbols whose latest
+        # close is below this are kept out of the scan queue (warrants and
+        # penny stocks dominated it). Persisted override:
+        # settings key ``universe_min_price``.
+        self.universe_min_price = self.UNIVERSE_MIN_PRICE_DEFAULT
+
         # Sector Rotation Filter (enabled by default)
         self.enable_sector_filter = True  # Prefer stocks in strong sectors
         self.sector_rotation_scores = {}  # Cache sector scores
@@ -933,6 +985,14 @@ class SmartTradingBot:
         self.trade_times = {}  # symbol -> last trade timestamp
         self.position_sell_analysis_times = {}  # symbol -> last sell analysis timestamp
         self.research_times = {}  # symbol -> last research timestamp for AI ticker variety
+        # NOBUY-FIX-001 FIX 4: real counters for periodic cooldown cleanup.
+        # The old check used len(self.research_times) % 100 which is always
+        # 0 when the DB is the store (the dict stays empty), so cleanup ran
+        # and logged on every single symbol call (~71k log lines/day).
+        self._research_writes_since_cleanup = 0
+        self._last_cooldown_cleanup_at = None
+        self.cooldown_cleanup_interval_writes = 100
+        self.cooldown_cleanup_interval_seconds = 3600
 
         # Portfolio optimization engine
         try:
@@ -1725,6 +1785,167 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             pass
         return f"unmodelled field(s) {culprits}" + (f"; reported exchange={exchange!r}" if exchange is not None else "")
 
+    # ------------------------------------------------------------------
+    # NOBUY-FIX-001 FIX 2 — junk security-type / penny-stock universe filter
+    # ------------------------------------------------------------------
+    #
+    # Warrants, rights and units (AMACW, FDMMW, PECEW, DAAQU, CHARR, BRLSW)
+    # carry a 5-letter ticker whose last letter is W/R/U, but so does no
+    # normal US common stock (common-stock tickers are 1-4 letters; a 5th
+    # letter is a security-type suffix, anything after a '.' is a class
+    # suffix e.g. BRK.B). The suffix pattern is therefore the reliable
+    # check; the asset name is used as a secondary signal for records whose
+    # ticker does not follow the convention. The name check is deliberately
+    # narrow (whole-token "Warrant(s)/Right(s)/Unit(s)") so that legitimate
+    # companies whose names merely contain e.g. "UNITED" or "WRIGHT" are
+    # never excluded, and ETFs (SPY, IWM, QQQI) are never matched.
+    UNIVERSE_MIN_PRICE_DEFAULT = 5.00  # default price floor, see settings key
+    _JUNK_SUFFIX_LETTERS = frozenset({"W", "R", "U"})
+    _JUNK_NAME_TOKENS = frozenset({
+        "WARRANT", "WARRANTS", "RIGHT", "RIGHTS", "UNIT", "UNITS",
+    })
+
+    @classmethod
+    def is_junk_security(cls, symbol: str, name: Optional[str] = None) -> bool:
+        """
+        True when the asset is a warrant/right/unit rather than a common
+        stock or ETF. Conservative: only 5-letter tickers ending in W/R/U
+        (no '.') and whole-token warrant/right/unit names match.
+        """
+        try:
+            sym = str(symbol or "").strip().upper()
+        except Exception:
+            sym = ""
+        if "." not in sym and len(sym) == 5 and sym[-1] in cls._JUNK_SUFFIX_LETTERS:
+            return True
+        if name:
+            try:
+                tokens = {
+                    t.strip(".,;:()[]'\"").upper()
+                    for t in str(name).split()
+                }
+            except Exception:
+                tokens = set()
+            if tokens & cls._JUNK_NAME_TOKENS:
+                return True
+        return False
+
+    def _universe_min_price_value(self) -> float:
+        """Configured universe price floor as a float (<=0 means disabled)."""
+        min_price = getattr(self, "universe_min_price", self.UNIVERSE_MIN_PRICE_DEFAULT)
+        try:
+            return float(min_price)
+        except (TypeError, ValueError):
+            return float(self.UNIVERSE_MIN_PRICE_DEFAULT)
+
+    def _passes_price_floor_value(self, price) -> bool:
+        """
+        NOBUY-FIX-001 FIX 2 (rev): pure, ZERO-API price floor check.
+
+        Used ONLY where a price is already in hand (the ~30-symbol analysis
+        batch), so enforcing the floor never costs an extra market-data
+        request. Fail-open: a missing/non-finite/non-positive price passes,
+        so a data outage never silently excludes a symbol.
+        """
+        min_price = self._universe_min_price_value()
+        if min_price <= 0:
+            return True
+        try:
+            value = float(price)
+        except (TypeError, ValueError):
+            return True
+        try:
+            if pd.isna(value) or value <= 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+        return value >= min_price
+
+    def _price_floor_ineligible_result(
+        self,
+        symbol: str,
+        price,
+        latest,
+        multi_timeframe: bool = False,
+        daily_signal=None,
+        hourly_signal=None,
+    ) -> Dict:
+        """
+        NOBUY-FIX-001 FIX 2 (rev): clean, non-actionable HOLD for a symbol
+        below the universe price floor.
+
+        Built from indicators that are already loaded, so it costs ZERO
+        extra API calls. The mark ``universe_price_floor_ineligible`` is
+        read by ``_build_decision_snapshot`` so the persisted OBS-001 /
+        OBS-002 decision row says "ineligible on the universe price
+        floor" instead of a generic "no actionable signal". No scoring or
+        BUY/SELL evaluation runs for such a symbol.
+        """
+        min_price = self._universe_min_price_value()
+
+        def _safe(col, fallback=None):
+            try:
+                value = latest.get(col, fallback)
+            except Exception:
+                return fallback
+            try:
+                if value is None or pd.isna(value):
+                    return fallback
+            except (TypeError, ValueError):
+                return fallback
+            return value
+
+        try:
+            price_value = float(price)
+        except (TypeError, ValueError):
+            price_value = price
+
+        result = {
+            'symbol': symbol,
+            'price': price_value,
+            'sma_fast': _safe(f'SMA_{getattr(self, "sma_fast", 10)}'),
+            'sma_slow': _safe(f'SMA_{getattr(self, "sma_slow", 30)}'),
+            'rsi': _safe('RSI'),
+            'signal': 'HOLD',
+            'signal_strength': 'WEAK',
+            'buy_criteria': [],
+            'passes_all_buy_criteria': False,
+            'filter_results': {},
+            'blocked_by': None,
+            'blocked_count': 0,
+            'timestamp': _safe('timestamp', datetime.now(timezone.utc)),
+            'universe_price_floor_ineligible': True,
+            'universe_min_price': min_price,
+        }
+        if multi_timeframe:
+            # MTF BUY OBSERVABILITY: keep the same stamped contract as a
+            # normal MTF result so the snapshot's multi_timeframe block is
+            # populated from decision-time facts only.
+            self._last_mtf_outcome = None
+            self._last_mtf_reason = None
+            self._last_mtf_daily_signal = daily_signal
+            self._last_mtf_hourly_signal = hourly_signal
+            self._last_mtf_hourly_data_available = (
+                hourly_signal is not None
+            )
+            result['multi_timeframe'] = True
+            result['daily_signal'] = daily_signal
+            result['hourly_signal'] = hourly_signal
+            result['mtf_outcome'] = None
+            result['mtf_reason'] = None
+            result['mtf_hourly_data_available'] = (
+                self._last_mtf_hourly_data_available
+            )
+        logging.debug(
+            f"⏭️ {symbol}: below universe price floor "
+            f"(${min_price:.2f}); HOLD without scoring"
+        )
+        try:
+            self.mark_recent_research(symbol)
+        except Exception as _e:
+            logging.debug(f"price-floor research mark failed for {symbol}: {_e}")
+        return result
+
     def get_all_us_symbols(self) -> List[str]:
         """
         Get all tradeable US stock symbols.
@@ -1738,18 +1959,45 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """
         try:
             assets = self._fetch_assets_resilient()
-            # Filter for active, tradable US equity assets
+            # Filter for active, tradable US equity assets.
+            # NOBUY-FIX-001 FIX 2: warrants/rights/units and sub-$5 stocks
+            # are dropped BEFORE they can enter the scan queue (they used
+            # to score 100/100 and dominate the queue, then all fail the
+            # volume gate).
             symbols = []
+            junk_skipped = 0
             for asset in assets:
                 try:
+                    # Unchanged eligibility comparison (pinned by
+                    # tests/test_universe_txse_resilience.py).
                     if (asset.tradable and
                         str(asset.status) == 'AssetStatus.ACTIVE' and
                         str(asset.asset_class) == 'AssetClass.US_EQUITY'):
-                        symbols.append(asset.symbol)
+                        candidate = asset.symbol
+                    else:
+                        continue
                 except Exception:
                     # If we can't check the attributes, just check tradable
-                    if asset.tradable:
-                        symbols.append(asset.symbol)
+                    if not asset.tradable:
+                        continue
+                    candidate = asset.symbol
+
+                asset_name = getattr(asset, "name", None)
+                if self.is_junk_security(candidate, asset_name):
+                    junk_skipped += 1
+                    continue
+                # NOBUY-FIX-001 FIX 2 (rev): NO price check here. This loop
+                # runs over every active US equity (~10k+) twice per cycle,
+                # so any per-symbol get_market_data() call would mean
+                # thousands of Alpaca requests per cycle. The $5 floor is
+                # enforced later, at analysis time, from the daily bar that
+                # is already fetched for the small (~30 symbol) batch.
+                symbols.append(candidate)
+            if junk_skipped:
+                logging.info(
+                    "Universe filter: skipped %d warrant/right/unit symbols",
+                    junk_skipped,
+                )
             if not symbols and assets:
                 logging.warning(
                     "⚠️  Loaded %d assets but filtered to 0 US equity symbols; "
@@ -1970,6 +2218,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         signal = analysis.get("signal", "HOLD")
         signal_strength = analysis.get("signal_strength", "WEAK")
         strategy_eligible = signal in ("BUY", "SELL")
+        # NOBUY-FIX-001 FIX 2 (rev): a symbol below the universe price
+        # floor is HOLD before any gate is evaluated, so it must never be
+        # reported as strategy-eligible and its reason must name the floor
+        # rather than a generic "no actionable signal".
+        _price_floor_ineligible = bool(
+            analysis.get("universe_price_floor_ineligible")
+        )
+        if _price_floor_ineligible:
+            strategy_eligible = False
 
         gates: List[Dict] = []
         rsi = analysis.get("rsi")
@@ -2029,7 +2286,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             )
 
         strategy_reason = None
-        if not strategy_eligible:
+        if _price_floor_ineligible:
+            _floor = analysis.get("universe_min_price")
+            strategy_reason = (
+                "Strategy ineligible: below universe price floor "
+                f"(${float(_floor):.2f})" if isinstance(_floor, (int, float))
+                else "Strategy ineligible: below universe price floor"
+            )
+        elif not strategy_eligible:
             failed = [g["name"] for g in gates if g.get("passed") is False]
             if failed:
                 strategy_reason = f"Strategy ineligible: failed gates: {', '.join(failed)}"
@@ -2731,9 +2995,71 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         analysis["_p0_pre_signal_strength"] = pre_signal_strength
         return
 
+    # NOBUY-FIX-001: a daily high/low range is NOT a spread. Only a truly
+    # broken/extreme intraday range (>= this percent of price) is treated as
+    # a data-quality problem when no real quote is available.
+    MAX_INTRADAY_RANGE_PCT = 20.0
+
+    def _get_bid_ask_spread_pct(self, symbol: str, price: float) -> Optional[float]:
+        """
+        Return the real bid/ask spread as a percent of price, or None.
+
+        Reuses the quote-client pattern from
+        src/analysis/smart_orders/smart_orders.py: StockLatestQuoteRequest
+        via the historical data client this bot already holds. Never raises;
+        any missing client / SDK problem / empty or stale quote returns None
+        so callers can fall back to a non-rejecting path.
+        """
+        client = getattr(self, "data_client", None)
+        if client is None or price is None or price <= 0:
+            return None
+        try:
+            from alpaca.data.requests import StockLatestQuoteRequest
+        except Exception:
+            try:
+                from alpaca.data import StockLatestQuoteRequest  # older SDK
+            except Exception:
+                return None
+        try:
+            request = StockLatestQuoteRequest(symbol_or_symbols=[symbol])
+            response = client.get_stock_latest_quote(request)
+        except Exception as e:
+            logging.debug(f"Latest quote unavailable for {symbol}: {e}")
+            return None
+
+        quote = None
+        try:
+            data = getattr(response, "data", None)
+            if data:
+                quote = data.get(symbol) if hasattr(data, "get") else data[symbol]
+        except Exception:
+            quote = None
+        if quote is None:
+            return None
+
+        try:
+            bid = float(quote.bid_price or 0)
+            ask = float(quote.ask_price or 0)
+        except Exception:
+            return None
+        # Require a sane, two-sided, non-crossed quote.
+        if bid <= 0 or ask <= bid:
+            return None
+        return ((ask - bid) / price) * 100
+
     def check_liquidity(self, symbol: str, min_volume: int = 1000000, max_spread_pct: float = 0.3) -> tuple:
         """
         Check if stock meets liquidity criteria.
+
+        NOBUY-FIX-001: the spread check no longer uses the daily high/low
+        range as a proxy (a 4.3% high-low day is completely normal for a
+        23M-volume large cap and used to reject it as "Spread too wide").
+
+        - During market hours with a real two-sided quote, the actual
+          bid/ask spread must be <= max_spread_pct.
+        - Without a usable quote (missing/zero/stale/off-hours) the spread
+          check is skipped, except for a truly broken daily range
+          (> MAX_INTRADAY_RANGE_PCT, labeled "Intraday range", not "Spread").
 
         Args:
             symbol: Stock symbol
@@ -2742,6 +3068,8 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
         Returns:
             (passes: bool, avg_volume: float, spread_pct: float, reason: str)
+            spread_pct is the observed bid/ask spread when a quote was used,
+            otherwise the daily high-low percent (observability only).
         """
         try:
             # Get recent data for volume calculation
@@ -2752,27 +3080,44 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # Calculate average daily volume (last 20 days)
             avg_volume = df['volume'].tail(20).mean()
 
-            # Get latest quote for spread calculation
-            # Note: Alpaca basic data doesn't include bid/ask, so we estimate spread using high-low
-            # Real implementation would need premium data or another source
             latest = df.iloc[-1]
             price = latest['close']
 
             if price <= 0:
                 return (True, 0, 0, "Invalid price - skipping liquidity check")
 
-            # Estimate spread using high-low as proxy (wider = more volatile/less liquid)
-            high_low_spread = ((latest['high'] - latest['low']) / price) * 100
+            # Intraday high-low range, used only as a data-quality guard and
+            # for observability; it is NOT a spread.
+            high_low_range_pct = ((latest['high'] - latest['low']) / price) * 100
 
-            # Check volume requirement
+            # Check volume requirement (unchanged)
             if avg_volume < min_volume:
-                return (False, avg_volume, high_low_spread, f"Volume {avg_volume/1e6:.1f}M < {min_volume/1e6:.0f}M minimum")
+                return (False, avg_volume, high_low_range_pct, f"Volume {avg_volume/1e6:.1f}M < {min_volume/1e6:.0f}M minimum")
 
-            # Check spread requirement (using high-low as proxy)
-            if high_low_spread > max_spread_pct * 3:  # Multiply since high-low is typically larger than bid-ask
-                return (False, avg_volume, high_low_spread, f"Spread {high_low_spread:.1f}% too wide")
+            # Market hours gate for the real-quote path.
+            market_open = True
+            try:
+                market_open = market_calendar.is_market_open()
+            except Exception:
+                market_open = False
 
-            return (True, avg_volume, high_low_spread, "Passes liquidity check")
+            if market_open:
+                bid_ask_pct = self._get_bid_ask_spread_pct(symbol, float(price))
+                if bid_ask_pct is not None:
+                    if bid_ask_pct > max_spread_pct:
+                        return (False, avg_volume, bid_ask_pct, f"Spread {bid_ask_pct:.2f}% too wide")
+                    return (True, avg_volume, bid_ask_pct, "Passes liquidity check")
+
+            # No usable quote: do not reject liquid stocks for normal daily
+            # high-low movement. Only guard truly extreme/broken ranges.
+            if high_low_range_pct > self.MAX_INTRADAY_RANGE_PCT:
+                return (
+                    False, avg_volume, high_low_range_pct,
+                    f"Intraday range {high_low_range_pct:.1f}% > "
+                    f"{self.MAX_INTRADAY_RANGE_PCT:.0f}% (possible bad data)"
+                )
+
+            return (True, avg_volume, high_low_range_pct, "Passes liquidity check")
 
         except Exception as e:
             logging.debug(f"Liquidity check failed for {symbol}: {e}")
@@ -2963,6 +3308,47 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(f"Hourly data fetch failed for {symbol}: {e}")
             return None
 
+    @staticmethod
+    def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+        """float(value) or default when missing/NaN/inf/unparseable."""
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return default
+        if math.isnan(out) or math.isinf(out):
+            return default
+        return out
+
+    @classmethod
+    def _bollinger_position_pct(
+        cls, close: Any, bb_upper: Any, bb_lower: Any,
+    ) -> Optional[float]:
+        """
+        Position of close inside the Bollinger bands as 0-100%.
+
+        NOBUY-FIX-001: returns None when the bands are missing or degenerate
+        (so callers can render a real fallback instead of a hardcoded 50).
+        """
+        c = cls._safe_float(close)
+        upper = cls._safe_float(bb_upper)
+        lower = cls._safe_float(bb_lower)
+        if c is None or upper is None or lower is None:
+            return None
+        if upper <= lower or upper <= 0:
+            return None
+        return ((c - lower) / (upper - lower)) * 100.0
+
+    def _volatility_tier_from_atr_pct(self, atr_pct: Any) -> str:
+        """Same thresholds as get_volatility_tier(), from an ATR% value."""
+        val = self._safe_float(atr_pct)
+        if val is None or val <= 0:
+            return 'mid'
+        if val < 2.0:
+            return 'low'
+        if val > 5.0:
+            return 'high'
+        return 'mid'
+
     def analyze_multi_timeframe(self, symbol: str, use_ai: bool = False) -> Optional[Dict]:
         """Analyze symbol using multiple timeframes (daily + hourly)"""
         # SCORE-002 observability: clear the scratch reason field at the
@@ -3027,6 +3413,19 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         hourly_signal = "BUY"
                     elif sma_fast_hourly < sma_slow_hourly and rsi_hourly > self.rsi_sell_threshold:
                         hourly_signal = "SELL"
+
+
+            # NOBUY-FIX-001 FIX 2 (rev): universe price floor, enforced
+            # here because the daily bar is ALREADY loaded (zero extra API
+            # calls). The scan universe no longer price-checks symbols, so
+            # a sub-$min_price name gets this clean HOLD instead of a BUY.
+            if not self._passes_price_floor_value(price):
+                return self._price_floor_ineligible_result(
+                    symbol, price, latest,
+                    multi_timeframe=True,
+                    daily_signal=daily_signal,
+                    hourly_signal=hourly_signal,
+                )
 
             # Multi-timeframe signal generation
             # Require BOTH daily AND hourly to agree (weighted: daily 70%, hourly 30%)
@@ -3218,6 +3617,23 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 self._last_score_error_reason = rsi_clamp_reason
                 return None
             macd_hist = latest_daily.get('MACD_histogram', None)
+            # NOBUY-FIX-001 FIX 3: real indicator display values. Before this
+            # the HOLD/WEAK log line had no data to read and printed
+            # "MACD:+0.00 | BB:50% | VWAP:+0.0% | Vol:mid(0.0%)" for ~98% of
+            # symbols. Values are computed once here from the daily bar.
+            _disp_macd = self._safe_float(latest_daily.get('MACD', None))
+            _disp_bb_pos = self._bollinger_position_pct(
+                price,
+                latest_daily.get('BB_upper', None),
+                latest_daily.get('BB_lower', None),
+            )
+            _disp_vwap_distance = self._safe_float(
+                latest_daily.get('vwap_distance', None),
+            )
+            _disp_atr_pct = self._safe_float(latest_daily.get('ATR_pct', None))
+            _disp_volatility_tier = self._volatility_tier_from_atr_pct(
+                _disp_atr_pct,
+            )
             # Total score: 0..100 bounded, centered at 50.
             total_score, total_clamp_reason = self._clamp_total_score_with_reason(
                 50.0 + _rsi_score_daily + _sma_score_daily + _macd_score_daily + _bb_score_daily
@@ -3304,7 +3720,21 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'timestamp': latest.get('timestamp', datetime.now(timezone.utc)),
                 'multi_timeframe': True,
                 'volume_confirmed': volume_confirmed,
-                'volume_ratio': volume_ratio
+                'volume_ratio': volume_ratio,
+                # NOBUY-FIX-001 FIX 3: real display values (see log paths).
+                # macd is None only when the column is missing/non-finite;
+                # bb_pos is None only when the bands are missing/degenerate;
+                # vwap_distance is a percent; atr_pct is a percent.
+                'macd': _disp_macd,
+                'macd_histogram': (
+                    self._safe_float(macd_hist) if macd_hist is not None else None
+                ),
+                'bb_upper': self._safe_float(latest_daily.get('BB_upper', None)),
+                'bb_lower': self._safe_float(latest_daily.get('BB_lower', None)),
+                'bb_pos': _disp_bb_pos,
+                'vwap_distance': _disp_vwap_distance,
+                'volatility_tier': _disp_volatility_tier,
+                'atr_pct': _disp_atr_pct,
             }
 
             # Add hourly data to result if available
@@ -3863,6 +4293,13 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             sma_slow = latest[f'SMA_{self.sma_slow}']
             rsi = latest['RSI']
             price = latest['close']
+
+            # NOBUY-FIX-001 FIX 2 (rev): universe price floor from the
+            # already-loaded daily bar (zero extra API calls).
+            if not self._passes_price_floor_value(price):
+                return self._price_floor_ineligible_result(
+                    symbol, price, latest, multi_timeframe=False,
+                )
 
             signal = None
             signal_strength = "WEAK"
@@ -4471,6 +4908,15 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 'bb_upper': latest.get('BB_upper', 0),
                 'bb_middle': latest.get('BB_middle', 0),
                 'bb_lower': latest.get('BB_lower', 0),
+                # NOBUY-FIX-001 FIX 3: display values for the HOLD/WEAK log.
+                'bb_pos': self._bollinger_position_pct(
+                    price,
+                    latest.get('BB_upper', None),
+                    latest.get('BB_lower', None),
+                ),
+                'vwap_distance': self._safe_float(
+                    latest.get('vwap_distance', None),
+                ),
                 'signal': signal,
                 'signal_strength': signal_strength,
                 'total_score': total_score,
@@ -5288,19 +5734,44 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # Use in-memory storage
             self.research_times[symbol] = research_time
 
-        # Periodically clean up old cooldowns (every 100 research entries)
-        if len(self.research_times) % 100 == 0:
-            if self.db.is_available():
-                # Clean up database entries older than 7 days
-                self.db.cleanup_old_cooldowns(days_old=7)
+        # NOBUY-FIX-001 FIX 4: gate cleanup on a real write counter and a
+        # wall-clock floor, not on len(self.research_times) (which is empty
+        # whenever the DB is the cooldown store, so 0 % 100 == 0 fired on
+        # every symbol call).
+        self._maybe_cleanup_cooldowns()
+
+    def _cooldown_cleanup_due(self, now: Optional[datetime] = None) -> bool:
+        """True when the write counter or the hour floor says cleanup is due."""
+        if self._research_writes_since_cleanup < self.cooldown_cleanup_interval_writes:
+            # Also allow a time-based run so a low-traffic day still cleans.
+            last = self._last_cooldown_cleanup_at
+            if last is None or self._research_writes_since_cleanup <= 0:
+                return False
+            now = now or datetime.now()
+            return (now - last).total_seconds() >= self.cooldown_cleanup_interval_seconds
+        return True
+
+    def _maybe_cleanup_cooldowns(self) -> None:
+        """Run cooldown cleanup at most once per 100 writes or per hour."""
+        self._research_writes_since_cleanup += 1
+        if not self._cooldown_cleanup_due():
+            return
+        self._research_writes_since_cleanup = 0
+        self._last_cooldown_cleanup_at = datetime.now()
+        if self.db.is_available():
+            # Clean up database entries older than 7 days. INFO only when
+            # rows were actually deleted (see cleanup_old_cooldowns).
+            self.db.cleanup_old_cooldowns(days_old=7)
+        else:
+            # Clean up in-memory entries older than 24 hours
+            cutoff_time = datetime.now() - timedelta(hours=24)
+            old_entries = [k for k, v in self.research_times.items() if v < cutoff_time]
+            for old_symbol in old_entries:
+                del self.research_times[old_symbol]
+            if old_entries:
+                logging.info(f"🧹 Cleaned up {len(old_entries)} old research entries (>24h)")
             else:
-                # Clean up in-memory entries older than 24 hours
-                cutoff_time = datetime.now() - timedelta(hours=24)
-                old_entries = [k for k, v in self.research_times.items() if v < cutoff_time]
-                for old_symbol in old_entries:
-                    del self.research_times[old_symbol]
-                if old_entries:
-                    logging.info(f"🧹 Cleaned up {len(old_entries)} old research entries (>24h)")
+                logging.debug("Research cooldown cleanup ran; nothing to delete")
 
     def _get_fresh_ticker_list(self, target_count: int = 30) -> List[str]:
         """Generate a fresh list of tickers excluding cooldown, orders, and portfolio positions"""
@@ -7820,14 +8291,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     # Check if we should skip due to weak signals
                     if analysis['signal_strength'] == "WEAK":
                         no_trade_reasons['weak_signal'] += 1
-                        score = analysis.get('total_score', 50)
-                        rsi = analysis.get('rsi', 50)
-                        macd = analysis.get('macd', 0)
-                        price = analysis.get('price', 0)
-                        bb_pos = 50
-                        vwap_dist = analysis.get('vwap_distance', 0)
-                        if pd.isna(vwap_dist): vwap_dist = 0
-                        logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | ⚠️ WEAK")
+                        logging.info(
+                            "%s | ⚠️ WEAK",
+                            _format_hold_log_line(symbol, analysis),
+                        )
                         # OBS-002: signal passed non-score gates but
                         # signal_strength is WEAK, so the symbol is NOT
                         # actionable for execution. Persist a
@@ -8027,19 +8494,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                 elif analysis:
                     # Has analysis but no actionable signal (HOLD)
-                    score = analysis.get('total_score', 50)
-                    rsi = analysis.get('rsi', 50)
-                    macd = analysis.get('macd', 0)
-                    price = analysis.get('price', 0)
-                    bb_pos = 50
-                    vwap_dist = analysis.get('vwap_distance', 0)
-                    if pd.isna(vwap_dist): vwap_dist = 0
-
-                    # Add new Phase 2 metrics to log
-                    vol_tier = analysis.get('volatility_tier', 'mid')
-                    atr = analysis.get('atr_pct', 0)
-                    cat_score = analysis.get('catalyst_score', 0)
-                    logging.info(f"   📊 {symbol}: ${price:.2f} | RSI:{rsi:.0f} | MACD:{macd:+.2f} | BB:{bb_pos:.0f}% | VWAP:{vwap_dist:+.1f}% | Score:{score:.0f}/100 | Vol:{vol_tier}({atr:.1f}%) Cat:+{cat_score}")
+                    # NOBUY-FIX-001 FIX 3: single formatter reads the real
+                    # macd/bb_pos/vwap_distance/volatility_tier/atr_pct from
+                    # the analysis result (no hardcoded bb_pos = 50).
+                    logging.info(_format_hold_log_line(symbol, analysis))
 
                     # OBS-001 Phase A: persist HOLD outcome immediately.
                     # The terminal outcome (HOLD_INELIGIBLE) is known now;
