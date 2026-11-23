@@ -24,11 +24,13 @@ def is_test_environment() -> bool:
 
 class MockAsset:
     """Mock asset object."""
-    def __init__(self, symbol: str, tradable: bool = True, status: str = 'ACTIVE', asset_class: str = 'US_EQUITY'):
+    def __init__(self, symbol: str, tradable: bool = True, status: str = 'ACTIVE', asset_class: str = 'US_EQUITY', name: str = ''):
         self.symbol = symbol
         self.tradable = tradable
         self.status = status
         self.asset_class = asset_class
+        # NOBUY-FIX-001: asset name is used by the universe junk filter.
+        self.name = name
 
 
 class MockPosition:

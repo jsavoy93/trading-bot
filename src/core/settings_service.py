@@ -120,6 +120,11 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
         "enable_liquidity_filter", True, "bool", None, None, None,
         "Skip illiquid stocks.", "Filters"
     ),
+    "universe_min_price": StrategySetting(
+        "universe_min_price", 5.0, "float", 0.0, 100.0, 0.5,
+        "Price floor ($) for the scan universe; symbols below it are "
+        "excluded before analysis (NOBUY-FIX-001).", "Filters"
+    ),
     "enable_sector_filter": StrategySetting(
         "enable_sector_filter", True, "bool", None, None, None,
         "Prefer strong sectors.", "Filters"

@@ -810,6 +810,12 @@ class SmartTradingBot:
         # defaults. Persisted on the snapshot for observability only.
         self.max_spread_pct = 0.3  # Mirror of check_liquidity default
 
+        # NOBUY-FIX-001 FIX 2: universe price floor. Symbols whose latest
+        # close is below this are kept out of the scan queue (warrants and
+        # penny stocks dominated it). Persisted override:
+        # settings key ``universe_min_price``.
+        self.universe_min_price = self.UNIVERSE_MIN_PRICE_DEFAULT
+
         # Sector Rotation Filter (enabled by default)
         self.enable_sector_filter = True  # Prefer stocks in strong sectors
         self.sector_rotation_scores = {}  # Cache sector scores
@@ -1725,6 +1731,78 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             pass
         return f"unmodelled field(s) {culprits}" + (f"; reported exchange={exchange!r}" if exchange is not None else "")
 
+    # ------------------------------------------------------------------
+    # NOBUY-FIX-001 FIX 2 — junk security-type / penny-stock universe filter
+    # ------------------------------------------------------------------
+    #
+    # Warrants, rights and units (AMACW, FDMMW, PECEW, DAAQU, CHARR, BRLSW)
+    # carry a 5-letter ticker whose last letter is W/R/U, but so does no
+    # normal US common stock (common-stock tickers are 1-4 letters; a 5th
+    # letter is a security-type suffix, anything after a '.' is a class
+    # suffix e.g. BRK.B). The suffix pattern is therefore the reliable
+    # check; the asset name is used as a secondary signal for records whose
+    # ticker does not follow the convention. The name check is deliberately
+    # narrow (whole-token "Warrant(s)/Right(s)/Unit(s)") so that legitimate
+    # companies whose names merely contain e.g. "UNITED" or "WRIGHT" are
+    # never excluded, and ETFs (SPY, IWM, QQQI) are never matched.
+    UNIVERSE_MIN_PRICE_DEFAULT = 5.00  # default price floor, see settings key
+    _JUNK_SUFFIX_LETTERS = frozenset({"W", "R", "U"})
+    _JUNK_NAME_TOKENS = frozenset({
+        "WARRANT", "WARRANTS", "RIGHT", "RIGHTS", "UNIT", "UNITS",
+    })
+
+    @classmethod
+    def is_junk_security(cls, symbol: str, name: Optional[str] = None) -> bool:
+        """
+        True when the asset is a warrant/right/unit rather than a common
+        stock or ETF. Conservative: only 5-letter tickers ending in W/R/U
+        (no '.') and whole-token warrant/right/unit names match.
+        """
+        try:
+            sym = str(symbol or "").strip().upper()
+        except Exception:
+            sym = ""
+        if "." not in sym and len(sym) == 5 and sym[-1] in cls._JUNK_SUFFIX_LETTERS:
+            return True
+        if name:
+            try:
+                tokens = {
+                    t.strip(".,;:()[]'\"").upper()
+                    for t in str(name).split()
+                }
+            except Exception:
+                tokens = set()
+            if tokens & cls._JUNK_NAME_TOKENS:
+                return True
+        return False
+
+    def _passes_universe_price_floor(self, symbol: str) -> bool:
+        """
+        Price floor for the scan universe. Fail-open: if the latest price
+        cannot be read (missing/network/data error) the symbol is kept, so a
+        data outage never silently shrinks the universe.
+        """
+        min_price = getattr(self, "universe_min_price", self.UNIVERSE_MIN_PRICE_DEFAULT)
+        try:
+            min_price = float(min_price)
+        except (TypeError, ValueError):
+            min_price = self.UNIVERSE_MIN_PRICE_DEFAULT
+        if min_price <= 0:
+            return True
+        try:
+            df = self.get_market_data(symbol)
+        except Exception:
+            return True
+        if df is None or len(df) == 0:
+            return True
+        try:
+            price = float(df["close"].iloc[-1])
+        except Exception:
+            return True
+        if pd.isna(price) or price <= 0:
+            return True
+        return price >= min_price
+
     def get_all_us_symbols(self) -> List[str]:
         """
         Get all tradeable US stock symbols.
@@ -1738,18 +1816,46 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """
         try:
             assets = self._fetch_assets_resilient()
-            # Filter for active, tradable US equity assets
+            # Filter for active, tradable US equity assets.
+            # NOBUY-FIX-001 FIX 2: warrants/rights/units and sub-$5 stocks
+            # are dropped BEFORE they can enter the scan queue (they used
+            # to score 100/100 and dominate the queue, then all fail the
+            # volume gate).
             symbols = []
+            junk_skipped = 0
+            price_skipped = 0
             for asset in assets:
                 try:
+                    # Unchanged eligibility comparison (pinned by
+                    # tests/test_universe_txse_resilience.py).
                     if (asset.tradable and
                         str(asset.status) == 'AssetStatus.ACTIVE' and
                         str(asset.asset_class) == 'AssetClass.US_EQUITY'):
-                        symbols.append(asset.symbol)
+                        candidate = asset.symbol
+                    else:
+                        continue
                 except Exception:
                     # If we can't check the attributes, just check tradable
-                    if asset.tradable:
-                        symbols.append(asset.symbol)
+                    if not asset.tradable:
+                        continue
+                    candidate = asset.symbol
+
+                asset_name = getattr(asset, "name", None)
+                if self.is_junk_security(candidate, asset_name):
+                    junk_skipped += 1
+                    continue
+                if not self._passes_universe_price_floor(candidate):
+                    price_skipped += 1
+                    continue
+                symbols.append(candidate)
+            if junk_skipped or price_skipped:
+                logging.info(
+                    "Universe filter: skipped %d warrant/right/unit and %d "
+                    "sub-$%.2f symbols",
+                    junk_skipped,
+                    price_skipped,
+                    float(getattr(self, "universe_min_price", self.UNIVERSE_MIN_PRICE_DEFAULT)),
+                )
             if not symbols and assets:
                 logging.warning(
                     "⚠️  Loaded %d assets but filtered to 0 US equity symbols; "
