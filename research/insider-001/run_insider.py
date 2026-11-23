@@ -278,13 +278,14 @@ class DrawSet:
     """A vectorized random strategy: per month a fixed prefix (e.g. the baseline short
     leg duplicated or the empty list) followed by a random k-subset of `eligible`."""
 
-    def __init__(self, md_list, eligible, k, short_net=None):
+    def __init__(self, md_list, eligible, k, short_net=None, mode="random"):
         self.md_list = md_list
         self.eligible = [np.asarray(e, dtype=np.int64) for e in eligible]
         self.k = [int(x) for x in k]
         self.short_net = short_net
+        self.mode = mode
 
-    def pass_chunks(self, rng, rows):
+    def pass_chunks(self, rows, rng):
         chunks = []
         for t in range(len(self.md_list)):
             k = self.k[t]
@@ -293,27 +294,31 @@ class DrawSet:
                 chunks.append(np.zeros((rows, 0), dtype=np.int64))
                 continue
             kk = min(k, len(elig))
-            pick = np.argsort(rng.random((rows, len(elig))), axis=1, kind="stable")[:, :kk]
-            chunks.append(elig[pick])
+            if self.mode == "rotate":
+                # fixed random ranking of the eligible names; draws are cyclic rotations
+                # of it, so each draw takes the next kk ranks (exactly uniform, cheap)
+                pick = (np.arange(kk)[None, :] + np.arange(rows)[:, None]) % len(elig)
+                chunks.append(elig[self._order[t][pick]])
+            else:
+                pick = np.argsort(rng.random((rows, len(elig))), axis=1,
+                                  kind="stable")[:, :kk]
+                chunks.append(elig[pick])
         return chunks
 
     def nets(self, n_draws, seed, want_means=False):
         rng = np.random.default_rng(seed)
-        fn = self.md_list.__len__
-        assert fn() > 0, "empty month list"
+        self._order = [rng.permutation(len(e)) for e in self.eligible]
         prev = None
         means, nets = [], []
         for start in range(0, n_draws, CHUNK):
             rows = min(CHUNK, n_draws - start)
-            net, prev = simulate_chunk(self.md_list, self.pass_chunks(rng, rows),
+            net, prev = simulate_chunk(self.md_list, self.pass_chunks(rows, rng),
                                        self.short_net, prev)
             if want_means:
                 means.append(net.mean(axis=1))
             else:
                 nets.append(net)
-        if want_means:
-            return np.concatenate(means)
-        return np.concatenate(nets, axis=0)
+        return np.concatenate(means) if want_means else np.concatenate(nets, axis=0)
 
 
 # ================================================================ V1
@@ -350,39 +355,10 @@ def v1_legs(md_list, bought):
     return longs, ks, n_bought
 
 
-class V1RandomDraws:
+def v1_random_draws(md_list, pools, k, short_net) -> DrawSet:
     """Random same-count swaps: long leg = uniform random k-subset of the SAME top-20%
     MOM pool, short leg = baseline bottom decile (fixed), engine costs."""
-
-    def __init__(self, md_list, pools, k, short_net):
-        self.md_list = md_list
-        self.pools = [np.asarray(p, dtype=np.int64) for p in pools]
-        self.k = [int(x) for x in k]
-        self.short_net = short_net
-
-    def nets(self, n_draws, seed, want_means=False):
-        rng = np.random.default_rng(seed)
-        prev = None
-        means, nets = [], []
-        for start in range(0, n_draws, CHUNK):
-            rows = min(CHUNK, n_draws - start)
-            chunks = []
-            for t in range(len(self.md_list)):
-                k = self.k[t]
-                pool = self.pools[t]
-                if k <= 0 or len(pool) == 0:
-                    chunks.append(np.zeros((rows, 0), dtype=np.int64))
-                    continue
-                kk = min(k, len(pool))
-                pick = np.argsort(rng.random((rows, len(pool))), axis=1,
-                                  kind="stable")[:, :kk]
-                chunks.append(pool[pick])
-            net, prev = simulate_chunk(self.md_list, chunks, self.short_net, prev)
-            if want_means:
-                means.append(net.mean(axis=1))
-            else:
-                nets.append(net)
-        return np.concatenate(means) if want_means else np.concatenate(nets, axis=0)
+    return DrawSet(md_list, pools, k, short_net, mode="rotate")
 
 
 # ================================================================ V2
@@ -569,7 +545,7 @@ def main(argv=None) -> int:
     v1_net, _ = simulate_chunk(md_list, [[leg] for leg in v1_long], short_net)
     v1_net = v1_net[0]
     pools = [mom_pool(md) for md in md_list]
-    v1_draws = V1RandomDraws(md_list, pools, v1_k, short_net)
+    v1_draws = v1_random_draws(md_list, pools, v1_k, short_net)
     v1_draw_means = v1_draws.nets(n_draws, SEED_V1, want_means=True)
     v1_summ = summary(v1_net, v1_net - base_net)
     v1_pct = eng.percentile_vs_random(float(v1_net.mean()), v1_draw_means)
@@ -585,7 +561,7 @@ def main(argv=None) -> int:
     v2_net, _ = simulate_chunk(md_list, [[leg] for leg in v2_long])
     v2_net = v2_net[0]
     v2_excess = v2_net - univ_ret
-    v2_draws = DrawSet(md_list, elig_univ, [len(l) for l in v2_long])
+    v2_draws = DrawSet(md_list, elig_univ, [len(l) for l in v2_long], mode="rotate")
     v2_draw_means = v2_draws.nets(n_draws, SEED_V2, want_means=True)
     v2_pct = eng.percentile_vs_random(float(v2_net.mean()), v2_draw_means)
     v2_summ = summary(v2_net, v2_excess)
@@ -597,7 +573,7 @@ def main(argv=None) -> int:
     # ---- baseline bar vs random same-size lists (same 1000-draw engine bar) ----
     base_draw_means = DrawSet(md_list, [np.flatnonzero(np.isfinite(md.mom) & np.isfinite(md.ret))
                                         for md in md_list],
-                              [len(l) for l in base_longs]).nets(
+                              [len(l) for l in base_longs], None, "rotate").nets(
         n_draws, SEED_BASELINE, want_means=True)
     base_pct = eng.percentile_vs_random(float(base_net.mean()), base_draw_means)
 
