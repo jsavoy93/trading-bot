@@ -1,5 +1,4 @@
-# local, git-excluded artifacts (frozen prereg section 7)
+# local artifacts, never committed (frozen prereg section 7)
 results.json
 results.md
-panel_dev.parquet
 *.log
