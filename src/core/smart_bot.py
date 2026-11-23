@@ -985,6 +985,14 @@ class SmartTradingBot:
         self.trade_times = {}  # symbol -> last trade timestamp
         self.position_sell_analysis_times = {}  # symbol -> last sell analysis timestamp
         self.research_times = {}  # symbol -> last research timestamp for AI ticker variety
+        # NOBUY-FIX-001 FIX 4: real counters for periodic cooldown cleanup.
+        # The old check used len(self.research_times) % 100 which is always
+        # 0 when the DB is the store (the dict stays empty), so cleanup ran
+        # and logged on every single symbol call (~71k log lines/day).
+        self._research_writes_since_cleanup = 0
+        self._last_cooldown_cleanup_at = None
+        self.cooldown_cleanup_interval_writes = 100
+        self.cooldown_cleanup_interval_seconds = 3600
 
         # Portfolio optimization engine
         try:
@@ -5602,19 +5610,44 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             # Use in-memory storage
             self.research_times[symbol] = research_time
 
-        # Periodically clean up old cooldowns (every 100 research entries)
-        if len(self.research_times) % 100 == 0:
-            if self.db.is_available():
-                # Clean up database entries older than 7 days
-                self.db.cleanup_old_cooldowns(days_old=7)
+        # NOBUY-FIX-001 FIX 4: gate cleanup on a real write counter and a
+        # wall-clock floor, not on len(self.research_times) (which is empty
+        # whenever the DB is the cooldown store, so 0 % 100 == 0 fired on
+        # every symbol call).
+        self._maybe_cleanup_cooldowns()
+
+    def _cooldown_cleanup_due(self, now: Optional[datetime] = None) -> bool:
+        """True when the write counter or the hour floor says cleanup is due."""
+        if self._research_writes_since_cleanup < self.cooldown_cleanup_interval_writes:
+            # Also allow a time-based run so a low-traffic day still cleans.
+            last = self._last_cooldown_cleanup_at
+            if last is None or self._research_writes_since_cleanup <= 0:
+                return False
+            now = now or datetime.now()
+            return (now - last).total_seconds() >= self.cooldown_cleanup_interval_seconds
+        return True
+
+    def _maybe_cleanup_cooldowns(self) -> None:
+        """Run cooldown cleanup at most once per 100 writes or per hour."""
+        self._research_writes_since_cleanup += 1
+        if not self._cooldown_cleanup_due():
+            return
+        self._research_writes_since_cleanup = 0
+        self._last_cooldown_cleanup_at = datetime.now()
+        if self.db.is_available():
+            # Clean up database entries older than 7 days. INFO only when
+            # rows were actually deleted (see cleanup_old_cooldowns).
+            self.db.cleanup_old_cooldowns(days_old=7)
+        else:
+            # Clean up in-memory entries older than 24 hours
+            cutoff_time = datetime.now() - timedelta(hours=24)
+            old_entries = [k for k, v in self.research_times.items() if v < cutoff_time]
+            for old_symbol in old_entries:
+                del self.research_times[old_symbol]
+            if old_entries:
+                logging.info(f"🧹 Cleaned up {len(old_entries)} old research entries (>24h)")
             else:
-                # Clean up in-memory entries older than 24 hours
-                cutoff_time = datetime.now() - timedelta(hours=24)
-                old_entries = [k for k, v in self.research_times.items() if v < cutoff_time]
-                for old_symbol in old_entries:
-                    del self.research_times[old_symbol]
-                if old_entries:
-                    logging.info(f"🧹 Cleaned up {len(old_entries)} old research entries (>24h)")
+                logging.debug("Research cooldown cleanup ran; nothing to delete")
 
     def _get_fresh_ticker_list(self, target_count: int = 30) -> List[str]:
         """Generate a fresh list of tickers excluding cooldown, orders, and portfolio positions"""

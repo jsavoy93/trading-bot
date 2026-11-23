@@ -1520,24 +1520,38 @@ class SQLiteDB:
             logging.debug(f"Error setting trade cooldown for {symbol}: {e}")
             return False
 
-    def cleanup_old_cooldowns(self, days_old: int = 7) -> bool:
+    def cleanup_old_cooldowns(self, days_old: int = 7) -> int:
+        """
+        Delete cooldown rows older than ``days_old`` days.
+
+        NOBUY-FIX-001 FIX 4: returns the number of rows actually deleted and
+        logs at INFO only when something was removed (DEBUG otherwise), so a
+        hot caller no longer produces ~71k identical "Cleaned up ..." lines
+        per day. The previous signature returned bool; callers that only
+        checked truthiness still work (0 is falsy, rows > 0 are truthy).
+        """
         cutoff = (datetime.utcnow() - timedelta(days=days_old)).isoformat()
+        deleted = 0
         try:
             with _get_conn() as conn:
-                conn.execute(
-                    "DELETE FROM research_cooldowns WHERE last_research_time < ?", (cutoff,)
-                )
-                conn.execute(
-                    "DELETE FROM position_sell_cooldowns WHERE last_analysis_time < ?", (cutoff,)
-                )
-                conn.execute(
-                    "DELETE FROM trade_cooldowns WHERE last_trade_time < ?", (cutoff,)
-                )
-            logging.info(f"🧹 Cleaned up cooldown entries older than {days_old} days")
-            return True
+                for sql, params in (
+                    ("DELETE FROM research_cooldowns WHERE last_research_time < ?", (cutoff,)),
+                    ("DELETE FROM position_sell_cooldowns WHERE last_analysis_time < ?", (cutoff,)),
+                    ("DELETE FROM trade_cooldowns WHERE last_trade_time < ?", (cutoff,)),
+                ):
+                    deleted += conn.execute(sql, params).rowcount or 0
         except Exception as e:
             logging.debug(f"Error cleaning up old cooldowns: {e}")
-            return False
+            return 0
+        if deleted:
+            logging.info(
+                f"🧹 Cleaned up {deleted} cooldown entries older than {days_old} days"
+            )
+        else:
+            logging.debug(
+                f"Cooldown cleanup ran (days_old={days_old}); nothing to delete"
+            )
+        return deleted
 
     # ------------------------------------------------------------------
     # Analysis results
