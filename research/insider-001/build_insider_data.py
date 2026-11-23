@@ -56,10 +56,11 @@ KEEP_COLS = ["symbol", "issuer_cik", "insider_cik", "filing_date", "transaction_
 
 # ---------------------------------------------------------------- CIK -> ticker
 def load_cik_map(combined_path: Path, ticker_cik_path: Path) -> dict[int, str]:
-    """CIK -> ticker. Primary source is SECFILE-001's ticker->CIK map (inverted);
-    the SEC combined company_tickers.json fills CIKs the historical map lacks.
-    On conflicts between the two files the SECFILE-001 map wins."""
+    """CIK -> ticker. The SECFILE-001 map (ticker->CIK, inverted) is the primary source;
+    SEC's company_tickers.json fills CIKs the historical map lacks. On conflicts the
+    SECFILE-001 map wins."""
     cik_to_ticker: dict[int, str] = {}
+    conflicts = 0
     if combined_path.exists():
         raw = json.loads(combined_path.read_text())
         rows = raw.values() if isinstance(raw, dict) else raw
@@ -74,8 +75,24 @@ def load_cik_map(combined_path: Path, ticker_cik_path: Path) -> dict[int, str]:
         for t, cik in hist.items():
             t = str(t).strip().upper()
             if t and t != "NONE" and cik is not None:
-                cik_to_ticker[int(cik)] = t
+                c = int(cik)
+                if c in cik_to_ticker and cik_to_ticker[c] != t:
+                    conflicts += 1
+                cik_to_ticker[c] = t
+    load_cik_map.conflicts = conflicts
     return cik_to_ticker
+
+
+def assert_cik_unique(cik_to_ticker: dict[int, str]) -> None:
+    """A CIK must map to exactly ONE ticker or the issuer->ticker mapping is ambiguous."""
+    rev: dict[str, set] = {}
+    for c, t in cik_to_ticker.items():
+        rev.setdefault(t, set()).add(c)
+    multi = {t: cs for t, cs in rev.items() if len(cs) > 1}
+    if multi:
+        sample = list(multi.items())[:3]
+        raise SystemExit(f"ambiguous CIK->ticker map ({len(multi)} tickers owned by >1 CIK, "
+                         f"e.g. {sample}); fix the map before building")
 
 
 # ---------------------------------------------------------------- download
@@ -110,7 +127,7 @@ def filter_quarter(zpath: Path, cik_map: dict[int, str]) -> pd.DataFrame:
     tr = tr[(tr["TRANS_CODE"].astype(str).str.strip() == "P")
             & (tr["TRANS_ACQUIRED_DISP_CD"].astype(str).str.strip() == "A")]
     if tr.empty:
-        return pd.DataFrame(columns=KEEP_COLS)
+        return pd.DataFrame(columns=KEEP_COLS), 0, 0
 
     own = read_tsv(zpath, "REPORTINGOWNER.tsv",
                    usecols=["ACCESSION_NUMBER", "RPTOWNERCIK", "RPTOWNER_RELATIONSHIP"])
@@ -128,7 +145,8 @@ def filter_quarter(zpath: Path, cik_map: dict[int, str]) -> pd.DataFrame:
     df["value"] = df["shares"] * df["price"]
     df = df[df["value"] >= MIN_VALUE]
     if df.empty:
-        return pd.DataFrame(columns=KEEP_COLS)
+        return pd.DataFrame(columns=KEEP_COLS), 0, 0
+    raw_n = len(df)
 
     df["filing_date"] = pd.to_datetime(df["FILING_DATE"], format="%d-%b-%Y",
                                        errors="coerce")
@@ -137,31 +155,40 @@ def filter_quarter(zpath: Path, cik_map: dict[int, str]) -> pd.DataFrame:
     df = df[df["filing_date"].notna()]
     df = df[df["filing_date"] <= MAX_FILING]
 
-    # one row per (filing, insider) -- keep the largest purchase of each insider
     df["issuer_cik"] = pd.to_numeric(df["ISSUERCIK"], errors="coerce")
     df["insider_cik"] = pd.to_numeric(df["RPTOWNERCIK"], errors="coerce")
-    df = df.sort_values("value", ascending=False).drop_duplicates(
-        ["ACCESSION_NUMBER", "issuer_cik", "insider_cik"])
+    # ticker at the most recent SEC symbol for the issuer (informational column)
     df["symbol"] = df["issuer_cik"].map(lambda c: cik_map.get(int(c)) if np.isfinite(c) else None)
     out = df[KEEP_COLS].copy()
     out["issuer_cik"] = out["issuer_cik"].astype("int64")
     out["insider_cik"] = out["insider_cik"].fillna(-1).astype("int64")
-    return out
+    return out, int(raw_n), 0
 
 
-def build(cik_map: dict[int, str], work_dir: Path) -> pd.DataFrame:
+def build(cik_map: dict[int, str], work_dir: Path, keep_zips: bool = False):
+    """Stream quarter by quarter: download, filter, delete. Returns (df, stats)."""
     parts = []
+    multi_ticker_issuers = pos_purchases_raw = 0
     for q in QUARTERS:
-        zp = fetch_zip(q, work_dir)
-        part = filter_quarter(zp, cik_map)
+        zpath = fetch_zip(q, work_dir)
+        try:
+            part, raw_n, multi = filter_quarter(zpath, cik_map)
+        finally:
+            if not keep_zips:
+                zpath.unlink()          # delete the ZIP as soon as it is parsed
         parts.append(part)
-        print(f"{q}: {len(part)} qualified purchase-rows", flush=True)
-        zpath = zp
-        zpath.unlink()                      # delete the ZIP immediately
+        pos_purchases_raw += raw_n
+        multi_ticker_issuers += multi
+        print(f"{q}: {raw_n} qualifying purchases, {len(part)} row(s) kept", flush=True)
     df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=KEEP_COLS)
-    df = df.drop_duplicates(["issuer_cik", "insider_cik", "filing_date"])
+    # Every kept row is a real (issuer, insider, filing) purchase; a filing may carry
+    # several transactions, so NOTHING is de-duplicated (the signal only needs the
+    # distinct (ticker, insider_cik, filing_date) set).
     df = df.sort_values(["filing_date", "symbol"]).reset_index(drop=True)
-    return df
+    stats = {"purchases_raw_before_ticker_merge": int(pos_purchases_raw),
+             "issuers_with_multiple_tickers": int(multi_ticker_issuers),
+             "cik_map_conflicts_sec_vs_secfile": int(getattr(load_cik_map, "conflicts", 0))}
+    return df, stats
 
 
 def coverage(df: pd.DataFrame) -> dict:
@@ -186,10 +213,12 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     cik_map = load_cik_map(Path(args.cik_map), Path(args.ticker_cik))
-    print(f"CIK map: {len(cik_map)} issuers", flush=True)
+    assert_cik_unique(cik_map)
+    print(f"CIK map: {len(cik_map)} issuers "
+          f"({load_cik_map.conflicts} SEC-vs-SECFILE conflicts, SECFILE wins)", flush=True)
     work = Path(tempfile.mkdtemp(prefix="insider001_"))
     try:
-        df = build(cik_map, work)
+        df, stats = build(cik_map, work, keep_zips=args.keep_zips)
     finally:
         if args.keep_zips:
             print(f"keeping temp dir {work}", flush=True)
@@ -202,6 +231,7 @@ def main(argv=None) -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     df.to_parquet(OUT_PARQUET, index=False)
     cov = coverage(df)
+    cov.update(stats)
     cov["path"] = str(OUT_PARQUET)
     cov["size_kb"] = round(OUT_PARQUET.stat().st_size / 1024, 1)
     (OUT_DIR / "coverage.json").write_text(json.dumps(cov, indent=2))
