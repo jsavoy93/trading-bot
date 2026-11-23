@@ -5,8 +5,8 @@ Implements the FROZEN preregistration (research/smoothmom-001/PREREGISTRATION.md
   * baseline : MOM 12-1 long-short, equal-weight decile legs (frozen engine)
   * V1       : double sort -- among top 20% MOM, long the smoother half; among
                bottom 20% MOM, short the smoother half
-  * V2       : combined score = mean(MOM pct rank, (-ID) pct rank); long top decile,
-               short bottom decile
+  * V2       : combined score = mean(MOM pct rank, dir-aligned (-ID) pct rank);
+               long top decile, short bottom decile
 
 Smoothness ID = sign(cum 12-1 return) x (% neg days - % pos days) over trading days
 t-252..t-21, lower = smoother.
@@ -249,7 +249,9 @@ def v2_legs(md: eng.MonthData, idv: np.ndarray):
     if len(idx) < eng.MIN_ELIGIBLE or n_leg < 1 or len(cand) < 2 * n_leg:
         return empty, empty, np.sort(top_pool), np.sort(bot_pool)
     mom_r = pct_rank(md.mom[cand])
-    id_r = pct_rank(-idv[cand])          # (-ID): smooth winners high, smooth losers low
+    # direction-aligned (-ID): rank on sign(MOM)*(-ID) so smooth winners rank high
+    # and smooth losers rank low (prereg S5 errata, PREREGISTRATION_ERRATUM.md S1)
+    id_r = pct_rank(np.sign(md.mom[cand]) * (-idv[cand]))
     score = 0.5 * (mom_r + id_r)
     order = np.argsort(score, kind="stable")   # ascending by symbol-index order
     long_idx = np.sort(cand[order[-n_leg:]])
@@ -350,12 +352,12 @@ def turnover(legs: list[np.ndarray]) -> float:
 def random_leg_nets(pre: dict, n_draws: int, seed: int) -> np.ndarray:
     """`n_draws` random same-size legs drawn from each month's candidate pool.
 
-    V1 pools = top/bottom MOM quintile (random half); V2 pools = top/bottom decile of
-    the MOM ranking. Draws are vectorized: per month each draw picks `n` distinct
-    positions per pool via argpartition on a uniform matrix, then scores with the
-    precomputed per-name returns. Costs / borrow follow the frozen rules (0.15%/side
-    on open and full close, dead names dropped from the carried book, borrow prorated
-    by trading days held).
+    V1 pools = top/bottom MOM quintile (random half); V2 pools = top/bottom MOM
+    quintile (random same-size legs of decile size). Draws are vectorized: per month
+    each draw picks `n` distinct positions per pool via argpartition on a uniform
+    matrix, then scores with the precomputed per-name returns. Costs / borrow follow
+    the frozen rules (0.15%/side on open and full close, dead names dropped from the
+    carried book, borrow prorated by trading days held).
     """
     rng = np.random.default_rng(seed)
     m = len(pre["long_n"])
