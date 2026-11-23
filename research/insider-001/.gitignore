@@ -1,0 +1,4 @@
+# local artifacts, never committed (frozen prereg section 7)
+results.json
+results.md
+*.log
