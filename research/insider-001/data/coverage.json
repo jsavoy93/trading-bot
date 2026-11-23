@@ -1,0 +1,14 @@
+{
+  "rows": 53237,
+  "rows_with_ticker": 53237,
+  "ticker_match_pct": 100.0,
+  "distinct_tickers": 3399,
+  "distinct_issuers": 3399,
+  "filing_date_min": "2019-10-01",
+  "filing_date_max": "2024-12-31",
+  "purchases_raw_before_ticker_merge": 71110,
+  "issuers_with_multiple_tickers": 0,
+  "cik_map_conflicts_sec_vs_secfile": 2417,
+  "path": "/root/.openclaw/worktrees/insider-001/research/insider-001/data/insider_purchases.parquet",
+  "size_kb": 972.4
+}
