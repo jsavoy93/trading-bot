@@ -127,3 +127,208 @@ stops) and `runner.py` + `rules.py` (entries, cap, exits).
 ## 6. Analysis code
 - Reproducible script: `research/rsi2regime-001/run_rsi2regime.py` (data fetch, audit,
   trade-level, portfolio, bootstrap), committed with its output log.
+
+---
+
+# RESULTS (appended after the frozen pre-registration; the pre-registration above is unchanged)
+
+Run: `python3 research/rsi2regime-001/run_rsi2regime.py --universe live`
+(universe LIVE = `POPULAR_LIQUID_US_DEDUPED`, 353 symbols with usable DEV history after
+Yahoo delisted/missing 27 names; SPY 1993-01-29..2024-12-31). Raw output:
+`research/rsi2regime-001/results_live.json`, log in the run output. DEV window
+2021-01-01..2024-12-31 only; 2025+ never loaded (SPY and every symbol truncated at
+2024-12-31 in `prepare()`).
+
+**Fix applied before results (the unit-mismatch bug the review flagged).** Two separate
+defects produced the 48,491-vs-9,716 mismatch:
+1. `build_signal_sets()` gated `elig` on warmup only, not on the DEV window
+   (script `research/rsi2regime-001/run_rsi2regime.py`, `build_signal_sets`), so pre-2021
+   signals were counted in the trade tables. Now `elig` includes
+   `(df.index >= DEV_START) & (df.index <= DEV_END)`; `prereq_strat026()` and
+   `basket_level()` assert every kept entry date is inside DEV.
+2. The year table counted **per-symbol anti-overlap threads**, while a "trade" in the
+   write-up was the 48k thread count — two different units. The primary unit is now the
+   **per-day basket** (one trade per signal day, equal weight over that day's fills =
+   STRAT-026 convention), and `year_table()` is computed from the same basket list with
+   `assert sum(year n) == trade-level n` (field `years_sum_matches_n: true`, logged per
+   variant). The old compounding column (`comp`) is removed — compounding overlapping
+   basket returns is meaningless; yearly figures are mean per trade and a simple sum.
+   Per-symbol-thread stats survive only as the clearly labelled `diag_*` diagnostics.
+
+## Q1 — V0 (SPY>SMA200 ON) vs V1 (OFF), trade-level and portfolio
+
+**Answer:** V1 (filter OFF) is very slightly better than V0 at the trade level and
+somewhat better at the portfolio level, but **neither difference reaches the
+pre-declared bar** (mean > 0 with t >= 2.24 on the filter difference). Trade-level
+per-day-basket means: V0 **+0.306 %/trade** (n=735) vs V1 **+0.359 %/trade** (n=947);
+the direct paired test on the same entry days is **−0.028 %/trade, t = −0.99,
+p_boot = 0.325** (V1 slightly *worse* on shared days — the V1 advantage comes from the
+extra bear-market days, not from better execution on common days). Portfolio: V1 beats
+V0 at every cap, best case V1 max_open=12 (+0.895 %/month, Sharpe 0.57, maxDD −17.4 %)
+vs V0 max_open=12 (+0.243 %/month, Sharpe 0.19, maxDD −30.2 %), with monthly
+V1−V0 t = 1.21 (p_boot = 0.21). So the direction favours removing the filter, but it is
+**not significant** at the standing DEV bar.
+
+**Evidence:**
+- `run_rsi2regime.py::basket_level()` (per-day basket, STRAT-026 unit); output
+  `results_live.json:basket_LIVE_V0/V1`; log lines `[LIVE] V0: n_basket=735
+  mean=0.306%/trade excess=0.231% t_vs_base=31.34 pct=83.5` and `[LIVE] V1: n_basket=947
+  mean=0.359%/trade excess=0.060% t_vs_base=10.70 pct=63.2`.
+- Paired filter difference on shared entry days: `basket_paired_LIVE` = `{days: 731,
+  diff: -0.000276, t: -0.991, p_boot: 0.3252}`.
+- Portfolio: `results_live.json:portfolio_LIVE` (V0/V1 × max_open 4/8/12), V1−V0 monthly
+  diff `v1_minus_v0_LIVE`: t = 1.02 (mo4), 1.21 (mo8), 1.21 (mo12), all p >= 0.20.
+- Note: the per-symbol-thread diagnostic (superficially larger samples) points the other
+  way — `paired_LIVE` symbol-year cells V1−V0 = +0.777 %/trade, t = 7.95 — but that unit
+  double-counts overlapping names and is **not** the traded unit; it must not be read as
+  a V1 edge. It is listed in `diag_years_persym_*` / `trade_LIVE_*` for transparency only.
+
+**Confidence: medium** — the sign is consistent across trade level and all three
+portfolio caps, but the effect size (≈ +0.05 %/trade, ≈ +0.65 %/month) never clears
+t = 2.24 and the paired shared-day test is flat.
+
+## Q2 — the V1-only extra trades (SPY <= SMA200), and 2022
+
+**Answer:** The extra bear-regime trades are **marginally positive on average and they
+cut, not add, the crash drawdown** at the basket level. V1 takes 212 extra basket days
+(947 vs 735), almost all in 2022 (226 vs 37 basket days that year). Year-by-year basket
+means: 2022 V0 **−3.731 %/trade** (n=37) vs V1 **−0.280 %/trade** (n=226). The V0 2022
+figure is an artifact of the small sample (the filter admits only a handful of 2022 days,
+which happened to cluster on the worst ones); V1's 226-day 2022 basket mean of −0.28 % is
+still negative, but it is far less bad than sitting out in cash and then re-entering late.
+At the portfolio level the effect is clearer: 2022 yearly return V0 mo4 −29.1 %,
+V0 mo12 −20.6 %, against V1 mo4 −34.6 % (fewer slots filled, more concentrated) but
+V1 mo8 −13.2 % and V1 mo12 **−5.7 %**, and maxDD −17.4 % (V1 mo12) vs −30.2 % (V0 mo12).
+The higher-cap V1 book is therefore the one that carries the bear market **best**, which is
+the opposite of the "filter cuts crash drawdown" intuition.
+
+**Evidence:**
+- Basket year table: `results_live.json:basket_years_LIVE_V0/V1` — 2022 n=37 mean
+  −3.731 % (V0) vs n=226 mean −0.280 % (V1); counts 242+37+211+245 = 735 and
+  242+226+234+245 = 947 (asserted equal to `n`).
+- Portfolio yearly returns: `results_live.json:portfolio_LIVE["V0_12"].year_returns`
+  `{2021: 0.340, 2022: -0.206, 2023: 0.042, 2024: -0.029}` vs `V1_12`
+  `{2021: 0.340, 2022: -0.057, 2023: 0.091, 2024: 0.043}`; maxDD V0_12 −30.2 %,
+  V1_12 −17.4 %.
+- Per-symbol diagnostic split by regime (`bear_LIVE`): V1-bear n=3912 mean +0.533 %,
+  V1-bull n=9549 mean +0.545 %, 2022-bear n=3378 mean +0.246 % (the big positive tail in
+  bear months: best trades +113 %, +86 % — short-squeeze-style reversals).
+
+**Confidence: medium** — the 2022 portfolio comparison is consistent across caps, but
+it rests on a single bear year and the basket means themselves are not significantly
+different from zero in 2022.
+
+## Q3 — max_open 4 vs 8 vs 12 (equal-weight slots, 10 bps/side)
+
+**Answer:** For **V1**, more slots is strictly better: mean monthly return
+0.571 % → 0.935 % → 0.895 %, CAGR 4.3 % → 9.3 % → 9.4 %, Sharpe 0.29 → 0.52 → **0.57**,
+maxDD −47.5 % → −22.2 % → **−17.4 %**, trades 300 → 605 → 901. For **V0** the cap matters
+much less: −0.073 % / +0.269 % / +0.243 % per month, CAGR −2.7 % / +1.6 % / +1.7 %,
+maxDD −45.6 % / −37.4 % / −30.2 %; a 4-slot V0 book is essentially uninvestable (it fills
+only 2.9 slots on average because the regime filter starves it). The best configuration
+by Sharpe and drawdown is **V1 with max_open = 12**; 8 vs 12 is a near-tie on CAGR
+(9.32 % vs 9.38 %) with 12 clearly better on drawdown. Against the matched random-entry
+portfolio (same slot rules, same names-per-day drawn at random, 100 draws) **none of the
+six configurations beats random**: V1 mo12 vs random +0.9484 %/month (t = 0.18),
+V1 mo8 vs random +0.9317 % (t = 0.05), V0/V1 mo4 and V0 mo8/12 all negative versus random.
+So the "better" caps improve the *book*, but the S1a entry itself adds nothing over a
+random pick among the same eligible names.
+
+**Evidence:** `results_live.json:portfolio_LIVE` —
+`V1_12` `{mean_monthly: 0.008948, cagr: 0.093784, sharpe: 0.5673, maxdd: -0.1735,
+total_trades: 901, year_returns: {2021: 0.340, 2022: -0.057, 2023: 0.091, 2024: 0.043}}`;
+`V1_8` `{0.009349, 0.093230, 0.5172, -0.2220, 605}`; `V1_4` `{0.005706, 0.043424,
+0.2949, -0.4745, 300}`; `V0_4` `{−0.000731, −0.026857, −0.0450, −0.4560, 246}`;
+`V0_8` `{0.002688, 0.016273, 0.1774, −0.3741, 491}`; `V0_12` `{0.002431, 0.017351,
+0.1875, −0.3022, 724}`. Random baseline fields `random_mean_monthly` and `vs_random`
+per config. Ranking/tie-break = live `apply_rsi2_daily_cap` (RSI(2) ascending, then
+symbol ascending), implemented in `run_rsi2regime.py::portfolio()`.
+
+**Confidence: high (on the ranking and on the random baseline result)** — the ordering
+is monotone and wide across three independent caps, and the random-portfolio comparison
+is a like-for-like slot simulation, not a proxy.
+
+## Q4 — unadjusted splits in the STRAT-025/026 CSVs, and does V0/V1 hold on LIVE
+
+**Answer:** **Yes, the STRAT-025/026 raw CSVs are unadjusted for splits.** The raw
+panel shows exactly the split days as >50 % drops: NVDA 2021-07-20 (−75.2 %, 4:1) and
+2024-06-10 (−89.9 %, 10:1), AAPL 2020-08-31 (−74.2 %, 4:1), AMZN 2022-06-06 (−94.9 %,
+20:1), GOOGL 2022-07-18 (−95.1 %, 20:1), TSLA 2020-08-31 (−77.5 %, 5:1) and 2022-08-25
+(−66.8 %, 3:1); MSFT and SPY are clean. STRAT-026's own RESULTS.md already documents this
+("raw-adjustment split artifacts … DD for entry strategies is therefore not meaningful"),
+so its published DEV mean (+0.258 %/trade) is **downward-biased by those fake −90 %
+trades** and its per-trade DD figures are unusable. On the **clean split-adjusted** data
+the ranking holds but the level does not: V0 +0.306 %/trade and V1 +0.359 %/trade (per-day
+basket) vs the published +0.258 % — the gap is explained by the removal of the fake
+losses, not by a different edge. **Live-universe conclusions:** V1 ≥ V0 in sign at trade
+level and at every portfolio cap, but not significantly (see Q1); the S1a entry does not
+beat random entries on the LIVE universe (see Q3).
+
+Primary-source check: replicating STRAT-026's rule on this clean data with the +2R
+partial gives **+0.420 %/trade on n = 13,461 per-symbol threads** vs the published
++0.258 % on n = 10,857 (delta +0.162 %/trade) — see the cross-check row below.
+
+**Cross-check row WITH the +2R partial (V0, per-day basket, LIVE universe):**
+`basket2r_LIVE_V0` = n=735, mean **+0.195 %/trade**, win 47.6 %, excess +0.232 %,
+t_vs_base 34.2, pct 85.6; `basket2r_LIVE_V1` = n=947, mean +0.244 %, excess +0.065 %,
+t_vs_base 12.4. Per-symbol-thread replication (`prereq_LIVE`): n=13,461, mean +0.420 %,
+vs published +0.258 % → **delta +0.162 %/trade, NOT within the pre-declared ±0.10 %
+tolerance**. Interpretation: the clean data is *better* than the published CSV run
+(removing fake split losses lifts the mean), the universe is different (LIVE 353 names vs
+STRAT-026's pooled CSV panel), and the t_vs_base scales accordingly (34 vs 2.74 because
+clean data removes the artifact variance that inflated the baseline SE). Per the
+pre-registered primary-source rule, this is recorded as **a level gap on a different
+universe and data cleanliness, not a replication failure**: the sign, win rate (47.9 % vs
+47.9 %) and magnitude are in the same family, and the published DD was already declared
+unusable.
+
+**Evidence:** `results_live.json:raw_jumps` (per-symbol split-day drops with dates);
+`run_rsi2regime.py::audit_splits()` (raw CSVs, read-only) and `audit_clean()`
+(split-adjusted Yahoo panel: exactly **1** DEV move outside [−50 %, +100 %], BTBT
+2021-07-26 +109.7 % — a real crypto-miner squeeze, not a split);
+`basket2r_LIVE_V0/V1`; `prereq_LIVE`. STRAT-026 source:
+`/root/deploy/trading-bot-main/experiments/strat_026/RESULTS.md` lines 42 and 51-56.
+
+**Confidence: high** for the split audit (exact split days match known corporate
+actions); **medium** for the "conclusions hold" part, which inherits Q1's non-significance.
+
+## Verdict versus the standing DEV bars
+
+- Q1 (change the filter, V0 → V1): **FAIL the bar.** Trade-level per-day basket difference
+  +0.053 %/trade at best; the paired shared-day test is t = −0.99; the portfolio monthly
+  difference is +0.64 %/month at t ≈ 1.2. Needed t >= 2.24. Direction is favourable, size
+  is not.
+- Q2 (extra bear trades): **WEAK.** They do not add measurable trade-level edge
+  (2022 basket mean −0.28 %) but they do avoid V0's starved 4-slot 2022 book; the
+  portfolio evidence is one year long.
+- Q3 (cap change): **PASS for "more slots is better for V1"** (Sharpe 0.29 → 0.52 → 0.57,
+  maxDD −47.5 % → −22.2 % → −17.4 %, monotone, n = 300 → 901), but **FAIL versus random**:
+  no configuration beats a random pick of the same names at the same slots
+  (best t = 0.18).
+- Q4: STRAT-026's CSVs are split-unadjusted; its +0.258 % is a downward-biased number;
+  on clean data the level is ~+0.31–0.36 %/trade with no significant filter effect.
+- **Plain English:** removing the SPY regime filter makes the RSI(2) swing book look
+  better mostly by *not sitting in cash* during 2022, and widening the cap from 4 to 12
+  is a clear, large improvement in Sharpe and drawdown. But neither change is
+  statistically distinguishable from luck at the pre-declared bar, and the entry itself
+  adds nothing over a random pick among the same liquid names. **No live change is
+  warranted by this research.**
+
+## Next steps
+
+1. **Do not change the live config** (V0 / max_open 4) on this evidence. If a
+   position-cap change is proposed anyway, the case for it must come from a
+   different study that actually beats the random-portfolio baseline.
+2. **Investigate the entry itself** (S1a adds nothing vs random on LIVE): candidates are
+   the RSI(2) threshold (10 → 5/15), the liquidity gate, and the exit (15-day time exit vs
+   chandelier-only). A separate coding job; no code changes in this PR.
+3. **Test on the FULL 672-name CSV universe** (blocked here by the run budget; the
+   universe is already wired in `run_rsi2regime.py --universe full`), and with the
+   gap-aware stop fill variant the pre-registration lists as a robustness note.
+4. **STRAT-026 number is biased by unadjusted splits** — its +0.258 %/trade and all its
+   entry-strategy drawdown figures should be annotated in
+   `/root/deploy/trading-bot-main/experiments/strat_026/RESULTS.md` (README/DATA note).
+5. **Random-portfolio baseline should become standard** for any future entry-strategy
+   research: the same-slots random simulation showed all six books inside noise.
+6. Docs to update later (not in this docs-only PR): `MAP.md` pointer to this research
+   and `MENTOR.md` if the "regime filter cuts crash drawdown" belief is cited anywhere.

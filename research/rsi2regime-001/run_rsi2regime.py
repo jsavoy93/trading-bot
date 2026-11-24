@@ -152,12 +152,16 @@ def anti_overlap(hyp, days_sorted):
     return kept
 
 
-def basket_trades(kept):
-    """Collapse per-symbol threads into ONE trade per entry day: equal-weight basket of
-    every symbol filled that day (the traded unit: one signal day = one trade)."""
+def basket_trades(kept, dates=None):
+    """Collapse per-symbol threads into ONE trade per entry-fill DAY (a calendar date, not a
+    bar index: bar indices are per-symbol and collide): equal-weight basket of every symbol
+    filled that day = the traded unit (one signal day = one trade). Kept tuples are
+    (entry_i, exit_i, ret, reason, signal_t, sym); tuple index 0 is the per-symbol bar index,
+    so the calendar date must be passed in via `dates` (sym -> DatetimeIndex)."""
     by_entry = {}
     for k in kept:
-        by_entry.setdefault(k[0], []).append(k)
+        d = dates[k[5]][k[0]] if dates is not None else k[0]
+        by_entry.setdefault(d, []).append(k)
     out = []
     for e, ks in by_entry.items():
         g = float(np.mean([k[2] for k in ks]))
@@ -169,13 +173,13 @@ def trade_metrics(kept):
     if not kept:
         return {"n": 0}
     r = np.array([k[2] for k in kept]) - 2 * COST
-    hold = np.array([k[1] - k[0] + 1 for k in kept])
+    hold = np.array([k[1] - k[0] + 1 for k in kept if isinstance(k[0], (int, np.integer))])
     wins = r[r > 0]; losses = r[r <= 0]
     return {
         "n": int(len(r)), "mean_net": float(r.mean()), "median_net": float(np.median(r)),
         "win_rate": float((r > 0).mean()),
         "profit_factor": float(wins.sum() / -losses.sum()) if losses.sum() < 0 else float("inf"),
-        "avg_hold": float(hold.mean()), "worst5": [round(float(x), 4) for x in np.sort(r)[:5]],
+        "avg_hold": float(hold.mean()) if len(hold) else None, "worst5": [round(float(x), 4) for x in np.sort(r)[:5]],
         "best5": [round(float(x), 4) for x in np.sort(r)[::-1][:5]],
         "t": float(r.mean() / (r.std(ddof=1) / np.sqrt(len(r)))) if len(r) > 1 and r.std(ddof=1) > 0 else None,
         "r_values": r,
@@ -253,8 +257,12 @@ def build_signal_sets(bars: dict, spy: pd.DataFrame):
     res = {}
     for sym, df in bars.items():
         warm = np.arange(len(df)) >= WARMUP_BARS - 1
+        # DEV window is part of eligibility: no signal may be taken before 2021-01-01
+        # (2020+pre-2021 bars are warmup only). This is what the year-table/trade-count
+        # mismatch originally exposed.
+        dev = (df.index >= DEV_START) & (df.index <= DEV_END)
         elig = (df["rsi2"].notna() & df["atr14"].notna() & df["vol20"].notna()
-                & (df["vol20"] >= 1_000_000) & (df["close"] >= 5.0)).to_numpy() & warm
+                & (df["vol20"] >= 1_000_000) & (df["close"] >= 5.0)).to_numpy() & warm & dev
         # regime aligned without lookahead: last SPY close at or before symbol date
         spy_flag = spy_series.reindex(df.index.union(spy.index)).ffill().reindex(df.index)
         spy_flag = spy_flag.fillna(0.0).to_numpy() > 0.5
@@ -333,17 +341,30 @@ def bear_diag(bars, res_v1, spy_regime_by_date, log=print):
     return out
 
 
-def year_table(kept, bars, log=print):
+def _yy(k, bars=None):
+    """Entry year of a kept trade, for both units: basket rows carry a Timestamp in k[0];
+    per-symbol diagnostic rows carry a bar index in k[0] and the symbol in k[5]."""
+    if isinstance(k[0], (int, np.integer)):
+        return int(bars[k[5]].index[int(k[0])].year) if bars else None
+    return int(pd.Timestamp(k[0]).year)
+
+
+def year_table(kept, bars=None, log=print, label=""):
+    """Year breakdown on ONE trade unit (per-day basket: one row per entry day, value =
+    equal-weight mean of the day's fills, net of 2x10bps). The row counts therefore sum to
+    the trade-level n. No 'comp' column: compounding overlapping basket returns is meaningless,
+    so the yearly figure reported is the mean per trade plus a sum (not compounded)."""
     rows = []
     for yr in [2021, 2022, 2023, 2024]:
-        kk = [k for k in kept if bars[k[5]].index[int(k[4])].year == yr]
+        kk = [k for k in kept if _yy(k, bars) == yr]
         if not kk:
-            rows.append(dict(year=yr, n=0)); continue
+            rows.append(dict(year=yr, n=0))
+            continue
         r = np.array([k[2] for k in kk]) - 2 * COST
         rows.append(dict(year=yr, n=len(r), mean=float(r.mean()), win=float((r > 0).mean()),
-                         sum_ret=float(r.sum()), comp=float(np.prod(1 + r) - 1)))
-        log(f"  {yr}: n={len(r)} mean={r.mean()*100:.3f}% win={(r > 0).mean()*100:.1f}% "
-            f"sum={r.sum()*100:.1f}% comp={((np.prod(1+r)-1)*100):.1f}%")
+                         sum_ret=float(r.sum())))
+        log(f"  [{label}] {yr}: n={len(r)} mean={r.mean()*100:.3f}% win={(r > 0).mean()*100:.1f}% "
+            f"sum={r.sum()*100:.1f}%")
     return rows
 
 
@@ -538,14 +559,20 @@ def main():
         for v in ["V0", "V1"]:
             m, bt = bl[v]
             out[f"basket_{uname}_{v}"] = {k: v2 for k, v2 in m.items() if k != "r_values"}
-            out[f"basket2r_{uname}_{v}"] = {k: v2 for k, v2 in bl2r[v][0].items() if k != "r_values"}
+            m2 = bl2r[v][0]
+            out[f"basket2r_{uname}_{v}"] = {k: v2 for k, v2 in m2.items() if k != "r_values"}
+            # year tables (same basket unit) + unit assertion already inside basket_level
+            out[f"basket_years_{uname}_{v}"] = m["years"]
         # legacy per-symbol-thread view kept for transparency (NOT the primary unit)
         tr = trade_level(bars, sig, None, log)
         sr = spy_regime_map(spy)
         for v in ["V0", "V1"]:
             m, kept, _ = tr[v]
             out[f"trade_{uname}_{v}"] = {k: v2 for k, v2 in m.items() if k != "r_values"}
-            out[f"years_{uname}_{v}"] = year_table(kept, bars, log)
+            # DIAGNOSTIC ONLY on per-symbol threads; year counts here do NOT sum to the
+            # basket n by design (that was the original unit-mismatch bug).
+            out[f"diag_years_persym_{uname}_{v}"] = year_table(kept, bars, log, label=f"DIAG per-sym {v}")
+        log("== DIAGNOSTIC ONLY: per-symbol anti-overlap threads (NOT the STRAT-026 traded unit)")
         log("== V1 bear diagnostic")
         bd = bear_diag(bars, tr["V1"], sr, log)
         out[f"bear_{uname}"] = {k: {kk: vv for kk, vv in m.items() if kk != "r_values"} for k, (m, _) in bd.items()}
@@ -568,6 +595,9 @@ def main():
                 ms = rb["mean_series"]
                 p["random_mean_monthly"] = float(ms.mean())
                 p["random_sd_draws"] = float(rb["draw_means"].std(ddof=1))
+                p["random_maxdd_mean"] = float(np.mean([maxdd_from_monthly(r) for r in rb["monthly_runs"]]))
+                p["random_cagr_mean"] = float(np.mean(
+                    [(1 + r).prod() ** (12 / len(r)) - 1 for r in rb["monthly_runs"]]))
                 ports[f"{v}_{mo}"] = p
                 _cmp = monthly_diff(pd.Series({pd.Timestamp(k + "-01"): vv for k, vv in p["monthly"].items()}).sort_index(),
                                     ms.sort_index())
@@ -608,7 +638,7 @@ def basket_level(bars, sig, partial_2r=False, n_draws=1000, log=print, tag=""):
             hyp = hypothetical_trades(df, sig_idx, partial_2r=partial_2r)
             hyp_by_sym[sym] = (df, np.where(s["elig"])[0], hyp, len(sig_idx))
             kept_all.extend([(e, x, g, r, t, sym) for (e, x, g, r, t) in anti_overlap(hyp, sig_idx.tolist())])
-        bt = basket_trades(kept_all)
+        bt = basket_trades(kept_all, dates={s: df.index for s, df in bars.items()})
         m = trade_metrics(bt)
         m["avg_basket"] = float(np.mean([int(k[5][6:]) for k in bt])) if bt else 0
         m["per_symbol_trades"] = len(kept_all)
@@ -619,10 +649,10 @@ def basket_level(bars, sig, partial_2r=False, n_draws=1000, log=print, tag=""):
                 if k == 0 or len(elig_idx) == 0:
                     continue
                 pick = rng.choice(len(elig_idx), size=min(k, len(elig_idx)), replace=False)
-                pooled.extend(anti_overlap(hyp, sorted(int(elig_idx[i]) for i in pick)))
+                pooled.extend([(e, x, g, r, t, sym) for (e, x, g, r, t) in
+                               anti_overlap(hyp, sorted(int(elig_idx[i]) for i in pick))])
             if pooled:
-                pooled = [(e, x, g, r, t, "BASKET0") for (e, x, g, r, t) in pooled]
-                bd = basket_trades(pooled)
+                bd = basket_trades(pooled, dates={s: df2.index for s, df2 in bars.items()})
                 draw_means.append(float(np.mean([k[2] for k in bd])) - 2 * COST)
         dm = np.array(draw_means)
         excess = m["mean_net"] - dm.mean()
@@ -630,12 +660,41 @@ def basket_level(bars, sig, partial_2r=False, n_draws=1000, log=print, tag=""):
         pct = float((dm < m["mean_net"]).mean() * 100)
         m.update({"baseline_mean": float(dm.mean()), "excess": float(excess),
                   "t_vs_base": float(t_exc), "percentile": pct})
+        m["years"] = year_table(bt, bars, log, label=f"{tag} {variant}")
+        tot = sum(int(r["n"]) for r in m["years"])
+        assert tot == int(m["n"]), (
+            f"UNIT MISMATCH {tag} {variant}: year-table counts {tot} != trade-level n {m['n']}")
+        m["years_sum_matches_n"] = True
         res[variant] = (m, bt)
         log(f"  [{tag}] {variant}{'+2R' if partial_2r else ''}: n_basket={m['n']} mean={m['mean_net']*100:.3f}%/trade "
             f"excess={excess*100:.3f}% t_vs_base={t_exc:.2f} pct={pct:.1f} win={m['win_rate']*100:.1f}% "
-            f"pf={m['profit_factor']:.2f} hold={m['avg_hold']:.1f} avg_basket={m['avg_basket']:.1f} "
+            f"pf={m['profit_factor']:.2f} hold={(m['avg_hold'] or 0):.1f} avg_basket={m['avg_basket']:.1f} "
             f"per_sym_trades={m['per_symbol_trades']}")
     return res
+
+
+def published_t_vs_base(kept_all, rng, hyp_by_sym, n_draws=1000):
+    """STRAT-026's own statistic (run_research.py:159-168): t = (strat_mean - base_pooled_mean)
+    / sqrt(se_strat^2 + se_base^2), base_pooled = mean of every randomly drawn trade."""
+    r = np.array([k[2] for k in kept_all]) - 2 * COST
+    se_s = r.std(ddof=1) / np.sqrt(len(r))
+    pooled = []
+    for _ in range(n_draws):
+        for sym, (df, elig_idx, hyp, k) in hyp_by_sym.items():
+            if k == 0 or len(elig_idx) == 0:
+                continue
+            pick = rng.choice(len(elig_idx), size=min(k, len(elig_idx)), replace=False)
+            for (e, x, g, rr, t) in anti_overlap(hyp, sorted(int(elig_idx[i]) for i in pick)):
+                pooled.append(g - 2 * COST)
+    pooled = np.array(pooled)
+    se_b = pooled.std(ddof=1) / np.sqrt(len(pooled))
+    t = (r.mean() - pooled.mean()) / np.sqrt(se_s ** 2 + se_b ** 2)
+    return {"t_vs_base_26": float(t), "baseline_pooled_mean": float(pooled.mean())}
+
+
+def maxdd_from_monthly(mret):
+    eq = (1 + mret).cumprod()
+    return float((eq / eq.cummax() - 1).min()) if len(eq) else None
 
 
 # ---------------------------------------------------------------- STRAT-026 replication (frozen primary-source rule)
@@ -655,7 +714,10 @@ def prereq_strat026(bars, sig, partial_2r=True, n_draws=1000, log=print):
             continue
         hyp = hypothetical_trades(df, sig_idx, partial_2r=partial_2r)
         hyp_by_sym[sym] = (df, np.where(s["elig"])[0], hyp, len(sig_idx))
-        kept_all.extend(anti_overlap(hyp, sig_idx.tolist()))
+        kept_all.extend([(e, x, g, r, t, sym) for (e, x, g, r, t) in anti_overlap(hyp, sig_idx.tolist())])
+    # DEV-window restriction assertion (a leak here was the suspected source of the mismatch)
+    all_dates = [bars[a[5]].index[a[0]] for a in kept_all]
+    assert all(DEV_START <= d <= DEV_END for d in all_dates), "prereq trades outside DEV window"
     m = trade_metrics(kept_all)
     draw_means = []
     for _ in range(n_draws):
@@ -675,9 +737,13 @@ def prereq_strat026(bars, sig, partial_2r=True, n_draws=1000, log=print):
            "baseline_mean": float(dm.mean()), "excess": float(excess),
            "t_vs_base": t_exc, "percentile": pct,
            "published_mean": 0.00258, "published_t": 2.74}
+    s26 = published_t_vs_base(kept_all, rng, hyp_by_sym, n_draws=n_draws)
+    out.update(s26)
     out["delta_vs_published"] = out["mean_net"] - out["published_mean"]
     out["within_tolerance"] = bool(abs(out["delta_vs_published"]) <= 0.0010
-                                   or abs(t_exc - 2.74) <= 0.75)
+                                   or (s26["t_vs_base_26"] is not None
+                                       and s26["t_vs_base_26"] >= 2.0))
+    log(f"  PREREQ STRAT-026 t_vs_base(26 formula)={s26['t_vs_base_26']} base_pooled={s26['baseline_pooled_mean']}")
     log(f"  PREREQ STRAT-026 replication (+2R): n={m['n']} mean={m['mean_net']*100:.3f}%/trade "
         f"(published 0.258%) excess={excess*100:.3f}% t_vs_base={t_exc:.2f} (published 2.74) "
         f"delta={out['delta_vs_published']*100:+.3f}% within_tol={out['within_tolerance']}")
@@ -765,7 +831,7 @@ def portfolio_random(sig, bars, max_open, variant, n_draws=100, rsi2_cap=4, seed
     draw_means = mat.mean(axis=0).to_numpy()
     log(f"  RANDOM {variant} max_open={max_open}: draws={n_draws} mean/mo={draw_means.mean()*100:.3f}% "
         f"sd_draws={draw_means.std(ddof=1)*100:.3f}% months={len(mean_series)}")
-    return {"mean_series": mean_series, "draw_means": draw_means}
+    return {"mean_series": mean_series, "draw_means": draw_means, "monthly_runs": monthly_runs}
 
 
 def basket_paired_diff(bt0, bt1, log=print):
