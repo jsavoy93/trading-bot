@@ -96,6 +96,17 @@ def keeped(hyp, days):
     return kept
 
 
+def spaced(raw_idx, elig_set, gap=5):
+    """Dense signal masks (e.g. a boolean market state like RSI2>90, true on most days) would
+    otherwise re-enter a name the day after its exit. Keep at most one signal per gap days,
+    like the anti-overlap rule the strategy's sparse signals satisfy naturally."""
+    out = []
+    for i in sorted(set(int(i) for i in np.asarray(raw_idx).tolist()) & elig_set):
+        if not out or i - out[-1] >= gap:
+            out.append(i)
+    return out
+
+
 class Book:
     """Everything needed to price any entry mask for one symbol."""
     def __init__(self, bars, sig):
@@ -113,7 +124,7 @@ class Book:
             m = mask_by_sym.get(s)
             if m is None:
                 continue
-            idx = sorted(set(np.where(m)[0].tolist()) & self.elig_set[s])
+            idx = spaced(np.where(m)[0], self.elig_set[s])
             if not idx:
                 continue
             kept = keeped(self.hyp[s], idx)
@@ -162,14 +173,15 @@ def compare(book, strat_mask, draw_fn, n_draws, tag, strat_days=None):
     return o, dmn
 
 
-def per_symbol_random_masks(book, k_by_sym, seed):
+def per_symbol_random_masks(book, k_by_sym, seed, mask_anchor=None):
     """Same protocol as RSI2REGIME-001 basket_level: per symbol draw k_sym eligible days
     without replacement. k_sym = number of signal days that symbol has."""
     rng = np.random.default_rng(seed)
+    mask_anchor = {} if mask_anchor is None else mask_anchor
     out = {}
     for s in book.bars:
         k = int(k_by_sym.get(s, 0))
-        k = k if k > 0 else int((sig[s]["elig"] & sig[s]["low"]).sum())
+        k = k if k > 0 else int(np.count_nonzero(mask_anchor.get(s)))
         pool = book.elig[s]
         m = np.zeros(len(book.bars[s]), bool)
         if k and len(pool):
@@ -178,13 +190,14 @@ def per_symbol_random_masks(book, k_by_sym, seed):
     return out
 
 
-def matched_days_random_masks(book, k_by_sym, allowed_days, seed):
+def matched_days_random_masks(book, k_by_sym, allowed_days, seed, mask_anchor=None):
     """Exposure-matched: draw k_sym entry days from the symbol's own strategy entry days."""
     rng = np.random.default_rng(seed)
+    mask_anchor = {} if mask_anchor is None else mask_anchor
     out = {}
     for s in book.bars:
         k = int(k_by_sym.get(s, 0))
-        k = k if k > 0 else int((sig[s]["elig"] & sig[s]["low"]).sum())
+        k = k if k > 0 else int(np.count_nonzero(mask_anchor.get(s)))
         pool = np.array([i for i in book.elig[s] if book.dates[s][i] in allowed_days])
         m = np.zeros(len(book.bars[s]), bool)
         if k and len(pool):
@@ -225,9 +238,15 @@ def portfolio_run(book, entry_days_by_sym, max_open, rsi2_cap=4, variant="V1", s
                "open": book.bars[s]["open"].to_numpy(), "close": book.bars[s]["close"].to_numpy(),
                "atr14": book.bars[s]["atr14"].to_numpy()} for s in names}
     cand = {}
-    for s, days in entry_days_by_sym.items():
-        for d in days:
-            cand.setdefault(d, []).append(s)
+    for a, b in entry_days_by_sym.items():
+        if isinstance(b, (set, list, tuple)) and (not b or isinstance(next(iter(b)), str)):
+            # {calendar day: set(symbols)} from entry_days_strat()
+            for sym in b:
+                cand.setdefault(a, []).append(sym)
+        else:
+            # {symbol: set(calendar days)}
+            for d in b:
+                cand.setdefault(d, []).append(a)
     for d in cand:
         cand[d].sort()
     pos = {}; equity = 1.0; pending = []; monthly = {}
@@ -292,7 +311,7 @@ def entry_days(book, mask_by_sym):
         m = mask_by_sym.get(s)
         if m is None:
             continue
-        idx = sorted(set(np.where(m)[0].tolist()) & book.elig_set[s])
+        idx = spaced(np.where(m)[0], book.elig_set[s])
         for t in keeped(book.hyp[s], idx):
             days.setdefault(book.dates[s][book.hyp[s][t][0]], set()).add(s)
     return days
@@ -339,7 +358,7 @@ def main():
     for v in ["V0", "V1"]:
         sm = mask_from_signal(book, sig, v)
         k_v = {s: int((sig[s]["elig"] & sig[s]["low"]).sum()) for s in bars}
-        o, dmn = compare(book, sm, lambda k, sd: per_symbol_random_masks(book, k_v, SEED + k),
+        o, dmn = compare(book, sm, lambda k, sd: per_symbol_random_masks(book, k_v, SEED + k, mask_anchor=sm),
                          N, f"Q1 basket {v} per-symbol random")
         o["k_by_sym_source"] = "strategy signal-day count"
         q1[v] = o
@@ -493,7 +512,7 @@ def main():
             m = mask_by_sym.get(s)
             if m is None:
                 continue
-            idx = sorted(set(np.where(m)[0].tolist()) & book.elig_set[s])
+            idx = spaced(np.where(m)[0], book.elig_set[s])
             c = df["close"].to_numpy(); o_ = df["open"].to_numpy()
             last = -1
             for i in idx:
@@ -533,7 +552,7 @@ def main():
             m = mask_by_sym.get(s)
             if m is None:
                 continue
-            idx = sorted(set(np.where(m)[0].tolist()) & book.elig_set[s])
+            idx = spaced(np.where(m)[0], book.elig_set[s])
             for t in keeped(book.hyp[s], idx):
                 cnt[book.hyp[s][t][3]] = cnt.get(book.hyp[s][t][3], 0) + 1
         tot = sum(cnt.values()) or 1
@@ -587,7 +606,7 @@ def entry_days_strat(book, mask_by_sym):
         m = mask_by_sym.get(s)
         if m is None:
             continue
-        idx = sorted(set(np.where(m)[0].tolist()) & book.elig_set[s])
+        idx = spaced(np.where(m)[0], book.elig_set[s])
         for t in keeped(book.hyp[s], idx):
             days.setdefault(book.dates[s][book.hyp[s][t][0]], set()).add(s)
     return days
