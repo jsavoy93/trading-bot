@@ -105,10 +105,14 @@ def basket_stats(bars, sig_variant, n_draws=N_DRAWS_TRADE, seed=SEED, tag=""):
             pooled.extend([(e, x, g, r, t, sym) for (e, x, g, r, t) in
                            H.anti_overlap(hyp, sorted(int(elig_idx[i]) for i in pick))])
         if pooled:
-            bd = H.basket_trades(pooled, dates)
-            draw_means.append(float(np.mean([k[2] for k in bd])) - 2 * COST)
-            draw_sizes.append(len(bd))
-            draw_mix.append(float(np.mean([int(k[5][6:]) for k in bd])))
+            by_day = {}
+            for (e, x, g, r, t, sym) in pooled:
+                by_day.setdefault(dates[sym][e], []).append(g)
+            # same basket construction as the strategy side: a calendar entry day with its
+            # realized (not anti-overlapped) fills
+            draw_means.append(float(np.mean([np.mean(v) for v in by_day.values()])) - 2 * COST)
+            draw_sizes.append(len(by_day))
+            draw_mix.append(float(np.mean([len(v) for v in by_day.values()])))
     dm = np.array(draw_means)
     excess = m["mean_net"] - dm.mean()
     sd = dm.std(ddof=1)
@@ -182,157 +186,167 @@ def main():
                 f"t_corr={t_corrected:.2f} pctile={pctile:.0f}")
     out["portfolio_recomputed"] = port
 
-    # ---------------- C/Q3: harness sanity checks
+    # ---------------- helpers shared by C (sanity) and D (decomposition)
+    def thread_returns(mask_by_sym):
+        """Per-symbol anti-overlapped S1a threads (same unit as RSI2REGIME-001's
+        per-symbol view), net of costs. Used only where both sides of a comparison use it."""
+        keep, rets = [], []
+        for sym, df in bars.items():
+            m = mask_by_sym[sym]
+            idx = np.where(m & sig[sym]["elig"])[0]
+            if len(idx) == 0:
+                continue
+            hyp = H.hypothetical_trades(df, idx)   # bars already truncated at DEV_END
+            for (e, x, g, r, t) in H.anti_overlap(hyp, idx.tolist()):
+                keep.append((sym, dates[sym][e]))
+                rets.append(g - 2 * COST)
+        return np.array(rets), keep
+
+    def day_means(mask_by_sym):
+        """One value per filled calendar entry day: mean realized net return of that day's fills."""
+        rets, keep = thread_returns(mask_by_sym)
+        by_day = {}
+        for r, (sym, d) in zip(rets, keep):
+            by_day.setdefault(d, []).append(r)
+        return {d: float(np.mean(v)) for d, v in by_day.items()}
+
+    def rule_stats(mask_by_sym, n_draws=N_DRAWS_TRADE, seed=SEED, tag="", exposure_matched=False):
+        """Strategy day-baskets vs random day-baskets, reported t and corrected t.
+        Random protocol = RSI2REGIME-001: per symbol draw k_sym eligible days without
+        replacement, apply anti-overlap, then one value per entry day.
+        exposure_matched=True: also draws ONLY on the strategy's own entry days."""
+        rng = np.random.default_rng(seed)
+        hs = day_means(mask_by_sym)
+        strat = np.array(list(hs.values()))
+        strat_days = set(hs)
+        hyp_by_sym = {}
+        for sym, df in bars.items():
+            idx = np.where(mask_by_sym[sym] & sig[sym]["elig"])[0]
+            if len(idx) == 0:
+                continue
+            hyp_by_sym[sym] = (np.where(sig[sym]["elig"])[0], H.hypothetical_trades(df, np.where(sig[sym]["elig"])[0]),
+                               len(np.where(mask_by_sym[sym] & sig[sym]["elig"])[0]))
+        draws = []
+        for _ in range(n_draws):
+            by_day = {}
+            all_days = []
+            for sym, (elig_idx, hyp_all, k) in hyp_by_sym.items():
+                if k == 0 or len(elig_idx) == 0:
+                    continue
+                pool = elig_idx
+                if exposure_matched:
+                    pool = np.array([i for i in elig_idx if dates[sym][i] in strat_days])
+                    if len(pool) == 0:
+                        continue
+                pick = rng.choice(len(pool), size=min(k, len(pool)), replace=False)
+                for i in pick:
+                    t = int(pool[i])
+                    if t not in hyp_all:
+                        continue
+                    e, x, g, r = hyp_all[t]
+                    if e >= len(dates[sym]) or dates[sym][e] > DEV_END:
+                        continue
+                    by_day.setdefault(dates[sym][e], []).append(g - 2 * COST)
+            if by_day:
+                # anti-overlap per symbol is already applied through hyp_all (one trade at a time)
+                draws.append(float(np.mean([np.mean(v) for v in by_day.values()])))
+        dm = np.array(draws)
+        m = float(strat.mean())
+        excess = m - dm.mean()
+        sd = dm.std(ddof=1)
+        o = {"n_days": int(len(strat)), "mean_net": m, "baseline_mean": float(dm.mean()),
+             "baseline_sd_draws": float(sd), "excess": float(excess),
+             "t_reported": float(excess / (sd / np.sqrt(len(dm)))),
+             "t_corrected": float(excess / sd),
+             "percentile": float((dm < m).mean() * 100), "n_draws": int(len(dm)),
+             "exposure_matched": exposure_matched}
+        log(f"  [{tag}] days={o['n_days']} mean={m*100:.3f}% base={dm.mean()*100:.3f}% "
+            f"sd_draws={sd*100:.3f}% t_rep={o['t_reported']:.2f} t_corr={o['t_corrected']:.2f} "
+            f"pct={o['percentile']:.1f}")
+        return o, dm
+
     log("== C. sanity checks (harness must fail BAD and pass LOOKAHEAD)")
     checks = {}
-    rsi = {sym: sig[sym] for sym in sig}
-    # bad entry: RSI(2) > 90 (overbought)
     bad = {sym: (bars[sym]["rsi2"].to_numpy() > 90.0) for sym in bars}
-    ob, bbt, bdm = basket_stats(bars, carry_masks(bars, sig, "bad", bad), tag="BAD rsi2>90")
-    checks["bad_rsi2_gt90"] = ob
-    # bad entry 2: buy after big up day (2-day return > +8%)
+    o, _ = rule_stats(bad, tag="BAD rsi2>90"); checks["bad_rsi2_gt90"] = o
     up = {}
     for sym in bars:
         c = bars[sym]["close"]
-        up[sym] = (c / c.shift(2) - 1.0).to_numpy() > 0.08
-    ob2, bb2, bdm2 = basket_stats(bars, carry_masks(bars, sig, "bad2", up), tag="BAD up2d>8%")
-    checks["bad_after_big_up_day"] = ob2
-    # lookahead cheat: buy names whose own close rises most over the NEXT 5 sessions
+        up[sym] = ((c / c.shift(2) - 1.0).to_numpy() > 0.08)
+    o, _ = rule_stats(up, tag="BAD after +8%/2d"); checks["bad_after_big_up_day"] = o
     look = {}
     for sym in bars:
         c = bars[sym]["close"]
-        fwd = (c.shift(-5) / c - 1.0).to_numpy()   # LOOKAHEAD on purpose
-        look[sym] = fwd >= 0.05
-    ol, lbt, ldm = basket_stats(bars, carry_masks(bars, sig, "look", look), tag="LOOKAHEAD fwd5d>=5%")
-    checks["lookahead_fwd5d_ge5pct"] = ol
+        look[sym] = ((c.shift(-5) / c - 1.0).to_numpy() >= 0.05)   # deliberate lookahead
+    o, _ = rule_stats(look, tag="LOOKAHEAD fwd5d>=5%"); checks["lookahead_fwd5d_ge5pct"] = o
+    # control: a truly random entry under the same protocol must sit at ~0 excess, pct ~50
+    ctrl = {}
+    rngc = np.random.default_rng(SEED + 1)
+    for sym in bars:
+        elig = np.where(sig[sym]["elig"])[0]
+        mask = np.zeros(len(sig[sym]["elig"]), bool)
+        k = int((sig[sym]["elig"] & sig[sym]["low"]).sum())
+        if k and len(elig):
+            mask[rngc.choice(elig, size=min(k, len(elig)), replace=False)] = True
+        ctrl[sym] = mask
+    o, _ = rule_stats(ctrl, tag="CONTROL random"); checks["control_random_entries"] = o
     out["sanity"] = checks
 
-    # same checks at portfolio level (random baseline, 100 draws each)
-    port_checks = {}
-    for nm, masks in (("bad_rsi2_gt90", bad), ("bad_after_big_up_day", up), ("lookahead_fwd5d_ge5pct", look)):
-        sg = carry_masks(bars, sig, nm, masks)
-        for mo in (8,):
-            p = H.portfolio(sg, bars, mo, "V1", log=log)
-            p.pop("trades", None)
-            p["monthly"] = {str(d.date())[:7]: float(x) for d, x in p["monthly"].items()}
-            rb = H.portfolio_random(sg, bars, mo, "V1", n_draws=N_DRAWS_PORT, log=log)
-            sstrat = pd.Series({pd.Timestamp(k + "-01"): x for k, x in p["monthly"].items()}).sort_index()
-            ms = rb["mean_series"].sort_index()
-            common = sstrat.index.intersection(ms.index)
-            dd = (sstrat.reindex(common) - ms.reindex(common)).dropna()
-            sd_draws = float(rb["draw_means"].std(ddof=1))
-            port_checks[nm] = {"mean_monthly": p["mean_monthly"], "random_mean_monthly": float(ms.mean()),
-                               "diff": float(dd.mean()), "t_corrected": float(dd.mean() / sd_draws),
-                               "pctile": float((rb["draw_means"] < p["mean_monthly"]).mean() * 100),
-                               "total_trades": p.get("total_trades")}
-            log(f"  PORT-CHECK {nm} mo{mo}: strat={p['mean_monthly']*100:.4f}% rand={ms.mean()*100:.4f}% "
-                f"t_corr={port_checks[nm]['t_corrected']:.2f} pctile={port_checks[nm]['pctile']:.0f}")
-            # extra: same-day check — is the strategy book using the same eligible set?
-            row = port_checks[nm]
-            # exposure/degenerate check: how often did the portfolio fill slots?
-    out["sanity_portfolio"] = port_checks
+    log("== C2. exposure-matched random baseline for the real S1a entry")
+    o, _ = rule_stats({sym: sig[sym]["low"] for sym in sig}, tag="S1a exposure-matched", exposure_matched=True)
+    out["s1a_exposure_matched"] = o
 
     # ---------------- D/Q4: decomposition
     log("== D. decomposition: exits vs entry")
     dec = {}
-    # 1. RSI2 entries with the full S1a exits, reuse of the RSI2REGIME-001 basket engine with each entry rule (reuse -> comparability)
-    for v in ["V1"]:
-        sigv = carry_masks(bars, sig, v, {sym: sig[sym]["low"] for sym in sig})
-        bl_res = H.basket_level(bars, sigv, log=log, tag="dec")
-        m = bl_res[v][0]
-        dec[f"rsi2_{v}_s1a_exits"] = {k: m[k] for k in ("n", "mean_net", "baseline_mean", "excess",
-                                                       "t_vs_base", "percentile", "avg_hold")}
-    # 2. time-only exit: no stops at all, exit 15 bars after the entry bar (same unit:
-    # per-symbol threads, anti-overlap), +10bps/side. Compared RSI2 entries vs random
-    # entries with the same per-symbol count (same draw protocol as the baseline).
-    def time_only_returns(mask_by_sym, no_overlap=True):
+    o_sig, _ = rule_stats({sym: sig[sym]["low"] for sym in sig}, tag="RSI2 entries + S1a exits")
+    rng_ = np.random.default_rng(SEED)
+    ctrl2 = {}
+    for sym in bars:
+        elig = np.where(sig[sym]["elig"])[0]
+        mask = np.zeros(len(sig[sym]["elig"]), bool)
+        k = int((sig[sym]["elig"] & sig[sym]["low"]).sum())
+        if k and len(elig):
+            mask[rng_.choice(elig, size=min(k, len(elig)), replace=False)] = True
+        ctrl2[sym] = mask
+    o_rnd, _ = rule_stats(ctrl2, tag="RANDOM entries + S1a exits")
+    dec["s1a_exits"] = {"rsi2_entries": o_sig, "random_entries": o_rnd}
+
+    def time_only_returns(mask_by_sym):
         r = []
         for sym, df in bars.items():
-            idx = np.where(mask_by_sym[sym])[0]
-            if no_overlap and len(idx):
-                keep, last = [], -1
-                for i in idx:
-                    if i + 1 > last:
-                        keep.append(i); last = i + 15
-                idx = np.array(keep)
-            c = df["close"].to_numpy(); o = df["open"].to_numpy()
+            idx = np.where(mask_by_sym[sym] & sig[sym]["elig"])[0]
+            keep, last = [], -1
             for i in idx:
+                if i + 1 > last:
+                    keep.append(i); last = i + 15
+            c = df["close"].to_numpy(); o = df["open"].to_numpy()
+            for i in keep:
                 e = i + 1
                 if e >= len(c):
                     continue
                 x = min(e + 14, len(c) - 1)
                 r.append(c[x] / o[e] - 1.0)
         return np.array(r) - 2 * COST
-
-    mask_sig = {sym: sig[sym]["elig"] & sig[sym]["low"] for sym in sig}
-    mask_rand = {}
-    rnd = np.random.default_rng(SEED)
-    for sym in sig:
-        m = np.zeros(len(sig[sym]["elig"]), bool)
-        elig = np.where(sig[sym]["elig"])[0]
-        k = int(mask_sig[sym].sum())
-        if k and len(elig):
-            m[rnd.choice(elig, size=min(k, len(elig)), replace=False)] = True
-        mask_rand[sym] = m
-    t_sig = time_only_returns(mask_sig); t_rand = time_only_returns(mask_rand)
-    dec["time_only_exit_rsi2_vs_random"] = {
-        "rsi2_entries": {"n": int(len(t_sig)), "mean": float(t_sig.mean()) if len(t_sig) else None},
-        "random_entries": {"n": int(len(t_rand)), "mean": float(t_rand.mean()) if len(t_rand) else None}}
-    log(f"  TIME-ONLY exit: rsi2 n={len(t_sig)} mean={t_sig.mean()*100:.3f}% | random n={len(t_rand)} mean={t_rand.mean()*100:.3f}%")
-    # 3. buy-and-hold (see below)
-    # 3. buy-and-hold: equal-weight universe, DEV entry 2021-01-04 -> 2024-12-31
-    rets = []
+    t_sig = time_only_returns({sym: sig[sym]["low"] for sym in sig})
+    t_rand = time_only_returns(ctrl2)
+    dec["time_only_exit"] = {"rsi2_entries": {"n": int(len(t_sig)), "mean": float(t_sig.mean())},
+                             "random_entries": {"n": int(len(t_rand)), "mean": float(t_rand.mean())}}
+    log(f"  TIME-ONLY exit (no stops): rsi2 n={len(t_sig)} mean={t_sig.mean()*100:.3f}% | "
+        f"random n={len(t_rand)} mean={t_rand.mean()*100:.3f}%")
+    bnh = []
     for sym, df in bars.items():
         d0 = df.index[df.index >= DEV_START]
-        if len(d0) < 5: continue
+        if len(d0) < 5:
+            continue
         c = df["close"]
-        rets.append(float(c.iloc[-1] / c.loc[d0[0]] - 1.0))
-    rets = np.array(rets)
-    dec["buy_and_hold_equal_weight_universe"] = {"n": int(len(rets)), "mean_total": float(rets.mean()),
-                                                "median_total": float(np.median(rets)),
-                                                "pct_positive": float((rets > 0).mean())}
-    log(f"  BUY&HOLD EW {len(rets)} names: mean {rets.mean()*100:.1f}% over DEV, median {np.median(rets)*100:.1f}%, "
-        f"positive {100*(rets>0).mean():.0f}%")
-    # 4. matched exposure: random entries drawn ONLY on the strategy's own entry days
-    def matched_random(sig_mask, n_draws=200):
-        rng = np.random.default_rng(SEED)
-        # per signal day, eligible names; strategy picks = names signalled; random picks = random subset same size
-        by_day_strat, by_day_elig = {}, {}
-        for sym, df in bars.items():
-            m = sig_mask[sym]; e = sig[sym]["elig"]
-            for i in np.where(m)[0]:
-                by_day_strat.setdefault(df.index[i], []).append(sym)
-            for i in np.where(e)[0]:
-                by_day_elig.setdefault(df.index[i], []).append(sym)
-        rsi_by_day = {}
-        for sym in bars:
-            rsi_by_day[sym] = bars[sym]["rsi2"].to_numpy()
-        means = []
-        for _ in range(n_draws):
-            pooled = []
-            for d, names in by_day_strat.items():
-                cands = by_day_elig.get(d, [])
-                take = min(len(names), len(cands))
-                pick = rng.choice(len(cands), size=take, replace=False)
-                for j in sorted(pick):
-                    sym = cands[int(j)]
-                    i = bars[sym].index.get_loc(d)
-                    hyp = H.hypothetical_trades(bars[sym], np.array([i]))
-                    for (e, x, g, r, t) in hyp:
-                        pooled.append(g - 2 * COST)
-            if pooled:
-                means.append(float(np.mean(pooled)))
-        return np.array(means)
-    mr = matched_random({sym: sig[sym]["elig"] & sig[sym]["low"] for sym in sig})
-    sig_r = np.array([k[2] for k in (H.anti_overlap(H.hypothetical_trades(bars[sym], np.where(sig[sym]["elig"] & sig[sym]["low"])[0]),
-                                         np.where(sig[sym]["elig"] & sig[sym]["low"])[0].tolist()) for sym in bars)
-                      for k in k]) - 2 * COST
-    dec["matched_exposure"] = {"rsi2_thread_mean": float(sig_r.mean()), "n_threads": int(len(sig_r)),
-                               "random_matched_mean": float(mr.mean()), "random_matched_sd": float(mr.std(ddof=1)),
-                               "t_corrected": float((sig_r.mean() - mr.mean()) / mr.std(ddof=1)),
-                               "n_draws": int(len(mr))}
-    log(f"  MATCHED-EXPOSURE: rsi2 threads {len(sig_r)} mean={sig_r.mean()*100:.3f}% | random matched "
-        f"{mr.mean()*100:.3f}% sd={mr.std(ddof=1)*100:.3f}% t={dec['matched_exposure']['t_corrected']:.2f}")
+        bnh.append(float(c.iloc[-1] / c.loc[d0[0]] - 1.0))
+    bnh = np.array(bnh)
+    dec["buy_and_hold_equal_weight"] = {"n": int(len(bnh)), "mean_total": float(bnh.mean()),
+                                        "median_total": float(np.median(bnh)),
+                                        "pct_positive": float((bnh > 0).mean())}
+    log(f"  BUY&HOLD EW {len(bnh)} names: mean {bnh.mean()*100:.1f}% median {np.median(bnh)*100:.1f}% "
+        f"positive {100*(bnh>0).mean():.0f}%")
     out["decomposition"] = dec
 
     # ---------------- survivorship / universe lookahead
