@@ -62,7 +62,8 @@ short; link files, not paragraphs.
     `experiments/strat_023/live_paper_runner.py`), enforced by
     `position_qty` + the sleeve-total check/entry-loop queries;
   - RSI(2) `rsi2-` 10% sleeve (`RSI2_SLEEVE_PCT`,
-    `--sleeve-pct` in /root/deploy/rsi2-swing-run/run_daily.sh), enforced
+    `--sleeve-pct` in `experiments/swing_paper/deploy/run_daily.sh`
+    (live copy: /root/deploy/rsi2-swing)), enforced
     by `size_rsi2_position` over `rsi2_open_notional`;
   - GAPFADE `gf_mid-` 30% (`DEFAULT_SIZE_FRACTION` 0.03 per entry x
     `MAX_OPEN_POSITIONS` 10, `TOTAL_EXPOSURE_CAP_FRACTION` 0.30), enforced
