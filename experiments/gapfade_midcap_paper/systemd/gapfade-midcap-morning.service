@@ -12,7 +12,7 @@ Type=oneshot
 Environment=TRADING_BOT_PAPER_ONLY=1
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=/root/strat-gapfade
-ExecStart=/usr/bin/env python3 -m experiments.gapfade_midcap_paper.runner --pass morning --execute
+ExecStart=/root/strat-gapfade/.venv/bin/python -m experiments.gapfade_midcap_paper.runner --pass morning --execute
 # KILL SWITCH: touch /root/strat-gapfade/experiments/gapfade_midcap_paper/KILL_GAPFADE_MIDCAP_PAPER
 # makes --execute exit 2 before any order. Remove the file to resume.
 Nice=10

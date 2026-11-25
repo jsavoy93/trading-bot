@@ -37,17 +37,21 @@ reviewed one cannot drift apart silently.
 
 ## The launch contract
 
+REBAL-40-50-10 (Josh, 2026-11-25) changed `--sleeve-pct` from `0.15` to
+`0.10`. Nothing else in this contract moves: the runner enforces the sleeve
+as a hard total cap (fail-closed) on its own.
+
 The final line is the contract this directory now pins with tests:
 
 ```bash
-exec "$PY" "$RUNNER" --execute --sleeve-pct 0.15 --rsi2-cap 4 \
+exec "$PY" "$RUNNER" --execute --sleeve-pct 0.10 --rsi2-cap 4 \
     --max-open 4 --per-position-cap 0.25 --symbols $SYMBOLS
 ```
 
 | Flag | Value | Meaning |
 |---|---|---|
 | `--execute` | — | places **PAPER** orders (default is dry-run) |
-| `--sleeve-pct` | `0.15` | RSI(2) sleeve as a fixed share of portfolio equity |
+| `--sleeve-pct` | `0.10` | RSI(2) sleeve as a fixed share of portfolio equity (REBAL-40-50-10: was 0.15) AND the hard total-exposure cap |
 | `--rsi2-cap` | `4` | max RSI(2) new buys per day |
 | `--max-open` | `4` | max open RSI(2) positions |
 | `--per-position-cap` | `0.25` | per-position cap as a share of the sleeve |

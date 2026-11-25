@@ -5,7 +5,7 @@ Method map (all read-only GETs against https://data.alpaca.markets):
 | Protocol call                  | Alpaca call                                        |
 |--------------------------------|----------------------------------------------------|
 | `prior_close(day)`             | POST-free: last DAILY bar (adjustment=split, feed=iex) strictly before `day` -> `close`, collected by `load_day` |
-| `expected_open(day)`           | GET /v1beta1/stocks/snapshots?feed=iex -> `latestTrade.p`, falling back to `minuteBar.c` then the prior close |
+| `expected_open(day)`           | GET /v2/stocks/snapshots?feed=iex (batched, 200 symbols/request) -> `latestTrade.p`, falling back to `minuteBar.c` then the prior close |
 | `true_ranges(symbol, through)` | the daily bars before `through` -> Wilder-style TR (high-low, vs prior close), ATR14 = mean of the last 14 |
 | `official_bar(symbol, day)`    | the daily bar dated `day` -> `{'open', 'close', 'high', 'low', 'volume'}` |
 | `eligible_clean(day)`          | current S&P 400 membership (membership.py, MDY holdings) minus names with earnings on t-1/t/t+1 (frozen rule) |

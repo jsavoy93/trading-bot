@@ -25,9 +25,12 @@ Per-run responsibilities (idempotent; safe to re-run same day):
   2. STOP-AFTER-FILL (S1): exactly ONE GTC stop for the full held qty is
      placed only AFTER a confirmed entry fill. No partial half-sell, no
      OCO brackets (removed by Josh decision S1, 2026-11-03).
-  3. NEW ENTRIES (S2): RSI(2) sizes against a FIXED 15% of equity
-     (configurable --sleeve-pct), max 4 open positions, each at most 25%
-     of the sleeve. Independent of C4 holdings. Skips symbols held in the
+  3. NEW ENTRIES (S2): RSI(2) sizes against a FIXED 10% of equity
+     (configurable --sleeve-pct; REBAL-40-50-10, was 15%), max 4 open
+     positions, each at most 25% of the sleeve, with a HARD total cap:
+     open + pending notional never exceed the sleeve (fail-closed — an
+     unreadable/unknown exposure means NO entry). Independent of C4
+     holdings (C4 has its own sleeve and cap). Skips symbols held in the
      account, symbols with any open/pending order (any label, including
      sl_short-*), and symbols C4 signaled on the last completed trading
      day (ref_date comparison — fix K, run order doesn't matter). Never
@@ -298,8 +301,19 @@ def finished_bars_only(df, now: datetime):
 
 
 def rsi2_open_notional(state: dict) -> float:
-    return sum(t.get("entry_notional", 0.0)
-               for t in state.get("open", {}).values())
+    """Sum of open RSI(2) entry notional. FAIL-CLOSED: a record with a
+    missing/non-numeric/negative entry_notional yields NaN, which makes
+    size_rsi2_position() skip every entry this run instead of guessing."""
+    total = 0.0
+    for t in state.get("open", {}).values():
+        try:
+            v = float(t.get("entry_notional"))
+        except (TypeError, ValueError):
+            return float("nan")
+        if v != v or v in (float("inf"), float("-inf")) or v < 0:
+            return float("nan")
+        total += v
+    return total
 
 
 def open_rsi2_count(state: dict) -> int:
@@ -1311,6 +1325,14 @@ def process_entries(state, api, bars, spy_bars, positions, open_orders,
     """now (fix J): the injected clock snapshot used for bar-finality
     checks and the C4 ref-date (last completed trading day)."""
     slice_dollars = rsi2_slice_dollars(portfolio_value, args.sleeve_pct)
+    # REBAL-40-50-10 HARD total cap: the sleeve IS the cap. A slice that is
+    # unknown or unusable (NaN/inf/zero/negative from a bad equity read)
+    # means NO entry at all this run (fail closed).
+    if not (slice_dollars == slice_dollars and slice_dollars > 0
+            and slice_dollars != float("inf")):
+        log_event({"type": "skip", "reason": "sleeve_unusable",
+                   "slice_dollars": str(slice_dollars)})
+        return
     # S2 (Josh, 2026-11-03): the sleeve is a FIXED share of equity.
     # The old subtract-C4 logic was REMOVED — RSI(2) sizing depends only
     # on its own sleeve and its own open positions.
@@ -1522,9 +1544,10 @@ def main(argv=None):
     p.add_argument("--execute", action="store_true",
                    help="actually submit PAPER orders (default: dry-run; "
                         "dry-run persists nothing to state.json)")
-    p.add_argument("--sleeve-pct", type=float, default=0.15,
+    p.add_argument("--sleeve-pct", type=float, default=0.10,
                    help="RSI(2) sleeve as a fixed share of portfolio equity "
-                   "(S2, default 0.15; independent of C4 holdings)")
+                   "(REBAL-40-50-10, default 0.10; also the HARD total "
+                   "exposure cap; independent of C4 holdings)")
     p.add_argument("--rsi2-cap", type=int, default=4,
                    help="max RSI(2) new buys per day (default 4)")
     p.add_argument("--max-open", type=int, default=4,

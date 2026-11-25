@@ -2,7 +2,8 @@
 
 Round 3 (PR #135) covers the Josh decisions of 2026-11-03:
   S1  one GTC stop for the FULL held qty after fill; no partial/OCO
-  S2  fixed 15% sleeve, 4 positions max, each <= 25% of the sleeve;
+  S2  fixed sleeve (REBAL-40-50-10: 10% of equity, was 15%), 4 positions
+      max, each <= 25% of the sleeve, hard total cap = the sleeve;
       no subtract-C4 logic
   B   stop raise = PATCH with a NEW deterministic client_order_id
       (...-stop-r<k>); the NEW order id and client id are stored
@@ -360,7 +361,7 @@ def frames():
 
 
 def make_args(symbols=("AMD",), **kw):
-    base = dict(symbols=list(symbols), sleeve_pct=0.15, rsi2_cap=4,
+    base = dict(symbols=list(symbols), sleeve_pct=0.10, rsi2_cap=4,
                 max_open=4, per_position_cap=0.25, c4_db=None)
     base.update(kw)
     return SimpleNamespace(**base)
@@ -429,8 +430,9 @@ def test_entries_sleeve_and_per_position_cap(frames):
     assert len(results["rsi2"]) == 1
     t = state["open"][results["rsi2"][0]["entry_id"]]
     px = t["ref_px"]
-    # S2: sleeve = 100k * 15% = 15k; per-position cap 25% of sleeve = 3.75k
-    assert t["qty"] * px <= 3_750 + px
+    # REBAL-40-50-10: sleeve = 100k * 10% = 10k; per-position cap
+    # 25% of sleeve = 2.5k
+    assert t["qty"] * px <= 2_500 + px
     assert t["qty"] * px > 0
     assert "partial_px" not in t  # S1: no partial target anymore
     sides = [b["side"] for b in broker.submitted]
@@ -442,11 +444,31 @@ def test_sleeve_pct_configurable(frames):
     state = {"open": {}}
     results = {"rsi2": [], "errors": []}
     runner.process_entries(state, broker, bars, bars["SPY"], [], [],
-                           [], "20261103", make_args(sleeve_pct=0.10),
+                           [], "20261103", make_args(sleeve_pct=0.20),
                            100_000.0, results, now=NOW)
     t = state["open"][results["rsi2"][0]["entry_id"]]
-    # sleeve 10k; cap 25% of sleeve = 2.5k
-    assert t["entry_notional"] <= 2_500 + t["ref_px"]
+    # sleeve 20k; cap 25% of sleeve = 5k
+    assert t["entry_notional"] <= 5_000 + t["ref_px"]
+    # and the shipped default is the REBAL-40-50-10 10% sleeve
+    import rules
+    assert rules.RSI2_SLEEVE_PCT == 0.10
+
+
+def test_sleeve_unusable_equity_skips_all_entries(frames, tmp_path, monkeypatch):
+    """REBAL-40-50-10 fail-closed: an unusable equity/sleeve read means NO
+    entry at all (never a guessed size)."""
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner, "EVENTS_PATH", tmp_path / "ev.jsonl")
+    broker, bars = setup_broker(frames, symbols=("AMD", "NVDA"))
+    for bad_pv in (float("nan"), float("inf"), 0.0):
+        state = {"open": {}}
+        results = {"rsi2": [], "errors": []}
+        runner.process_entries(state, broker, bars, bars["SPY"], [], [],
+                               [], "20261103", make_args(symbols=("AMD", "NVDA")),
+                               bad_pv, results, now=NOW)
+        assert results["rsi2"] == [], bad_pv
+        assert state["open"] == {}, bad_pv
+    assert broker.submitted == []
 
 
 def test_c4_open_positions_do_not_shrink_sleeve(_c4_db, frames):
@@ -468,8 +490,9 @@ def test_c4_open_positions_do_not_shrink_sleeve(_c4_db, frames):
                            "20261103", make_args(c4_db=str(_c4_db)),
                            100_000.0, results, now=NOW)
     t = state["open"][results["rsi2"][0]["entry_id"]]
-    # full 3.75k cap available — the 5k C4 position did not shrink it
-    assert t["entry_notional"] > 3_750 - t["ref_px"]
+    # full REBAL-40-50-10 slice available (25% of the 10k sleeve = 2.5k)
+    # — the 5k C4 position did not shrink it
+    assert t["entry_notional"] > 2_500 - t["ref_px"]
 
 
 def test_order_error_records_no_trade(frames):
@@ -1150,8 +1173,9 @@ def test_run_never_sends_oco_partial_or_class_orders(frames, tmp_path,
 
 
 def test_sleeve_caps_four_positions_at_25pct_each(frames):
-    # S2: max 4 open positions, each at most 25% of the 15% sleeve; the
-    # 5th candidate is refused and the total never exceeds the sleeve.
+    # S2 + REBAL-40-50-10: max 4 open positions, each at most 25% of the
+    # 10% sleeve; the 5th candidate is refused and the total never exceeds
+    # the sleeve. The 25%-of-sleeve slice is what makes 4 fill exactly.
     syms = ("AMD", "NVDA", "TSLA", "META", "INTC")
     broker, bars = setup_broker(frames, symbols=syms)
     state = {"open": {}}
@@ -1160,7 +1184,7 @@ def test_sleeve_caps_four_positions_at_25pct_each(frames):
                            "20261103", make_args(symbols=syms),
                            100_000.0, results, now=NOW)
     assert len(results["rsi2"]) == 4           # max 4 open positions
-    sleeve = 100_000.0 * 0.15
+    sleeve = 100_000.0 * 0.10
     total = 0.0
     for r in results["rsi2"]:
         t = state["open"][r["entry_id"]]

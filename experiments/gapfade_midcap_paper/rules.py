@@ -7,7 +7,10 @@ FROZEN RULE (do not tune here; see README.md):
   Entry: gap = expected_open / prior_close - 1 <= -4.0%; ranked by most
   negative gap; max 3 new entries/day, max 10 open positions, skip names
   already held by this runner. Sizing = fixed fraction of paper equity
-  (default 1%), skip if notional < 1 share or buying power insufficient.
+  (REBAL-40-50-10: 3%, was 1%), skip if notional < 1 share or buying
+  power insufficient. HARD TOTAL CAP (REBAL-40-50-10): total open +
+  planned GAPFADE exposure never exceeds 30% of equity; the check is
+  fail-closed (unknown exposure => no entry).
   Exits: profit = first later open strictly above the entry price (OPG
   sell); stop = close <= entry - 2*ATR14[t-1] (ATR14 as of the day BEFORE
   the entry day), sell at the next open (documented divergence from the
@@ -33,7 +36,9 @@ ET = ZoneInfo("America/New_York")
 GAP_THRESHOLD = -0.04          # signal only when gap <= -4.0%
 MAX_NEW_ENTRIES_PER_DAY = 3
 MAX_OPEN_POSITIONS = 10
-DEFAULT_SIZE_FRACTION = 0.01   # 1% of paper equity per entry
+DEFAULT_SIZE_FRACTION = 0.03   # REBAL-40-50-10: 3% of paper equity per entry
+                               # (was 1%); 10 open x 3% = the 30% total cap
+TOTAL_EXPOSURE_CAP_FRACTION = 0.30   # HARD cap: total GAPFADE exposure
 MAX_OPEN_POSITIONS_PER_SYMBOL = 1
 STOP_ATR_MULT = 2.0
 ATR_PERIOD = 14
@@ -240,6 +245,35 @@ def size_entry(equity: float, size_fraction: float, price: float,
     return qty
 
 
+def exposure_usable(open_exposure, equity, cap_fraction) -> bool:
+    """FAIL-CLOSED check for the REBAL-40-50-10 hard total cap. Unknown or
+    unusable inputs (None, non-numeric, NaN/infinite, negative exposure,
+    non-positive equity, out-of-range fraction) mean the exposure can NOT
+    be proven inside the 30% cap -> the caller must place no entry."""
+    try:
+        exp = float(open_exposure)
+        eq = float(equity)
+        frac = float(cap_fraction)
+    except (TypeError, ValueError):
+        return False
+    for v in (exp, eq, frac):
+        if v != v or v in (float("inf"), float("-inf")):
+            return False
+    return exp >= 0.0 and eq > 0.0 and 0.0 < frac <= 1.0
+
+
+def total_cap_remaining(open_exposure, equity,
+                        cap_fraction: float = TOTAL_EXPOSURE_CAP_FRACTION
+                        ) -> float | None:
+    """Dollars still available under the 30%-of-equity hard cap, or None
+    when the exposure is UNKNOWN (fail closed => no entry). Never
+    negative."""
+    if not exposure_usable(open_exposure, equity, cap_fraction):
+        return None
+    return max(0.0, float(equity) * float(cap_fraction)
+               - float(open_exposure))
+
+
 def rank_candidates(candidates: list[Candidate],
                     held: set[str] | frozenset[str],
                     skipped: dict[str, str],
@@ -250,17 +284,28 @@ def rank_candidates(candidates: list[Candidate],
                     buying_power: float,
                     size_fraction: float = DEFAULT_SIZE_FRACTION,
                     max_new_today: int = MAX_NEW_ENTRIES_PER_DAY,
-                    max_open: int = MAX_OPEN_POSITIONS) -> EntryDecision:
+                    max_open: int = MAX_OPEN_POSITIONS,
+                    total_open_notional: float = 0.0,
+                    total_cap_fraction: float = TOTAL_EXPOSURE_CAP_FRACTION,
+                    ) -> EntryDecision:
     """Rank gap signals and apply caps + sizing.
 
     `skipped` (symbol -> reason) carries already-known skips (no reliable
     prior close, earnings); this function adds its own reasons ('no
     signal', 'already held', ...). Buying power is spent greedily in rank
     order. Returns plans plus what remains of each cap.
+
+    REBAL-40-50-10 HARD TOTAL CAP: `total_open_notional` is this runner's
+    CURRENT open exposure (including any open entry orders). New plans are
+    only added while `total_open_notional + planned notional` stays within
+    `total_cap_fraction` x equity (30%). The check is FAIL-CLOSED: an
+    unknown/unusable exposure or equity value skips every entry.
     """
     held_up = {s.upper() for s in held}
     slots = max(0, int(max_new_today) - int(entries_today))
     room = max(0, int(max_open) - int(open_positions))
+    budget_left = total_cap_remaining(total_open_notional, equity,
+                                      total_cap_fraction)
     plans: list[EntryPlan] = []
     skipped = dict(skipped)
 
@@ -296,12 +341,21 @@ def rank_candidates(candidates: list[Candidate],
         if room <= 0:
             skipped[sym] = "max_open"
             continue
+        if budget_left is None:          # exposure/equity unknown
+            skipped[sym] = "total_cap"
+            continue
         qty = size_entry(equity, size_fraction, cand.expected_open,
                          buying_power)
         if qty < 1:
             skipped[sym] = "size_zero"
             continue
         notional = qty * cand.expected_open
+        if budget_left <= 0.0 or notional > budget_left + 1e-9:
+            # an entry that would break the 30% hard cap is skipped
+            # (never shrunk below the fixed 3% size)
+            skipped[sym] = "total_cap"
+            continue
+        budget_left -= notional
         cid = build_client_order_id(
             sym, "buy", entry_day, seq=entries_today + len(plans) + 1)
         plans.append(EntryPlan(symbol=sym, entry_day=parse_date(entry_day),

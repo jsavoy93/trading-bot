@@ -16,6 +16,11 @@ strat023-c4-shadow timer (labels sl_short-..., state in live_paper.db).
 
 Frozen research parameters are re-used EXACTLY; nothing here relaxes a
 BUY/entry threshold.
+
+REBAL-40-50-10 sizing (Josh, 2026-11-25): the RSI(2) sleeve is 10% of
+account equity (was 15%), with a HARD total cap — total open RSI(2)
+exposure never exceeds the sleeve. Sizing/per-position caps only; the
+entry/exit SIGNAL rules above are untouched.
 """
 from __future__ import annotations
 
@@ -277,7 +282,8 @@ def rsi2_skip_blocked(positions, open_orders, symbol: str,
 # --- RSI(2) selection caps ---------------------------------------------------
 RSI2_DAILY_CAP = 4
 # RSI2_MAX_OPEN_POSITIONS / RSI2_PER_POSITION_CAP_PCT live in the
-# budget-sizing section (S2: 4 positions, each <= 25% of the sleeve).
+# budget-sizing section (S2: 4 positions, each <= 25% of the sleeve;
+# REBAL-40-50-10: sleeve = 10% of equity, hard total cap = the sleeve).
 
 
 def apply_rsi2_daily_cap(candidates, cap: int = RSI2_DAILY_CAP) -> list:
@@ -294,11 +300,15 @@ def apply_rsi2_daily_cap(candidates, cap: int = RSI2_DAILY_CAP) -> list:
 
 
 # --- budget sizing -----------------------------------------------------------
-# S2 (Josh, 2026-11-03): RSI(2) gets a FIXED 15% of equity (configurable),
+# S2 (Josh, 2026-11-03): RSI(2) gets a FIXED share of equity (configurable),
 # independent of C4 holdings. Max 4 open positions, each at most 25% of
 # the RSI(2) sleeve. Sizing is against the sleeve minus the strategy's
 # OWN open positions only — no C4 subtraction.
-RSI2_SLEEVE_PCT = 0.15
+# REBAL-40-50-10 (Josh, 2026-11-25): 15% -> 10% of equity, with the same
+# hard total cap (open + pending never exceed the sleeve). C4 keeps its OWN
+# sleeve/parameterization in experiments/strat_023/live_paper_runner.py —
+# nothing here is shared globally with C4.
+RSI2_SLEEVE_PCT = 0.10
 RSI2_MAX_OPEN_POSITIONS = 4
 RSI2_PER_POSITION_CAP_PCT = 0.25  # 25% of the RSI(2) sleeve
 
@@ -310,6 +320,20 @@ def rsi2_slice_dollars(portfolio_value: float,
     if not (0.0 <= sleeve_pct <= 1.0):
         raise ValueError("sleeve_pct must be within [0, 1]")
     return portfolio_value * sleeve_pct
+
+
+def _sizing_exposure_usable(open_notional, pending_notional) -> bool:
+    """FAIL-CLOSED check for the RSI(2) hard total cap: exposure that is
+    unknown (None / non-numeric / NaN / infinite) or negative cannot be
+    proven inside the sleeve, so the caller must size 0."""
+    try:
+        vals = [float(open_notional), float(pending_notional)]
+    except (TypeError, ValueError):
+        return False
+    for v in vals:
+        if v != v or v in (float("inf"), float("-inf")) or v < 0:
+            return False
+    return True
 
 
 def size_rsi2_position(price: float, slice_dollars: float,
@@ -324,11 +348,18 @@ def size_rsi2_position(price: float, slice_dollars: float,
     RSI(2) sleeve, so four positions exactly fill the sleeve. Remaining
     sleeve (sleeve - open - pending notional, RSI(2)'s OWN positions
     only) is the other cap. Returns 0 at max_open_positions.
+
+    REBAL-40-50-10 HARD CAP: open + pending never exceed the sleeve, so
+    total open RSI(2) exposure is <= `RSI2_SLEEVE_PCT` (10%) of equity.
+    FAIL-CLOSED: unknown or unusable exposure (None/NaN/inf/negative)
+    returns 0 — skip the entry rather than guess a size.
     """
     if price <= 0:
         raise ValueError("price must be > 0")
     if not (0.0 < per_position_cap_pct <= 1.0):
         raise ValueError("per_position_cap_pct must be within (0, 1]")
+    if not _sizing_exposure_usable(open_notional, pending_notional):
+        return 0
     if open_positions >= max_open_positions:
         return 0
     cap_dollars = slice_dollars * per_position_cap_pct

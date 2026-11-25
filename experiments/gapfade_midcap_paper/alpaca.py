@@ -40,6 +40,7 @@ DATA_API_URL = "https://data.alpaca.markets"
 COID_PREFIX = "gf_mid-"
 ORDER_TYPE = "market"
 ORDER_TIF = "opg"
+SNAPSHOT_BATCH_SIZE = 200      # symbols per /v2/stocks/snapshots request
 
 
 class AlpacaError(RuntimeError):
@@ -173,13 +174,27 @@ class AlpacaPaperClient:
 
     # -- market data --
     def snapshot_prices(self, symbols: list[str]) -> dict:
-        """GET /v1beta1/stocks/snapshots -> raw per-symbol dict."""
-        if not symbols:
-            return {}
-        params = {"symbols": ",".join(symbols), "feed": "iex"}
-        out = self.get(f"{self.data_url}/v1beta1/stocks/snapshots",
-                       params=params)
-        return out.get("snapshots", out) if isinstance(out, dict) else {}
+        """GET /v2/stocks/snapshots -> {SYMBOL: {latestTrade, minuteBar, ...}}.
+
+        The former beta snapshot endpoint is dead (404). The v2
+        response has the snapshot objects at the TOP level (no "snapshots"
+        wrapper); the per-symbol fields the runner reads (latestTrade.p,
+        minuteBar.c) are unchanged. Requests are batched:
+        SNAPSHOT_BATCH_SIZE symbols per call.
+        """
+        syms = [str(s).upper() for s in symbols if s]
+        out: dict = {}
+        for i in range(0, len(syms), SNAPSHOT_BATCH_SIZE):
+            batch = syms[i:i + SNAPSHOT_BATCH_SIZE]
+            params = {"symbols": ",".join(batch), "feed": "iex"}
+            page = self.get(f"{self.data_url}/v2/stocks/snapshots",
+                            params=params)
+            if not isinstance(page, dict):
+                continue
+            for sym, snap in page.items():
+                if isinstance(snap, dict):
+                    out[str(sym).upper()] = snap
+        return out
 
     def daily_bars(self, symbols: list[str], start: str, end: str,
                    ) -> dict:

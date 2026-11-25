@@ -1,0 +1,12 @@
+[Unit]
+Description=STRAT-023 daily C4 shadow run (after US close; DISABLED until enabled manually)
+
+[Timer]
+# 21:15 UTC Mon-Fri: after 16:00 ET close in both DST (20:00 UTC) and
+# winter (21:00 UTC), so the final daily bar is available.
+OnCalendar=Mon..Fri 21:15 UTC
+Persistent=true
+Unit=strat023-c4-shadow.service
+
+[Install]
+WantedBy=timers.target

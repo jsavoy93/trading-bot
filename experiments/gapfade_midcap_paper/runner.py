@@ -120,6 +120,56 @@ class PlannedOrder:
 
 
 # --- morning pass --------------------------------------------------------
+def open_notional(state: StateStore,
+                  pos_map: dict | None = None) -> float | None:
+    """Current GAPFADE exposure in dollars for the REBAL-40-50-10 hard
+    total cap: sum(qty x entry_price) over open positions plus the
+    notional of entry orders already submitted and not yet filled.
+
+    FAIL-CLOSED: returns None when any value is missing, non-numeric or
+    unusable (NaN/infinite/negative) — the caller then places NO entry
+    (it cannot prove exposure stays inside the 30% cap).
+    """
+    if pos_map is None:
+        pos_map = {}
+        for sym, rec in (state.positions() or {}).items():
+            try:
+                pos_map[sym] = rules.Position(
+                    symbol=rec["symbol"],
+                    entry_day=rules.parse_date(rec["entry_day"]),
+                    entry_price=float(rec["entry_price"]),
+                    qty=int(rec["qty"]),
+                    stop_price=float(rec["stop_price"]),
+                    client_order_id=rec["client_order_id"])
+            except (KeyError, TypeError, ValueError, rules.RuleError):
+                return None
+    total = 0.0
+    try:
+        for pos in pos_map.values():
+            total += float(pos.qty) * float(pos.entry_price)
+        for intent in state.data.get("intents", []) or []:
+            if not isinstance(intent, dict):
+                continue
+            # real BUY intents whose order was submitted but has not filled
+            # yet still consume the cap (kind is 'real'|'shadow', so filter
+            # on the SIDE, not on kind)
+            if str(intent.get("kind", "")).lower() != "real":
+                continue
+            if str(intent.get("side", "")).lower() != "buy":
+                continue
+            if intent.get("fill_price") or intent.get("fill_qty"):
+                continue
+            if not intent.get("submitted"):
+                continue
+            price = intent.get("expected_open")
+            total += float(intent.get("qty") or 0) * float(price or 0)
+    except (TypeError, ValueError):
+        return None
+    if total != total or total in (float("inf"), float("-inf")) or total < 0:
+        return None
+    return total
+
+
 def plan_morning(state: StateStore, inp: MorningInputs,
                  now=None, rng: random.Random | None = None,
                  size_fraction: float = rules.DEFAULT_SIZE_FRACTION,
@@ -127,12 +177,23 @@ def plan_morning(state: StateStore, inp: MorningInputs,
     """Return {'sells': [...], 'buys': [...], 'shadows': [...],
     'candidates': [...], 'skipped': {...}} — pure w.r.t. orders."""
     day = rules.parse_date(inp.day)
-    pos_map = {s: rules.Position(
-        symbol=rec["symbol"], entry_day=rules.parse_date(rec["entry_day"]),
-        entry_price=float(rec["entry_price"]), qty=int(rec["qty"]),
-        stop_price=float(rec["stop_price"]),
-        client_order_id=rec["client_order_id"])
-        for s, rec in state.positions().items()}
+    pos_map = {}
+    for s, rec in state.positions().items():
+        try:
+            pos_map[s] = rules.Position(
+                symbol=rec["symbol"],
+                entry_day=rules.parse_date(rec["entry_day"]),
+                entry_price=float(rec["entry_price"]), qty=int(rec["qty"]),
+                stop_price=float(rec["stop_price"]),
+                client_order_id=rec["client_order_id"])
+        except (KeyError, TypeError, ValueError, rules.RuleError):
+            # REBAL-40-50-10: an unreadable position means the GAPFADE
+            # exposure is UNKNOWN -> open_notional() fails closed and no
+            # entry is placed (the position is left alone for inspection).
+            print(f"morning: unreadable position {s}; no GAPFADE entries "
+                  "this pass (fail-closed total cap)", file=sys.stderr)
+            pos_map = None
+            break
 
     sells: list[PlannedOrder] = []
     skip_reason_by_sym: dict[str, str] = {}
@@ -143,7 +204,7 @@ def plan_morning(state: StateStore, inp: MorningInputs,
                 for item in state.data.get("pending_exits", [])
                 if isinstance(item, dict)}
     open_by_sym = inp.expected_open
-    for sym, pos in pos_map.items():
+    for sym, pos in (pos_map or {}).items():
         dec = rules.decide_exit(pos, day, inp.trading_days,
                                 day_open=open_by_sym.get(sym))
         reason = dec.reason
@@ -174,7 +235,8 @@ def plan_morning(state: StateStore, inp: MorningInputs,
 
     exiting = {o.symbol for o in sells}
     # a symbol sold today may be re-entered only on a LATER day
-    held = set(pos_map) | {p.symbol for p in pos_map.values()} | exiting
+    held = (set(pos_map) | {p.symbol for p in pos_map.values()}
+            if pos_map is not None else set(state.positions())) | exiting
     deciding = [c for c in candidates if c.symbol.upper() not in exiting]
     skipped = {k: v for k, v in skip_reason_by_sym.items()
                if k not in {o.symbol for o in sells}}
@@ -182,7 +244,8 @@ def plan_morning(state: StateStore, inp: MorningInputs,
         deciding, held=held, skipped=skipped,
         entry_day=day, entries_today=state.entries_on(day.isoformat()),
         open_positions=len(state.positions()), equity=inp.equity,
-        buying_power=inp.buying_power, size_fraction=size_fraction)
+        buying_power=inp.buying_power, size_fraction=size_fraction,
+        total_open_notional=open_notional(state, pos_map))
 
     buys = [PlannedOrder("buy", p.symbol, p.qty, "signal", p.client_order_id,
                          p.expected_open) for p in decision.plans]

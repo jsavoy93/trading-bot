@@ -147,14 +147,33 @@ def test_held_symbol_is_skipped():
     assert dec.skipped["A"] == "already_held"
 
 
-def test_sizing_is_one_percent_of_equity_by_default():
+def test_sizing_is_three_percent_of_equity_by_default():
+    # REBAL-40-50-10 (Josh 2026-11-25): 3% per entry (was 1%).
+    assert rules.DEFAULT_SIZE_FRACTION == 0.03
     dec = rules.rank_candidates([cand("A", 100, 50.0)], held=set(),
                                 skipped={}, entry_day=date(2026, 11, 4),
                                 entries_today=0, open_positions=0,
                                 equity=100_000.0, buying_power=100_000.0)
-    # 1% of 100k = 1000 -> 20 shares at 50.00
-    assert dec.plans[0].qty == 20
-    assert dec.plans[0].notional == pytest.approx(1000.0)
+    # 3% of 100k = 3000 -> 60 shares at 50.00
+    assert dec.plans[0].qty == 60
+    assert dec.plans[0].notional == pytest.approx(3_000.0)
+
+
+def test_daily_cap_wins_over_total_cap_reason():
+    # slots are consumed by entries that HIT the total cap (and by
+    # size_zero) exactly as before REBAL-40-50-10: 3 slots -> D is
+    # daily_cap. The 30% cap is a separate, additional hard limit.
+    cands = [cand(s, 100, 90.0) for s in "ABCDE"]
+    dec = rules.rank_candidates(cands, held=set(), skipped={},
+                                entry_day=date(2026, 11, 4), entries_today=0,
+                                open_positions=0, equity=100_000.0,
+                                buying_power=100_000.0,
+                                total_open_notional=29_000.0)
+    # 29k + 3k would break the 30% cap -> no plan; capped symbols get
+    # total_cap (the cap reason wins over the daily cap for reporting)
+    assert dec.plans == ()
+    assert all(v == "total_cap" for v in dec.skipped.values())
+    assert dec.remaining_slots_today == 3      # skipped != counted as entry
 
 
 def test_sizing_requires_at_least_one_whole_share():
@@ -162,9 +181,9 @@ def test_sizing_requires_at_least_one_whole_share():
                                 skipped={}, entry_day=date(2026, 11, 4),
                                 entries_today=0, open_positions=0,
                                 equity=100_000.0, buying_power=1_000_000.0)
-    # 1000 notional / 900 = 1 share -> still allowed
-    assert dec.plans[0].qty == 1
-    # 1% of 20k = 200 notional at 1200 -> no whole share
+    # REBAL-40-50-10: 3% of 100k = 3000 / 900 = 3 shares -> allowed
+    assert dec.plans[0].qty == 3
+    # 3% of 20k = 600 notional at 1200 -> no whole share
     dec2 = rules.rank_candidates([cand("A", 1250.0, 1200.0)], held=set(),
                                  skipped={}, entry_day=date(2026, 11, 4),
                                  entries_today=0, open_positions=0,
@@ -186,9 +205,11 @@ def test_buying_power_is_spent_greedily_in_rank_order():
     cands = [cand("A", 100, 90.0), cand("B", 100, 95.0)]
     dec = rules.rank_candidates(cands, held=set(), skipped={},
                                 entry_day=date(2026, 11, 4), entries_today=0,
-                                open_positions=0, equity=100_000.0,
-                                buying_power=1005.0)
-    assert [p.symbol for p in dec.plans] == ["A"]   # 11 x 90 = 990
+                                open_positions=0, equity=1_000.0,
+                                buying_power=1005.0, size_fraction=1.0,
+                                total_cap_fraction=1.0)
+    # buying power (not the cap) is the binding constraint: 11 x 90 = 990
+    assert [p.symbol for p in dec.plans] == ["A"]
     assert dec.skipped["B"] == "size_zero"
 
 
@@ -383,3 +404,79 @@ def test_after_close_window_and_dst_awareness():
                                       tzinfo=timezone.utc)) == "morning"
     assert rules.choose_pass(datetime(2026, 11, 4, 13, 25,
                                       tzinfo=timezone.utc)) is None
+
+
+# ── REBAL-40-50-10 hard total cap (30% of equity, fail-closed) ─────────────
+def _cap_cands(n=12, pc=100.0, eo=50.0):
+    return [cand(f"S{i:02d}", pc, eo) for i in range(n)]
+
+
+def test_total_cap_default_is_thirty_pct():
+    assert rules.TOTAL_EXPOSURE_CAP_FRACTION == 0.30
+    assert rules.MAX_OPEN_POSITIONS == 10
+    assert rules.MAX_NEW_ENTRIES_PER_DAY == 3
+
+
+def test_total_exposure_never_exceeds_thirty_pct():
+    # 3% of 100k = 3k per entry; 10 open x 3k = 30k = the hard cap.
+    dec = rules.rank_candidates(
+        _cap_cands(12), held=set(), skipped={}, entry_day=date(2026, 11, 4),
+        entries_today=0, open_positions=0, equity=100_000.0,
+        buying_power=100_000.0, max_new_today=12, max_open=12)
+    total = sum(p.notional for p in dec.plans)
+    assert total <= 30_000.0 + 1e-9, total
+    assert total == pytest.approx(30_000.0)
+    assert len(dec.plans) == 10
+    assert all(q * 50.0 == pytest.approx(3_000.0) for q in
+               [p.qty for p in dec.plans])
+    # everything past the cap is skipped with the total_cap reason
+    assert dec.skipped["S10"] == "total_cap"
+    assert dec.skipped["S11"] == "total_cap"
+
+
+def test_total_cap_counts_existing_open_notional():
+    # 24k already open -> only 6k (two entries) of the 30k cap is left.
+    dec = rules.rank_candidates(
+        _cap_cands(6), held=set(), skipped={}, entry_day=date(2026, 11, 4),
+        entries_today=0, open_positions=2, equity=100_000.0,
+        buying_power=100_000.0, max_new_today=6, max_open=10,
+        total_open_notional=24_000.0)
+    assert len(dec.plans) == 2
+    assert sum(p.notional for p in dec.plans) <= 6_000.0 + 1e-9
+    assert dec.skipped["S02"] == "total_cap"
+
+
+def test_total_cap_reached_places_no_entry():
+    dec = rules.rank_candidates(
+        _cap_cands(3), held=set(), skipped={}, entry_day=date(2026, 11, 4),
+        entries_today=0, open_positions=0, equity=100_000.0,
+        buying_power=100_000.0, total_open_notional=30_000.0)
+    assert dec.plans == ()
+    assert dec.skipped["S00"] == "total_cap"
+
+
+@pytest.mark.parametrize("bad", [None, float("nan"), float("inf"),
+                                 float("-inf"), -1.0, "oops"])
+def test_total_cap_fail_closed_on_unknown_exposure(bad):
+    dec = rules.rank_candidates(
+        _cap_cands(3), held=set(), skipped={}, entry_day=date(2026, 11, 4),
+        entries_today=0, open_positions=0, equity=100_000.0,
+        buying_power=100_000.0, total_open_notional=bad)
+    assert dec.plans == ()
+    assert all(v == "total_cap" for v in dec.skipped.values())
+    assert rules.total_cap_remaining(bad, 100_000.0) is None
+    assert rules.exposure_usable(bad, 100_000.0, 0.30) is False
+
+
+@pytest.mark.parametrize("bad_equity", [None, float("nan"), 0.0, -1.0, "x"])
+def test_total_cap_fail_closed_on_unusable_equity(bad_equity):
+    dec = rules.rank_candidates(
+        _cap_cands(3), held=set(), skipped={}, entry_day=date(2026, 11, 4),
+        entries_today=0, open_positions=0, equity=bad_equity,
+        buying_power=100_000.0)
+    assert dec.plans == ()
+
+
+def test_total_cap_remaining_never_negative():
+    assert rules.total_cap_remaining(40_000.0, 100_000.0) == 0.0
+    assert rules.total_cap_remaining(5_000.0, 100_000.0) == 25_000.0

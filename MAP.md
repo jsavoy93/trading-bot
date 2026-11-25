@@ -10,16 +10,33 @@ short; link files, not paragraphs.
   `get_allocation_budget_view` reporting), sell scan
   (`analyze_current_positions_for_selling`), rotation
   (`get_position_scores`).
-- `src/core/allocation_policy.py` — REBAL-60-30-10 pure-math allocation
-  policy: budget/cash-floor math, swing-runner attribution (order-label
+- `src/core/allocation_policy.py` — REBAL-40-50-10 pure-math allocation
+  policy (Josh, 2026-11-25; supersedes the 2026-11-09 REBAL-60-30-10
+  split): budget/cash-floor math, swing-runner attribution (order-label
   prefixes + runner SQLite DBs, read-only), ledger-proven ownership
   (FILLED rows only), position classification (OWN / SWING /
   UNATTRIBUTED; unattributed = untouchable but budget-counted).
+  `DEFAULT_SWING_ORDER_LABEL_PREFIXES` = `sl_short-` (C4), `rsi2-`
+  (RSI(2)), `gf_mid-` (GAPFADE midcap). `normalize_swing_order_label_prefixes`
+  widens a persisted value that exactly equals a superseded shipped default
+  (`LEGACY_SWING_ORDER_LABEL_PREFIXES`) to the current defaults; custom
+  lists and malformed values are untouched / fail closed.
+  REBAL-40-50-10 also ships `normalize_persisted_long_term_budget_pct`:
+  a one-time, explicit, idempotent rewrite of a persisted
+  `long_term_budget_pct` that exactly equals the old shipped default
+  (`LEGACY_LONG_TERM_BUDGET_PCT` = 60.0) to the schema default (40.0)
+  through `settings_service.save_typed`; custom/malformed values are
+  untouched and a second run is a no-op. Called once from the bot's
+  `_load_effective_strategy_settings`.
 - `src/core/settings_service.py` — `STRATEGY_SETTINGS_SCHEMA` is the
   authoritative default source for every tunable (incl.
-  `long_term_budget_pct`, `cash_floor_pct`,
-  `swing_order_label_prefixes`, `swing_runner_db_paths`);
+  `long_term_budget_pct` default **40.0**, `cash_floor_pct` default
+  **10.0** — the remaining **50%** is the external short-term swing
+  sleeve, `swing_order_label_prefixes`, `swing_runner_db_paths`);
   DB overrides applied via `load_effective_strategy_settings`.
+  NOTE: `smart_bot.py` imports `core.*` (src on sys.path), i.e. a SECOND
+  module instance of these files; patch both when a test needs the bot's
+  objects.
 - `src/core/market_calendar.py` — DB-GROWTH-FIX: DST-correct
   `America/New_York` market calendar (session 09:30–16:00 ET, 13:00 ET
   early closes, NYSE holiday lists for 2024–2027). Pure helper:
@@ -36,6 +53,24 @@ short; link files, not paragraphs.
   decision_history/cycle_funnel tables.
 - `src/analysis/portfolio_optimizer.py` — logs rebalance
   RECOMMENDATIONS only; never auto-executes.
+
+### REBAL-40-50-10 runner sizing (reference, no live configs changed here)
+- Sleeve shares are FIXED fractions of account equity and each runner has a
+  FAIL-CLOSED hard total open-exposure cap at its own sleeve:
+  - main bot 40% (`budget_room` / `max_buy_cost`);
+  - C4 `sl_short-` 10% sleeve (`SLEEVE_EQUITY_FRAC`,
+    `experiments/strat_023/live_paper_runner.py`), enforced by
+    `position_qty` + the sleeve-total check/entry-loop queries;
+  - RSI(2) `rsi2-` 10% sleeve (`RSI2_SLEEVE_PCT`,
+    `--sleeve-pct` in `experiments/swing_paper/deploy/run_daily.sh`
+    (live copy: /root/deploy/rsi2-swing)), enforced
+    by `size_rsi2_position` over `rsi2_open_notional`;
+  - GAPFADE `gf_mid-` 30% (`DEFAULT_SIZE_FRACTION` 0.03 per entry x
+    `MAX_OPEN_POSITIONS` 10, `TOTAL_EXPOSURE_CAP_FRACTION` 0.30), enforced
+    by `rules.total_cap_remaining` over
+    `runner.open_notional` (positions + submitted unfilled buys).
+- Worst case: 40 main + 10 + 10 + 30 = 90% deployed, 10% cash floor
+  reserved. An unreadable exposure makes that runner place NO entry.
 
 ## Conventions that bite
 - Tests build bots via `SmartTradingBot.__new__` and stub every method
@@ -153,11 +188,33 @@ short; link files, not paragraphs.
   timers `[Install] WantedBy=timers.target`, services none;
   `WorkingDirectory=/root/strat-gapfade`, the post-merge checkout; install
   steps in the README are NOT EXECUTED). Tests:
-  `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop}.py`.
+  `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop,broker,membership}.py`
+  plus `tests/test_gapfade_systemd_units.py` (unit templates: ExecStart uses
+  `/root/strat-gapfade/.venv/bin/python`, services stay un-enableable).
+  S&P 400 membership (`membership.py`): PRIMARY Wikipedia
+  `List_of_S%26P_400_companies`, FALLBACK `slickcharts.com/sp400`, both
+  parsed from the Symbol column with stdlib `html.parser`; 380-420 unique
+  symbols required or the source is skipped; cached `sp400_members.txt`,
+  cache only used within 10 days and with a LOUD stale warning, else
+  `MembershipError` (fail closed). The old SSGA MDY CSV is dead (404) and
+  iShares IJH is 403 from this box — do not reintroduce them.
+  Tests: `pytest tests/test_gapfade_*.py -q` with `/usr/bin/python3`'s
+  pytest (the runner venv has no pytest).
+  GAPFADE-SNAP-FIX: market data uses Alpaca's v2 data API only —
+  `GET /v2/stocks/bars` (daily) and `GET /v2/stocks/snapshots?feed=iex`
+  (`alpaca.snapshot_prices`, batched `SNAPSHOT_BATCH_SIZE`=200 symbols
+  per request; flat `{SYM: {latestTrade, minuteBar, prevDailyBar, ...}}`
+  body). The beta `/v1beta1/stocks/snapshots` endpoint 404s and must not
+  come back; `tests/test_gapfade_snapshots_v2.py` guards it (fixture
+  `tests/fixtures/alpaca_v2_snapshots_iex.json`).
 
 ## External (read-only for this bot)
 - C4 runner: /root/strat-swing (DB
   experiments/strat_023/live_paper.db, labels `sl_short-*`).
+- GAPFADE midcap paper runner: /root/strat-gapfade (labels `gf_mid-*`;
+  checkout with its own `.venv`; state under
+  /root/trading-data/gapfade-midcap-paper). Attribution is order-label
+  only — no runner DB is configured for it.
 - RSI(2) runner: /root/deploy/rsi2-swing (labels `rsi2-*`; its
   logs/state.json contains unfilled dry-run shadow entries — do NOT
   trust for attribution).

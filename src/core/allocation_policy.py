@@ -1,10 +1,11 @@
-"""REBAL-60-30-10 — main-bot long-term allocation policy.
+"""REBAL-40-50-10 — main-bot long-term allocation policy.
 
-Approved split (Josh, 2026-11-09): 60% of account equity is the main
-SmartBot's long-term budget, 30% belongs to the external short-term
-swing runners (C4 at /root/strat-swing, RSI(2) at /root/deploy/rsi2-swing;
-both share the SAME Alpaca paper account), and at least 10% of equity
-must stay in cash.
+Approved split (Josh, 2026-11-25; supersedes the 2026-11-09 60/30/10 split):
+40% of account equity is the main SmartBot's long-term budget, 50% belongs
+to the external short-term swing runners (C4 at /root/strat-swing, RSI(2)
+at /root/deploy/rsi2-swing, and the GAPFADE midcap paper trial at
+/root/strat-gapfade; all share the SAME Alpaca paper account), and at least
+10% of equity must stay in cash.
 
 Contracts (must NOT be weakened):
 
@@ -14,7 +15,8 @@ Contracts (must NOT be weakened):
 - **Foreign positions are identified by evidence, never guessed.**
   Evidence sources: (1) broker order labels — any order whose
   client_order_id starts with a configured swing prefix
-  (default "sl_short-" for C4, "rsi2-" for RSI(2)); (2) optional runner
+  (default "sl_short-" for C4, "rsi2-" for RSI(2), "gf_mid-" for the
+  GAPFADE midcap paper runner); (2) optional runner
   SQLite DBs exposing a positions table with status='open' (C4's
   live_paper.db). RSI(2)'s logs/state.json is deliberately NOT a
   source: its dry-run entries record unfilled shadow positions with
@@ -41,13 +43,35 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
 #: Fallback label prefixes if the configured value cannot be parsed.
-DEFAULT_SWING_ORDER_LABEL_PREFIXES: Tuple[str, ...] = ("sl_short-", "rsi2-")
+DEFAULT_SWING_ORDER_LABEL_PREFIXES: Tuple[str, ...] = (
+    "sl_short-",  # C4 runner (/root/strat-swing)
+    "rsi2-",      # RSI(2) runner (/root/deploy/rsi2-swing)
+    "gf_mid-",    # GAPFADE midcap paper runner (/root/strat-gapfade)
+)
+
+#: Prefixes that were once shipped as the default and are now superseded by
+#: DEFAULT_SWING_ORDER_LABEL_PREFIXES. A persisted setting that exactly equals
+#: the legacy JSON list is treated as "never customized": it is widened to the
+#: current defaults so existing deployments pick up newly added runners
+#: (GAPFADE midcap gf_mid-). Any other value — including malformed JSON — is
+#: left untouched; malformed values still fail closed via parse_json_list.
+LEGACY_SWING_ORDER_LABEL_PREFIXES: Tuple[Tuple[str, ...], ...] = (
+    ("sl_short-", "rsi2-"),
+)
+
+#: REBAL-40-50-10 (Josh, 2026-11-25): shipped default of the main bot's
+#: long-term allocation budget before the 60/30/10 -> 40/50/10 rebalance.
+#: A persisted value that EXACTLY equals this "never customized" value is a
+#: one-time candidate for the normalization below; anything else is respected.
+LEGACY_LONG_TERM_BUDGET_PCT: float = 60.0
+LONG_TERM_BUDGET_PCT_KEY: str = "long_term_budget_pct"
 
 #: Ledger row status that counts as a confirmed fill.
 _FILLED_STATUS = "FILLED"
@@ -84,6 +108,117 @@ def parse_json_list(raw: Any, fallback: Sequence[str]) -> Tuple[str, ...]:
     return cleaned or tuple(fallback)
 
 
+def normalize_swing_order_label_prefixes(
+    raw: Any, defaults: Sequence[str] = DEFAULT_SWING_ORDER_LABEL_PREFIXES
+) -> Tuple[str, ...]:
+    """Effective swing label prefixes from a possibly-persisted setting.
+
+    Parses ``raw`` fail-closed (same rules as ``parse_json_list``) and then
+    upgrades a value that exactly matches a superseded shipped default to the
+    current ``defaults``. This keeps existing deployments on the authoritative
+    runner list when a new runner prefix is added, while an explicitly
+    customized list is never widened.
+    """
+    prefixes = parse_json_list(raw, defaults)
+    legacy_sets = {tuple(item) for item in LEGACY_SWING_ORDER_LABEL_PREFIXES}
+    if prefixes in legacy_sets and tuple(prefixes) != tuple(defaults):
+        logger.info(
+            "allocation_policy: upgrading legacy swing label prefixes %s -> %s",
+            prefixes, tuple(defaults),
+        )
+        return tuple(defaults)
+    return prefixes
+
+
+# ── Long-term budget migration (REBAL-40-50-10) ─────────────────────────────
+
+def is_legacy_long_term_budget_pct(raw: Any) -> bool:
+    """True only for a persisted value that EXACTLY equals the old default.
+
+    ``60`` and ``"60.0"`` are the legacy shipped default (never customized).
+    Custom values (e.g. 50.0), out-of-range values and malformed values are
+    NOT legacy: they are left exactly as they are (fail closed — the caller
+    keeps whatever the normal settings load produced).
+    """
+    if raw is None or isinstance(raw, bool):
+        return False
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return value == float(LEGACY_LONG_TERM_BUDGET_PCT)
+
+
+def normalize_long_term_budget_pct_rows(
+    rows: Iterable[Any], new_default: Any
+) -> Tuple[List[Any], Optional[float]]:
+    """Pure decision helper: which settings rows to rewrite (no side effects).
+
+    ``rows`` are ``(key, value)`` or ``(key, value, ...)`` sequences from the
+    settings table limited to ``LONG_TERM_BUDGET_PCT_KEY``. Returns
+    ``(rows_to_rewrite, first_legacy_value)``; only rows whose value is the
+    legacy default are returned, so a second run over already-normalized
+    rows rewrites nothing (idempotent).
+    """
+    to_rewrite: List[Any] = []
+    first: Optional[float] = None
+    for row in rows:
+        if not row or str(row[0]) != LONG_TERM_BUDGET_PCT_KEY:
+            continue
+        value = row[1] if len(row) > 1 else None
+        if is_legacy_long_term_budget_pct(value):
+            to_rewrite.append(row)
+            if first is None:
+                first = float(value)
+    return to_rewrite, first
+
+
+def normalize_persisted_long_term_budget_pct(
+    settings_service_module: Any,
+    new_default: Any,
+    db_path: Any = None,
+) -> bool:
+    """One-time, explicit, idempotent rewrite of the legacy 60.0 -> ``new_default``.
+
+    Runs ONLY when the persisted value exactly equals the legacy shipped
+    default (:data:`LEGACY_LONG_TERM_BUDGET_PCT`). The rewrite goes through
+    the app's normal runtime DB-write path (``settings_service.save_typed``),
+    so the new value is schema-validated and serialized like any other
+    setting write. Custom values and malformed values are never touched.
+
+    Returns True when a row was rewritten this call, False when there was
+    nothing to do (no row, custom value, or a second run — no-op). Never
+    raises: any DB/validation error logs a warning and leaves the DB alone.
+    """
+    try:
+        conn = settings_service_module._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT key, value FROM settings WHERE key = ?",
+                (LONG_TERM_BUDGET_PCT_KEY,),
+            ).fetchall()
+        finally:
+            conn.close()
+        to_rewrite, legacy_value = normalize_long_term_budget_pct_rows(
+            [tuple(row) for row in rows], new_default
+        )
+        if not to_rewrite:
+            return False
+        logger.info(
+            "allocation_policy: REBAL-40-50-10 normalizing persisted %s "
+            "from legacy default %s to %s",
+            LONG_TERM_BUDGET_PCT_KEY, legacy_value, new_default,
+        )
+        settings_service_module.save_typed(LONG_TERM_BUDGET_PCT_KEY, new_default)
+        return True
+    except Exception as exc:  # fail closed: never break a trading loop
+        logger.warning(
+            "allocation_policy: %s normalization skipped (%s)",
+            LONG_TERM_BUDGET_PCT_KEY, exc.__class__.__name__,
+        )
+        return False
+
+
 # ── Swing-runner attribution ─────────────────────────────────────────────────
 
 def _order_field(order: Any, name: str) -> Any:
@@ -106,7 +241,7 @@ def swing_symbols_from_orders(
 
     Covers entries AND their resting exits (stops carry the same
     prefix plus a suffix, e.g. sl_short-AMD-s-20261102,
-    rsi2-AMD-20261103-1-stop-r2).
+    rsi2-AMD-20261103-1-stop-r2, gf_mid-AAA-sell-20261103-1).
     """
     symbols: set = set()
     for order in orders or []:
@@ -276,3 +411,50 @@ def buy_respects_cash_floor(
 ) -> bool:
     """True if cash - cost still satisfies the cash floor (exact fit allowed)."""
     return (float(cash) - float(cost)) >= cash_floor_amount(equity, floor_pct) - eps
+
+
+# ── REBAL-40-50-10 per-runner sleeve caps ───────────────────────────────────
+# The 50% short-term sleeve is split C4 10% / RSI(2) 10% / GAPFADE 30%. Each
+# runner gets its OWN hard total-exposure cap and a fail-closed check. The
+# main bot itself never sizes these orders; the constants live here only so
+# the numbers are declared once in the same module as the 40/50/10 split.
+SWING_SLEEVE_TOTAL_PCT: float = 0.50
+C4_SLEEVE_PCT: float = 0.10          # 3 positions, <= 10% in total
+RSI2_SLEEVE_PCT: float = 0.10        # 4 positions, <= 10% in total
+GAPFADE_TOTAL_CAP_PCT: float = 0.30  # 10 open x 3% per entry = 30%
+CASH_FLOOR_PCT: float = 0.10
+MAIN_BUDGET_PCT: float = 0.40
+
+
+def swing_total_cap_exceeded(open_exposure: Any, equity: Any,
+                             sleeve_pct: Any) -> bool:
+    """FAIL-CLOSED check: True (=> refuse the entry) when `open_exposure`
+    already meets or exceeds `sleeve_pct * equity`.
+
+    Unknown/unusable inputs (None, non-numeric, negative equity, errors while
+    converting) count as EXCEEDED — the caller must skip the entry rather
+    than risk over-deploying. A non-negative exposure that is still below the
+    cap returns False.
+    """
+    try:
+        equity_f = float(equity)
+        exposure_f = float(open_exposure)
+        pct_f = float(sleeve_pct)
+    except (TypeError, ValueError):
+        return True
+    if not all(math.isfinite(v) for v in (equity_f, exposure_f, pct_f)):
+        return True             # NaN / inf exposure or equity => refuse
+    if equity_f <= 0.0 or exposure_f < 0.0:
+        return True
+    if not (0.0 < pct_f <= 1.0):
+        return True
+    return exposure_f >= pct_f * equity_f
+
+
+def swing_entry_budget(open_exposure: Any, equity: Any,
+                       sleeve_pct: Any) -> float:
+    """Dollar budget still available inside a runner's sleeve, or 0.0 when
+    the hard cap is reached or exposure is unknown (fail closed)."""
+    if swing_total_cap_exceeded(open_exposure, equity, sleeve_pct):
+        return 0.0
+    return float(equity) * float(sleeve_pct) - float(open_exposure)

@@ -200,61 +200,51 @@ def test_paper_broker_kill_switch_blocks_orders(paper_env):
     assert cl.submitted == []
 
 
-# --- membership (MDY holdings CSV) ---------------------------------------
-MDY_CSV = """Fund Name,SPDR S&P MidCap 400 ETF Trust
-Ticker,Name,Weight,Sector
-AAA,A Corp,1.1,Industrials
-BBB,B Corp,0.9,Financials
-CCC,C Corp,0.5,Health Care
--,US Dollar,0.01,Cash
-US Dollar,Cash line,0.0,Cash
-DDD,D Corp,0.2,Utilities
-"""
+# --- membership (Wikipedia primary / Slickcharts fallback) ---------------
+# The source-specific fixtures live in tests/test_gapfade_membership.py.
+
+MEMBERS_400 = [f"A{i:03d}" for i in range(400)]
 
 
-def test_membership_parses_mdy_payload():
-    got = membership.parse_holdings(MDY_CSV)
-    assert got == ["AAA", "BBB", "CCC", "DDD"]
-    assert "US" not in got
-
-
-def test_membership_rejects_garbage():
+def test_membership_parses_and_validates():
+    got = membership.validate(MEMBERS_400, "wikipedia")
+    assert len(got) == 400
     with pytest.raises(membership.MembershipError):
-        membership.parse_holdings("no ticker here\n")
+        membership.validate(MEMBERS_400[:100], "wikipedia")
 
 
 def test_membership_caches_daily_and_falls_back(tmp_path):
     calls = {"n": 0}
 
-    def fetch():
+    def fetch(name, url):
         calls["n"] += 1
-        return MDY_CSV
+        cells = "".join(f"<tr><td>{s}</td><td>Co</td></tr>" for s in MEMBERS_400)
+        return f"<table><tr><th>Symbol</th><th>Security</th></tr>{cells}</table>"
 
     d = date(2026, 11, 24)
-    assert membership.load_members(tmp_path, fetch=fetch, today=d) == [
-        "AAA", "BBB", "CCC", "DDD"]
+    assert membership.load_members(tmp_path, fetch=fetch, today=d) == (
+        MEMBERS_400)
     assert calls["n"] == 1
     # same day: served from the cache
     membership.load_members(tmp_path, fetch=fetch, today=d)
     assert calls["n"] == 1
 
-    def boom():
+    def boom(name, url):
         raise OSError("offline")
 
-    # download failure one day later -> the fresh cached copy is used
+    # every source failing a day later -> the fresh cached copy is used
     assert membership.load_members(tmp_path, fetch=boom,
-                                   today=date(2026, 11, 25)) == [
-        "AAA", "BBB", "CCC", "DDD"]
+                                   today=date(2026, 11, 25)) == MEMBERS_400
 
 
 def test_membership_refuses_stale_copy(tmp_path):
-    cache = tmp_path / "mdy_holdings.csv"
-    cache.write_text(MDY_CSV)
+    cache = tmp_path / "sp400_members.txt"
+    cache.write_text("\n".join(MEMBERS_400))
     import os
     age = 11 * 86400
     os.utime(cache, (cache.stat().st_atime - age, cache.stat().st_mtime - age))
 
-    def boom():
+    def boom(name, url):
         raise OSError("offline")
 
     with pytest.raises(membership.MembershipError):
@@ -309,8 +299,8 @@ def test_marketdata_prior_close_open_and_atr():
     routes = {
         ("GET", "/v2/stocks/bars"): lambda p, b: Resp(200, {
             "bars": _bars_payload("AAA", rows)}),
-        ("GET", "/v1beta1/stocks/snapshots"): lambda p, b: Resp(200, {
-            "snapshots": {"AAA": {"latestTrade": {"p": 10.2}}}}),
+        ("GET", "/v2/stocks/snapshots"): lambda p, b: Resp(200, {
+            "AAA": {"latestTrade": {"p": 10.2}}}),
     }
     data = marketdata.AlpacaMarketData(client(routes), cache_dir="/tmp/x",
                                        members=["AAA"], today=date(2026, 11, 25))
@@ -335,8 +325,7 @@ def test_eligible_clean_requires_calendar_and_bars():
     routes = {
         ("GET", "/v2/stocks/bars"): lambda p, b: Resp(200, {
             "bars": _bars_payload("AAA", rows)}),
-        ("GET", "/v1beta1/stocks/snapshots"): lambda p, b: Resp(
-            200, {"snapshots": {}}),
+        ("GET", "/v2/stocks/snapshots"): lambda p, b: Resp(200, {}),
     }
     data = marketdata.AlpacaMarketData(client(routes), cache_dir="/tmp/x",
                                        members=["AAA", "BBB"],

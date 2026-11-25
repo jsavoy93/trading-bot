@@ -207,12 +207,46 @@ class TestSizing:
         assert rsi2_slice_dollars(200_000.0, 0.30) == 60_000.0
 
     def test_s2_sleeve_defaults(self):
-        # S2 (Josh 2026-11-03): fixed 15% sleeve, 4 positions max, each
-        # at most 25% of the sleeve.
-        assert RSI2_SLEEVE_PCT == 0.15
+        # S2 (Josh 2026-11-03): fixed sleeve, 4 positions max, each at most
+        # 25% of the sleeve. REBAL-40-50-10 (Josh 2026-11-25): 15% -> 10%.
+        assert RSI2_SLEEVE_PCT == 0.10
         assert RSI2_MAX_OPEN_POSITIONS == 4
         assert RSI2_PER_POSITION_CAP_PCT == 0.25
-        assert rsi2_slice_dollars(100_000.0) == 15_000.0
+        assert rsi2_slice_dollars(100_000.0) == 10_000.0
+
+
+class TestRsi2HardTotalCap:
+    """REBAL-40-50-10: open + pending never exceed the 10% sleeve, and
+    unknown/unusable exposure is fail-closed (size 0, no entry)."""
+
+    def test_total_never_exceeds_sleeve(self):
+        sleeve = rsi2_slice_dollars(100_000.0)          # 10k
+        assert sleeve == 10_000.0
+        total = 0.0
+        for _ in range(4):
+            q = size_rsi2_position(50.0, sleeve, open_notional=total,
+                                   pending_notional=0.0,
+                                   open_positions=int(total // 2_500))
+            total += q * 50.0
+        assert total <= sleeve + 1e-9
+        # a further entry is refused once the sleeve is full
+        assert size_rsi2_position(50.0, sleeve, open_notional=total,
+                                  open_positions=4) == 0
+
+    def test_pending_counts_against_cap(self):
+        sleeve = rsi2_slice_dollars(100_000.0)
+        assert size_rsi2_position(50.0, sleeve, open_notional=0.0,
+                                  pending_notional=sleeve) == 0
+        assert size_rsi2_position(50.0, sleeve, open_notional=sleeve,
+                                  pending_notional=0.0) == 0
+
+    @pytest.mark.parametrize("bad", [None, float("nan"), float("inf"),
+                                     float("-inf"), -1.0, "oops"])
+    def test_fail_closed_on_unknown_exposure(self, bad):
+        sleeve = rsi2_slice_dollars(100_000.0)
+        assert size_rsi2_position(50.0, sleeve, open_notional=bad) == 0
+        assert size_rsi2_position(50.0, sleeve,
+                                  pending_notional=bad) == 0
 
     def test_four_positions_exactly_fill_the_sleeve(self):
         # 4 positions x 25% of the sleeve == the whole sleeve

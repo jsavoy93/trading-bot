@@ -8,7 +8,8 @@ Status: **wired, NOT enabled** — frozen decision logic, guards, dry-run CLI,
 state, shadow logging, the real-vs-shadow PnL report (`report_pnl.py`), the
 early-stop **flag** (`early_stop.py`; config/file only, trips nothing) and
 **disabled** systemd user-unit templates. The live path fetches its own data
-(MDY membership, yfinance earnings, Alpaca PAPER market data). No unit is
+(S&P 400 membership from Wikipedia, yfinance earnings, Alpaca PAPER
+market data). No unit is
 installed, enabled, started or restarted; nothing here is deployed. Paper
 only.
 
@@ -21,8 +22,12 @@ only.
 - **Entry** (pre-market 09:20–09:28 ET): `gap = expected_open / prior_close
   − 1`; signal only if `gap <= −4.0%`. Rank by most negative gap. Max 3 new
   entries/day, max 10 open positions, skip names already held by this runner.
-  Sizing = fixed fraction of paper equity (default 1%); skip if the notional
-  buys no whole share or buying power is insufficient.
+  Sizing = fixed fraction of paper equity (REBAL-40-50-10: 3%, was 1%);
+  skip if the notional buys no whole share or buying power is insufficient.
+  **Hard total cap**: total open + planned GAPFADE exposure never exceeds
+  **30% of equity** (10 open x 3% = 30%). The check is fail-closed: if the
+  current exposure cannot be computed (unreadable position, non-numeric
+  value), no entry is placed.
 - **Profit exit**: at the first later open strictly above the entry price,
   OPG sell that morning.
 - **Stop**: close-based; level = `entry − 2 × ATR14[t−1]` (ATR14 as of the
@@ -63,7 +68,7 @@ only.
 
 A **dry run never needs** `TRADING_BOT_PAPER_ONLY` (it places zero orders).
 With no `--inputs` it reads live data from the sources below — S&P 400
-membership (MDY/SSGA holdings), Yahoo Finance earnings via `yfinance` and
+membership (Wikipedia/Slickcharts), Yahoo Finance earnings via `yfinance` and
 Alpaca PAPER market data — using the PAPER credential pair, and prints the
 plan. Only `--execute` (order placement) requires the env, the locked paper
 URL and an absent kill switch.
@@ -71,7 +76,7 @@ URL and an absent kill switch.
 ## Run
 
 ```bash
-# live dry run (default): fetches MDY membership, yfinance earnings and
+# live dry run (default): fetches S&P 400 membership, yfinance earnings and
 # Alpaca PAPER data; places zero orders; no env var needed
 python experiments/gapfade_midcap_paper/runner.py --pass morning
 
@@ -95,8 +100,8 @@ is never opened by this experiment.
 
 | Fact | Source | Notes |
 | --- | --- | --- |
-| Universe (S&P 400) | live: SSGA **MDY** holdings CSV (`membership.py`, cached, >10 days stale ⇒ refuse); offline: inputs JSON `universe` + `eligible_clean` | membership is FETCHED each run when live (cached), never hardcoded |
-| Prior close, expected open (~09:20 ET) | live: Alpaca PAPER snapshot (`marketdata.py`); offline: inputs JSON `prior_close`, `expected_open`, `all_expected_opens` | a pre-market print is only a reference, never a fill |
+| Universe (S&P 400) | live: `membership.py` — PRIMARY Wikipedia "List of S&P 400 companies", FALLBACK Slickcharts `/sp400` (both parsed from the Symbol column, stdlib only); must yield 380-420 unique symbols or the source is skipped; cached `sp400_members.txt`, >10 days stale ⇒ refuse; offline: inputs JSON `universe` + `eligible_clean` | membership is FETCHED each run when live (cached), never hardcoded. The old SSGA MDY CSV is dead (HTTP 404) and iShares IJH is 403 from this box |
+| Prior close, expected open (~09:20 ET) | live: Alpaca PAPER snapshot — `GET /v2/stocks/snapshots?feed=iex`, batched 200 symbols/request (`alpaca.snapshot_prices`, mapped in `marketdata.py`; `latestTrade.p`, then `minuteBar.c`); offline: inputs JSON `prior_close`, `expected_open`, `all_expected_opens` | a pre-market print is only a reference, never a fill |
 | Official bars, ATR14 | Alpaca PAPER daily bars (`official_bar`, `true_ranges`) | ATR14 as of t−1; exits judged on official bars only |
 | Earnings (t−1, t, t+1) | live: Yahoo Finance via `yfinance` (`earnings.py`, cached, refreshed ~daily); offline: inputs JSON `earnings` | no coverage ⇒ skip (fail closed) |
 | Volatility quintiles | live: Alpaca PAPER closes; offline: inputs JSON `vols` (60-day close-to-close) | vol-matched shadow: same quintile, nearest rank when empty |
@@ -118,7 +123,7 @@ python experiments/gapfade_midcap_paper/report_pnl.py --cost-bps 10 --json
 nothing is written). It needs no `TRADING_BOT_PAPER_ONLY`:
 
 ```bash
-# live data: MDY membership + yfinance earnings + Alpaca PAPER, zero orders
+# live data: S&P 400 membership + yfinance earnings + Alpaca PAPER, zero orders
 python experiments/gapfade_midcap_paper/runner.py --pass morning
 python experiments/gapfade_midcap_paper/runner.py --pass after_close
 # offline fixture instead of the network
@@ -141,10 +146,11 @@ no-network dry runs; it is never hardcoded and `--execute` refuses it.
    from a daily-bar runner and is what C4 documents for its SMA5 exits;
    it also makes real and both shadows identical, so the edge comparison
    stays apples to apples.
-2. **Sizing is 1% of paper equity per entry**, not the research's 10% slots.
-   Mid-cap liquidity and up to 10 concurrent positions make 1% the
-   conservative choice; returns are reported per trade, so the edge is
-   scale-free.
+2. **Sizing is 3% of paper equity per entry** (REBAL-40-50-10, was 1%),
+   not the research's 10% slots: 10 open positions x 3% = the 30% hard
+   total-exposure cap of the short-term sleeve (C4 10% + RSI(2) 10% +
+   GAPFADE 30% = 50%; main 40% + cash floor 10% = 100%). Returns are
+   reported per trade, so the edge stays scale-free.
 3. **Costs are 27 bps per side**, not the research's 10 bps. 27 bps is the
    conservative mid-cap assumption (spread + impact + slippage); the report
    script can re-price the same records at 10 bps (`--cost-bps 10`).
@@ -179,7 +185,9 @@ Schedules: `Mon..Fri 09:20 America/New_York` (before the 09:28 ET deadline)
 and `Mon..Fri 16:10 America/New_York`; timezone is explicit in the timer.
 
 `WorkingDirectory=/root/strat-gapfade` is the stable checkout, created
-**after this merges** (nothing in this repo creates it):
+**after this merges** (nothing in this repo creates it). Both services run
+from that checkout's own venv: `ExecStart=/root/strat-gapfade/.venv/bin/python
+-m experiments.gapfade_midcap_paper.runner ...`.
 
 ```bash
 # NOT EXECUTED — once, after merge, on the host that runs the timer:
@@ -192,14 +200,19 @@ explicit decision made after a green paper dry run.
 
 ### 1. First dry run (no orders)
 
+The checkout has its own venv at `/root/strat-gapfade/.venv` (the units'
+`ExecStart` points at `/root/strat-gapfade/.venv/bin/python`):
+
 ```bash
-# NOT EXECUTED — offline dry run from the checkout, places ZERO orders:
 cd /root/strat-gapfade
-python3 experiments/gapfade_midcap_paper/runner.py \
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+# NOT EXECUTED — offline dry run from the checkout, places ZERO orders:
+.venv/bin/python experiments/gapfade_midcap_paper/runner.py \
     --inputs inputs.json --pass morning --seed 1
 # and the live-data dry run (reads Alpaca PAPER data, still zero orders,
 # no TRADING_BOT_PAPER_ONLY needed):
-python3 experiments/gapfade_midcap_paper/runner.py --pass morning
+.venv/bin/python experiments/gapfade_midcap_paper/runner.py --pass morning
 ```
 
 ### 2. Install the user units
@@ -258,7 +271,8 @@ temp dirs and never touch a live DB.
 
 ## Status checklist
 
-- [x] S&P 400 membership fetched from MDY holdings each live run (cached)
+- [x] S&P 400 membership fetched from Wikipedia (primary) / Slickcharts
+  (fallback) each live run; 380-420 range gate, cached, fail-closed
 - [x] Earnings calendar files, "no coverage ⇒ skip" enforced in `rules`
 - [x] Expected open (~09:20 ET), prior close, official bars, ATR14
 - [x] PAPER broker behind `broker.Broker`, shadow logging
@@ -277,3 +291,17 @@ temp dirs and never touch a live DB.
 - `broker.MarketData`: `expected_open(day)`, `prior_close(day)`,
   `official_bar(symbol, day)`, `true_ranges(symbol, through_day, n)`,
   `eligible_clean(day)`, `vols(day, symbols)`.
+
+## S&P 400 membership sources (`membership.py`)
+
+Resolution order in `load_members`: same-day cache → PRIMARY Wikipedia
+`List_of_S%26P_400_companies` → FALLBACK `slickcharts.com/sp400` → cached
+copy younger than `MAX_AGE_DAYS` (10) with a LOUD `WARNING: STALE ...`
+line → `MembershipError` (fail closed, no universe, no entries). A source's
+list is accepted only when it has 380-420 unique symbols; an out-of-range
+list counts as a failed source and never passes. A success is written to
+`<cache dir>/sp400_members.txt` plus a `sp400_members.downloaded` date
+stamp. `fetch(source_name, url) -> str` is injectable; the tests stub it and
+never touch the network (`tests/test_gapfade_membership.py`, fixtures shaped
+like the real Wikipedia and Slickcharts pages). Stdlib only (`urllib`,
+`html.parser`), no new dependencies.
