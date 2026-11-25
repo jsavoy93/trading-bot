@@ -154,22 +154,82 @@ process or unit management, and it reads only this trial's records, so it
 cannot affect any other bot. **A human reads the flag and decides**; the
 units below stay disabled either way.
 
-## Systemd units (disabled by design — enable commands NOT EXECUTED)
+## Systemd USER units (templates only — enable commands NOT EXECUTED)
 
-`systemd/gapfade-midcap-{morning,after-close}.{service,timer}` are committed
-but **not installed, not enabled, not started**. The commands below are
-documentation only — none of them has been run, and running them is a
-separate, explicit operator decision. There is intentionally no `enable.sh`.
+`systemd/gapfade-midcap-{morning,after-close}.{service,timer}` are **user-unit
+templates** committed to the repo but **not installed, not enabled, not
+started**. The `[Install] WantedBy=timers.target` section is on the two
+timers only (services have none); `TRADING_BOT_PAPER_ONLY=1` is set on both
+services and the paper URL stays hard-locked in `guards.py`. There is no
+`enable.sh` and there will not be one.
+
+Schedules: `Mon..Fri 09:20 America/New_York` (before the 09:28 ET deadline)
+and `Mon..Fri 16:10 America/New_York`; timezone is explicit in the timer.
+
+`WorkingDirectory=/root/strat-gapfade` is the stable checkout, created
+**after this merges** (nothing in this repo creates it):
 
 ```bash
-# NOT EXECUTED — operator decision, after a green paper dry run:
-cp experiments/gapfade_midcap_paper/systemd/gapfade-midcap-*.{service,timer} \
-    /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now gapfade-midcap-morning.timer
-systemctl enable --now gapfade-midcap-after-close.timer
+# NOT EXECUTED — once, after merge, on the host that runs the timer:
+git clone --branch main https://github.com/jsavoy93/trading-bot.git /root/strat-gapfade
+```
+
+Everything below is documentation for a human operator. **None of these
+commands has been run by any agent**, and running them is a separate,
+explicit decision made after a green paper dry run.
+
+### 1. First dry run (no orders)
+
+```bash
+# NOT EXECUTED — offline dry run from the checkout, places ZERO orders:
+cd /root/strat-gapfade
+python3 experiments/gapfade_midcap_paper/runner.py \
+    --inputs inputs.json --pass morning --seed 1
+# and the live-data dry run (reads Alpaca PAPER data, still zero orders,
+# no TRADING_BOT_PAPER_ONLY needed):
+python3 experiments/gapfade_midcap_paper/runner.py --pass morning
+```
+
+### 2. Install the user units
+
+```bash
+# NOT EXECUTED — user units live in ~/.config/systemd/user/:
+mkdir -p ~/.config/systemd/user
+cp /root/strat-gapfade/experiments/gapfade_midcap_paper/systemd/gapfade-midcap-*.service \
+   /root/strat-gapfade/experiments/gapfade_midcap_paper/systemd/gapfade-midcap-*.timer \
+   ~/.config/systemd/user/
+systemctl --user daemon-reload
+```
+
+### 3. Enable and start the timers
+
+```bash
+# NOT EXECUTED — enable + start both timers:
+systemctl --user enable --now gapfade-midcap-morning.timer
+systemctl --user enable --now gapfade-midcap-after-close.timer
 # check (also NOT EXECUTED):
-systemctl list-timers 'gapfade-midcap-*'
+systemctl --user list-timers 'gapfade-midcap-*'
+```
+
+### 4. Kill switch
+
+```bash
+# NOT EXECUTED — create the file to stop all future orders:
+touch /root/strat-gapfade/experiments/gapfade_midcap_paper/KILL_GAPFADE_MIDCAP_PAPER
+```
+
+The kill-switch file (`guards.py`; override `GAPFADE_MIDCAP_KILL_FILE`)
+makes every `--execute` run exit **2 before any order** is placed; dry runs
+are unaffected. Delete the file to resume. The timers keep firing, but each
+run refuses at the guard.
+
+### 5. Disable and stop the timers
+
+```bash
+# NOT EXECUTED — stop future triggers and remove the enable symlinks:
+systemctl --user disable --now gapfade-midcap-morning.timer
+systemctl --user disable --now gapfade-midcap-after-close.timer
+systemctl --user daemon-reload
 ```
 
 ## Tests

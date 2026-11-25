@@ -477,3 +477,20 @@ def test_nothing_in_repo_runs_systemctl():
         if path.suffix not in (".py", ".sh", ".service", ".timer"):
             continue
         assert not pat.search(path.read_text()), path
+
+
+def test_readme_enable_commands_are_user_units_and_not_executed():
+    """README documents user-unit commands only, all marked NOT EXECUTED."""
+    text = (PROJECT_ROOT / "experiments" / "gapfade_midcap_paper" /
+            "README.md").read_text()
+    import re
+    calls = re.findall(r"systemctl\s+[^\n`]*", text)
+    assert calls, "README must show systemctl commands"
+    for cmd in calls:
+        assert cmd.split()[1] == "--user", cmd
+    for must in ("enable --now gapfade-midcap-morning.timer",
+                 "enable --now gapfade-midcap-after-close.timer",
+                 "list-timers", "daemon-reload",
+                 "KILL_GAPFADE_MIDCAP_PAPER"):
+        assert must in text, must
+    assert "NOT EXECUTED" in text
