@@ -254,3 +254,48 @@ def test_cli_execute_guard_failure_exits_2(tmp_path, monkeypatch, capsys):
     rc = runner.main(["--execute", "--inputs", str(_write_inputs(tmp_path)),
                       "--pass", "morning", "--state-dir", str(tmp_path)])
     assert rc == 2
+
+
+# --- item 3: live dry run vs TRADING_BOT_PAPER_ONLY ----------------------
+def test_live_dry_run_without_paper_env_needs_no_execute_env(
+        tmp_path, monkeypatch):
+    """A no---inputs (live-data) DRY RUN works without TRADING_BOT_PAPER_ONLY:
+    it loads the market-data PAPER client (for_orders=False) and places zero
+    orders; the live data path is reached, so no guard blocked it."""
+    from experiments.gapfade_midcap_paper import guards
+    monkeypatch.delenv("TRADING_BOT_PAPER_ONLY", raising=False)
+    seen = {}
+
+    class _FakeClient:
+        base = guards.PAPER_API_URL
+
+    def fake_client(args=None, for_orders=True):
+        seen["for_orders"] = for_orders
+        return _FakeClient()
+
+    def fake_build(args, state, client, now):
+        raise SystemExit(0)                # reached the live data path
+
+    monkeypatch.setattr(runner.broker_mod, "make_client", fake_client)
+    monkeypatch.setattr(runner.broker_mod, "make_broker",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("dry run must not build a broker")))
+    monkeypatch.setattr(runner, "_build_real_morning", fake_build)
+    with pytest.raises(SystemExit) as exc:
+        runner.main(["--pass", "morning", "--state-dir", str(tmp_path)])
+    assert exc.value.code == 0
+    assert seen.get("for_orders") is False     # market-data client only
+
+
+def test_order_placement_still_requires_paper_env(tmp_path, monkeypatch):
+    """make_broker/make_client(for_orders=True) refuse without the env, and
+    make_client(for_orders=False) yields a client hard-locked to paper."""
+    from experiments.gapfade_midcap_paper import broker, guards
+    monkeypatch.delenv("TRADING_BOT_PAPER_ONLY", raising=False)
+    with pytest.raises(guards.GuardError):
+        broker.make_client(None, for_orders=True)
+    class _Ns:
+        state_dir = None
+    with pytest.raises(guards.GuardError):
+        broker.make_broker(_Ns())
+    assert guards.PAPER_API_URL == "https://paper-api.alpaca.markets"

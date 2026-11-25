@@ -119,9 +119,19 @@ class PaperBroker:
 # the not-wired stubs (they raise NotWired before any guard ever runs).
 
 
-def make_client(args: Any = None):
-    """PAPER client, so the GUARD always runs first on order paths."""
-    guards.check_paper_only()
+def make_client(args: Any = None, for_orders: bool = True):
+    """PAPER-only client.
+
+    `for_orders=True` (order paths, the default) runs the FULL guard first:
+    `check_paper_only()` (TRADING_BOT_PAPER_ONLY=1, the hard-locked paper URL,
+    the kill switch). `for_orders=False` is the market-data-only client used
+    by a live dry run: it still loads PAPER credentials and the class itself
+    refuses any trading URL other than guards.PAPER_API_URL, but it does not
+    require TRADING_BOT_PAPER_ONLY — it can never submit (the dry run never
+    builds a broker; make_broker() always uses for_orders=True).
+    """
+    if for_orders:
+        guards.check_paper_only()
     key, secret = alpaca.load_paper_credentials()
     return alpaca.AlpacaPaperClient(key, secret)
 

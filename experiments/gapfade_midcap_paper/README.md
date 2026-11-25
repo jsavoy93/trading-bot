@@ -59,17 +59,25 @@ restarted; nothing here is deployed. Paper only.
 3. kill-switch file absent (`KILL_GAPFADE_MIDCAP_PAPER` next to `guards.py`,
    override `GAPFADE_MIDCAP_KILL_FILE`).
 
-Part 1 has no broker wired, so `--execute` stops at the broker boundary with
-exit code 3. Dry run needs no env and always places zero orders.
+A **dry run never needs** `TRADING_BOT_PAPER_ONLY` (it places zero orders).
+With no `--inputs` it reads live data from the sources below — S&P 400
+membership (MDY/SSGA holdings), Yahoo Finance earnings via `yfinance` and
+Alpaca PAPER market data — using the PAPER credential pair, and prints the
+plan. Only `--execute` (order placement) requires the env, the locked paper
+URL and an absent kill switch.
 
 ## Run
 
 ```bash
-# dry run (default) — needs an inputs JSON until part 2 supplies data
+# live dry run (default): fetches MDY membership, yfinance earnings and
+# Alpaca PAPER data; places zero orders; no env var needed
+python experiments/gapfade_midcap_paper/runner.py --pass morning
+
+# offline dry run from a JSON fixture (no network)
 python experiments/gapfade_midcap_paper/runner.py \
     --inputs inputs.json --pass morning --seed 1
 
-# guarded execute (part 2 only; needs the broker)
+# guarded execute (places OPG orders on the PAPER account)
 TRADING_BOT_PAPER_ONLY=1 python experiments/gapfade_midcap_paper/runner.py --execute
 ```
 
@@ -85,11 +93,11 @@ is never opened by this experiment.
 
 | Fact | Source | Notes |
 | --- | --- | --- |
-| Universe (S&P 400) | `broker.MarketData.eligible_clean(day)` / the inputs JSON `universe` + `eligible_clean` | membership injected, never hardcoded |
-| Prior close, expected open (~09:20 ET) | inputs JSON `prior_close`, `expected_open`, `all_expected_opens` (part 2: Alpaca PAPER snapshot) | a pre-market print is only a reference, never a fill |
+| Universe (S&P 400) | live: SSGA **MDY** holdings CSV (`membership.py`, cached, >10 days stale ⇒ refuse); offline: inputs JSON `universe` + `eligible_clean` | membership is FETCHED each run when live (cached), never hardcoded |
+| Prior close, expected open (~09:20 ET) | live: Alpaca PAPER snapshot (`marketdata.py`); offline: inputs JSON `prior_close`, `expected_open`, `all_expected_opens` | a pre-market print is only a reference, never a fill |
 | Official bars, ATR14 | Alpaca PAPER daily bars (`official_bar`, `true_ranges`) | ATR14 as of t−1; exits judged on official bars only |
-| Earnings (t−1, t, t+1) | inputs JSON `earnings` (`rules.EarningsCalendar`) | no coverage ⇒ skip |
-| Volatility quintiles | inputs JSON `vols` (60-day close-to-close) | vol-matched shadow: same quintile, nearest rank when empty |
+| Earnings (t−1, t, t+1) | live: Yahoo Finance via `yfinance` (`earnings.py`, cached, refreshed ~daily); offline: inputs JSON `earnings` | no coverage ⇒ skip (fail closed) |
+| Volatility quintiles | live: Alpaca PAPER closes; offline: inputs JSON `vols` (60-day close-to-close) | vol-matched shadow: same quintile, nearest rank when empty |
 | Trades, shadows, fills | this trial's `state.json` (`/root/trading-data/gapfade-midcap-paper/`, override `GAPFADE_MIDCAP_STATE_DIR` or `--state-dir`) | `closed[]`, `shadows[]`, `intents[]`, `early_stops[]` |
 
 `report_pnl.py` reads **only** that `state.json` — `closed` (real) and
@@ -105,20 +113,22 @@ python experiments/gapfade_midcap_paper/report_pnl.py --cost-bps 10 --json
 ## Dry run and refresh
 
 `--dry-run` is the default and places **zero** orders (state is still read,
-nothing is written):
+nothing is written). It needs no `TRADING_BOT_PAPER_ONLY`:
 
 ```bash
+# live data: MDY membership + yfinance earnings + Alpaca PAPER, zero orders
+python experiments/gapfade_midcap_paper/runner.py --pass morning
+python experiments/gapfade_midcap_paper/runner.py --pass after_close
+# offline fixture instead of the network
 python experiments/gapfade_midcap_paper/runner.py --inputs inputs.json \
     --pass morning --seed 1
-python experiments/gapfade_midcap_paper/runner.py --inputs inputs.json \
-    --pass after_close --seed 1
 ```
 
-Refresh the inputs JSON each pass: `day`, `trading_days`, S&P 400 membership
-(`universe` + `eligible_clean`), `prior_close`, `expected_open`,
-`all_expected_opens`, `vols`, `equity`, `buying_power` (after-close pass:
-`bars`). The inputs JSON is the seam between the data source and the frozen
-rules; the runner never fetches membership or hardcodes it.
+The live path fetches its own data. `--inputs JSON` (`day`, `trading_days`,
+`universe`, `prior_close`, `expected_open`, `all_expected_opens`,
+`earnings`, `eligible_clean`, `vols`, `equity`, `buying_power`; after-close:
+`day`, `trading_days`, `bars`) stays as the offline seam for tests and
+no-network dry runs; it is never hardcoded and `--execute` refuses it.
 
 ## Divergences from the research (documented, not tuned away)
 

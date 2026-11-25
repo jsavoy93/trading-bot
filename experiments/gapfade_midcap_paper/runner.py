@@ -9,8 +9,9 @@ Usage (from the repo root):
 the intended OPG buys/sells and the shadow picks. --execute refuses to run
 (exit code 2) unless TRADING_BOT_PAPER_ONLY=1, the URL is exactly
 https://paper-api.alpaca.markets and the kill-switch file is absent.
-Part 1 has no broker wired: --execute stops at the broker boundary with
-exit code 3; part 2 implements broker.submit_* on that same path.
+A dry run needs no env var: with no --inputs it reads live data (MDY
+membership, yfinance earnings, Alpaca PAPER market data) and places zero
+orders. Only --execute (OPG orders on the PAPER account) is guarded.
 
 Pass selection: --pass {auto,morning,after_close}. 'auto' (default) uses
 the America/New_York clock: morning 09:20-09:28, after-close from 16:00.
@@ -868,7 +869,10 @@ def _build_real_after_close(args, state, client, now) -> RealAfterCloseInputs:
 
 
 def _run_real(args, pass_name, state, now, execute: bool) -> int:
-    client = broker_mod.make_client(args)
+    # MARKET DATA ONLY: a live dry run needs PAPER credentials but not
+    # TRADING_BOT_PAPER_ONLY. Orders go through make_broker(), which always
+    # runs the full guard (env + locked paper URL + kill switch).
+    client = broker_mod.make_client(args, for_orders=execute)
     rng = random.Random(args.seed)
     if pass_name == "morning":
         inp = _build_real_morning(args, state, client, now)
