@@ -205,7 +205,7 @@ def normalize_persisted_long_term_budget_pct(
             return False
         logger.info(
             "allocation_policy: REBAL-40-50-10 normalizing persisted %s "
-            "from legacy default %r to %r",
+            "from legacy default %s to %s",
             LONG_TERM_BUDGET_PCT_KEY, legacy_value, new_default,
         )
         settings_service_module.save_typed(LONG_TERM_BUDGET_PCT_KEY, new_default)
@@ -410,3 +410,48 @@ def buy_respects_cash_floor(
 ) -> bool:
     """True if cash - cost still satisfies the cash floor (exact fit allowed)."""
     return (float(cash) - float(cost)) >= cash_floor_amount(equity, floor_pct) - eps
+
+
+# ── REBAL-40-50-10 per-runner sleeve caps ───────────────────────────────────
+# The 50% short-term sleeve is split C4 10% / RSI(2) 10% / GAPFADE 30%. Each
+# runner gets its OWN hard total-exposure cap and a fail-closed check. The
+# main bot itself never sizes these orders; the constants live here only so
+# the numbers are declared once in the same module as the 40/50/10 split.
+SWING_SLEEVE_TOTAL_PCT: float = 0.50
+C4_SLEEVE_PCT: float = 0.10          # 3 positions, <= 10% in total
+RSI2_SLEEVE_PCT: float = 0.10        # 4 positions, <= 10% in total
+GAPFADE_TOTAL_CAP_PCT: float = 0.30  # 10 open x 3% per entry = 30%
+CASH_FLOOR_PCT: float = 0.10
+MAIN_BUDGET_PCT: float = 0.40
+
+
+def swing_total_cap_exceeded(open_exposure: Any, equity: Any,
+                             sleeve_pct: Any) -> bool:
+    """FAIL-CLOSED check: True (=> refuse the entry) when `open_exposure`
+    already meets or exceeds `sleeve_pct * equity`.
+
+    Unknown/unusable inputs (None, non-numeric, negative equity, errors while
+    converting) count as EXCEEDED — the caller must skip the entry rather
+    than risk over-deploying. A non-negative exposure that is still below the
+    cap returns False.
+    """
+    try:
+        equity_f = float(equity)
+        exposure_f = float(open_exposure)
+        pct_f = float(sleeve_pct)
+    except (TypeError, ValueError):
+        return True
+    if equity_f <= 0.0 or exposure_f < 0.0:
+        return True
+    if not (0.0 < pct_f <= 1.0):
+        return True
+    return exposure_f >= pct_f * equity_f
+
+
+def swing_entry_budget(open_exposure: Any, equity: Any,
+                       sleeve_pct: Any) -> float:
+    """Dollar budget still available inside a runner's sleeve, or 0.0 when
+    the hard cap is reached or exposure is unknown (fail closed)."""
+    if swing_total_cap_exceeded(open_exposure, equity, sleeve_pct):
+        return 0.0
+    return float(equity) * float(sleeve_pct) - float(open_exposure)

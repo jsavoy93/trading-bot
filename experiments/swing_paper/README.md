@@ -95,13 +95,27 @@ Every run starts with a **live reconciliation** of the protective stops
 
 ## Sizing (S2 — fixed sleeve, independent of C4)
 
-- sleeve = portfolio_value × `--sleeve-pct` (default **15%**, configurable)
+- sleeve = portfolio_value × `--sleeve-pct` (default **10%**, configurable;
+  REBAL-40-50-10 set it from 15% to 10%)
 - each position ≤ `--per-position-cap` (default **25% of the sleeve**)
 - ≤ `--max-open` open RSI(2) positions (default **4**)
 - ≤ `--rsi2-cap` new buys/day (default 4), ranked by lowest RSI(2)
 - the sleeve is sized against **RSI(2)'s OWN open positions only** — the
   old "subtract open C4 notional" logic was REMOVED (S2)
 - closed trades free the sleeve back
+
+### Hard total cap (REBAL-40-50-10, Josh 2026-11-25)
+
+The sleeve IS the hard cap: `open + pending` notional never exceeds
+`--sleeve-pct` × equity, so total open RSI(2) exposure is **≤ 10% of
+equity** (4 positions × 25% of the sleeve). The cap is **fail-closed** —
+if open/pending notional or the portfolio value is unknown or unusable
+(NaN/inf/negative, unreadable state), NO entry is placed that run.
+
+Allocation context: main bot 40% + short-term sleeve 50% (C4 10% /
+RSI(2) 10% / GAPFADE 30%) + 10% cash floor = **100% worst case** (no
+leverage). C4 keeps its own sleeve/parameters
+(`experiments/strat_023/live_paper_runner.py`, `STRAT024_SLEEVE_EQUITY_FRAC`).
 
 ## Run order (idempotent; safe to re-run same day)
 

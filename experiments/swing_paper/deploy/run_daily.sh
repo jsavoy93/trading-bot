@@ -45,5 +45,8 @@ EOF
 if [ -z "$SYMBOLS" ]; then echo "swing-rsi2-paper: empty universe" >&2; exit 4; fi
 
 cd "$REPO"
-exec "$PY" "$RUNNER" --execute --sleeve-pct 0.15 --rsi2-cap 4 \
+# REBAL-40-50-10 (Josh, 2026-11-25): RSI(2) sleeve 10% of equity (was 15%);
+# the sleeve is also the HARD total-exposure cap (fail-closed inside the
+# runner). SIZING ONLY — no entry/exit signal flag changes.
+exec "$PY" "$RUNNER" --execute --sleeve-pct 0.10 --rsi2-cap 4 \
     --max-open 4 --per-position-cap 0.25 --symbols $SYMBOLS
