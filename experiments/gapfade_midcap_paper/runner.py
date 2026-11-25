@@ -617,17 +617,45 @@ def settle_shadows(state: StateStore, data, day: str,
     A shadow is never ordered; it only moves between 'open' and 'closed'.
     Returns counts for the summary line.
     """
-    out = {"new": shadow_stops(state, data, day), "closed": 0, "pending": 0}
     day_d = rules.parse_date(day)
     days = [rules.parse_date(d) for d in trading_days]
+    out = {"new": 0, "closed": 0, "pending": 0}
+    fresh: list[dict] = []
+    # 1. entry: a shadow is filled from its name's OFFICIAL opening-auction
+    #    price on the entry day (never the pre-market reference print). The
+    #    fill is established by this after-close pass, so it is only
+    #    recorded when `day` is the shadow's entry day or later; a run
+    #    started while the entry day is still ahead leaves it untouched.
     for sh in state.shadows():
-        if sh.get("status") != "open":
+        if sh.get("status") != "open" or sh.get("entry_price"):
+            continue
+        if day_d < rules.parse_date(sh["entry_day"]):
+            continue
+        day_sym = sh["symbol"].upper()
+        # the OFFICIAL opening-auction bar, first from the data source, then
+        # (offline / already loaded) from the pass's official bars
+        bar = _safe_official(data, day_sym, day) or bars.get(day_sym)
+        price = (bar or {}).get("open")
+        if not price:
+            sh["note"] = "no_official_open_yet"
+            continue
+        sh["entry_price"] = sh["entry_open"] = float(price)
+        sh["note"] = None
+        out["new"] += 1
+        fresh.append(sh)
+    # 2. frozen stop = entry - 2 x ATR14[t-1] (as of the entry day)
+    shadow_stops(state, data, day)
+    # 3. exits on the same rules as a real trade. Only a shadow that was
+    #    already open with a known entry at the START of this pass can
+    #    exit today: a shadow filled today is skipped at the open (it is
+    #    on the book from tomorrow), exactly like a real OPG fill.
+    fresh_ids = {id(sh) for sh in fresh}
+    for sh in state.shadows():
+        if sh.get("status") != "open" or id(sh) in fresh_ids:
             continue
         sym = sh["symbol"].upper()
         entry_day = rules.parse_date(sh["entry_day"])
         if not sh.get("entry_price"):
-            # shadow_stops() above already filled it when a bar + ATR exist;
-            # reaching here means the official open is not available yet
             sh["note"] = "no_official_open_yet"
             continue
         stop = sh.get("stop_price")
@@ -639,28 +667,34 @@ def settle_shadows(state: StateStore, data, day: str,
         if day_d < entry_day:
             continue
         bar = bars.get(sym) or {}
-        dec = rules.decide_exit(pos, day_d, days,
-                                day_open=bar.get("open"),
-                                day_close=bar.get("close"))
         deferred = sh.get("exit_pending")
+        today_open, today_close = bar.get("open"), bar.get("close")
+        if deferred:
+            # a stop/time-cap sell flagged at the earlier close leaves at
+            # TODAY's official open, exactly like the real OPG sell; the
+            # rest of today's bar is then irrelevant for this shadow
+            if today_open:
+                sh.update(exit_price=float(today_open), exit_day=day,
+                          exit_reason=deferred, status="closed")
+                sh.pop("exit_pending", None)
+                out["closed"] += 1
+            else:
+                out["pending"] += 1
+            continue
+        if day_d == entry_day:
+            # entry day: only a same-day close through the stop is judged;
+            # a profit exit needs a LATER official open on the book
+            dec = rules.decide_exit(pos, day_d, days, day_close=today_close)
+        else:
+            dec = rules.decide_exit(pos, day_d, days, day_open=today_open,
+                                    day_close=today_close)
         if dec.reason == rules.PROFIT:
             sh.update(exit_price=dec.trigger_price, exit_day=day,
                       exit_reason=rules.PROFIT, status="closed")
-            sh.pop("exit_pending", None)
             out["closed"] += 1
             continue
         if dec.reason in (rules.STOP, rules.TIME_CAP):
             sh["exit_pending"] = dec.reason
-            continue
-        if deferred and bar.get("open"):
-            # the deferred stop/time-cap sell executes at today's open,
-            # exactly like the real OPG sell does
-            sh.update(exit_price=float(bar["open"]), exit_day=day,
-                      exit_reason=deferred, status="closed")
-            sh.pop("exit_pending", None)
-            out["closed"] += 1
-            continue
-        if deferred:
             out["pending"] += 1
     return out
 

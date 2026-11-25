@@ -521,10 +521,20 @@ def select_shadows(symbol: str, universe: list[str],
     same_q = [s for s in eligible if s not in picked
               and qmap.get(s) == target_q]
     rng.shuffle(same_q)
-    if not same_q:
-        return first, ShadowPick("vol_matched", None, target_q,
-                                 "no_name_in_quintile")
-    return first, ShadowPick("vol_matched", same_q[0], target_q, None)
+    if same_q:
+        return first, ShadowPick("vol_matched", same_q[0], target_q, None)
+    # fallback: with exact quintiles a crowded bucket can be empty (and
+    # today's real entries are already taken). The vol-matched shadow's job
+    # is to control for the volatility profile, so the nearest-rank name
+    # (same distance below, then above) is used instead of dropping it.
+    ranked = [s for s in eligible if s not in picked and s in qmap]
+    if ranked:
+        nearest = min(ranked, key=lambda s: (abs(qmap[s] - target_q),
+                                             qmap[s], s))
+        return first, ShadowPick("vol_matched", nearest, qmap[nearest],
+                                 "nearest_quintile")
+    return first, ShadowPick("vol_matched", None, target_q,
+                             "no_name_in_quintile")
 
 
 # --- market windows ------------------------------------------------------
