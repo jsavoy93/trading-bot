@@ -325,11 +325,31 @@ def test_select_shadows_picks_clean_unused_names_deterministically():
 def test_select_shadows_skips_names_with_earnings_and_chosen():
     vols = _vols()
     universe = list(vols)
-    clean = {"V0", "V1", "V2", "V4", "V5"}      # V3 (vol partner) dirty
+    # V3 (the same-quintile vol partner) is earnings-dirty, V0 was chosen
+    clean = {"V0", "V1", "V2", "V4", "V5"}
     first, second = rules.select_shadows("V2", universe, clean, {"V0"},
                                          vols, random.Random(1))
     assert first.symbol in {"V1", "V4", "V5"}
-    assert second.symbol is None
+    # the vol-matched shadow still controls for the volatility profile: with
+    # the exact quintile empty it takes the nearest rank (V1 is quintile 0,
+    # next to V2's quintile 1) rather than dropping the shadow entirely.
+    assert second.kind == "vol_matched"
+    assert second.symbol == "V1" and second.quintile == 0
+    assert second.reason == "nearest_quintile"
+    # dirty and already-chosen names are never picked by either shadow
+    assert second.symbol not in {"V0", "V3"}
+    assert second.symbol != first.symbol
+
+
+def test_select_shadows_drops_vol_shadow_when_no_ranked_name_is_left():
+    vols = _vols()
+    universe = list(vols)
+    # every name except the real entry is earnings-dirty or already chosen
+    first, second = rules.select_shadows("V2", universe, {"V2"}, set(),
+                                         vols, random.Random(1))
+    assert first.kind == "random_clean" and first.symbol is None
+    assert first.reason == "no_eligible_name"
+    assert second.kind == "vol_matched" and second.symbol is None
     assert second.reason == "no_name_in_quintile"
 
 
