@@ -146,7 +146,11 @@ short; link files, not paragraphs.
   labels `gf_mid-*`; state under /root/trading-data/gapfade-midcap-paper.
   `rules.py` (pure decisions), `guards.py` (paper guard, exit 2),
   `runner.py` (CLI, dry run default), `state.py`, `broker.py` (part-2
-  boundary, stubs). Tests: `tests/test_gapfade_{rules,guards,runner}.py`.
+  boundary, stubs), `report_pnl.py` (real vs both shadows PnL from this
+  trial's state.json; `--cost-bps` per side, default 27), `early_stop.py`
+  (flag only: records a trip in state.json, manages no process;
+  `--record`), `systemd/` (units committed DISABLED). Tests:
+  `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop}.py`.
 
 ## External (read-only for this bot)
 - C4 runner: /root/strat-swing (DB
