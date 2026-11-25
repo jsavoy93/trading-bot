@@ -89,7 +89,7 @@ OBS_001_EXECUTION_CHECK_ORDER = (
 # AND the code reaches the SELL branch.
 OBS_001_SELL_ONLY_CHECK = "position_existence_check"
 
-# REBAL-60-30-10 — SELL-only ownership check. The broker reports ONE
+# REBAL-40-50-10 — SELL-only ownership check. The broker reports ONE
 # position per symbol across sleeves, so a position that cannot be
 # proven to belong to THIS bot (owned by an external swing runner, or
 # without a FILLED row in this bot's own ledger) must never be sold by
@@ -5441,7 +5441,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         return allocation_policy.classify_positions(positions, own_net, swing_symbols)
 
     def get_allocation_budget_view(self) -> Optional[Dict[str, Any]]:
-        """Snapshot of the REBAL-60-30-10 budget math (read-only).
+        """Snapshot of the REBAL-40-50-10 budget math (read-only).
 
         Returns None when the account cannot be read; BUY callers must
         treat that as fail-closed (block), never fall back to a
@@ -6425,7 +6425,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                             "SELL-only check: get_open_position(symbol).qty > 0."
                         ),
                     )
-                    # ── REBAL-60-30-10: ownership gate (FAIL CLOSED) ──
+                    # ── REBAL-40-50-10: ownership gate (FAIL CLOSED) ──
                     # The broker reports ONE position per symbol across
                     # sleeves: this bot and the external swing runners
                     # share the same paper account. A position that
@@ -6576,7 +6576,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         ),
                     )
 
-                # ── REBAL-60-30-10: swing-runner symbol guard ──
+                # ── REBAL-40-50-10: swing-runner symbol guard ──
                 # The external swing runners manage their own positions.
                 # The broker reports ONE position per symbol across
                 # sleeves, so a main-bot BUY would silently change the
@@ -6640,7 +6640,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     ),
                 )
 
-                # ── REBAL-60-30-10: allocation budget + cash-floor check ──
+                # ── REBAL-40-50-10: allocation budget + cash-floor check ──
                 # ALLOCATION constraint only (where money may go), NOT an
                 # entry-rule change: eligibility/ranking/concentration above
                 # are untouched, and this can only CAP the quantity down,
@@ -6655,7 +6655,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         threshold_value=None,
                         reason=(
                             "Account unreadable; BUY blocked fail-closed "
-                            "(REBAL-60-30-10)"
+                            "(REBAL-40-50-10)"
                         ),
                         gap_note=(
                             "Real check: get_allocation_budget_view() returned"
@@ -7196,10 +7196,10 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
           1. margin      — block all buys when account cash < 0;
           2. open BUY orders for the symbol (duplicate-entry guard);
           3. position concentration (10% cap) — with quantity adjustment;
-          4. swing-runner symbol guard (REBAL-60-30-10) — the main bot must
+          4. swing-runner symbol guard (REBAL-40-50-10) — the main bot must
              never ADD to a symbol attributed to an external swing runner
              (same rule as the initial-BUY path);
-          5. allocation budget + cash floor (REBAL-60-30-10) — the tranche
+          5. allocation budget + cash floor (REBAL-40-50-10) — the tranche
              BUY must fit the long-term budget headroom AND leave the cash
              floor intact; the budget view is consulted live and an
              unavailable view FAILS CLOSED (the tranche is blocked);
@@ -7309,7 +7309,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 )
             quantity = min(quantity, adjusted_quantity)
 
-            # 4. REBAL-60-30-10: swing-runner symbol guard.
+            # 4. REBAL-40-50-10: swing-runner symbol guard.
             #
             # A tranche is a continuation BUY of an entry plan, so it must
             # obey the SAME rule as the initial BUY: the main bot must
@@ -7343,7 +7343,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         f"to it"
                     )
 
-            # 5. REBAL-60-30-10: allocation budget + cash floor.
+            # 5. REBAL-40-50-10: allocation budget + cash floor.
             #
             # A tranche is a BUY, so it is subject to the SAME money
             # constraints as the initial entry: the cost must fit the
@@ -7574,7 +7574,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         # analysis cycle (worst case it logs a warning and continues).
         self.poll_order_fills()
 
-        # ── REBAL-60-30-10: refresh swing-runner attribution for the cycle.
+        # ── REBAL-40-50-10: refresh swing-runner attribution for the cycle.
         # Read-only (broker orders + optional runner DBs); failures degrade
         # to fewer evidence sources and are logged, never raised.
         self.get_swing_runner_symbols(force_refresh=True)
@@ -9866,7 +9866,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             sell_candidates = []
 
-            # REBAL-60-30-10: ledger-proven ownership map — the bot only
+            # REBAL-40-50-10: ledger-proven ownership map — the bot only
             # ever manages positions it can prove it bought itself.
             own_net = self._ledger_own_net_qty()
 
@@ -9881,7 +9881,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if current_qty <= 0 or market_value < 50:
                     continue
 
-                # ── REBAL-60-30-10: ownership gate ──
+                # ── REBAL-40-50-10: ownership gate ──
                 # NEVER sell/resize positions owned by the external swing
                 # runners, and never manage positions this bot cannot prove
                 # it owns via its own ledger (fail-closed).
@@ -10042,7 +10042,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if current_qty <= 0 or market_value < 50:
                     continue
 
-                # REBAL-60-30-10: rotation must never sell out of a
+                # REBAL-40-50-10: rotation must never sell out of a
                 # position this bot does not provably own.
                 if self._is_foreign_or_unproven_position(symbol):
                     continue
@@ -10128,7 +10128,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             # Action 1: Reduce high-concentration positions (>15% of portfolio)
             for position in portfolio_analysis['positions']:
-                # REBAL-60-30-10: never resize a position this bot does not
+                # REBAL-40-50-10: never resize a position this bot does not
                 # provably own (swing runners first, then ledger proof).
                 if self._is_foreign_or_unproven_position(position['symbol']):
                     continue
@@ -10136,7 +10136,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
                 if position_weight > 15 and position['unrealized_plpc'] > 50:
                     # Consider taking partial profits on large winning positions
-                    # REBAL-60-30-10: never size the reduction from the raw
+                    # REBAL-40-50-10: never size the reduction from the raw
                     # broker quantity - cap it to the ledger-proven own
                     # quantity (min(broker_qty, own_qty)).
                     sell_cap = self._sell_qty_cap(
@@ -10154,7 +10154,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
 
             # Action 2: Set stop losses on losing positions (>-10%)
             for position in portfolio_analysis['positions']:
-                # REBAL-60-30-10: never stop-loss a position this bot does
+                # REBAL-40-50-10: never stop-loss a position this bot does
                 # not provably own (would fight the runners' own stops).
                 if self._is_foreign_or_unproven_position(position['symbol']):
                     continue
@@ -10188,7 +10188,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         continue
 
                     # Place actual stop-loss order
-                    # REBAL-60-30-10: the stop may cover at most the
+                    # REBAL-40-50-10: the stop may cover at most the
                     # ledger-proven own quantity, never the raw broker
                     # quantity (the runners share this paper account).
                     stop_cap = self._sell_qty_cap(
@@ -10210,7 +10210,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                         stop_method = f"({self.atr_stop_multiplier}x ATR)" if stop_type == "ATR" else f"({self.stop_loss_pct}%)"
                         actions_taken.append(f"Stop loss set for {position['symbol']} at ${stop_price:.2f} {stop_method}")
 
-            # Action 3: Report REBAL-60-30-10 allocation headroom.
+            # Action 3: Report REBAL-40-50-10 allocation headroom.
             # NOTE: this action never places orders. Deployment happens ONLY
             # through the normal BUY path in run_analysis (entry rules
             # unchanged). Previously this block logged a "considering
@@ -10223,7 +10223,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                 if alloc_view:
                     logging.info(
                         f"💰 High cash position ({cash_percentage:.1f}%) — "
-                        f"REBAL-60-30-10 headroom: long-term budget "
+                        f"REBAL-40-50-10 headroom: long-term budget "
                         f"${alloc_view['long_term_budget']:,.2f} "
                         f"({alloc_view['budget_pct']:.0f}% of ${alloc_view['equity']:,.2f}), "
                         f"long-term book ${alloc_view['long_term_book_mv']:,.2f}, "
@@ -10342,7 +10342,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
                     logging.warning(f"⚠️ {symbol}: No position to set stop-loss on")
                     return False
 
-                # REBAL-60-30-10: a stop-loss is a SELL - it may never
+                # REBAL-40-50-10: a stop-loss is a SELL - it may never
                 # cover more shares than this bot can prove it owns
                 # (min(broker_qty, own_qty)). Fail closed when ownership
                 # cannot be proven.
@@ -10441,7 +10441,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             order_side = OrderSide.SELL if side.lower() == 'sell' else OrderSide.BUY
 
             if order_side == OrderSide.SELL:
-                # REBAL-60-30-10: a portfolio SELL may never exceed the
+                # REBAL-40-50-10: a portfolio SELL may never exceed the
                 # ledger-proven own quantity, and never exceeds the broker
                 # position either. Fail closed when ownership cannot be
                 # proven.

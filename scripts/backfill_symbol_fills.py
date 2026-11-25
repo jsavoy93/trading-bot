@@ -3,7 +3,7 @@
 PAPER fill history for symbols the main bot owns at the broker but
 cannot prove from its own ledger.
 
-Why this exists (PR #139, REBAL-60-30-10): after a deploy, the bot only
+Why this exists (PR #139, then REBAL-60-30-10, now REBAL-40-50-10): after a deploy, the bot only
 sells / stop-losses shares it can PROVE it owns — FILLED trades rows
 with filled_qty, read through allocation_policy.own_net_qty_from_ledger_rows
 (SmartTradingBot._proven_own_qty). Symbols whose fills never landed in
