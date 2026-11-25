@@ -8,7 +8,8 @@ Status: **wired, NOT enabled** — frozen decision logic, guards, dry-run CLI,
 state, shadow logging, the real-vs-shadow PnL report (`report_pnl.py`), the
 early-stop **flag** (`early_stop.py`; config/file only, trips nothing) and
 **disabled** systemd user-unit templates. The live path fetches its own data
-(MDY membership, yfinance earnings, Alpaca PAPER market data). No unit is
+(S&P 400 membership from Wikipedia, yfinance earnings, Alpaca PAPER
+market data). No unit is
 installed, enabled, started or restarted; nothing here is deployed. Paper
 only.
 
@@ -63,7 +64,7 @@ only.
 
 A **dry run never needs** `TRADING_BOT_PAPER_ONLY` (it places zero orders).
 With no `--inputs` it reads live data from the sources below — S&P 400
-membership (MDY/SSGA holdings), Yahoo Finance earnings via `yfinance` and
+membership (Wikipedia/Slickcharts), Yahoo Finance earnings via `yfinance` and
 Alpaca PAPER market data — using the PAPER credential pair, and prints the
 plan. Only `--execute` (order placement) requires the env, the locked paper
 URL and an absent kill switch.
@@ -71,7 +72,7 @@ URL and an absent kill switch.
 ## Run
 
 ```bash
-# live dry run (default): fetches MDY membership, yfinance earnings and
+# live dry run (default): fetches S&P 400 membership, yfinance earnings and
 # Alpaca PAPER data; places zero orders; no env var needed
 python experiments/gapfade_midcap_paper/runner.py --pass morning
 
@@ -95,7 +96,7 @@ is never opened by this experiment.
 
 | Fact | Source | Notes |
 | --- | --- | --- |
-| Universe (S&P 400) | live: SSGA **MDY** holdings CSV (`membership.py`, cached, >10 days stale ⇒ refuse); offline: inputs JSON `universe` + `eligible_clean` | membership is FETCHED each run when live (cached), never hardcoded |
+| Universe (S&P 400) | live: `membership.py` — PRIMARY Wikipedia "List of S&P 400 companies", FALLBACK Slickcharts `/sp400` (both parsed from the Symbol column, stdlib only); must yield 380-420 unique symbols or the source is skipped; cached `sp400_members.txt`, >10 days stale ⇒ refuse; offline: inputs JSON `universe` + `eligible_clean` | membership is FETCHED each run when live (cached), never hardcoded. The old SSGA MDY CSV is dead (HTTP 404) and iShares IJH is 403 from this box |
 | Prior close, expected open (~09:20 ET) | live: Alpaca PAPER snapshot (`marketdata.py`); offline: inputs JSON `prior_close`, `expected_open`, `all_expected_opens` | a pre-market print is only a reference, never a fill |
 | Official bars, ATR14 | Alpaca PAPER daily bars (`official_bar`, `true_ranges`) | ATR14 as of t−1; exits judged on official bars only |
 | Earnings (t−1, t, t+1) | live: Yahoo Finance via `yfinance` (`earnings.py`, cached, refreshed ~daily); offline: inputs JSON `earnings` | no coverage ⇒ skip (fail closed) |
@@ -118,7 +119,7 @@ python experiments/gapfade_midcap_paper/report_pnl.py --cost-bps 10 --json
 nothing is written). It needs no `TRADING_BOT_PAPER_ONLY`:
 
 ```bash
-# live data: MDY membership + yfinance earnings + Alpaca PAPER, zero orders
+# live data: S&P 400 membership + yfinance earnings + Alpaca PAPER, zero orders
 python experiments/gapfade_midcap_paper/runner.py --pass morning
 python experiments/gapfade_midcap_paper/runner.py --pass after_close
 # offline fixture instead of the network
@@ -265,7 +266,8 @@ temp dirs and never touch a live DB.
 
 ## Status checklist
 
-- [x] S&P 400 membership fetched from MDY holdings each live run (cached)
+- [x] S&P 400 membership fetched from Wikipedia (primary) / Slickcharts
+  (fallback) each live run; 380-420 range gate, cached, fail-closed
 - [x] Earnings calendar files, "no coverage ⇒ skip" enforced in `rules`
 - [x] Expected open (~09:20 ET), prior close, official bars, ATR14
 - [x] PAPER broker behind `broker.Broker`, shadow logging
@@ -284,3 +286,17 @@ temp dirs and never touch a live DB.
 - `broker.MarketData`: `expected_open(day)`, `prior_close(day)`,
   `official_bar(symbol, day)`, `true_ranges(symbol, through_day, n)`,
   `eligible_clean(day)`, `vols(day, symbols)`.
+
+## S&P 400 membership sources (`membership.py`)
+
+Resolution order in `load_members`: same-day cache → PRIMARY Wikipedia
+`List_of_S%26P_400_companies` → FALLBACK `slickcharts.com/sp400` → cached
+copy younger than `MAX_AGE_DAYS` (10) with a LOUD `WARNING: STALE ...`
+line → `MembershipError` (fail closed, no universe, no entries). A source's
+list is accepted only when it has 380-420 unique symbols; an out-of-range
+list counts as a failed source and never passes. A success is written to
+`<cache dir>/sp400_members.txt` plus a `sp400_members.downloaded` date
+stamp. `fetch(source_name, url) -> str` is injectable; the tests stub it and
+never touch the network (`tests/test_gapfade_membership.py`, fixtures shaped
+like the real Wikipedia and Slickcharts pages). Stdlib only (`urllib`,
+`html.parser`), no new dependencies.

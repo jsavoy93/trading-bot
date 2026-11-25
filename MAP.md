@@ -158,9 +158,18 @@ short; link files, not paragraphs.
   timers `[Install] WantedBy=timers.target`, services none;
   `WorkingDirectory=/root/strat-gapfade`, the post-merge checkout; install
   steps in the README are NOT EXECUTED). Tests:
-  `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop,broker}.py`
+  `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop,broker,membership}.py`
   plus `tests/test_gapfade_systemd_units.py` (unit templates: ExecStart uses
   `/root/strat-gapfade/.venv/bin/python`, services stay un-enableable).
+  S&P 400 membership (`membership.py`): PRIMARY Wikipedia
+  `List_of_S%26P_400_companies`, FALLBACK `slickcharts.com/sp400`, both
+  parsed from the Symbol column with stdlib `html.parser`; 380-420 unique
+  symbols required or the source is skipped; cached `sp400_members.txt`,
+  cache only used within 10 days and with a LOUD stale warning, else
+  `MembershipError` (fail closed). The old SSGA MDY CSV is dead (404) and
+  iShares IJH is 403 from this box — do not reintroduce them.
+  Tests: `pytest tests/test_gapfade_*.py -q` with `/usr/bin/python3`'s
+  pytest (the runner venv has no pytest).
 
 ## External (read-only for this bot)
 - C4 runner: /root/strat-swing (DB

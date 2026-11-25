@@ -201,7 +201,7 @@ def validate(symbols: list[str], source: str = "") -> list[str]:
     return sorted(set(symbols))
 
 
-def _download(url: str) -> str:
+def _download(_source: str, url: str) -> str:
     """GET a source page with the stdlib (no auth needed)."""
     import urllib.request
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
