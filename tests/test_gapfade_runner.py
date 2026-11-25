@@ -3,7 +3,7 @@
 import json
 import random
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -270,11 +270,20 @@ def test_live_dry_run_without_paper_env_needs_no_execute_env(
     class _FakeClient:
         base = guards.PAPER_API_URL
 
+        def get(self, url, params=None):
+            # holiday guard: a fixed Wed 2026-11-25 session (no network)
+            assert url == f"{guards.PAPER_API_URL}/v2/calendar"
+            return [{"date": "2026-11-25", "open": "09:30",
+                     "close": "16:00"}]
+
     def fake_client(args=None, for_orders=True):
         seen["for_orders"] = for_orders
         return _FakeClient()
 
-    def fake_build(args, state, client, now):
+    monkeypatch.setattr(runner.rules, "etc_now", lambda: datetime(
+        2026, 11, 25, 9, 20, tzinfo=rules.ET))
+
+    def fake_build(args, state, client, now, session=None):
         raise SystemExit(0)                # reached the live data path
 
     monkeypatch.setattr(runner.broker_mod, "make_client", fake_client)
