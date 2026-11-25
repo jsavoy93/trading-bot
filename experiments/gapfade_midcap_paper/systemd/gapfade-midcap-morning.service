@@ -1,0 +1,15 @@
+# GAPFADE-MIDCAP-PAPER — morning pass. DISABLED BY DESIGN / NOT INSTALLED.
+# Paper only: TRADING_BOT_PAPER_ONLY=1 and the guarded runner (a live
+# brokerage URL aborts the process). There is deliberately no install
+# section, so enable is a no-op. Started by hand from README.md only.
+[Unit]
+Description=GAPFADE midcap paper trial — morning pass (paper only, disabled by design)
+Documentation=file:../README.md
+
+[Service]
+Type=oneshot
+Environment=TRADING_BOT_PAPER_ONLY=1
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/root/.openclaw/clean/trading-bot
+ExecStart=/usr/bin/env python3 -m experiments.gapfade_midcap_paper.runner --pass morning --execute
+Nice=10

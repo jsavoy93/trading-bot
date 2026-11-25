@@ -1,0 +1,14 @@
+# GAPFADE-MIDCAP-PAPER — morning pass (09:20 ET)
+# NOT INSTALLED. This timer exists in the repo only; it is never enabled,
+# started or installed by any agent. See README.md, "Enabling by hand".
+[Unit]
+Description=GAPFADE midcap paper trial — morning pass (09:20 America/New_York, before the 09:28 ET deadline)
+
+[Timer]
+OnCalendar=Mon..Fri 09:20 America/New_York
+# a missed run after a reboot should not pile up into the 09:28 deadline
+Persistent=false
+AccuracySec=1min
+Unit=gapfade-midcap-morning.service
+
+# No install section on purpose, so `systemctl enable` is a no-op.

@@ -1,0 +1,13 @@
+# GAPFADE-MIDCAP-PAPER — after-close pass (16:10 ET)
+# NOT INSTALLED. This timer exists in the repo only; it is never enabled,
+# started or installed by any agent. See README.md, "Enabling by hand".
+[Unit]
+Description=GAPFADE midcap paper trial — after-close pass (16:10 America/New_York)
+
+[Timer]
+OnCalendar=Mon..Fri 16:10 America/New_York
+Persistent=false
+AccuracySec=1min
+Unit=gapfade-midcap-after-close.service
+
+# No install section on purpose, so `systemctl enable` is a no-op.
