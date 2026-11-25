@@ -233,12 +233,20 @@ def test_cli_default_is_dry_run_and_places_zero_orders(tmp_path, monkeypatch,
     assert not (tmp_path / "state.json").exists()   # state not written
 
 
-def test_cli_execute_with_unwired_inputs_exits_3(tmp_path, monkeypatch, capsys):
+def test_cli_execute_with_inputs_refused(tmp_path, monkeypatch, capsys):
+    """PART 2: --execute with a planted --inputs payload is refused (exit 2)
+    — orders only ever run from live Alpaca PAPER data, never fixtures."""
     monkeypatch.setenv("TRADING_BOT_PAPER_ONLY", "1")
     monkeypatch.setenv("GAPFADE_MIDCAP_KILL_FILE", str(tmp_path / "kill"))
+    monkeypatch.setattr(runner.broker_mod, "make_broker",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("no broker on the --inputs path")))
     rc = runner.main(["--execute", "--inputs", str(_write_inputs(tmp_path)),
                       "--pass", "morning", "--state-dir", str(tmp_path)])
-    assert rc == runner.EXIT_NOT_WIRED
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--execute with --inputs is not supported" in err
+    assert not (tmp_path / "state.json").exists()
 
 
 def test_cli_execute_guard_failure_exits_2(tmp_path, monkeypatch, capsys):

@@ -68,7 +68,11 @@ def check_paper_only(env: dict | None = None,
 
 
 def run_cli(main_fn, argv: list[str] | None = None) -> int:
-    """Parse argv: --execute is guarded, --dry-run (default) is not."""
+    """Parse argv: --execute is guarded, --dry-run (default) is not.
+
+    `main_fn(execute=bool, argv=...)` is called with keyword arguments; a
+    main_fn that also needs the parsed CLI args can accept `namespace=`.
+    """
     import argparse
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--execute", action="store_true")
@@ -80,10 +84,6 @@ def run_cli(main_fn, argv: list[str] | None = None) -> int:
         return EXIT_GUARD_FAILED
     if _rest and _rest[0] in ("-h", "--help"):
         return main_fn(execute=False, argv=argv)
-    if args.execute and args.dry_run:
-        print("gapfade_midcap_paper: --execute and --dry-run are mutually "
-              "exclusive", file=sys.stderr)
-        return EXIT_GUARD_FAILED
     if args.execute:
         try:
             check_paper_only()

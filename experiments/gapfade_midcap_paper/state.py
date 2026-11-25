@@ -35,6 +35,8 @@ def _empty() -> dict:
         "shadows": [],        # list of shadow-trade dicts
         "entry_counts": {},   # ISO date -> int (real entries that day)
         "order_ids": [],      # client_order_ids already generated/submitted
+        "intents": [],        # every intended entry/exit + fill (audit log)
+        "passes": {},         # ISO date -> {'morning': ts, 'after_close': ts}
     }
 
 
@@ -96,12 +98,36 @@ class StateStore:
         if coid not in self.data["order_ids"]:
             self.data["order_ids"].append(coid)
 
+    # --- intended orders / fills ---
+    def add_intent(self, intent: dict) -> None:
+        """Append one intended entry/exit record (part-2 audit log)."""
+        self.data["intents"].append(intent)
+
+    def intents(self) -> list[dict]:
+        return self.data["intents"]
+
+    def intent(self, client_order_id: str) -> dict | None:
+        for rec in self.data["intents"]:
+            if rec.get("client_order_id") == client_order_id:
+                return rec
+        return None
+
+    def record_pass(self, day: str, pass_name: str, ts: str) -> None:
+        self.data["passes"].setdefault(str(day), {})[pass_name] = ts
+
+    def pass_done(self, day: str, pass_name: str) -> bool:
+        return pass_name in (self.data["passes"].get(str(day)) or {})
+
     # --- shadows ---
     def add_shadow(self, shadow: dict) -> None:
         self.data["shadows"].append(shadow)
 
     def shadows(self) -> list[dict]:
         return self.data["shadows"]
+
+    def shadow_for(self, real_client_order_id: str) -> list[dict]:
+        return [s for s in self.data["shadows"]
+                if s.get("real_client_order_id") == real_client_order_id]
 
     def chosen_symbols(self) -> set[str]:
         """Symbols already used by a real entry or a shadow on any day."""
