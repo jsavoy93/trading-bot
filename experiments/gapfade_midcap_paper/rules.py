@@ -364,10 +364,14 @@ def decide_exit(pos: Position, day: date, trading_days: list[date],
     pos_day = parse_date(pos.entry_day)
     if day < pos_day:
         raise RuleError("decide_exit day precedes entry day")
-    later = day > pos_day
+    strict_later = day > pos_day
 
-    # 1. profit check at the open (only on a later day)
-    if later and day_open is not None and float(day_open) > pos.entry_price:
+    # 1. profit check at the open: the first LATER open strictly above the
+    #    entry price. The previous ``later = day > pos_day`` was shadowed by
+    #    the local ``later`` list in due_exits and silently became truthy
+    #    even on the entry day, which made the stop/time cap unreachable.
+    if strict_later and day_open is not None \
+            and float(day_open) > pos.entry_price:
         return ExitDecision(pos.symbol, PROFIT, "open", float(day_open),
                             stop_pending=False)
 
@@ -375,8 +379,12 @@ def decide_exit(pos: Position, day: date, trading_days: list[date],
                 and float(day_close) <= pos.stop_price)
 
     # 3. time cap: entry day = day 1; sell after the close of day 3
-    time_cap = later and pos.trading_day_number(day, trading_days) >= \
-        TIME_CAP_TRADING_DAYS
+    #    (judged whenever the calendar actually contains the entry day; a
+    #    calendar that does not is not this position's calendar)
+    days = [parse_date(d) for d in trading_days]
+    time_cap = (parse_date(pos.entry_day) in days and
+                pos.trading_day_number(day, trading_days) >=
+                TIME_CAP_TRADING_DAYS)
 
     # 2. stop at the close
     if stop_hit:

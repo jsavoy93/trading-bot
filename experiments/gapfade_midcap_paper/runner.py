@@ -217,7 +217,9 @@ def plan_morning(state: StateStore, inp: MorningInputs,
                       "open", file=sys.stderr)
                 continue
             shadows.append({
-                "real_symbol": p.symbol, "kind": pick.kind,
+                "real_symbol": p.symbol,
+                "real_client_order_id": p.client_order_id,
+                "kind": pick.kind,
                 "symbol": pick.symbol, "quintile": pick.quintile,
                 "entry_day": day.isoformat(),
                 "entry_price": entry,
@@ -262,8 +264,13 @@ def plan_after_close(state: StateStore, inp: AfterCloseInputs) -> dict:
         stop_price=float(rec["stop_price"]),
         client_order_id=rec["client_order_id"])
         for rec in state.positions().values()]
+    # calendar guard: pre-compute only the deferred (stop / time-cap)
+    # symbols, and never let a decide_exit call below re-evaluate the
+    # profit branch on a day whose open is already above entry.
+    bars_today = {sym: {"close": (bar or {}).get("close")}
+                  for sym, bar in inp.bars.items()}
     _due, deferred = rules.due_exits(pos_list, day, inp.trading_days,
-                                     inp.bars)
+                                     bars_today)
     pending = []
     for sym in deferred:
         pos = next(p for p in pos_list if p.symbol == sym)
@@ -396,10 +403,11 @@ def execute_morning(state: StateStore, plan: dict, broker, data,
                               "missed": True, "note": f"data:{delay}"})
             continue
 
+        # idempotency for a rerun after a crash: ask the broker whether this
+        # key was already accepted (plan builders may not carry the map)
         existing = None
-        if plan["reason_by_coid"].get(order.client_order_id):
-            existing = broker.order_by_client_id(order.client_order_id) \
-                if hasattr(broker, "order_by_client_id") else None
+        if hasattr(broker, "order_by_client_id"):
+            existing = broker.order_by_client_id(order.client_order_id)
         if existing is None:
             if order.side == "buy":
                 resp = broker.submit_opg_buy(order.symbol, order.qty,
@@ -609,24 +617,19 @@ def settle_shadows(state: StateStore, data, day: str,
     A shadow is never ordered; it only moves between 'open' and 'closed'.
     Returns counts for the summary line.
     """
-    shadow_stops(state, data, day)
+    out = {"new": shadow_stops(state, data, day), "closed": 0, "pending": 0}
     day_d = rules.parse_date(day)
     days = [rules.parse_date(d) for d in trading_days]
-    out = {"new": 0, "closed": 0, "pending": 0}
     for sh in state.shadows():
         if sh.get("status") != "open":
             continue
         sym = sh["symbol"].upper()
         entry_day = rules.parse_date(sh["entry_day"])
         if not sh.get("entry_price"):
-            bar = _safe_official(data, sym, sh["entry_day"])
-            price = (bar or {}).get("open")
-            if not price:
-                sh["note"] = "no_official_open_yet"
-                continue
-            sh["entry_price"] = sh["entry_open"] = float(price)
-            sh["note"] = None
-            out["new"] += 1
+            # shadow_stops() above already filled it when a bar + ATR exist;
+            # reaching here means the official open is not available yet
+            sh["note"] = "no_official_open_yet"
+            continue
         stop = sh.get("stop_price")
         pos = rules.Position(
             symbol=sym, entry_day=entry_day,
