@@ -73,6 +73,37 @@ Alpaca PAPER market data — using the PAPER credential pair, and prints the
 plan. Only `--execute` (order placement) requires the env, the locked paper
 URL and an absent kill switch.
 
+## Trading-day (holiday) guard — fail closed
+
+Both passes (`morning`, `after_close`) read **today's session from Alpaca's
+`GET /v2/calendar`** through the existing PAPER client, before any market
+data is loaded or any plan is built (`runner._market_calendar` /
+`runner._holiday_guard`). The timer keeps firing Mon–Fri; the runner itself
+decides whether the day is real.
+
+| Situation | Behaviour | Exit |
+|---|---|---|
+| Today is not a calendar session (holiday, weekend) | ONE stderr line `"<day> is not an Alpaca trading day (holiday/weekend) - skipping, 0 orders submitted"`; no data load, zero orders, state untouched | 0 |
+| Calendar unreadable (transport/auth error, empty list, non-list body, malformed row, session without open/close) | `runner: FAIL CLOSED - <reason>; no orders submitted`, zero orders | 1 |
+| Resolved session date != today ET (belt and braces in both builders) | skips with zero orders | 0 |
+| Pass already recorded for today (`passes[day][pass]`) | `"... already ran ... 0 orders submitted"`; **no order submission**; `--force-pass` overrides | 0 |
+| `after_close` invoked before the session's real close | skipped, zero orders, no data load | 0 |
+
+Why it exists: `_resolve_day()` falls back to the last trading day. On a
+holiday that made "open" the prior day's last trade, and the old
+"already ran" check only printed and continued, so a stale close-to-close
+drop could submit real (paper) OPG buys. The calendar — never the fallback —
+now decides the order day; there is no path where a guessed date reaches the
+broker.
+
+**Early close** (e.g. Fri 2026-11-27, 13:00 ET): the morning pass runs
+normally. The after-close pass gates on the calendar's `close` time
+(`close_early: true` → 13:00 ET, not 16:00), so it settles the true session
+close from 13:00 ET and skips with zero orders before it.
+
+Dry runs take the same gate: a holiday dry run prints the skip line and
+places zero orders.
+
 ## Run
 
 ```bash
@@ -260,9 +291,14 @@ systemctl --user daemon-reload
 ## Tests
 
 ```bash
-python -m pytest tests/test_gapfade_rules.py tests/test_gapfade_guards.py \
-    tests/test_gapfade_runner.py -q
+pytest tests/test_gapfade_*.py -q     # whole experiment suite
+pytest tests/test_gapfade_holiday_guard.py -q   # holiday guard only
 ```
+
+`tests/test_gapfade_holiday_guard.py` covers holiday, weekend, normal day,
+half (early-close) day, calendar unavailable (fail closed), already-ran
+idempotency and the `--force-pass` override. It is fixture-based: a fake
+calendar client and a fixed ET clock, `tmp_path` state, no network.
 
 Live in `tests/` because `pytest.ini` sets `testpaths = tests` (same as the
 other experiment tests, which insert their experiment dir on `sys.path`).
