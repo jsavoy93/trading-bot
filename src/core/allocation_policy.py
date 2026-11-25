@@ -2,9 +2,9 @@
 
 Approved split (Josh, 2026-11-09): 60% of account equity is the main
 SmartBot's long-term budget, 30% belongs to the external short-term
-swing runners (C4 at /root/strat-swing, RSI(2) at /root/deploy/rsi2-swing;
-both share the SAME Alpaca paper account), and at least 10% of equity
-must stay in cash.
+swing runners (C4 at /root/strat-swing, RSI(2) at /root/deploy/rsi2-swing,
+and the GAPFADE midcap paper trial at /root/strat-gapfade; all share the
+SAME Alpaca paper account), and at least 10% of equity must stay in cash.
 
 Contracts (must NOT be weakened):
 
@@ -14,7 +14,8 @@ Contracts (must NOT be weakened):
 - **Foreign positions are identified by evidence, never guessed.**
   Evidence sources: (1) broker order labels — any order whose
   client_order_id starts with a configured swing prefix
-  (default "sl_short-" for C4, "rsi2-" for RSI(2)); (2) optional runner
+  (default "sl_short-" for C4, "rsi2-" for RSI(2), "gf_mid-" for the
+  GAPFADE midcap paper runner); (2) optional runner
   SQLite DBs exposing a positions table with status='open' (C4's
   live_paper.db). RSI(2)'s logs/state.json is deliberately NOT a
   source: its dry-run entries record unfilled shadow positions with
@@ -47,7 +48,21 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 #: Fallback label prefixes if the configured value cannot be parsed.
-DEFAULT_SWING_ORDER_LABEL_PREFIXES: Tuple[str, ...] = ("sl_short-", "rsi2-")
+DEFAULT_SWING_ORDER_LABEL_PREFIXES: Tuple[str, ...] = (
+    "sl_short-",  # C4 runner (/root/strat-swing)
+    "rsi2-",      # RSI(2) runner (/root/deploy/rsi2-swing)
+    "gf_mid-",    # GAPFADE midcap paper runner (/root/strat-gapfade)
+)
+
+#: Prefixes that were once shipped as the default and are now superseded by
+#: DEFAULT_SWING_ORDER_LABEL_PREFIXES. A persisted setting that exactly equals
+#: the legacy JSON list is treated as "never customized": it is widened to the
+#: current defaults so existing deployments pick up newly added runners
+#: (GAPFADE midcap gf_mid-). Any other value — including malformed JSON — is
+#: left untouched; malformed values still fail closed via parse_json_list.
+LEGACY_SWING_ORDER_LABEL_PREFIXES: Tuple[Tuple[str, ...], ...] = (
+    ("sl_short-", "rsi2-"),
+)
 
 #: Ledger row status that counts as a confirmed fill.
 _FILLED_STATUS = "FILLED"
@@ -84,6 +99,28 @@ def parse_json_list(raw: Any, fallback: Sequence[str]) -> Tuple[str, ...]:
     return cleaned or tuple(fallback)
 
 
+def normalize_swing_order_label_prefixes(
+    raw: Any, defaults: Sequence[str] = DEFAULT_SWING_ORDER_LABEL_PREFIXES
+) -> Tuple[str, ...]:
+    """Effective swing label prefixes from a possibly-persisted setting.
+
+    Parses ``raw`` fail-closed (same rules as ``parse_json_list``) and then
+    upgrades a value that exactly matches a superseded shipped default to the
+    current ``defaults``. This keeps existing deployments on the authoritative
+    runner list when a new runner prefix is added, while an explicitly
+    customized list is never widened.
+    """
+    prefixes = parse_json_list(raw, defaults)
+    legacy_sets = {tuple(item) for item in LEGACY_SWING_ORDER_LABEL_PREFIXES}
+    if prefixes in legacy_sets and tuple(prefixes) != tuple(defaults):
+        logger.info(
+            "allocation_policy: upgrading legacy swing label prefixes %s -> %s",
+            prefixes, tuple(defaults),
+        )
+        return tuple(defaults)
+    return prefixes
+
+
 # ── Swing-runner attribution ─────────────────────────────────────────────────
 
 def _order_field(order: Any, name: str) -> Any:
@@ -106,7 +143,7 @@ def swing_symbols_from_orders(
 
     Covers entries AND their resting exits (stops carry the same
     prefix plus a suffix, e.g. sl_short-AMD-s-20261102,
-    rsi2-AMD-20261103-1-stop-r2).
+    rsi2-AMD-20261103-1-stop-r2, gf_mid-AAA-sell-20261103-1).
     """
     symbols: set = set()
     for order in orders or []:

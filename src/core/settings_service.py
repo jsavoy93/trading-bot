@@ -159,7 +159,8 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
     ),
     # REBAL-60-30-10 — approved split (Josh, 2026-11-09):
     # 60% long-term (this bot), 30% short-term (external swing runners
-    # C4 + RSI(2) sharing the same paper account), 10% cash floor.
+    # C4 + RSI(2) + GAPFADE midcap sharing the same paper account),
+    # 10% cash floor.
     "long_term_budget_pct": StrategySetting(
         "long_term_budget_pct", 60.0, "float", 0.0, 100.0, 1.0,
         "Main bot long-term budget as % of account equity (REBAL-60-30-10). "
@@ -173,10 +174,12 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
         "Allocation Budget",
     ),
     "swing_order_label_prefixes": StrategySetting(
-        "swing_order_label_prefixes", '["sl_short-", "rsi2-"]', "str", None, None, None,
+        "swing_order_label_prefixes",
+        '["sl_short-", "rsi2-", "gf_mid-"]', "str", None, None, None,
         "JSON list of client_order_id prefixes that mark orders (and their "
-        "positions) as belonging to the external swing runners. The main "
-        "bot never sells, resizes, or counts these as its own.",
+        "positions) as belonging to the external swing runners (C4 "
+        "sl_short-, RSI(2) rsi2-, GAPFADE midcap gf_mid-). The main bot "
+        "never sells, resizes, or counts these as its own.",
         "Allocation Budget",
     ),
     "swing_runner_db_paths": StrategySetting(

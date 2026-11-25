@@ -179,7 +179,9 @@ Schedules: `Mon..Fri 09:20 America/New_York` (before the 09:28 ET deadline)
 and `Mon..Fri 16:10 America/New_York`; timezone is explicit in the timer.
 
 `WorkingDirectory=/root/strat-gapfade` is the stable checkout, created
-**after this merges** (nothing in this repo creates it):
+**after this merges** (nothing in this repo creates it). Both services run
+from that checkout's own venv: `ExecStart=/root/strat-gapfade/.venv/bin/python
+-m experiments.gapfade_midcap_paper.runner ...`.
 
 ```bash
 # NOT EXECUTED — once, after merge, on the host that runs the timer:
@@ -192,14 +194,19 @@ explicit decision made after a green paper dry run.
 
 ### 1. First dry run (no orders)
 
+The checkout has its own venv at `/root/strat-gapfade/.venv` (the units'
+`ExecStart` points at `/root/strat-gapfade/.venv/bin/python`):
+
 ```bash
-# NOT EXECUTED — offline dry run from the checkout, places ZERO orders:
 cd /root/strat-gapfade
-python3 experiments/gapfade_midcap_paper/runner.py \
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+# NOT EXECUTED — offline dry run from the checkout, places ZERO orders:
+.venv/bin/python experiments/gapfade_midcap_paper/runner.py \
     --inputs inputs.json --pass morning --seed 1
 # and the live-data dry run (reads Alpaca PAPER data, still zero orders,
 # no TRADING_BOT_PAPER_ONLY needed):
-python3 experiments/gapfade_midcap_paper/runner.py --pass morning
+.venv/bin/python experiments/gapfade_midcap_paper/runner.py --pass morning
 ```
 
 ### 2. Install the user units

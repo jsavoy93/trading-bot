@@ -778,7 +778,7 @@ class SmartTradingBot:
         # exist so that override mechanism can find the attributes).
         self.long_term_budget_pct = 60.0    # % of equity: this bot's long-term budget
         self.cash_floor_pct = 10.0          # % of equity that must stay in cash
-        self.swing_order_label_prefixes = '["sl_short-", "rsi2-"]'
+        self.swing_order_label_prefixes = '["sl_short-", "rsi2-", "gf_mid-"]'
         self.swing_runner_db_paths = "[]"
         # (symbols, monotonic_computed_at) caches — see get_swing_runner_symbols
         self._swing_symbols_cache = (set(), 0.0)
@@ -5266,8 +5266,14 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
     # entry rules are changed by any of the methods below.
 
     def _swing_order_prefixes(self) -> Tuple[str, ...]:
-        """Configured swing-runner client_order_id prefixes (fail-closed)."""
-        return allocation_policy.parse_json_list(
+        """Configured swing-runner client_order_id prefixes (fail-closed).
+
+        A persisted value equal to a superseded shipped default (the old
+        ["sl_short-", "rsi2-"] list) is widened to the current defaults so
+        deployments pick up the GAPFADE midcap gf_mid- runner; custom lists
+        and malformed values keep the fail-closed behavior.
+        """
+        return allocation_policy.normalize_swing_order_label_prefixes(
             getattr(self, "swing_order_label_prefixes", None),
             allocation_policy.DEFAULT_SWING_ORDER_LABEL_PREFIXES,
         )
@@ -5276,8 +5282,9 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         """Symbols currently owned by the EXTERNAL swing runners.
 
         Evidence: broker order labels (the runners keep resting stop
-        orders open, e.g. sl_short-AMD-s-20261102 or
-        rsi2-AMD-20261103-1-stop-r2) plus optional runner SQLite DBs
+        orders open, e.g. sl_short-AMD-s-20261102,
+        rsi2-AMD-20261103-1-stop-r2 or gf_mid-AAA-sell-20261103-1) plus
+        optional runner SQLite DBs
         (swing_runner_db_paths config, opened READ-ONLY). Cached for
         one analysis cycle. Any failure degrades to fewer evidence
         sources and never raises; sell-side safety does NOT depend on

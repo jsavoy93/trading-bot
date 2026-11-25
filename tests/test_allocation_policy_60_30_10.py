@@ -3,8 +3,8 @@ REBAL-60-30-10 — long-term allocation budget, cash floor, and
 swing-runner position isolation.
 
 Approved split (Josh, 2026-11-09): 60% long-term (this bot), 30%
-short-term (external swing runners C4 + RSI(2) sharing the same
-Alpaca paper account), 10% cash floor.
+short-term (external swing runners C4 + RSI(2) + GAPFADE midcap
+sharing the same Alpaca paper account), 10% cash floor.
 
 Contracts under test (see src/core/allocation_policy.py):
 - Pure budget math; no broker calls.
@@ -57,7 +57,7 @@ def _make_bot():
     bot = SmartTradingBot.__new__(SmartTradingBot)
     bot.long_term_budget_pct = 60.0
     bot.cash_floor_pct = 10.0
-    bot.swing_order_label_prefixes = '["sl_short-", "rsi2-"]'
+    bot.swing_order_label_prefixes = '["sl_short-", "rsi2-", "gf_mid-"]'
     bot.swing_runner_db_paths = "[]"
     return bot
 
@@ -196,7 +196,9 @@ class TestConfigNotHardCoded:
             assert key in settings_service.STRATEGY_SETTINGS_SCHEMA, key
         assert settings_service.STRATEGY_SETTINGS_SCHEMA["long_term_budget_pct"].default == 60.0
         assert settings_service.STRATEGY_SETTINGS_SCHEMA["cash_floor_pct"].default == 10.0
-        assert settings_service.STRATEGY_SETTINGS_SCHEMA["swing_order_label_prefixes"].default == '["sl_short-", "rsi2-"]'
+        # GAPFADE midcap (gf_mid-) joins C4 + RSI(2) in the 30% swing book.
+        assert settings_service.STRATEGY_SETTINGS_SCHEMA["swing_order_label_prefixes"].default == \
+            '["sl_short-", "rsi2-", "gf_mid-"]'
 
     def test_parse_json_list_fail_closed(self):
         assert ap.parse_json_list('["sl_short-"]', ()) == ("sl_short-",)
@@ -297,3 +299,177 @@ class TestSmartBotWiring:
             == OBS_001_EXECUTION_CHECK_ORDER.index("position_concentration_check") + 1
         )
         assert OBS_001_EXECUTION_CHECK_ORDER[-1] == "quantity_post_sizing_check"
+
+
+# ── 6. GAPFADE midcap (gf_mid-) joins the 30% swing book ────────────────────
+# The GAPFADE midcap paper runner (/root/strat-gapfade) tags its Alpaca
+# paper orders gf_mid-. It is an external short-term swing runner exactly
+# like C4 (sl_short-) and RSI(2) (rsi2-): its positions are SWING, count
+# toward the 30% short-term book, and stay untouchable by the main bot.
+
+class TestGapfadeMidcapAttribution:
+    def test_defaults_include_all_three_runners(self):
+        assert ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES == (
+            "sl_short-", "rsi2-", "gf_mid-",
+        )
+        # Existing runner prefixes are kept, never renamed.
+        assert "sl_short-" in ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES
+        assert "rsi2-" in ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES
+
+    def test_gf_mid_entry_and_exit_suffix_are_swing(self):
+        orders = [
+            {"client_order_id": "gf_mid-AAA-buy-20261102-1", "symbol": "AAA"},
+            {"client_order_id": "gf_mid-AAA-sell-20261103-1", "symbol": "AAA"},
+            # same shape as C4 / RSI(2) stop suffixes stay swing too
+            {"client_order_id": "gf_mid-BBB-sell-20261105-2", "symbol": "BBB"},
+            {"client_order_id": "sl_short-AMD-s-20261102", "symbol": "AMD"},
+            {"client_order_id": "rsi2-AVTR-20261105-2", "symbol": "AVTR"},
+            {"client_order_id": "AAPL-20261105-991", "symbol": "AAPL"},
+        ]
+        syms = ap.swing_symbols_from_orders(orders, ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES)
+        assert syms == {"AAA", "BBB", "AMD", "AVTR"}
+        assert "AAPL" not in syms
+
+    def test_gf_mid_prefix_recognized_alone_when_no_orders(self):
+        # generic order objects (attribute style) work the same way
+        orders = [_order("gf_mid-ZZZ-buy-20261102-1", "ZZZ")]
+        assert ap.swing_symbols_from_orders(
+            orders, ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES
+        ) == {"ZZZ"}
+        assert ap.is_swing_labeled_order(
+            orders[0], ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES
+        ) is True
+        # gf_mid- without the dash is NOT a swing label (no prefix bleed)
+        assert ap.is_swing_labeled_order(
+            _order("gf_midZZZ", "ZZZ"), ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES
+        ) is False
+
+    def test_gf_mid_position_classified_swing_not_long_term(self):
+        positions = [
+            _position("AAA", 10, 2_000.0),    # gf_mid- (GAPFADE midcap)
+            _position("AMD", 22, 11_061.38),  # sl_short- (C4)
+            _position("CMA", 17, 1_507.39),   # own (ledger-proven)
+            _position("AVTR", 679, 10_711.23),  # unattributed
+        ]
+        out = ap.classify_positions(
+            positions,
+            own_net={"CMA": 17.0},
+            swing_symbols={"AAA", "AMD"},
+        )
+        assert out["by_symbol"]["AAA"]["classification"] == ap.SWING
+        assert out["by_symbol"]["AMD"]["classification"] == ap.SWING
+        assert out["by_symbol"]["CMA"]["classification"] == ap.OWN
+        assert out["by_symbol"]["AVTR"]["classification"] == ap.UNATTRIBUTED
+        # gf_mid- counts in swing_mv, NOT in the long-term book
+        assert out["swing_mv"] == pytest.approx(2_000.0 + 11_061.38)
+        assert out["long_term_book_mv"] == pytest.approx(1_507.39 + 10_711.23)
+        assert out["unattributed_mv"] == pytest.approx(10_711.23)
+
+    def test_fail_closed_ownership_unchanged_with_gf_mid(self):
+        bot = _make_bot()
+        bot.trading_client = SimpleNamespace(
+            get_orders=lambda: [
+                _order("gf_mid-AAA-buy-20261102-1", "AAA"),
+                _order("sl_short-AMD-s-20261102", "AMD"),
+                _order("rsi2-AVTR-20261105-2", "AVTR"),
+            ]
+        )
+        bot._swing_symbols_cache = (set(), 0.0)
+        bot._own_net_cache = ({}, 0.0)
+        bot.db = None  # no ledger -> nothing is provably own
+        swing = bot.get_swing_runner_symbols(force_refresh=True)
+        assert swing == {"AAA", "AMD", "AVTR"}
+        for sym in ("AAA", "AMD", "AVTR"):
+            assert bot._is_foreign_or_unproven_position(sym) is True
+        # an unlabeled, non-ledger position stays untouchable AND budget-counted
+        assert bot._is_foreign_or_unproven_position("UNLAB") is True
+
+    def test_gf_mid_counts_in_budget_view_swing_book(self):
+        bot = _make_bot()
+        _prime_caches(bot, swing_symbols={"AAA"}, own_net={"CMA": 17.0})
+        bot.trading_client = SimpleNamespace(
+            get_account=lambda: SimpleNamespace(portfolio_value=100_000.0, cash=50_000.0),
+            get_all_positions=lambda: [
+                _position("AAA", 10, 2_000.0),   # gf_mid- swing
+                _position("CMA", 17, 1_507.39),  # own
+                _position("AVTR", 100, 5_000.0),  # unattributed
+            ],
+        )
+        view = bot.get_allocation_budget_view()
+        assert view["swing_mv"] == pytest.approx(2_000.0)
+        assert view["long_term_book_mv"] == pytest.approx(1_507.39 + 5_000.0)
+
+
+class TestGapfadeSettingsUpgrade:
+    """Existing deployments that stored the old two-prefix list must pick
+    up gf_mid-; malformed values still fail closed to the defaults."""
+
+    @pytest.fixture
+    def isolated_settings_db(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "settings.db"
+        monkeypatch.setattr(settings_service, "_DB_PATH", db_path)
+        return db_path
+
+    def test_old_two_prefix_row_is_upgraded(self, isolated_settings_db):
+        # simulate a deployed DB that persisted the pre-gf_mid- value
+        settings_service.save_typed("swing_order_label_prefixes", '["sl_short-", "rsi2-"]')
+        raw = settings_service.get("swing_order_label_prefixes")
+        assert "gf_mid-" not in raw
+        effective = settings_service.load_effective_strategy_settings()
+        prefixes = ap.normalize_swing_order_label_prefixes(
+            effective["swing_order_label_prefixes"],
+            ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES,
+        )
+        assert prefixes == ("sl_short-", "rsi2-", "gf_mid-")
+        # the bot resolves the same upgraded list from the same setting
+        bot = _make_bot()
+        bot.swing_order_label_prefixes = effective["swing_order_label_prefixes"]
+        assert bot._swing_order_prefixes() == ("sl_short-", "rsi2-", "gf_mid-")
+
+    def test_explicit_custom_list_is_respected(self, isolated_settings_db):
+        settings_service.save_typed("swing_order_label_prefixes", '["only-"]')
+        effective = settings_service.load_effective_strategy_settings()
+        assert ap.normalize_swing_order_label_prefixes(
+            effective["swing_order_label_prefixes"],
+            ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES,
+        ) == ("only-",)
+
+    def test_malformed_persisted_value_falls_back_to_new_defaults(
+        self, isolated_settings_db
+    ):
+        import sqlite3
+        conn = sqlite3.connect(str(isolated_settings_db))
+        conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            ("swing_order_label_prefixes", "not json"),
+        )
+        conn.commit()
+        conn.close()
+        # str-typed settings pass any persisted string through unchanged, so
+        # the unparseable row reaches the prefix resolver; there it fails
+        # closed to the authoritative defaults (which now include gf_mid-).
+        effective = settings_service.load_effective_strategy_settings()
+        assert effective["swing_order_label_prefixes"] == "not json"
+        assert ap.normalize_swing_order_label_prefixes(
+            effective["swing_order_label_prefixes"],
+            ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES,
+        ) == ("sl_short-", "rsi2-", "gf_mid-")
+        # and parse_json_list itself still fails closed on malformed input
+        assert ap.normalize_swing_order_label_prefixes(
+            "not json", ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES
+        ) == ("sl_short-", "rsi2-", "gf_mid-")
+
+    def test_bot_constructor_default_contains_gf_mid(self):
+        from src.core import smart_bot as smart_bot_module
+        import inspect
+        src = inspect.getsource(smart_bot_module.SmartTradingBot.__init__)
+        lines = [ln for ln in src.splitlines() if "self.swing_order_label_prefixes" in ln]
+        assert len(lines) == 1, lines
+        # evaluated as a literal JSON list: same value the schema ships
+        literal = lines[0].split("=", 1)[1].strip()
+        if literal[:1] in ("'", '"'):
+            literal = literal[1:]
+        if literal[-1:] in ("'", '"'):
+            literal = literal[:-1]
+        assert ap.parse_json_list(literal, ()) == ap.DEFAULT_SWING_ORDER_LABEL_PREFIXES

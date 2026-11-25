@@ -20,8 +20,8 @@ Safety contract (deliberately stricter than EXEC-004's reconciler):
   get_all_positions() only. No submit/cancel/replace call exists here.
 - Swing-runner fills are NEVER backfilled into the main ledger. A fill
   is swing-owned when its client_order_id starts with a configured
-  swing label prefix (default 'sl_short-' for C4, 'rsi2-' for RSI(2))
-  OR its order id / client_order_id appears in a runner SQLite DB
+  swing label prefix (default 'sl_short-' for C4, 'rsi2-' for RSI(2),
+  'gf_mid-' for the GAPFADE midcap paper runner) OR its order id / client_order_id appears in a runner SQLite DB
   (default /root/strat-swing/experiments/strat_023/live_paper.db,
   opened read-only via a mode=ro URI).
 - REFUSES instead of guessing: for every requested symbol the projected

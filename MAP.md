@@ -15,6 +15,11 @@ short; link files, not paragraphs.
   prefixes + runner SQLite DBs, read-only), ledger-proven ownership
   (FILLED rows only), position classification (OWN / SWING /
   UNATTRIBUTED; unattributed = untouchable but budget-counted).
+  `DEFAULT_SWING_ORDER_LABEL_PREFIXES` = `sl_short-` (C4), `rsi2-`
+  (RSI(2)), `gf_mid-` (GAPFADE midcap). `normalize_swing_order_label_prefixes`
+  widens a persisted value that exactly equals a superseded shipped default
+  (`LEGACY_SWING_ORDER_LABEL_PREFIXES`) to the current defaults; custom
+  lists and malformed values are untouched / fail closed.
 - `src/core/settings_service.py` — `STRATEGY_SETTINGS_SCHEMA` is the
   authoritative default source for every tunable (incl.
   `long_term_budget_pct`, `cash_floor_pct`,
@@ -153,11 +158,17 @@ short; link files, not paragraphs.
   timers `[Install] WantedBy=timers.target`, services none;
   `WorkingDirectory=/root/strat-gapfade`, the post-merge checkout; install
   steps in the README are NOT EXECUTED). Tests:
-  `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop}.py`.
+  `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop,broker}.py`
+  plus `tests/test_gapfade_systemd_units.py` (unit templates: ExecStart uses
+  `/root/strat-gapfade/.venv/bin/python`, services stay un-enableable).
 
 ## External (read-only for this bot)
 - C4 runner: /root/strat-swing (DB
   experiments/strat_023/live_paper.db, labels `sl_short-*`).
+- GAPFADE midcap paper runner: /root/strat-gapfade (labels `gf_mid-*`;
+  checkout with its own `.venv`; state under
+  /root/trading-data/gapfade-midcap-paper). Attribution is order-label
+  only — no runner DB is configured for it.
 - RSI(2) runner: /root/deploy/rsi2-swing (labels `rsi2-*`; its
   logs/state.json contains unfilled dry-run shadow entries — do NOT
   trust for attribution).
