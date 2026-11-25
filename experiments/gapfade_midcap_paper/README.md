@@ -7,8 +7,10 @@ state file, and its orders carry the client_order_id prefix `gf_mid-`.
 Status: **wired, NOT enabled** — frozen decision logic, guards, dry-run CLI,
 state, shadow logging, the real-vs-shadow PnL report (`report_pnl.py`), the
 early-stop **flag** (`early_stop.py`; config/file only, trips nothing) and
-**disabled** systemd units. No unit is installed, enabled, started or
-restarted; nothing here is deployed. Paper only.
+**disabled** systemd user-unit templates. The live path fetches its own data
+(MDY membership, yfinance earnings, Alpaca PAPER market data). No unit is
+installed, enabled, started or restarted; nothing here is deployed. Paper
+only.
 
 ## Frozen rule (do not tune)
 
@@ -256,13 +258,13 @@ temp dirs and never touch a live DB.
 
 ## Status checklist
 
-- [x] S&P 400 membership injected (refresh each pass — see Sources)
+- [x] S&P 400 membership fetched from MDY holdings each live run (cached)
 - [x] Earnings calendar files, "no coverage ⇒ skip" enforced in `rules`
 - [x] Expected open (~09:20 ET), prior close, official bars, ATR14
 - [x] PAPER broker behind `broker.Broker`, shadow logging
 - [x] PnL report (`report_pnl.py`) and early-stop flag (`early_stop.py`)
 - [ ] Cost notes validated against real fills (uses 27 bps/side; 10 via flag)
-- [ ] Systemd units — committed disabled; enable commands NOT EXECUTED
+- [ ] Systemd user units — templates committed; enable commands NOT EXECUTED
 
 ## Wiring points
 
