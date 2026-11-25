@@ -97,7 +97,7 @@ is never opened by this experiment.
 | Fact | Source | Notes |
 | --- | --- | --- |
 | Universe (S&P 400) | live: `membership.py` — PRIMARY Wikipedia "List of S&P 400 companies", FALLBACK Slickcharts `/sp400` (both parsed from the Symbol column, stdlib only); must yield 380-420 unique symbols or the source is skipped; cached `sp400_members.txt`, >10 days stale ⇒ refuse; offline: inputs JSON `universe` + `eligible_clean` | membership is FETCHED each run when live (cached), never hardcoded. The old SSGA MDY CSV is dead (HTTP 404) and iShares IJH is 403 from this box |
-| Prior close, expected open (~09:20 ET) | live: Alpaca PAPER snapshot (`marketdata.py`); offline: inputs JSON `prior_close`, `expected_open`, `all_expected_opens` | a pre-market print is only a reference, never a fill |
+| Prior close, expected open (~09:20 ET) | live: Alpaca PAPER snapshot — `GET /v2/stocks/snapshots?feed=iex`, batched 200 symbols/request (`alpaca.snapshot_prices`, mapped in `marketdata.py`; `latestTrade.p`, then `minuteBar.c`); offline: inputs JSON `prior_close`, `expected_open`, `all_expected_opens` | a pre-market print is only a reference, never a fill |
 | Official bars, ATR14 | Alpaca PAPER daily bars (`official_bar`, `true_ranges`) | ATR14 as of t−1; exits judged on official bars only |
 | Earnings (t−1, t, t+1) | live: Yahoo Finance via `yfinance` (`earnings.py`, cached, refreshed ~daily); offline: inputs JSON `earnings` | no coverage ⇒ skip (fail closed) |
 | Volatility quintiles | live: Alpaca PAPER closes; offline: inputs JSON `vols` (60-day close-to-close) | vol-matched shadow: same quintile, nearest rank when empty |

@@ -299,8 +299,8 @@ def test_marketdata_prior_close_open_and_atr():
     routes = {
         ("GET", "/v2/stocks/bars"): lambda p, b: Resp(200, {
             "bars": _bars_payload("AAA", rows)}),
-        ("GET", "/v1beta1/stocks/snapshots"): lambda p, b: Resp(200, {
-            "snapshots": {"AAA": {"latestTrade": {"p": 10.2}}}}),
+        ("GET", "/v2/stocks/snapshots"): lambda p, b: Resp(200, {
+            "AAA": {"latestTrade": {"p": 10.2}}}),
     }
     data = marketdata.AlpacaMarketData(client(routes), cache_dir="/tmp/x",
                                        members=["AAA"], today=date(2026, 11, 25))
@@ -325,8 +325,7 @@ def test_eligible_clean_requires_calendar_and_bars():
     routes = {
         ("GET", "/v2/stocks/bars"): lambda p, b: Resp(200, {
             "bars": _bars_payload("AAA", rows)}),
-        ("GET", "/v1beta1/stocks/snapshots"): lambda p, b: Resp(
-            200, {"snapshots": {}}),
+        ("GET", "/v2/stocks/snapshots"): lambda p, b: Resp(200, {}),
     }
     data = marketdata.AlpacaMarketData(client(routes), cache_dir="/tmp/x",
                                        members=["AAA", "BBB"],

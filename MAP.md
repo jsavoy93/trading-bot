@@ -170,6 +170,13 @@ short; link files, not paragraphs.
   iShares IJH is 403 from this box — do not reintroduce them.
   Tests: `pytest tests/test_gapfade_*.py -q` with `/usr/bin/python3`'s
   pytest (the runner venv has no pytest).
+  GAPFADE-SNAP-FIX: market data uses Alpaca's v2 data API only —
+  `GET /v2/stocks/bars` (daily) and `GET /v2/stocks/snapshots?feed=iex`
+  (`alpaca.snapshot_prices`, batched `SNAPSHOT_BATCH_SIZE`=200 symbols
+  per request; flat `{SYM: {latestTrade, minuteBar, prevDailyBar, ...}}`
+  body). The beta `/v1beta1/stocks/snapshots` endpoint 404s and must not
+  come back; `tests/test_gapfade_snapshots_v2.py` guards it (fixture
+  `tests/fixtures/alpaca_v2_snapshots_iex.json`).
 
 ## External (read-only for this bot)
 - C4 runner: /root/strat-swing (DB
