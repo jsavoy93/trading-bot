@@ -139,6 +139,15 @@ short; link files, not paragraphs.
 - `tests/test_ledger_backfill_001.py` — regression suite for the tool plus
   the case-insensitive `_broker_position_qty` symbol match.
 
+## Experiments (paper-only, separate state)
+- `experiments/gapfade_midcap_paper/` — GAPFADE-MIDCAP-PAPER: S&P 400
+  gap-fade experiment (gap <= -4% pre-market, profit-at-open / 2xATR14
+  close stop / 3-day cap exits, two shadow trades per entry). PAPER only;
+  labels `gf_mid-*`; state under /root/trading-data/gapfade-midcap-paper.
+  `rules.py` (pure decisions), `guards.py` (paper guard, exit 2),
+  `runner.py` (CLI, dry run default), `state.py`, `broker.py` (part-2
+  boundary, stubs). Tests: `tests/test_gapfade_{rules,guards,runner}.py`.
+
 ## External (read-only for this bot)
 - C4 runner: /root/strat-swing (DB
   experiments/strat_023/live_paper.db, labels `sl_short-*`).
