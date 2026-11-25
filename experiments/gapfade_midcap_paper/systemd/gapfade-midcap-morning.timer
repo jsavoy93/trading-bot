@@ -1,0 +1,14 @@
+# GAPFADE-MIDCAP-PAPER — morning pass timer (09:20 America/New_York).
+# USER unit TEMPLATE: not installed/enabled/started by anything in this repo.
+[Unit]
+Description=GAPFADE midcap paper trial — morning pass (09:20 America/New_York, before the 09:28 ET deadline)
+
+[Timer]
+OnCalendar=Mon..Fri 09:20 America/New_York
+# a missed run after a reboot should not pile up into the 09:28 deadline
+Persistent=false
+AccuracySec=1min
+Unit=gapfade-midcap-morning.service
+
+[Install]
+WantedBy=timers.target

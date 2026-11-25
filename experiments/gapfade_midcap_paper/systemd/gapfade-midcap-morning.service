@@ -1,0 +1,18 @@
+# GAPFADE-MIDCAP-PAPER — morning pass. USER unit TEMPLATE: committed
+# disabled; nothing here installs, enables or starts it (see ../README.md).
+# Paper only: TRADING_BOT_PAPER_ONLY=1 here, and the runner aborts on any
+# trading URL other than the hard-locked paper-api.alpaca.markets.
+# WorkingDirectory is the stable checkout Josh creates after this merges:
+#   git clone --branch main https://github.com/jsavoy93/trading-bot.git /root/strat-gapfade
+[Unit]
+Description=GAPFADE midcap paper trial — morning pass (paper only)
+
+[Service]
+Type=oneshot
+Environment=TRADING_BOT_PAPER_ONLY=1
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/root/strat-gapfade
+ExecStart=/usr/bin/env python3 -m experiments.gapfade_midcap_paper.runner --pass morning --execute
+# KILL SWITCH: touch /root/strat-gapfade/experiments/gapfade_midcap_paper/KILL_GAPFADE_MIDCAP_PAPER
+# makes --execute exit 2 before any order. Remove the file to resume.
+Nice=10
