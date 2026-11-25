@@ -1,10 +1,11 @@
-"""REBAL-60-30-10 — main-bot long-term allocation policy.
+"""REBAL-40-50-10 — main-bot long-term allocation policy.
 
-Approved split (Josh, 2026-11-09): 60% of account equity is the main
-SmartBot's long-term budget, 30% belongs to the external short-term
-swing runners (C4 at /root/strat-swing, RSI(2) at /root/deploy/rsi2-swing,
-and the GAPFADE midcap paper trial at /root/strat-gapfade; all share the
-SAME Alpaca paper account), and at least 10% of equity must stay in cash.
+Approved split (Josh, 2026-11-25; supersedes the 2026-11-09 60/30/10 split):
+40% of account equity is the main SmartBot's long-term budget, 50% belongs
+to the external short-term swing runners (C4 at /root/strat-swing, RSI(2)
+at /root/deploy/rsi2-swing, and the GAPFADE midcap paper trial at
+/root/strat-gapfade; all share the SAME Alpaca paper account), and at least
+10% of equity must stay in cash.
 
 Contracts (must NOT be weakened):
 
@@ -64,6 +65,13 @@ LEGACY_SWING_ORDER_LABEL_PREFIXES: Tuple[Tuple[str, ...], ...] = (
     ("sl_short-", "rsi2-"),
 )
 
+#: REBAL-40-50-10 (Josh, 2026-11-25): shipped default of the main bot's
+#: long-term allocation budget before the 60/30/10 -> 40/50/10 rebalance.
+#: A persisted value that EXACTLY equals this "never customized" value is a
+#: one-time candidate for the normalization below; anything else is respected.
+LEGACY_LONG_TERM_BUDGET_PCT: float = 60.0
+LONG_TERM_BUDGET_PCT_KEY: str = "long_term_budget_pct"
+
 #: Ledger row status that counts as a confirmed fill.
 _FILLED_STATUS = "FILLED"
 
@@ -119,6 +127,95 @@ def normalize_swing_order_label_prefixes(
         )
         return tuple(defaults)
     return prefixes
+
+
+# ── Long-term budget migration (REBAL-40-50-10) ─────────────────────────────
+
+def is_legacy_long_term_budget_pct(raw: Any) -> bool:
+    """True only for a persisted value that EXACTLY equals the old default.
+
+    ``60`` and ``"60.0"`` are the legacy shipped default (never customized).
+    Custom values (e.g. 50.0), out-of-range values and malformed values are
+    NOT legacy: they are left exactly as they are (fail closed — the caller
+    keeps whatever the normal settings load produced).
+    """
+    if raw is None or isinstance(raw, bool):
+        return False
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return value == float(LEGACY_LONG_TERM_BUDGET_PCT)
+
+
+def normalize_long_term_budget_pct_rows(
+    rows: Iterable[Any], new_default: Any
+) -> Tuple[List[Any], Optional[float]]:
+    """Pure decision helper: which settings rows to rewrite (no side effects).
+
+    ``rows`` are ``(key, value)`` or ``(key, value, ...)`` sequences from the
+    settings table limited to ``LONG_TERM_BUDGET_PCT_KEY``. Returns
+    ``(rows_to_rewrite, first_legacy_value)``; only rows whose value is the
+    legacy default are returned, so a second run over already-normalized
+    rows rewrites nothing (idempotent).
+    """
+    to_rewrite: List[Any] = []
+    first: Optional[float] = None
+    for row in rows:
+        if not row or str(row[0]) != LONG_TERM_BUDGET_PCT_KEY:
+            continue
+        value = row[1] if len(row) > 1 else None
+        if is_legacy_long_term_budget_pct(value):
+            to_rewrite.append(row)
+            if first is None:
+                first = float(value)
+    return to_rewrite, first
+
+
+def normalize_persisted_long_term_budget_pct(
+    settings_service_module: Any,
+    new_default: Any,
+    db_path: Any = None,
+) -> bool:
+    """One-time, explicit, idempotent rewrite of the legacy 60.0 -> ``new_default``.
+
+    Runs ONLY when the persisted value exactly equals the legacy shipped
+    default (:data:`LEGACY_LONG_TERM_BUDGET_PCT`). The rewrite goes through
+    the app's normal runtime DB-write path (``settings_service.save_typed``),
+    so the new value is schema-validated and serialized like any other
+    setting write. Custom values and malformed values are never touched.
+
+    Returns True when a row was rewritten this call, False when there was
+    nothing to do (no row, custom value, or a second run — no-op). Never
+    raises: any DB/validation error logs a warning and leaves the DB alone.
+    """
+    try:
+        conn = settings_service_module._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT key, value FROM settings WHERE key = ?",
+                (LONG_TERM_BUDGET_PCT_KEY,),
+            ).fetchall()
+        finally:
+            conn.close()
+        to_rewrite, legacy_value = normalize_long_term_budget_pct_rows(
+            [tuple(row) for row in rows], new_default
+        )
+        if not to_rewrite:
+            return False
+        logger.info(
+            "allocation_policy: REBAL-40-50-10 normalizing persisted %s "
+            "from legacy default %r to %r",
+            LONG_TERM_BUDGET_PCT_KEY, legacy_value, new_default,
+        )
+        settings_service_module.save_typed(LONG_TERM_BUDGET_PCT_KEY, new_default)
+        return True
+    except Exception as exc:  # fail closed: never break a trading loop
+        logger.warning(
+            "allocation_policy: %s normalization skipped (%s)",
+            LONG_TERM_BUDGET_PCT_KEY, exc.__class__.__name__,
+        )
+        return False
 
 
 # ── Swing-runner attribution ─────────────────────────────────────────────────

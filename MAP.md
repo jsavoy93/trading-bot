@@ -10,8 +10,9 @@ short; link files, not paragraphs.
   `get_allocation_budget_view` reporting), sell scan
   (`analyze_current_positions_for_selling`), rotation
   (`get_position_scores`).
-- `src/core/allocation_policy.py` — REBAL-60-30-10 pure-math allocation
-  policy: budget/cash-floor math, swing-runner attribution (order-label
+- `src/core/allocation_policy.py` — REBAL-40-50-10 pure-math allocation
+  policy (Josh, 2026-11-25; supersedes the 2026-11-09 REBAL-60-30-10
+  split): budget/cash-floor math, swing-runner attribution (order-label
   prefixes + runner SQLite DBs, read-only), ledger-proven ownership
   (FILLED rows only), position classification (OWN / SWING /
   UNATTRIBUTED; unattributed = untouchable but budget-counted).
@@ -20,11 +21,22 @@ short; link files, not paragraphs.
   widens a persisted value that exactly equals a superseded shipped default
   (`LEGACY_SWING_ORDER_LABEL_PREFIXES`) to the current defaults; custom
   lists and malformed values are untouched / fail closed.
+  REBAL-40-50-10 also ships `normalize_persisted_long_term_budget_pct`:
+  a one-time, explicit, idempotent rewrite of a persisted
+  `long_term_budget_pct` that exactly equals the old shipped default
+  (`LEGACY_LONG_TERM_BUDGET_PCT` = 60.0) to the schema default (40.0)
+  through `settings_service.save_typed`; custom/malformed values are
+  untouched and a second run is a no-op. Called once from the bot's
+  `_load_effective_strategy_settings`.
 - `src/core/settings_service.py` — `STRATEGY_SETTINGS_SCHEMA` is the
   authoritative default source for every tunable (incl.
-  `long_term_budget_pct`, `cash_floor_pct`,
-  `swing_order_label_prefixes`, `swing_runner_db_paths`);
+  `long_term_budget_pct` default **40.0**, `cash_floor_pct` default
+  **10.0** — the remaining **50%** is the external short-term swing
+  sleeve, `swing_order_label_prefixes`, `swing_runner_db_paths`);
   DB overrides applied via `load_effective_strategy_settings`.
+  NOTE: `smart_bot.py` imports `core.*` (src on sys.path), i.e. a SECOND
+  module instance of these files; patch both when a test needs the bot's
+  objects.
 - `src/core/market_calendar.py` — DB-GROWTH-FIX: DST-correct
   `America/New_York` market calendar (session 09:30–16:00 ET, 13:00 ET
   early closes, NYSE holiday lists for 2024–2027). Pure helper:

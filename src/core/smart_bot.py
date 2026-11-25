@@ -771,12 +771,12 @@ class SmartTradingBot:
         self.risk_per_trade = self.atr_position_size_pct / 100  # Decimal used by sizing math
         self.max_position_pct = 0.05  # Max 5% of portfolio in single position
 
-        # REBAL-60-30-10 — long-term allocation budget. These are CONFIG
+        # REBAL-40-50-10 — long-term allocation budget. These are CONFIG
         # values: authoritative defaults live in settings_service's
         # STRATEGY_SETTINGS_SCHEMA and DB overrides are applied by
         # _load_effective_strategy_settings (constructor defaults here
         # exist so that override mechanism can find the attributes).
-        self.long_term_budget_pct = 60.0    # % of equity: this bot's long-term budget
+        self.long_term_budget_pct = 40.0    # % of equity: this bot's long-term budget
         self.cash_floor_pct = 10.0          # % of equity that must stay in cash
         self.swing_order_label_prefixes = '["sl_short-", "rsi2-", "gf_mid-"]'
         self.swing_runner_db_paths = "[]"
@@ -1329,6 +1329,22 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
         non-secret strategy setting keys from the authoritative schema.
         """
         try:
+            # REBAL-40-50-10: one-time, explicit, idempotent normalization of a
+            # persisted LEGACY default (exactly 60.0) to the current schema
+            # default. Custom/malformed values are untouched; a second run is a
+            # no-op. Models normalize_swing_order_label_prefixes.
+            try:
+                allocation_policy.normalize_persisted_long_term_budget_pct(
+                    settings_service,
+                    settings_service.STRATEGY_SETTINGS_SCHEMA[
+                        allocation_policy.LONG_TERM_BUDGET_PCT_KEY
+                    ].default,
+                )
+            except Exception as migration_error:  # never block startup
+                logging.warning(
+                    "long_term_budget_pct normalization skipped: %s",
+                    migration_error,
+                )
             effective_settings = settings_service.load_effective_strategy_settings()
             for key, value in effective_settings.items():
                 if hasattr(self, key):
@@ -5259,7 +5275,7 @@ CREATE POLICY "Allow all operations" ON trades FOR ALL USING (true);""")
             logging.debug(f"Error checking daily loss limit: {e}")
             return False, self.daily_loss_pct, self.daily_starting_value or 0.0
 
-    # ── REBAL-60-30-10: allocation budget + position attribution ─────────────
+    # ── REBAL-40-50-10: allocation budget + position attribution ─────────────
     # Contracts live in core/allocation_policy.py: foreign swing-runner
     # positions are NEVER sold/resized/counted as own; ownership must be
     # ledger-proven; the cash floor is a hard BUY-side constraint; no

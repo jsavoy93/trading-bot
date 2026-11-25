@@ -2,9 +2,9 @@
 REBAL-60-30-10 — long-term allocation budget, cash floor, and
 swing-runner position isolation.
 
-Approved split (Josh, 2026-11-09): 60% long-term (this bot), 30%
-short-term (external swing runners C4 + RSI(2) + GAPFADE midcap
-sharing the same Alpaca paper account), 10% cash floor.
+Approved split (Josh, 2026-11-25; was 60/30/10 on 2026-11-09): 40%
+long-term (this bot), 50% short-term (external swing runners C4 + RSI(2)
++ GAPFADE midcap sharing the same Alpaca paper account), 10% cash floor.
 
 Contracts under test (see src/core/allocation_policy.py):
 - Pure budget math; no broker calls.
@@ -55,7 +55,7 @@ def _ledger_row(symbol, side, qty, status="FILLED"):
 def _make_bot():
     """Bot skeleton without __init__ (no Alpaca creds, no DB, no network)."""
     bot = SmartTradingBot.__new__(SmartTradingBot)
-    bot.long_term_budget_pct = 60.0
+    bot.long_term_budget_pct = 40.0
     bot.cash_floor_pct = 10.0
     bot.swing_order_label_prefixes = '["sl_short-", "rsi2-", "gf_mid-"]'
     bot.swing_runner_db_paths = "[]"
@@ -73,7 +73,7 @@ def _prime_caches(bot, swing_symbols, own_net):
 
 class TestBudgetMath:
     def test_long_term_budget(self):
-        assert ap.long_term_budget(106_622.46, 60.0) == pytest.approx(63_973.476)
+        assert ap.long_term_budget(106_622.46, 40.0) == pytest.approx(42_648.984)
 
     def test_cash_floor_amount(self):
         assert ap.cash_floor_amount(106_622.46, 10.0) == pytest.approx(10_662.246)
@@ -194,9 +194,9 @@ class TestConfigNotHardCoded:
             "swing_runner_db_paths",
         ):
             assert key in settings_service.STRATEGY_SETTINGS_SCHEMA, key
-        assert settings_service.STRATEGY_SETTINGS_SCHEMA["long_term_budget_pct"].default == 60.0
+        assert settings_service.STRATEGY_SETTINGS_SCHEMA["long_term_budget_pct"].default == 40.0
         assert settings_service.STRATEGY_SETTINGS_SCHEMA["cash_floor_pct"].default == 10.0
-        # GAPFADE midcap (gf_mid-) joins C4 + RSI(2) in the 30% swing book.
+        # GAPFADE midcap (gf_mid-) joins C4 + RSI(2) in the 50% swing book.
         assert settings_service.STRATEGY_SETTINGS_SCHEMA["swing_order_label_prefixes"].default == \
             '["sl_short-", "rsi2-", "gf_mid-"]'
 
@@ -245,10 +245,10 @@ class TestSmartBotWiring:
         )
         view = bot.get_allocation_budget_view()
         assert view["equity"] == pytest.approx(106_622.46)
-        assert view["long_term_budget"] == pytest.approx(63_973.476)
+        assert view["long_term_budget"] == pytest.approx(42_648.984)
         assert view["cash_floor"] == pytest.approx(10_662.246)
         assert view["long_term_book_mv"] == pytest.approx(1_507.39 + 10_711.23)
-        room = 63_973.476 - 12_218.62
+        room = 42_648.984 - 12_218.62
         assert view["budget_room"] == pytest.approx(room, rel=1e-6)
         assert view["max_buy_cost"] == pytest.approx(min(room, 81_090.96 - 10_662.246), rel=1e-6)
 
@@ -301,11 +301,11 @@ class TestSmartBotWiring:
         assert OBS_001_EXECUTION_CHECK_ORDER[-1] == "quantity_post_sizing_check"
 
 
-# ── 6. GAPFADE midcap (gf_mid-) joins the 30% swing book ────────────────────
+# ── 6. GAPFADE midcap (gf_mid-) joins the 50% swing book ────────────────────
 # The GAPFADE midcap paper runner (/root/strat-gapfade) tags its Alpaca
 # paper orders gf_mid-. It is an external short-term swing runner exactly
 # like C4 (sl_short-) and RSI(2) (rsi2-): its positions are SWING, count
-# toward the 30% short-term book, and stay untouchable by the main bot.
+# toward the 50% short-term book, and stay untouchable by the main bot.
 
 class TestGapfadeMidcapAttribution:
     def test_defaults_include_all_three_runners(self):

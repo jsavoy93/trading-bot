@@ -157,20 +157,22 @@ STRATEGY_SETTINGS_SCHEMA: Dict[str, StrategySetting] = {
         "daily_loss_limit_pct", 5.0, "float", 0.5, 20.0, 0.5,
         "Max daily loss before stopping.", "Risk & Sizing"
     ),
-    # REBAL-60-30-10 — approved split (Josh, 2026-11-09):
-    # 60% long-term (this bot), 30% short-term (external swing runners
+    # REBAL-40-50-10 — approved split (Josh, 2026-11-25; was 60/30/10):
+    # 40% long-term (this bot), 50% short-term (external swing runners
     # C4 + RSI(2) + GAPFADE midcap sharing the same paper account),
-    # 10% cash floor.
+    # 10% cash floor. A persisted value that still equals the old shipped
+    # default 60.0 is normalized once to the new default by
+    # allocation_policy.normalize_persisted_long_term_budget_pct().
     "long_term_budget_pct": StrategySetting(
-        "long_term_budget_pct", 60.0, "float", 0.0, 100.0, 1.0,
-        "Main bot long-term budget as % of account equity (REBAL-60-30-10). "
+        "long_term_budget_pct", 40.0, "float", 0.0, 100.0, 1.0,
+        "Main bot long-term budget as % of account equity (REBAL-40-50-10). "
         "The bot's own positions may never exceed this budget.",
         "Allocation Budget",
     ),
     "cash_floor_pct": StrategySetting(
         "cash_floor_pct", 10.0, "float", 0.0, 50.0, 0.5,
         "Minimum % of account equity kept in cash; main-bot BUYs never "
-        "breach this floor (REBAL-60-30-10).",
+        "breach this floor (REBAL-40-50-10).",
         "Allocation Budget",
     ),
     "swing_order_label_prefixes": StrategySetting(
@@ -310,6 +312,9 @@ def save(key: str, value: Any) -> None:
             (key, str(value)),
         )
         conn.commit()
+        # Close inside the try: a commit on a WAL database is only durable
+        # once the handle is closed/checkpointed, and a leaked handle must
+        # never make a caller think a write was persisted when it was not.
         conn.close()
     except Exception as e:
         log.error(f"settings_service.save({key!r}, {value!r}) failed: {e}")
