@@ -37,6 +37,7 @@ def _empty() -> dict:
         "order_ids": [],      # client_order_ids already generated/submitted
         "intents": [],        # every intended entry/exit + fill (audit log)
         "passes": {},         # ISO date -> {'morning': ts, 'after_close': ts}
+        "early_stops": [],    # trials that tripped the paper-trial early stop
     }
 
 
@@ -128,6 +129,14 @@ class StateStore:
     def shadow_for(self, real_client_order_id: str) -> list[dict]:
         return [s for s in self.data["shadows"]
                 if s.get("real_client_order_id") == real_client_order_id]
+
+    # --- early stop (paper-trial flag only) ---
+    def add_early_stop(self, record: dict) -> None:
+        """Append one early-stop flag record (never an order or a process)."""
+        self.data["early_stops"].append(record)
+
+    def early_stops(self) -> list[dict]:
+        return self.data["early_stops"]
 
     def chosen_symbols(self) -> set[str]:
         """Symbols already used by a real entry or a shadow on any day."""
