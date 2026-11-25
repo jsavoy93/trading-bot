@@ -791,7 +791,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="DEFAULT: print intended orders, place none")
     p.add_argument("--pass", dest="pass_name", default="auto",
                    choices=["auto", "morning", "after_close"])
-    p.add_argument("--day", default=None, help="trading day YYYY-MM-DD")
+    p.add_argument("--day", default=None, help="trading day YYYY-MM-DD "
+                   "(must equal today ET in the after_close pass)")
     p.add_argument("--state-dir", default=None,
                    help="state directory (default "
                         "/root/trading-data/gapfade-midcap-paper)")
@@ -855,10 +856,109 @@ def _resolve_day(args_day, client, now) -> str:
     return past[-1] if past else today
 
 
-def _build_real_morning(args, state, client, now) -> RealMorningInputs:
+# --- holiday guard (fail closed) ----------------------------------------
+class CalendarUnavailable(RuntimeError):
+    """The Alpaca market calendar could not be read (fail closed)."""
+
+
+class _SkipToday:
+    """Sentinel: the guard decided this run must submit nothing.
+
+    A skip is a normal, quiet outcome (exit 0), never a SystemExit: a
+    SystemExit inside a function would make `main()`'s own error handling
+    look like an exit even if a caller caught one.
+    """
+
+    def __repr__(self) -> str:                      # pragma: no cover
+        return "<SkipToday>"
+
+
+_SKIP_TODAY = _SkipToday()
+
+
+def _market_calendar(client) -> dict[str, dict]:
+    """{session date: calendar entry} for TODAY +/- 40 calendar days.
+
+    Reads the Alpaca PAPER trading API `GET /v2/calendar` through the
+    existing client and keeps each session's real `open`/`close` times
+    (early closes are marked `close_early`). Any failure -- transport,
+    auth, non-list body, empty list, malformed rows -- raises
+    CalendarUnavailable: the order path must never guess a session.
+    """
+    today = _now(None).date()
+    start = (today - timedelta(days=40)).isoformat()
+    end = (today + timedelta(days=40)).isoformat()
+    try:
+        body = client.get(f"{client.base}/v2/calendar",
+                          params={"start": start, "end": end})
+    except Exception as exc:                       # noqa: BLE001 - fail closed
+        raise CalendarUnavailable(
+            f"market calendar unreadable ({type(exc).__name__}: {exc})") from exc
+    if not isinstance(body, list) or not body:
+        raise CalendarUnavailable(
+            "market calendar returned no sessions for "
+            f"{start}..{end}")
+    out: dict[str, dict] = {}
+    for item in body:
+        if not isinstance(item, dict):
+            raise CalendarUnavailable("market calendar row is not an object")
+        date_s = str(item.get("date") or "")[:10]
+        if not date_s:
+            raise CalendarUnavailable("market calendar row without a date")
+        out[date_s] = item
+    return out
+
+
+def _holiday_guard(client, pass_name: str, now) -> dict:
+    """Return today's calendar entry, or `_SKIP_TODAY` on a holiday.
+
+    Skipping is NEVER an order path: a non-trading day logs ONE clear line
+    naming the day and exits 0 with zero orders. A calendar we cannot read
+    (or a row without session times) logs an error and exits 1. The date
+    math lives entirely here -- `_resolve_day()`'s fallback is never used to
+    decide the order day.
+    """
+    cal = _market_calendar(client)
+    today = _now(now).date().isoformat()
+    session = cal.get(today)
+    if session is None:
+        print(f"{pass_name}: {today} is not an Alpaca trading day "
+              "(holiday/weekend) - skipping, 0 orders submitted",
+              file=sys.stderr)
+        return _SKIP_TODAY
+    if not (session.get("open") and session.get("close")):
+        raise CalendarUnavailable(
+            f"calendar session {today} has no open/close time")
+    return session
+
+
+def _early_close(session: dict) -> bool:
+    return bool(session.get("close_early"))
+
+
+def _session_close_hour(session: dict) -> tuple[int, int]:
+    """(hour, minute) ET of the session's real close (13:00 on early closes)."""
+    close = str(session.get("close") or "")
+    parts = close.split(":")
+    if len(parts) < 2:
+        raise CalendarUnavailable(f"calendar close time unreadable: {close!r}")
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError as exc:
+        raise CalendarUnavailable(
+            f"calendar close time unreadable: {close!r}") from exc
+
+
+def _build_real_morning(args, state, client, now,
+                        session: dict | None = None) -> RealMorningInputs:
     from experiments.gapfade_midcap_paper import earnings as earnings_mod
     from experiments.gapfade_midcap_paper import marketdata
     day = _resolve_day(getattr(args, "day", None), client, now)
+    if session is not None and day != _now(now).date().isoformat():
+        print(f"morning: resolved session {day} != today "
+              f"{_now(now).date().isoformat()} ET - skipping, 0 orders "
+              "submitted", file=sys.stderr)
+        return _SKIP_TODAY
     data = marketdata.AlpacaMarketData(
         client, Path(state.dir) / "cache", today=_now(now).date())
     universe = data.members()
@@ -897,7 +997,16 @@ def _build_real_morning(args, state, client, now) -> RealMorningInputs:
 def _build_real_after_close(args, state, client, now) -> RealAfterCloseInputs:
     from experiments.gapfade_midcap_paper import earnings as earnings_mod
     from experiments.gapfade_midcap_paper import marketdata
+    # after_close always settles TODAY's session: _resolve_day()'s
+    # last-trading-day fallback must never reach the order path (on a
+    # holiday it would settle a stale close). `_holiday_guard` has already
+    # confirmed today is a session before we get here.
     day = _resolve_day(getattr(args, "day", None), client, now)
+    today = _now(now).date().isoformat()
+    if day != today:
+        print(f"after_close: resolved session {day} != today {today} ET - "
+              "skipping, 0 orders submitted", file=sys.stderr)
+        return _SKIP_TODAY
     data = marketdata.AlpacaMarketData(
         client, Path(state.dir) / "cache", today=_now(now).date())
     symbols = sorted(set(data.members()) | set(state.positions())
@@ -937,8 +1046,22 @@ def _run_real(args, pass_name, state, now, execute: bool) -> int:
     # runs the full guard (env + locked paper URL + kill switch).
     client = broker_mod.make_client(args, for_orders=execute)
     rng = random.Random(args.seed)
+    # Holiday guard, BOTH passes, before any data load or order build.
+    # A closed session returns the skip sentinel (exit 0, zero orders); an
+    # unreadable calendar returns 1 (fail closed) -- a non-trading day can
+    # never reach an order either way.
+    try:
+        session = _holiday_guard(client, pass_name, now)
+    except CalendarUnavailable as exc:
+        print(f"runner: FAIL CLOSED - {exc}; no orders submitted",
+              file=sys.stderr)
+        return 1
+    if session is _SKIP_TODAY:
+        return 0
     if pass_name == "morning":
-        inp = _build_real_morning(args, state, client, now)
+        inp = _build_real_morning(args, state, client, now, session=session)
+        if inp is _SKIP_TODAY:
+            return 0
         now_et = _now(now)
         if execute and not within_deadline(now_et):
             print(f"morning: past the 09:28 ET deadline ({now_et.isoformat()}"
@@ -969,8 +1092,10 @@ def _run_real(args, pass_name, state, now, execute: bool) -> int:
             print("DRY RUN — zero orders placed (state unchanged).")
             return 0
         if state.pass_done(plan["day"], "morning") and not args.force_pass:
-            print(f"morning pass for {plan['day']} already ran "
-                  "(idempotent rerun: nothing to do)", file=sys.stderr)
+            print(f"morning pass for {plan['day']} already ran (idempotent "
+                  "rerun: nothing to do; --force-pass rewrites it); 0 orders "
+                  "submitted", file=sys.stderr)
+            return 0
         n = execute_morning(state, plan, broker_mod.make_broker(
             args, client=client), inp._data, inp, now=now)
         state.record_pass(plan["day"], "morning", _now(now).isoformat())
@@ -982,7 +1107,20 @@ def _run_real(args, pass_name, state, now, execute: bool) -> int:
         print(f"morning: submitted {n} OPG order(s); state saved")
         return 0
 
+    # Settle only a CLOSED session: on an early-close day that is the
+    # calendar's real close (13:00 ET), not 16:00, and never while the
+    # market is still open. Checked BEFORE any data load.
+    close_h, close_m = _session_close_hour(session)
+    now_et = _now(now)
+    if (now_et.hour, now_et.minute) < (close_h, close_m):
+        print(f"after_close: market still open until {close_h:02d}:"
+              f"{close_m:02d} ET on {now_et.date().isoformat()}"
+              f"{' (early close)' if _early_close(session) else ''} - "
+              "skipping, 0 orders submitted", file=sys.stderr)
+        return 0
     inp = _build_real_after_close(args, state, client, now)
+    if inp is _SKIP_TODAY:
+        return 0
     plan = plan_after_close(state, AfterCloseInputs(
         day=inp.day, trading_days=inp.trading_days, bars=inp.bars))
     if args.dump_json:
@@ -992,6 +1130,11 @@ def _run_real(args, pass_name, state, now, execute: bool) -> int:
         print(f"day={plan['day']} pending exits for next open: "
               f"{json.dumps(plan['pending_exits'], sort_keys=True)}")
         print("DRY RUN — zero orders placed (state unchanged).")
+        return 0
+    if state.pass_done(plan["day"], "after_close") and not args.force_pass:
+        print(f"after_close pass for {plan['day']} already ran (idempotent "
+              "rerun: nothing to do; --force-pass rewrites it); 0 orders "
+              "submitted", file=sys.stderr)
         return 0
     summary = execute_after_close(state, plan, broker_mod.make_broker(
         args, client=client), inp._data, inp)
@@ -1051,6 +1194,10 @@ def main(argv: list[str] | None = None, execute: bool | None = None,
         return guards.EXIT_GUARD_FAILED if execute else 1
     except broker_mod.alpaca.AlpacaError as exc:
         print(f"runner: Alpaca error: {exc}", file=sys.stderr)
+        return 1
+    except CalendarUnavailable as exc:
+        print(f"runner: FAIL CLOSED - {exc}; no orders submitted",
+              file=sys.stderr)
         return 1
     except broker_mod.MarketDataError as exc:
         print(f"runner: market data unavailable ({exc}); nothing submitted",

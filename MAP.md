@@ -189,6 +189,7 @@ short; link files, not paragraphs.
   `WorkingDirectory=/root/strat-gapfade`, the post-merge checkout; install
   steps in the README are NOT EXECUTED). Tests:
   `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop,broker,membership}.py`
+  plus `tests/test_gapfade_holiday_guard.py`
   plus `tests/test_gapfade_systemd_units.py` (unit templates: ExecStart uses
   `/root/strat-gapfade/.venv/bin/python`, services stay un-enableable).
   S&P 400 membership (`membership.py`): PRIMARY Wikipedia
@@ -200,6 +201,16 @@ short; link files, not paragraphs.
   iShares IJH is 403 from this box — do not reintroduce them.
   Tests: `pytest tests/test_gapfade_*.py -q` with `/usr/bin/python3`'s
   pytest (the runner venv has no pytest).
+  Holiday guard (fail closed): BOTH real passes read today's session from
+  `GET /v2/calendar` via the existing client before any data load
+  (`runner._market_calendar` / `runner._holiday_guard`). A non-session day
+  logs one line naming the day and exits 0 with zero orders; an unreadable
+  calendar exits 1 with zero orders. `_resolve_day()`'s last-trading-day
+  fallback never decides the order day (both builders also refuse when the
+  resolved date != today ET). "already ran" now STOPS submission (was
+  print-only); `--force-pass` still overrides. `after_close` gates on the
+  calendar's real close (13:00 ET on early closes), checked before inputs.
+  The timer still fires Mon-Fri; the runner owns the holiday decision.
   GAPFADE-SNAP-FIX: market data uses Alpaca's v2 data API only —
   `GET /v2/stocks/bars` (daily) and `GET /v2/stocks/snapshots?feed=iex`
   (`alpaca.snapshot_prices`, batched `SNAPSHOT_BATCH_SIZE`=200 symbols
