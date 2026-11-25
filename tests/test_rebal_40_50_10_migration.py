@@ -218,3 +218,55 @@ class TestBotStartupPath:
         SmartTradingBot._load_effective_strategy_settings(bot)
         assert bot.long_term_budget_pct == 55.0
         assert _raw_persisted(db_path) == "55.0"
+
+
+# ── 5. Log-format fix + swing sleeve cap helpers ────────────────────────────
+
+class TestMigrationLogFormat:
+    def test_rewrite_log_message_formats_with_all_args(self, isolated_settings_db, caplog):
+        """Regression: logger.info had 2 %s placeholders but 3 args."""
+        _insert_raw(isolated_settings_db, "60.0")
+        with caplog.at_level("INFO", logger=ap.logger.name):
+            assert _migrate() is True
+        msgs = [r.getMessage() for r in caplog.records
+                if "normalizing persisted" in r.getMessage()]
+        assert len(msgs) == 1
+        text = msgs[0]
+        assert ap.LONG_TERM_BUDGET_PCT_KEY in text
+        assert "60.0" in text and "40.0" in text
+        assert "%s" not in text and "{" not in text
+
+
+class TestSwingSleeveCaps:
+    def test_split_constants(self):
+        assert ap.MAIN_BUDGET_PCT == 0.40
+        assert ap.C4_SLEEVE_PCT == 0.10
+        assert ap.RSI2_SLEEVE_PCT == 0.10
+        assert ap.GAPFADE_TOTAL_CAP_PCT == 0.30
+        assert ap.SWING_SLEEVE_TOTAL_PCT == 0.50
+        assert ap.CASH_FLOOR_PCT == 0.10
+        # worst case 40 + 10 + 10 + 30 = 90 deployed, 10 cash floor
+        assert (ap.MAIN_BUDGET_PCT + ap.C4_SLEEVE_PCT + ap.RSI2_SLEEVE_PCT
+                + ap.GAPFADE_TOTAL_CAP_PCT + ap.CASH_FLOOR_PCT) == pytest.approx(1.0)
+        assert (ap.C4_SLEEVE_PCT + ap.RSI2_SLEEVE_PCT
+                + ap.GAPFADE_TOTAL_CAP_PCT) == pytest.approx(ap.SWING_SLEEVE_TOTAL_PCT)
+
+    @pytest.mark.parametrize("sleeve", [ap.C4_SLEEVE_PCT, ap.RSI2_SLEEVE_PCT,
+                                        ap.GAPFADE_TOTAL_CAP_PCT])
+    def test_cap_is_a_hard_ceiling(self, sleeve):
+        eq = 100_000.0
+        cap = eq * sleeve
+        assert ap.swing_total_cap_exceeded(cap, eq, sleeve) is True   # at cap
+        assert ap.swing_total_cap_exceeded(cap - 1.0, eq, sleeve) is False
+        assert ap.swing_entry_budget(cap - 1.0, eq, sleeve) == pytest.approx(1.0)
+        assert ap.swing_entry_budget(cap * 2, eq, sleeve) == 0.0
+
+    @pytest.mark.parametrize("exp,eq,sleeve", [
+        (None, 100_000.0, 0.10), (float("nan"), 100_000.0, 0.10),
+        (1_000.0, None, 0.10), (1_000.0, 100_000.0, "x"),
+        (1_000.0, -1.0, 0.10), (-5.0, 100_000.0, 0.10),
+        (1_000.0, 0.0, 0.10), (1_000.0, 100_000.0, 0.0),
+    ])
+    def test_cap_fails_closed(self, exp, eq, sleeve):
+        assert ap.swing_total_cap_exceeded(exp, eq, sleeve) is True
+        assert ap.swing_entry_budget(exp, eq, sleeve) == 0.0

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -441,6 +442,8 @@ def swing_total_cap_exceeded(open_exposure: Any, equity: Any,
         pct_f = float(sleeve_pct)
     except (TypeError, ValueError):
         return True
+    if not all(math.isfinite(v) for v in (equity_f, exposure_f, pct_f)):
+        return True             # NaN / inf exposure or equity => refuse
     if equity_f <= 0.0 or exposure_f < 0.0:
         return True
     if not (0.0 < pct_f <= 1.0):

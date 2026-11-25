@@ -157,7 +157,8 @@ class TestLaunchCommandFlags:
 
     def test_launch_command_includes_current_limits(self):
         argv = parse_launch_command(launcher_text())
-        assert flag_value(argv, "--sleeve-pct") == "0.15"
+        # REBAL-40-50-10: RSI(2) sleeve 15% -> 10%
+        assert flag_value(argv, "--sleeve-pct") == "0.10"
         assert flag_value(argv, "--rsi2-cap") == "4"
         assert flag_value(argv, "--max-open") == "4"
         assert flag_value(argv, "--per-position-cap") == "0.25"
@@ -192,7 +193,7 @@ class TestRunnerAcceptsLaunchCommand:
         parsed = _parse_with_runner(argv)
         assert parsed.symbols == ["AAPL"]
         assert parsed.execute is True
-        assert parsed.sleeve_pct == pytest.approx(0.15)
+        assert parsed.sleeve_pct == pytest.approx(0.10)   # REBAL-40-50-10
         assert parsed.rsi2_cap == 4
         assert parsed.max_open == 4
         assert parsed.per_position_cap == pytest.approx(0.25)
