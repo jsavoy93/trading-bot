@@ -61,7 +61,8 @@ def test_morning_plan_ranks_and_sizes_entries():
     plan = runner.plan_morning(st, inputs(), rng=random.Random(1))
     assert [o.symbol for o in plan["buys"]] == ["AAA", "BBB", "CCC"]
     aaa = plan["buys"][0]
-    assert aaa.qty == 11 and aaa.client_order_id == "gf_mid-AAA-buy-20261104-1"
+    # REBAL-40-50-10: 3% of 100k = 3000 / 90.0 -> 33 shares (was 11 at 1%)
+    assert aaa.qty == 33 and aaa.client_order_id == "gf_mid-AAA-buy-20261104-1"
     assert all(o.side == "buy" for o in plan["buys"])
 
 
@@ -299,3 +300,78 @@ def test_order_placement_still_requires_paper_env(tmp_path, monkeypatch):
     with pytest.raises(guards.GuardError):
         broker.make_broker(_Ns())
     assert guards.PAPER_API_URL == "https://paper-api.alpaca.markets"
+
+
+# --- REBAL-40-50-10 hard 30% total cap at runner level -------------------
+def _hold(st, sym, entry_price, qty, day="2026-11-02"):
+    st.open_position({"symbol": sym, "entry_day": day,
+                      "entry_price": entry_price, "qty": qty,
+                      "stop_price": entry_price - 1.0,
+                      "client_order_id": f"gf_mid-{sym}-buy-20261102-1"})
+
+
+def test_open_notional_sums_open_positions():
+    st = StateStore()
+    assert runner.open_notional(st) == 0.0
+    _hold(st, "AAA", 90.0, 100)      # 9 000
+    _hold(st, "BBB", 100.0, 50)      # 5 000
+    assert runner.open_notional(st) == pytest.approx(14_000.0)
+
+
+def test_open_notional_counts_submitted_unfilled_buys():
+    st = StateStore()
+    st.add_intent({"kind": "real", "side": "buy", "symbol": "AAA",
+                   "qty": 33, "expected_open": 90.0, "submitted": True,
+                   "fill_price": None, "fill_qty": None})
+    assert runner.open_notional(st) == pytest.approx(2_970.0)
+    # a filled buy is already in positions(); it must not be double counted
+    st2 = StateStore()
+    _hold(st2, "AAA", 90.0, 33)
+    st2.add_intent({"kind": "real", "side": "buy", "symbol": "AAA",
+                    "qty": 33, "expected_open": 90.0, "submitted": True,
+                    "fill_price": 90.0, "fill_qty": 33})
+    assert runner.open_notional(st2) == pytest.approx(2_970.0)
+    # not-submitted (cutoff / data delay) and shadow entries consume no cap
+    st3 = StateStore()
+    st3.add_intent({"kind": "real", "side": "buy", "symbol": "AAA",
+                    "qty": 33, "expected_open": 90.0, "submitted": False})
+    st3.add_intent({"kind": "shadow", "side": "buy", "symbol": "BBB",
+                    "qty": 33, "expected_open": 90.0, "submitted": True})
+    assert runner.open_notional(st3) == 0.0
+
+
+def test_open_notional_fails_closed_on_bad_position():
+    st = StateStore()
+    _hold(st, "AAA", 90.0, 100)
+    st.data["positions"]["BBB"] = {"symbol": "BBB", "entry_day": "2026-11-02",
+                                   "qty": 10, "stop_price": 1.0,
+                                   "client_order_id": "x"}   # no entry_price
+    assert runner.open_notional(st) is None
+    plan = runner.plan_morning(st, inputs(), rng=random.Random(1))
+    assert plan["buys"] == []       # unknown exposure => no entry at all
+
+
+def test_morning_plan_hard_caps_total_exposure_at_30pct():
+    st = StateStore()
+    # already 27k open of the 30k cap on flat names: only one 3k entry fits
+    for i, sym in enumerate(["OLD1", "OLD2", "OLD3"]):
+        _hold(st, sym, 90.0, 100)
+    # OLD names are not in today's universe -> no exit, exposure stays 27k
+    plan = runner.plan_morning(
+        st, inputs(opens={"AAA": 90.0, "BBB": 95.0, "CCC": 95.5}),
+        rng=random.Random(1))
+    bought = [o for o in plan["buys"]]
+    assert len(bought) == 1
+    assert bought[0].qty * bought[0].price_ref <= 3_000.0 + 1e-9
+    assert runner.open_notional(st) + sum(
+        o.qty * o.price_ref for o in bought) <= 30_000.0 + 1e-9
+    assert plan["skipped"]["BBB"] == "total_cap"
+
+
+def test_morning_plan_full_cap_places_no_buys():
+    st = StateStore()
+    for i, sym in enumerate(["OLD1", "OLD2", "OLD3"]):
+        _hold(st, sym, 100.0, 100)           # 30k = the whole cap
+    plan = runner.plan_morning(st, inputs(), rng=random.Random(1))
+    assert plan["buys"] == []
+    assert all(v == "total_cap" for v in plan["skipped"].values())

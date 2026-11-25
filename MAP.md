@@ -54,15 +54,22 @@ short; link files, not paragraphs.
 - `src/analysis/portfolio_optimizer.py` — logs rebalance
   RECOMMENDATIONS only; never auto-executes.
 
-### REBAL-40-50-10 runner sizing (reference, no configs changed here)
-- Sleeve shares are FIXED fractions of account equity: C4 15% sleeve / 3
-  positions / 10% of equity each (<= 45% total); RSI(2) 15% sleeve
-  (`--sleeve-pct` in /root/deploy/rsi2-swing-run/run_daily.sh) / 4
-  positions / 25% of the sleeve each (<= 15%); GAPFADE 1% per entry x 10
-  open (<= 10%). Main 40% + sleeve 50% + cash floor 10% = 100%; the main
-  bot's hard caps are `budget_room` and `max_buy_cost`. Worst case all
-  three runners deploy 70%, so a 50%->runner-share reduction is a lead
-  decision (documented in PR #160, not applied).
+### REBAL-40-50-10 runner sizing (reference, no live configs changed here)
+- Sleeve shares are FIXED fractions of account equity and each runner has a
+  FAIL-CLOSED hard total open-exposure cap at its own sleeve:
+  - main bot 40% (`budget_room` / `max_buy_cost`);
+  - C4 `sl_short-` 10% sleeve (`SLEEVE_EQUITY_FRAC`,
+    `experiments/strat_023/live_paper_runner.py`), enforced by
+    `position_qty` + the sleeve-total check/entry-loop queries;
+  - RSI(2) `rsi2-` 10% sleeve (`RSI2_SLEEVE_PCT`,
+    `--sleeve-pct` in /root/deploy/rsi2-swing-run/run_daily.sh), enforced
+    by `size_rsi2_position` over `rsi2_open_notional`;
+  - GAPFADE `gf_mid-` 30% (`DEFAULT_SIZE_FRACTION` 0.03 per entry x
+    `MAX_OPEN_POSITIONS` 10, `TOTAL_EXPOSURE_CAP_FRACTION` 0.30), enforced
+    by `rules.total_cap_remaining` over
+    `runner.open_notional` (positions + submitted unfilled buys).
+- Worst case: 40 main + 10 + 10 + 30 = 90% deployed, 10% cash floor
+  reserved. An unreadable exposure makes that runner place NO entry.
 
 ## Conventions that bite
 - Tests build bots via `SmartTradingBot.__new__` and stub every method

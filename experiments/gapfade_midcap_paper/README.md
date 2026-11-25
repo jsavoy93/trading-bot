@@ -22,8 +22,12 @@ only.
 - **Entry** (pre-market 09:20–09:28 ET): `gap = expected_open / prior_close
   − 1`; signal only if `gap <= −4.0%`. Rank by most negative gap. Max 3 new
   entries/day, max 10 open positions, skip names already held by this runner.
-  Sizing = fixed fraction of paper equity (default 1%); skip if the notional
-  buys no whole share or buying power is insufficient.
+  Sizing = fixed fraction of paper equity (REBAL-40-50-10: 3%, was 1%);
+  skip if the notional buys no whole share or buying power is insufficient.
+  **Hard total cap**: total open + planned GAPFADE exposure never exceeds
+  **30% of equity** (10 open x 3% = 30%). The check is fail-closed: if the
+  current exposure cannot be computed (unreadable position, non-numeric
+  value), no entry is placed.
 - **Profit exit**: at the first later open strictly above the entry price,
   OPG sell that morning.
 - **Stop**: close-based; level = `entry − 2 × ATR14[t−1]` (ATR14 as of the
@@ -142,10 +146,11 @@ no-network dry runs; it is never hardcoded and `--execute` refuses it.
    from a daily-bar runner and is what C4 documents for its SMA5 exits;
    it also makes real and both shadows identical, so the edge comparison
    stays apples to apples.
-2. **Sizing is 1% of paper equity per entry**, not the research's 10% slots.
-   Mid-cap liquidity and up to 10 concurrent positions make 1% the
-   conservative choice; returns are reported per trade, so the edge is
-   scale-free.
+2. **Sizing is 3% of paper equity per entry** (REBAL-40-50-10, was 1%),
+   not the research's 10% slots: 10 open positions x 3% = the 30% hard
+   total-exposure cap of the short-term sleeve (C4 10% + RSI(2) 10% +
+   GAPFADE 30% = 50%; main 40% + cash floor 10% = 100%). Returns are
+   reported per trade, so the edge stays scale-free.
 3. **Costs are 27 bps per side**, not the research's 10 bps. 27 bps is the
    conservative mid-cap assumption (spread + impact + slippage); the report
    script can re-price the same records at 10 bps (`--cost-bps 10`).
