@@ -343,6 +343,13 @@ def _seed_shadow(st, coid, sym, entry_day, entry_price, stop):
                    "entry_day": entry_day, "entry_open": None,
                    "entry_price": None, "qty": 5, "stop_price": None,
                    "status": "open", "note": None})
+    # the extra arguments are the already-filled entry a later pass sees
+    # (positional order in the callers: entry_price, then stop_price)
+    if entry_price is not None:
+        st.shadows()[-1]["entry_price"] = st.shadows()[-1]["entry_open"] = (
+            float(entry_price))
+    if stop is not None:
+        st.shadows()[-1]["stop_price"] = float(stop)
 
 
 def test_shadow_entry_filled_from_official_open(tmp_path):
