@@ -81,13 +81,22 @@ def test_units_reflect_morning_and_after_close_in_new_york_time():
     assert all("09:28" not in ln for ln in morning)
 
 
-def test_units_are_disabled_by_design():
+def test_units_are_user_unit_templates_never_installed():
+    """Committed USER-unit templates: timers carry the [Install] section
+    (WantedBy=timers.target) so `systemctl --user enable` works; services
+    carry none; nothing in the PR installs/enables/starts anything."""
     for name in ("gapfade-midcap-morning", "gapfade-midcap-after-close"):
         svc = (UNIT_DIR / f"{name}.service").read_text()
-        assert "[Install]" not in svc        # enable would be a no-op
-        assert "NOT INSTALLED" in svc or "DISABLED" in svc
+        timer = (UNIT_DIR / f"{name}.timer").read_text()
+        assert "[Install]" not in svc        # services: no [Install]
+        assert "[Install]" in timer
+        assert "WantedBy=timers.target" in timer
         assert "TRADING_BOT_PAPER_ONLY=1" in svc
+        assert "WorkingDirectory=/root/strat-gapfade" in svc
+        assert "USER unit TEMPLATE" in svc
+    # no enable helper anywhere in the PR tree
     assert not (UNIT_DIR / "enable.sh").exists()
+    assert not list(PROJECT_ROOT.glob("**/*enable*.sh"))
 
 
 # --- fakes ---------------------------------------------------------------
@@ -454,3 +463,17 @@ def test_gate_execute_requires_opt_in_flags(tmp_path, monkeypatch, capsys):
                       "--state-dir", str(tmp_path / "s")])
     assert rc == 2
     assert "KILL SWITCH" in capsys.readouterr().err
+
+
+# --- units: nothing may shell out to systemctl ---------------------------
+def test_nothing_in_repo_runs_systemctl():
+    """No script or module in this experiment installs, enables, starts or
+    restarts a unit: the templates are documentation until a human does it."""
+    import re
+    pat = re.compile(r"systemctl\s+(?:--user\s+)?(?:enable|start|restart|"
+                     r"disable|daemon-reload)")
+    for path in sorted((PROJECT_ROOT / "experiments" /
+                        "gapfade_midcap_paper").rglob("*")):
+        if path.suffix not in (".py", ".sh", ".service", ".timer"):
+            continue
+        assert not pat.search(path.read_text()), path

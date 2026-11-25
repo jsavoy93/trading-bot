@@ -1,15 +1,18 @@
-# GAPFADE-MIDCAP-PAPER — after-close pass. DISABLED BY DESIGN / NOT INSTALLED.
-# Paper only: TRADING_BOT_PAPER_ONLY=1 and the guarded runner (a live
-# brokerage URL aborts the process). There is deliberately no install
-# section, so enable is a no-op. Started by hand from README.md only.
+# GAPFADE-MIDCAP-PAPER — after-close pass. USER unit TEMPLATE: committed
+# disabled; nothing here installs, enables or starts it (see ../README.md).
+# Paper only: TRADING_BOT_PAPER_ONLY=1 here, and the runner aborts on any
+# trading URL other than the hard-locked paper-api.alpaca.markets.
+# WorkingDirectory is the stable checkout Josh creates after this merges:
+#   git clone --branch main https://github.com/jsavoy93/trading-bot.git /root/strat-gapfade
 [Unit]
-Description=GAPFADE midcap paper trial — after-close pass (paper only, disabled by design)
-Documentation=file:../README.md
+Description=GAPFADE midcap paper trial — after-close pass (paper only)
 
 [Service]
 Type=oneshot
 Environment=TRADING_BOT_PAPER_ONLY=1
 Environment=PYTHONUNBUFFERED=1
-WorkingDirectory=/root/.openclaw/clean/trading-bot
+WorkingDirectory=/root/strat-gapfade
 ExecStart=/usr/bin/env python3 -m experiments.gapfade_midcap_paper.runner --pass after_close --execute
+# KILL SWITCH: touch /root/strat-gapfade/experiments/gapfade_midcap_paper/KILL_GAPFADE_MIDCAP_PAPER
+# makes --execute exit 2 before any order. Remove the file to resume.
 Nice=10

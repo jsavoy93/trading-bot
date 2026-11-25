@@ -149,7 +149,10 @@ short; link files, not paragraphs.
   boundary, stubs), `report_pnl.py` (real vs both shadows PnL from this
   trial's state.json; `--cost-bps` per side, default 27), `early_stop.py`
   (flag only: records a trip in state.json, manages no process;
-  `--record`), `systemd/` (units committed DISABLED). Tests:
+  `--record`), `systemd/` (USER-unit templates, committed disabled:
+  timers `[Install] WantedBy=timers.target`, services none;
+  `WorkingDirectory=/root/strat-gapfade`, the post-merge checkout; install
+  steps in the README are NOT EXECUTED). Tests:
   `tests/test_gapfade_{rules,guards,passes,runner,report,early_stop}.py`.
 
 ## External (read-only for this bot)
