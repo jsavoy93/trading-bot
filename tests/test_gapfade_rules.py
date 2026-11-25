@@ -11,9 +11,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXP = PROJECT_ROOT / "experiments" / "gapfade_midcap_paper"
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(EXP))
-
-import rules  # noqa: E402
+# Import ONLY via the package path: never put the experiment dir itself on
+# sys.path, or a bare `rules`/`guards`/`runner` module would shadow the
+# other experiments' same-named modules (e.g. experiments/swing_paper/rules.py).
+from experiments.gapfade_midcap_paper import rules  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
 DAYS = [date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4),

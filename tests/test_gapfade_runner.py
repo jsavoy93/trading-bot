@@ -11,11 +11,13 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXP = PROJECT_ROOT / "experiments" / "gapfade_midcap_paper"
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(EXP))
+# Import ONLY via the package path: never put the experiment dir itself on
+# sys.path, or a bare `rules`/`guards`/`runner` module would shadow the
+# other experiments' same-named modules (e.g. experiments/swing_paper/rules.py).
+from experiments.gapfade_midcap_paper import rules  # noqa: E402
 
-import runner  # noqa: E402
-import rules  # noqa: E402
-from state import StateStore  # noqa: E402
+from experiments.gapfade_midcap_paper import runner  # noqa: E402
+from experiments.gapfade_midcap_paper.state import StateStore  # noqa: E402
 
 DAYS = ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05",
         "2026-11-06", "2026-11-09"]
@@ -191,7 +193,7 @@ def test_execute_plan_submits_in_part2_style_and_records_keys(tmp_path):
 def test_execute_plan_with_unwired_broker_raises_not_wired(tmp_path):
     st = StateStore(tmp_path)
     plan = runner.plan_morning(st, inputs(), rng=random.Random(1))
-    import broker
+    from experiments.gapfade_midcap_paper import broker
     with pytest.raises(broker.NotWired):
         runner.execute_plan(st, plan, broker.make_broker())
 
